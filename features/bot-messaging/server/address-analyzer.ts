@@ -24,6 +24,15 @@ import type { BotIdentity } from "./addressing";
  * when that citation actually occurs in the message. Whether the cited word IS
  * the name stays the model's judgment — code checks only what is mechanical
  * (the quote is real), never linguistics.
+ *
+ * Even a real citation can still be the wrong word: the same model cited "бота"
+ * — the generic word "bot", declined — as a match for a display name it plainly
+ * is not. So a surviving citation goes back to the model as its own focused
+ * question (see {@link buildVerifierMessages}): identify the word's base form
+ * and what it refers to, then say whether it is the display name. Naming the
+ * base form first is what makes the weak model notice that a declined generic
+ * word is not a name. Both calls fail closed — no readable confirmation, no
+ * reply.
  */
 
 /** How the display name appears in the message. Anything but `absent` replies. */
@@ -136,4 +145,56 @@ export function parseAnalyzerVerdict(
     matchedText: cited,
     reason: `display name appears as ${nameMatch} ("${cited}")`,
   };
+}
+
+export const VERIFIER_SYSTEM_PROMPT = `You verify one word against a Telegram bot's display name.
+
+You are given the bot's display name and a single word taken from a chat message. First identify what the word actually is: give its base (dictionary) form and say what it refers to. Then decide whether it IS the display name — the same name, possibly written in another alphabet (for example a Cyrillic spelling of a Latin name) or in an inflected/declined grammatical form.
+
+It is NOT the display name when it is:
+- a different person's name
+- a generic word like "bot", "assistant", or "AI" in any language, in any grammatical form
+- an ordinary word of the sentence that is not a name at all
+
+Reply with ONLY a JSON object of the shape {"base_form": "<the word's base form>", "refers_to": "<what it names or means>", "is_display_name": true | false} — no code fences, no commentary.`;
+
+/** The messages for one verifier call: the fixed rules, then the cited word. */
+export function buildVerifierMessages(bot: BotIdentity, citedText: string): ChatMessage[] {
+  return [
+    { role: "system", content: VERIFIER_SYSTEM_PROMPT },
+    {
+      role: "user",
+      content:
+        `Bot display name: ${bot.displayName.trim()}\n` +
+        `Word from the message: ${citedText.trim()}\n\n` +
+        `Reply with only the JSON object.`,
+    },
+  ];
+}
+
+export interface VerifierVerdict {
+  /** True only when the model readably confirmed the word is the display name. */
+  isDisplayName: boolean;
+  reason: string;
+}
+
+/**
+ * Read the verifier's confirmation. Fail closed: anything but a readable
+ * `"is_display_name": true` means the cited word did not survive scrutiny and
+ * the message reads as not addressed.
+ */
+export function parseVerifierVerdict(content: string, citedText: string): VerifierVerdict {
+  const parsed = extractJsonObject(content);
+  const confirmed = parsed?.is_display_name;
+  if (typeof confirmed !== "boolean") {
+    return { isDisplayName: false, reason: "unreadable verifier answer — treated as absent" };
+  }
+  if (!confirmed) {
+    const refersTo = typeof parsed?.refers_to === "string" ? ` (${parsed.refers_to})` : "";
+    return {
+      isDisplayName: false,
+      reason: `cited match "${citedText}" is not the display name${refersTo} — treated as absent`,
+    };
+  }
+  return { isDisplayName: true, reason: `verifier confirmed "${citedText}" as the display name` };
 }

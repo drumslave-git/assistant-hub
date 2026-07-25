@@ -12,7 +12,12 @@ import {
   sanitizeRequestBodyForTrace,
 } from "@/server/llm/client";
 import { startTrace, type TraceRecorder } from "@/server/trace";
-import { buildAnalyzerMessages, parseAnalyzerVerdict } from "./address-analyzer";
+import {
+  buildAnalyzerMessages,
+  buildVerifierMessages,
+  parseAnalyzerVerdict,
+  parseVerifierVerdict,
+} from "./address-analyzer";
 import { checkAddressed, type AddressResult, type AddressSource, type BotIdentity } from "./addressing";
 import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
 import { buildAddressingHint, buildSystemPrompt, hasPersonality } from "./prompt";
@@ -146,8 +151,10 @@ export interface BotMessagingDeps {
    * with the configured model). Called only for a group message the deterministic
    * checks left undecided — i.e. one that could be naming the bot in another
    * alphabet or an inflected form — so a chat's ordinary traffic costs nothing.
-   * Absent → the analyzer step is skipped entirely and such a message is treated
-   * as not addressed (the pre-analyzer behavior).
+   * Used up to twice per such message: the classification call, then the
+   * verifier call on its cited word. Absent → the analyzer step is skipped
+   * entirely and such a message is treated as not addressed (the pre-analyzer
+   * behavior).
    */
   analyzeAddressing?: (messages: ChatMessage[]) => Promise<GeneratedReply>;
   /** Deliver a reply back to the originating chat; resolves with its delivered id. */
@@ -268,9 +275,11 @@ function ignored(reason: IgnoreReason, source?: AddressSource): HandleOutcome {
 }
 
 /**
- * Settle an undecided group message with one LLM call: is the bot's display name
- * here in another alphabet, or declined? Records the full request and response on
- * the trace.
+ * Settle an undecided group message with the LLM: is the bot's display name here
+ * in another alphabet, or declined? First a classification call that must cite
+ * the matched word, then — when the citation is real — a focused verifier call
+ * that the cited word IS the name (both in `address-analyzer.ts`). Records every
+ * request and response on the trace.
  *
  * Never throws. A provider failure resolves to "not addressed" — the message
  * never clearly named the bot, so silence is the honest outcome, and barging into
@@ -304,7 +313,29 @@ async function runAddressAnalyzer(
       usage: { ...llmUsageOf(result), callKind: "addressing-check" },
     });
     const verdict = parseAnalyzerVerdict(result.content, { text: incoming.text });
-    return { addressed: verdict.addressed, source: "analyzer", reason: verdict.reason };
+    if (!verdict.addressed || !verdict.matchedText) {
+      return { addressed: verdict.addressed, source: "analyzer", reason: verdict.reason };
+    }
+
+    const verifierMessages = buildVerifierMessages(deps.bot, verdict.matchedText);
+    await trace.event({
+      type: "llm_request",
+      message: "addressing verifier request",
+      data: { messages: verifierMessages },
+    });
+    const verifierResult = await analyze(verifierMessages);
+    await trace.event({
+      type: "llm_response",
+      message: "addressing verifier response",
+      data: verifierResult.responseBody ?? { content: verifierResult.content },
+      usage: { ...llmUsageOf(verifierResult), callKind: "addressing-verify" },
+    });
+    const verified = parseVerifierVerdict(verifierResult.content, verdict.matchedText);
+    return {
+      addressed: verified.isDisplayName,
+      source: "analyzer",
+      reason: verified.isDisplayName ? verdict.reason : verified.reason,
+    };
   } catch (err) {
     await trace.event({
       type: "error",

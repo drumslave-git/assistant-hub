@@ -757,17 +757,25 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     return incoming({ message: m, chatType: "group", text });
   }
 
-  /** An analyzer that answers with one classification, citing `matchedText`. */
-  function analyzer(nameMatch: string, matchedText?: string) {
-    const answer = matchedText
+  /**
+   * An analyzer that answers the classification call (citing `matchedText` when
+   * given), then the verifier call — confirming unless `verified` is false.
+   */
+  function analyzer(nameMatch: string, matchedText?: string, verified = true) {
+    const classification = matchedText
       ? `{"name_match": "${nameMatch}", "matched_text": "${matchedText}"}`
       : `{"name_match": "${nameMatch}"}`;
-    return vi.fn().mockResolvedValue({
-      content: answer,
+    const confirmation = `{"base_form": "x", "refers_to": "x", "is_display_name": ${verified}}`;
+    const respond = (content: string) => ({
+      content,
       model: "m",
       latencyMs: 3,
       responseBody: { id: "cmpl-1" },
     });
+    return vi
+      .fn()
+      .mockResolvedValueOnce(respond(classification))
+      .mockResolvedValue(respond(confirmation));
   }
 
   it("replies when the analyzer finds the name in another alphabet", async () => {
@@ -776,11 +784,26 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
 
     expect(out).toEqual({ status: "replied", text: "hi back" });
-    expect(analyzeAddressing).toHaveBeenCalledOnce();
-    // The analyzer is asked about this message, and only this message.
-    const messages = analyzeAddressing.mock.calls[0][0];
-    expect(messages[1].content).toContain("Ари, привет");
+    // One classification call about this message, then one verifier call about
+    // the word the classification cited.
+    expect(analyzeAddressing).toHaveBeenCalledTimes(2);
+    expect(analyzeAddressing.mock.calls[0][0][1].content).toContain("Ари, привет");
+    expect(analyzeAddressing.mock.calls[1][0][1].content).toContain("Word from the message: Ари");
     expect(recorder.succeed).toHaveBeenCalledOnce();
+  });
+
+  // The failure the verifier stage exists for: the classification cites a word
+  // that really is in the message but is not the name (e.g. a declined generic
+  // word), and the focused second look rejects it.
+  it("stays silent when the verifier rejects the cited word", async () => {
+    const analyzeAddressing = analyzer("other_alphabet", "Ари", false);
+    const d = deps({ analyzeAddressing });
+    const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed", source: "analyzer" });
+    expect(analyzeAddressing).toHaveBeenCalledTimes(2);
+    expect(d.generateReply).not.toHaveBeenCalled();
+    expect(recorder.skip).toHaveBeenCalledOnce();
   });
 
   it("replies when the analyzer finds an inflected form of the name", async () => {
@@ -838,11 +861,13 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     await handleIncomingMessage(groupChatter("Ариа, ты тут?"), d);
 
     expect(startTrace).toHaveBeenCalledOnce();
-    // The analyzer's exchange and the reply's land on the same trace, in order.
+    // The analyzer's exchanges and the reply's land on the same trace, in order.
     const events = recorder.event.mock.calls.map((c) => c[0]);
     expect(events.map((e) => e.message)).toEqual([
       "addressing analyzer request",
       "addressing analyzer response",
+      "addressing verifier request",
+      "addressing verifier response",
       "addressing check",
       "system prompt composed",
       "history window loaded",

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { BOT } from "@/test/__mocks__/telegram";
-import { buildAnalyzerMessages, parseAnalyzerVerdict } from "./address-analyzer";
+import {
+  buildAnalyzerMessages,
+  buildVerifierMessages,
+  parseAnalyzerVerdict,
+  parseVerifierVerdict,
+} from "./address-analyzer";
 
 describe("buildAnalyzerMessages", () => {
   const messages = buildAnalyzerMessages({
@@ -112,6 +117,51 @@ describe("parseAnalyzerVerdict", () => {
         matchedText: null,
         reason: "unreadable analyzer answer",
       });
+    }
+  });
+});
+
+describe("buildVerifierMessages", () => {
+  it("asks about the cited word and the display name it must be", () => {
+    const messages = buildVerifierMessages(BOT, "  Аріє ");
+    expect(messages.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(messages[0].content).toContain("is_display_name");
+    expect(messages[1].content).toContain(`Bot display name: ${BOT.displayName}`);
+    expect(messages[1].content).toContain("Word from the message: Аріє");
+  });
+});
+
+describe("parseVerifierVerdict", () => {
+  it("confirms only a readable explicit yes", () => {
+    const verdict = parseVerifierVerdict(
+      '{"base_form": "Арія", "refers_to": "the bot", "is_display_name": true}',
+      "Аріє",
+    );
+    expect(verdict).toEqual({
+      isDisplayName: true,
+      reason: 'verifier confirmed "Аріє" as the display name',
+    });
+  });
+
+  // The failure this stage exists for: a citation that is a real word of the
+  // message — a declined generic word like "бота" — but not the bot's name.
+  it("rejects a word the model says is not the name, carrying its explanation", () => {
+    const verdict = parseVerifierVerdict(
+      '{"base_form": "бот", "refers_to": "a robot or bot", "is_display_name": false}',
+      "бота",
+    );
+    expect(verdict.isDisplayName).toBe(false);
+    expect(verdict.reason).toBe(
+      'cited match "бота" is not the display name (a robot or bot) — treated as absent',
+    );
+  });
+
+  // Fail closed: no readable confirmation, no reply.
+  it("treats an unreadable answer as a no", () => {
+    for (const raw of ["", "sure", "{}", '{"is_display_name": "yes"}', '{"is_display_name": 1}']) {
+      const verdict = parseVerifierVerdict(raw, "Аріє");
+      expect(verdict.isDisplayName).toBe(false);
+      expect(verdict.reason).toContain("unreadable verifier answer");
     }
   });
 });

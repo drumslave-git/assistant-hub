@@ -228,6 +228,40 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-25 (user-reported — analyzer citation gamed by a generic word, done):
+  follow-up to the citation fix below. Live trace eb2eac98: for "залив фікс для
+  бота" the model cited "бота" — a word that really occurs in the message, so
+  the mechanical citation check passed, but it is the declined generic word
+  "bot", not the display name. Per the standing rule (no linguistic heuristics
+  in code) the judgment went back to the model as a second, focused call:
+  - `features/bot-messaging/server/address-analyzer.ts`: new
+    `VERIFIER_SYSTEM_PROMPT` / `buildVerifierMessages(bot, citedText)` /
+    `parseVerifierVerdict(content, citedText)`. When a classification's citation
+    survives the occurs-in-message check, the cited word alone is sent back:
+    name its base (dictionary) form and what it refers to, then answer
+    `is_display_name` true/false. Making the model state the base form first is
+    what fixes it — asked bare, it confirmed "бота" (9/10 on a live pair
+    matrix); asked base-form-first it correctly said бот → generic → false
+    (10/10). Fail closed: unreadable answer = not addressed.
+  - `features/bot-messaging/server/service.ts`: `runAddressAnalyzer` runs the
+    verifier call after an accepted classification (same `analyzeAddressing`
+    dep, so up to two completions per undecided message — user's standing call:
+    detection quality beats saved calls). Trace gains "addressing verifier
+    request"/"response" events (`callKind: "addressing-verify"`), and the
+    verifier's rejection reason (with the model's own explanation) lands on the
+    "addressing check" step.
+  - Tests: verifier build/parse cases incl. the "бота" rejection carrying the
+    model's explanation; service mocks answer both calls, new test for a
+    verifier rejection, trace-order test extended. 646 unit tests ✓, lint ✓,
+    typecheck ✓.
+  - Proof (live, shipped module bundled against the real Ollama endpoint):
+    10-case matrix incl. both live-trace false positives → 10/10 on two runs;
+    one earlier run had a single *false negative* (classifier hallucinated a
+    citation at temp 1 → mechanically rejected → silence), which is the safe
+    direction and recoverable with an @mention. False-negative noise is a model
+    quality/temperature matter — the operator's model choice is the lever, not
+    code.
+
 - 2026-07-25 (user-reported — addressing analyzer false positives on Ollama,
   done): after the operator pointed the LLM settings at an Ollama server
   (`gemma4:e4b`), the bot replied to nearly every group message. Live trace
