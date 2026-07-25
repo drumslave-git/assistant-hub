@@ -885,6 +885,36 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     expect(analyzeAddressing).not.toHaveBeenCalled();
   });
 
+  // Maintenance means no LLM work beyond deterministically addressed turns —
+  // settling an undecided message is itself an LLM call, so it never happens.
+  it("does not consult the analyzer in maintenance mode: silent ignore, no trace, no notice", async () => {
+    const analyzeAddressing = analyzer("other_alphabet", "Ари");
+    const d = deps({
+      analyzeAddressing,
+      policy: { ownerUserId: "1", maintenanceModeEnabled: true },
+    });
+    const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
+    expect(analyzeAddressing).not.toHaveBeenCalled();
+    expect(startTrace).not.toHaveBeenCalled();
+    expect(d.sendReply).not.toHaveBeenCalled();
+    expect(d.generateReply).not.toHaveBeenCalled();
+  });
+
+  it("keeps the analyzer off for the owner too during maintenance", async () => {
+    const analyzeAddressing = analyzer("other_alphabet", "Ари");
+    const d = deps({
+      analyzeAddressing,
+      policy: { ownerUserId: "100", maintenanceModeEnabled: true },
+    });
+    const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
+    expect(analyzeAddressing).not.toHaveBeenCalled();
+    expect(d.generateReply).not.toHaveBeenCalled();
+  });
+
   it("does not consult the analyzer in a private chat", async () => {
     const analyzeAddressing = analyzer("absent");
     const d = deps({ analyzeAddressing });

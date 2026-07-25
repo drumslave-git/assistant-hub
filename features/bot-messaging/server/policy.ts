@@ -6,9 +6,10 @@ import type { BotPolicy } from "@/features/settings/server/service";
  * data (owner + maintenance state) is resolved by the settings service and passed
  * in; this module only decides.
  *
- * Maintenance mode: the bot stays fully functional for the owner (normal
- * addressing still applies) and is closed to everyone else, who instead get a
- * static maintenance notice.
+ * Maintenance mode: the bot stays functional for the owner (deterministic
+ * addressing — private chat, reply, command, mention, exact display name — still
+ * applies, but the LLM addressing analyzer is off for everyone) and is closed to
+ * everyone else, who instead get a static maintenance notice.
  */
 
 export type { BotPolicy };

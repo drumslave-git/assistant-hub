@@ -355,7 +355,16 @@ export async function handleIncomingMessage(
     deps.bot,
     incoming.isVoice ? incoming.text : undefined,
   );
-  if (!decision.addressed && decision.needsAnalyzer && deps.analyzeAddressing) {
+  // Maintenance mode turns the analyzer off entirely (owner included): settling
+  // an undecided message costs an LLM call, and maintenance means no LLM work
+  // except turns the deterministic checks already addressed. The undecided
+  // message stays silent, exactly like chatter the cheap checks rejected.
+  if (
+    !decision.addressed &&
+    decision.needsAnalyzer &&
+    deps.analyzeAddressing &&
+    !deps.policy.maintenanceModeEnabled
+  ) {
     trace = await openTrace();
     decision = await runAddressAnalyzer(incoming, deps, trace);
   }
