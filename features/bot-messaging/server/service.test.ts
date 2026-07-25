@@ -757,10 +757,13 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     return incoming({ message: m, chatType: "group", text });
   }
 
-  /** An analyzer that answers with one classification. */
-  function analyzer(nameMatch: string) {
+  /** An analyzer that answers with one classification, citing `matchedText`. */
+  function analyzer(nameMatch: string, matchedText?: string) {
+    const answer = matchedText
+      ? `{"name_match": "${nameMatch}", "matched_text": "${matchedText}"}`
+      : `{"name_match": "${nameMatch}"}`;
     return vi.fn().mockResolvedValue({
-      content: `{"name_match": "${nameMatch}"}`,
+      content: answer,
       model: "m",
       latencyMs: 3,
       responseBody: { id: "cmpl-1" },
@@ -768,7 +771,7 @@ describe("handleIncomingMessage — LLM addressing check", () => {
   }
 
   it("replies when the analyzer finds the name in another alphabet", async () => {
-    const analyzeAddressing = analyzer("other_alphabet");
+    const analyzeAddressing = analyzer("other_alphabet", "Ари");
     const d = deps({ analyzeAddressing });
     const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
 
@@ -781,7 +784,7 @@ describe("handleIncomingMessage — LLM addressing check", () => {
   });
 
   it("replies when the analyzer finds an inflected form of the name", async () => {
-    const d = deps({ analyzeAddressing: analyzer("inflected") });
+    const d = deps({ analyzeAddressing: analyzer("inflected", "Арию") });
     expect(await handleIncomingMessage(groupChatter("Арию спросите"), d)).toEqual({
       status: "replied",
       text: "hi back",
@@ -818,8 +821,20 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     });
   });
 
-  it("opens exactly one trace for a message the analyzer accepts", async () => {
+  // A weak model can claim a match on a message that never names the bot (seen
+  // live: every Cyrillic message classified "other_alphabet"). The uncorroborated
+  // claim must read as absent, not become a reply.
+  it("stays silent when the analyzer claims a match it cannot cite from the message", async () => {
     const d = deps({ analyzeAddressing: analyzer("other_alphabet") });
+    const out = await handleIncomingMessage(groupChatter("Тупо без причини"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed", source: "analyzer" });
+    expect(d.generateReply).not.toHaveBeenCalled();
+    expect(recorder.skip).toHaveBeenCalledOnce();
+  });
+
+  it("opens exactly one trace for a message the analyzer accepts", async () => {
+    const d = deps({ analyzeAddressing: analyzer("other_alphabet", "Ариа") });
     await handleIncomingMessage(groupChatter("Ариа, ты тут?"), d);
 
     expect(startTrace).toHaveBeenCalledOnce();
@@ -881,7 +896,7 @@ describe("handleIncomingMessage — LLM addressing check", () => {
 
   it("tells the model it was called by name when the analyzer decided so", async () => {
     const d = deps({
-      analyzeAddressing: analyzer("inflected"),
+      analyzeAddressing: analyzer("inflected", "Арию"),
       loadCurrentTurn: vi.fn().mockResolvedValue({
         content: "[#7] Bob (@bob): Арию спросите",
         senderLabel: "Bob (@bob)",

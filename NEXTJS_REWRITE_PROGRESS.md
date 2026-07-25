@@ -228,6 +228,45 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-25 (user-reported — addressing analyzer false positives on Ollama,
+  done): after the operator pointed the LLM settings at an Ollama server
+  (`gemma4:e4b`), the bot replied to nearly every group message. Live trace
+  ab0bf4b5 showed the analyzer classifying "Тупо без причини" (no name in it) as
+  `other_alphabet`; direct replay against the endpoint reproduced it 5/5, and a
+  case matrix showed the model stamps `other_alphabet` on **every Cyrillic
+  message** — it judges the language of the message, not the name (English
+  chatter correctly came back `absent`). Server was already on the latest Ollama
+  (0.32.3), so this is model quality, not a version/template issue. Fix: the
+  analyzer verdict is now trust-but-verify.
+  - `features/bot-messaging/server/address-analyzer.ts`: the prompt requires a
+    non-`absent` answer to cite the word it took for the name
+    (`matched_text`, verbatim), and adds an explicit "the message merely being
+    in another alphabet does not put the name into it" rule.
+    `parseAnalyzerVerdict(content, context)` rejects a claimed match unless the
+    citation occurs verbatim in the message (case-insensitive). Whether the
+    cited word IS the name stays the model's judgment — **per the user, no
+    transliteration tables or other linguistic heuristics in code, ever** (a
+    `CYRILLIC_TO_LATIN` resemblance check was added and removed on user order);
+    code verifies only what is mechanical (the quote is real).
+  - `features/bot-messaging/server/service.ts`: passes the message text into
+    the parse; rejection reasons (including the citation) land on the trace's
+    "addressing check" step.
+  - Tests: `address-analyzer.test.ts` rewritten around the citation contract
+    (uncited/fabricated/whitespace citations all read as absent);
+    `service.test.ts` analyzer mocks now cite, plus a new test that an uncited
+    claim stays silent.
+  - Proof: 639 unit tests ✓, lint ✓, typecheck ✓. Live E2E against the real
+    Ollama endpoint with the shipped module (esbuild-bundled): 8/8 — the trace's
+    false positive now comes back `absent` from the model itself (the citation
+    demand improved its raw answers), the one remaining uncited claim is
+    rejected in code, and vocative/declined/Cyrillic true positives are all
+    accepted with correct citations.
+  - Remaining risk (separate issue, NOT fixed here): the same trace's *reply*
+    contained leaked pseudo-control tokens (`</blockquote><channel|>`) and a
+    duplicated body — the reply model/parser on the Ollama side is unhealthy for
+    this model tag even on 0.32.3. Operator may want a different model tag for
+    replies; addressing is now guarded either way.
+
 - 2026-07-22 (user-requested — tabs instead of stacked sections, done): per the
   user, pages that stacked distinct content sections vertically now use the
   shared `Tabs` component (`components/ui/Tabs.tsx`, already proven on

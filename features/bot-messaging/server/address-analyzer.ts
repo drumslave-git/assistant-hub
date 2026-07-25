@@ -16,6 +16,14 @@ import type { BotIdentity } from "./addressing";
  * bounded enum makes it commit to a conclusion that the decision is then derived
  * from in code, so a hedging or chatty model cannot talk its way into a reply —
  * and "absent" stays a specific, checkable answer rather than a shade of no.
+ *
+ * The enum alone is not enough against a weak model: a small local model was
+ * observed stamping "other_alphabet" on *every* Cyrillic message — it judged the
+ * language of the message, not the name. So a non-"absent" answer must also cite
+ * the word it took for the name (`matched_text`), and the verdict only counts
+ * when that citation actually occurs in the message. Whether the cited word IS
+ * the name stays the model's judgment — code checks only what is mechanical
+ * (the quote is real), never linguistics.
  */
 
 /** How the display name appears in the message. Anything but `absent` replies. */
@@ -38,8 +46,11 @@ Answer "absent" when:
 - People are talking among themselves; a second-person "you" alone is not the bot's name
 - Generic words like "bot", "assistant", or "AI" appear without the specific display name
 - It is background chatter the bot should not interrupt
+- The message is merely written in another language or alphabet than the name: that by itself does not put the name into the message — classify the name, not the language
 
-Reply with ONLY a JSON object of the shape {"name_match": "exact" | "other_alphabet" | "inflected" | "absent"} — no code fences, no commentary.`;
+For any answer other than "absent", copy the word of the message you take for the bot's name into "matched_text" — verbatim, character for character, exactly as it appears in the message. If you cannot point to such a word, the answer is "absent" and "matched_text" is null.
+
+Reply with ONLY a JSON object of the shape {"name_match": "exact" | "other_alphabet" | "inflected" | "absent", "matched_text": "<verbatim word from the message>" | null} — no code fences, no commentary.`;
 
 export interface AnalyzerInput {
   bot: BotIdentity;
@@ -68,25 +79,61 @@ export interface AnalyzerVerdict {
   addressed: boolean;
   /** The classification the model committed to, or null when it emitted none. */
   nameMatch: NameMatch | null;
+  /** The word the model cited as the name, when it cited one. */
+  matchedText: string | null;
   reason: string;
+}
+
+/** What the citation check compares the model's answer against. */
+export interface AnalyzerVerdictContext {
+  /** The message text the analyzer was shown (body, caption, or transcript). */
+  text: string;
 }
 
 /**
  * Read the model's classification and derive the decision from it. An answer we
  * cannot understand is a "no": the bot stays out of a conversation it was never
- * shown to be part of.
+ * shown to be part of. A "yes" only counts when the model's own citation checks
+ * out — the cited word must occur verbatim in the message (see the module
+ * comment for the failure mode this guards against).
  */
-export function parseAnalyzerVerdict(content: string): AnalyzerVerdict {
-  const raw = extractJsonObject(content)?.name_match;
+export function parseAnalyzerVerdict(
+  content: string,
+  context: AnalyzerVerdictContext,
+): AnalyzerVerdict {
+  const parsed = extractJsonObject(content);
+  const raw = parsed?.name_match;
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : null;
   if (!value || !NAME_MATCH_VALUES.includes(value as NameMatch)) {
-    return { addressed: false, nameMatch: null, reason: "unreadable analyzer answer" };
+    return { addressed: false, nameMatch: null, matchedText: null, reason: "unreadable analyzer answer" };
   }
   const nameMatch = value as NameMatch;
-  const addressed = nameMatch !== "absent";
+  if (nameMatch === "absent") {
+    return { addressed: false, nameMatch, matchedText: null, reason: "display name absent" };
+  }
+
+  const citedRaw = parsed?.matched_text;
+  const cited = typeof citedRaw === "string" ? citedRaw.trim() : "";
+  if (!cited) {
+    return {
+      addressed: false,
+      nameMatch,
+      matchedText: null,
+      reason: `"${nameMatch}" claimed without citing the matched word — treated as absent`,
+    };
+  }
+  if (!context.text.toLowerCase().includes(cited.toLowerCase())) {
+    return {
+      addressed: false,
+      nameMatch,
+      matchedText: cited,
+      reason: `cited match "${cited}" does not occur in the message — treated as absent`,
+    };
+  }
   return {
-    addressed,
+    addressed: true,
     nameMatch,
-    reason: addressed ? `display name appears as ${nameMatch}` : "display name absent",
+    matchedText: cited,
+    reason: `display name appears as ${nameMatch} ("${cited}")`,
   };
 }

@@ -303,7 +303,7 @@ async function runAddressAnalyzer(
       data: result.responseBody ?? { content: result.content },
       usage: { ...llmUsageOf(result), callKind: "addressing-check" },
     });
-    const verdict = parseAnalyzerVerdict(result.content);
+    const verdict = parseAnalyzerVerdict(result.content, { text: incoming.text });
     return { addressed: verdict.addressed, source: "analyzer", reason: verdict.reason };
   } catch (err) {
     await trace.event({
