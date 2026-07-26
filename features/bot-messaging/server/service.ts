@@ -12,6 +12,7 @@ import {
   sanitizeRequestBodyForTrace,
 } from "@/server/llm/client";
 import { startTrace, type TraceRecorder } from "@/server/trace";
+import { ADDRESSING_CHECK_EVENT } from "../addressing-trace";
 import {
   buildAnalyzerMessages,
   buildVerifierMessages,
@@ -157,6 +158,13 @@ export interface BotMessagingDeps {
    * behavior).
    */
   analyzeAddressing?: (messages: ChatMessage[]) => Promise<GeneratedReply>;
+  /**
+   * Load the words the chat has confirmed are *not* the bot's display name (the
+   * 👎 "wasn't talking to you" reports). Called only when the analyzer runs, so
+   * ordinary group traffic pays nothing for it. Absent/failing → the analyzer
+   * judges unaided; an unreadable exclusion list must never drop a turn.
+   */
+  loadAddressExclusions?: () => Promise<string[]>;
   /** Deliver a reply back to the originating chat; resolves with its delivered id. */
   sendReply: (text: string) => Promise<SentMessage>;
   /**
@@ -294,10 +302,23 @@ async function runAddressAnalyzer(
   const analyze = deps.analyzeAddressing;
   if (!analyze) return { addressed: false };
 
+  // Loaded here rather than per message: only an undecided message reaches the
+  // analyzer, so ordinary group chatter still costs no query. Best-effort — an
+  // unreadable list means the analyzer judges unaided, never that the turn fails.
+  const exclusions = (await deps.loadAddressExclusions?.().catch(() => [])) ?? [];
+  if (exclusions.length > 0) {
+    await trace.event({
+      type: "step",
+      message: `addressing exclusions applied (${exclusions.length})`,
+      data: { exclusions },
+    });
+  }
+
   const messages = buildAnalyzerMessages({
     bot: deps.bot,
     chatType: incoming.chatType,
     text: incoming.text,
+    exclusions,
   });
   await trace.event({
     type: "llm_request",
@@ -312,12 +333,20 @@ async function runAddressAnalyzer(
       data: result.responseBody ?? { content: result.content },
       usage: { ...llmUsageOf(result), callKind: "addressing-check" },
     });
-    const verdict = parseAnalyzerVerdict(result.content, { text: incoming.text });
+    const verdict = parseAnalyzerVerdict(result.content, {
+      text: incoming.text,
+      exclusions,
+    });
     if (!verdict.addressed || !verdict.matchedText) {
-      return { addressed: verdict.addressed, source: "analyzer", reason: verdict.reason };
+      return {
+        addressed: verdict.addressed,
+        source: "analyzer",
+        reason: verdict.reason,
+        ...(verdict.matchedText ? { matchedText: verdict.matchedText } : {}),
+      };
     }
 
-    const verifierMessages = buildVerifierMessages(deps.bot, verdict.matchedText);
+    const verifierMessages = buildVerifierMessages(deps.bot, verdict.matchedText, exclusions);
     await trace.event({
       type: "llm_request",
       message: "addressing verifier request",
@@ -335,6 +364,7 @@ async function runAddressAnalyzer(
       addressed: verified.isDisplayName,
       source: "analyzer",
       reason: verified.isDisplayName ? verdict.reason : verified.reason,
+      matchedText: verdict.matchedText,
     };
   } catch (err) {
     await trace.event({
@@ -405,8 +435,14 @@ export async function handleIncomingMessage(
     if (trace) {
       await trace.event({
         type: "step",
-        message: "addressing check",
-        data: { addressed: false, source: decision.source, reason: decision.reason },
+        message: ADDRESSING_CHECK_EVENT,
+        data: {
+          addressed: false,
+          source: decision.source,
+          reason: decision.reason,
+          matchedText: decision.matchedText ?? null,
+          botDisplayName: deps.bot.displayName,
+        },
       });
       await trace.skip(undefined, {
         outputSummary: `not addressed — ${decision.reason ?? "no reference to the bot"}`,
@@ -425,8 +461,14 @@ export async function handleIncomingMessage(
     await trace.event({
       type: "step",
       level: "success",
-      message: "addressing check",
-      data: { addressed: true, source: decision.source, reason: decision.reason },
+      message: ADDRESSING_CHECK_EVENT,
+      data: {
+        addressed: true,
+        source: decision.source,
+        reason: decision.reason,
+        matchedText: decision.matchedText ?? null,
+        botDisplayName: deps.bot.displayName,
+      },
     });
     await trace.event({
       type: "step",
@@ -459,8 +501,19 @@ export async function handleIncomingMessage(
       await trace.event({
         type: "step",
         level: "success",
-        message: "addressing check",
-        data: { addressed: true, source: decision.source, reason: decision.reason },
+        message: ADDRESSING_CHECK_EVENT,
+        data: {
+          addressed: true,
+          source: decision.source,
+          reason: decision.reason,
+          // The identity the decision was made against, so a later report knows
+          // which display name the excluded word was confused with.
+          botDisplayName: deps.bot.displayName,
+          // The word that summoned the bot, when the analyzer found one. A later
+          // "wasn't talking to you" report reads it from here to know what to
+          // exclude — the whole feedback loop hangs off this field.
+          matchedText: decision.matchedText ?? null,
+        },
       });
 
       // 2. Compose the system prompt (base + operator personality + learned

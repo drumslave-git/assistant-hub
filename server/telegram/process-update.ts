@@ -9,6 +9,7 @@ import {
 } from "@/features/settings/server/service";
 import type { BotPolicy } from "@/features/settings/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
+import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/exclusions-repository";
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import {
   handleIncomingMessage,
@@ -385,6 +386,10 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
         return chatCompletion(conn, { model: runtime.model, messages });
       }),
+    // The words the chat has already reported as *not* the bot's name, so the
+    // analyzer stops answering to someone else's name. Read only when the
+    // analyzer actually runs (the service calls this lazily).
+    loadAddressExclusions: () => listAddressingExclusionTerms().catch(() => []),
     async sendReply(text: string) {
       return transport.sendReply(text, { replyToMessageId: currentMessageId });
     },

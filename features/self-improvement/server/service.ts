@@ -4,6 +4,11 @@ import { randomUUID } from "node:crypto";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
+import type { AddressingExclusion } from "@/features/bot-messaging/exclusions";
+import {
+  deleteAddressingExclusion,
+  listAddressingExclusions,
+} from "@/features/bot-messaging/server/exclusions-repository";
 import { getChatMessageByTelegramId } from "@/features/history/server/repository";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
@@ -21,8 +26,9 @@ import {
   type MenuSelection,
 } from "../menu";
 import { normalizeModelName } from "../model-name";
-import { optionsForReaction } from "../options";
+import { optionsForReaction, topicForAnswer } from "../options";
 import type { CommunicationPreference, SelfCorrection, UserFeedback } from "../types";
+import { recordAddressingExclusion, type AddressingReportOutcome } from "./addressing-report";
 import { getReplyTrace } from "./exchange";
 import { scheduleReflection } from "./reflect";
 import {
@@ -228,7 +234,8 @@ export async function handleMenuPress(
       await trace.skip("unknown option index");
       return { status: "unknown" };
     }
-    const updated = await completeFeedback(db, feedback.id, chosen);
+    const topic = topicForAnswer(chosen);
+    const updated = await completeFeedback(db, feedback.id, chosen, topic);
     // The answer is stored; the menu has done its job and goes away (the press
     // is acknowledged by the transport's toast, not by a message).
     await deps.deleteMenu();
@@ -236,15 +243,32 @@ export async function handleMenuPress(
       type: "output",
       level: "success",
       message: "feedback recorded",
-      data: { feedbackId: feedback.id, feedback: chosen },
-    });
-    publishEvent(FEEDBACK_FEATURE.realtimeTopic);
-    await trace.succeed({
-      outputSummary: chosen,
-      relatedIds: { [FEEDBACK_FEATURE.relatedIdsKey]: [feedback.id] },
+      data: { feedbackId: feedback.id, feedback: chosen, topic },
     });
     const answered = updated ?? feedback;
-    scheduleReflection(answered, db);
+
+    // "Wasn't talking to you" is a routing report, and it is acted on here and
+    // now: the word that mis-triggered the analyzer is filed as an exclusion, so
+    // the next message using it does not summon the bot again. Nothing reflects
+    // on it and no fold reads it — there is no reply quality to learn from a
+    // reply that should never have been sent (user decision, 2026-07-26).
+    let report: AddressingReportOutcome | null = null;
+    if (topic === "addressing") {
+      report = await recordAddressingExclusion(db, answered, trace);
+    } else {
+      scheduleReflection(answered, db);
+    }
+
+    publishEvent(FEEDBACK_FEATURE.realtimeTopic);
+    await trace.succeed({
+      outputSummary:
+        report?.status === "excluded" || report?.status === "already_excluded"
+          ? `${chosen} — "${report.exclusion.term}" excluded from addressing`
+          : report
+            ? `${chosen} — ${report.reason}`
+            : chosen,
+      relatedIds: { [FEEDBACK_FEATURE.relatedIdsKey]: [feedback.id] },
+    });
     return { status: "recorded", feedback: answered };
   } catch (err) {
     await trace.fail(err);
@@ -367,21 +391,36 @@ export interface CommunicationPreferenceView extends CommunicationPreference {
   userLabel: string;
 }
 
+/** An exclusion resolved with the label of whoever reported it (dashboard). */
+export interface AddressingExclusionView extends AddressingExclusion {
+  userLabel: string;
+}
+
 /** Everything the dashboard page shows. */
 export interface SelfImprovementView {
   feedbacks: UserFeedbackView[];
   preferences: CommunicationPreferenceView[];
   correction: SelfCorrection | null;
+  /** Words the analyzer must not read as the bot's name (from 👎 reports). */
+  exclusions: AddressingExclusionView[];
 }
 
-/** Aggregate dashboard view: feedbacks, latest preferences per user, latest correction. */
+/**
+ * Aggregate dashboard view: feedbacks, latest preferences per user, latest
+ * correction, and the addressing exclusions those feedbacks produced.
+ */
 export async function getSelfImprovementView(db: DrizzleDb = getDb()): Promise<SelfImprovementView> {
-  const [feedbacks, preferences, correction] = await Promise.all([
+  const [feedbacks, preferences, correction, exclusions] = await Promise.all([
     listFeedbacks(db),
     listLatestPreferences(db),
     getLatestCorrection(db),
+    listAddressingExclusions(db),
   ]);
-  const userIds = [...feedbacks.map((f) => f.userId), ...preferences.map((p) => p.userId)];
+  const userIds = [
+    ...feedbacks.map((f) => f.userId),
+    ...preferences.map((p) => p.userId),
+    ...exclusions.flatMap((e) => (e.userId ? [e.userId] : [])),
+  ];
   const users = await getKnownUsersByIds(db, userIds);
   const labels = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
   const labelFor = (userId: string) => labels.get(userId) ?? `user ${userId}`;
@@ -389,5 +428,45 @@ export async function getSelfImprovementView(db: DrizzleDb = getDb()): Promise<S
     feedbacks: feedbacks.map((f) => ({ ...f, userLabel: labelFor(f.userId) })),
     preferences: preferences.map((p) => ({ ...p, userLabel: labelFor(p.userId) })),
     correction,
+    exclusions: exclusions.map((e) => ({
+      ...e,
+      userLabel: e.userId ? labelFor(e.userId) : "—",
+    })),
   };
+}
+
+/**
+ * Remove an addressing exclusion: the operator's undo when a word was excluded
+ * in error, after which the analyzer may match it again. Traced like any other
+ * mutation of learned state.
+ */
+export async function removeAddressingExclusion(
+  id: string,
+  db: DrizzleDb = getDb(),
+): Promise<AddressingExclusion | null> {
+  const trace = await startTrace({
+    feature: FEEDBACK_FEATURE.id,
+    action: "exclusion-delete",
+    trigger: { kind: "dashboard", actor: "operator" },
+    inputSummary: `remove addressing exclusion ${id}`,
+  });
+  try {
+    const removed = await deleteAddressingExclusion(db, id);
+    if (!removed) {
+      await trace.skip("exclusion not found");
+      return null;
+    }
+    await trace.event({
+      type: "db",
+      level: "success",
+      message: `addressing exclusion removed: "${removed.term}"`,
+      data: { exclusion: removed },
+    });
+    publishEvent(FEEDBACK_FEATURE.realtimeTopic);
+    await trace.succeed({ outputSummary: `"${removed.term}" is matchable again` });
+    return removed;
+  } catch (err) {
+    await trace.fail(err);
+    throw err;
+  }
 }

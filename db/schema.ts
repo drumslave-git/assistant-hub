@@ -635,6 +635,16 @@ export const usersFeedbacks = pgTable(
     feedback: text("feedback"),
     /** `pending` | `awaiting_text` | `completed`. */
     status: text("status").notNull().default("pending"),
+    /**
+     * What the feedback is *about*: `quality` (the default — anything said about
+     * the reply itself) or `addressing` (the bot answered someone who was not
+     * talking to it). The distinction is not cosmetic: an addressing complaint is
+     * a routing fault whose fix is an {@link addressingExclusions} row, and
+     * folding "you should not have replied" into per-user preferences or the
+     * global system prompt would teach style from a mis-fire. The daily job
+     * therefore folds `quality` rows only.
+     */
+    topic: text("topic").notNull().default("quality"),
     /** Telegram `message_id` of the menu we sent (for edits + reply capture). */
     menuMessageId: bigint("menu_message_id", { mode: "number" }),
     /** Clean model name that generated the reacted reply (informational). */
@@ -660,6 +670,7 @@ export const usersFeedbacks = pgTable(
       "users_feedbacks_status_check",
       sql`${t.status} in ('pending', 'awaiting_text', 'completed')`,
     ),
+    check("users_feedbacks_topic_check", sql`${t.topic} in ('quality', 'addressing')`),
   ],
 );
 
@@ -721,6 +732,52 @@ export const selfCorrections = pgTable(
 
 export type SelfCorrectionRow = typeof selfCorrections.$inferSelect;
 export type SelfCorrectionInsert = typeof selfCorrections.$inferInsert;
+
+/**
+ * Words the addressing analyzer must stop reading as the bot's display name.
+ *
+ * The analyzer decides whether an undecided group message calls the bot by name
+ * in another alphabet or an inflected form, and it cites the word it took for the
+ * name. When that judgment is wrong — a *different* person's name the model
+ * thought was a spelling of the bot's — the person who was actually being talked
+ * to says so with 👎 → "Wasn't talking to you", and the cited word lands here.
+ *
+ * Rows apply **bot-wide** (user decision, 2026-07-26): the fact recorded is that
+ * this word is not the bot's name, which is true in every chat. `chat_id` /
+ * `telegram_message_id` / `user_id` / `feedback_id` are provenance — where the
+ * report came from — not scope.
+ *
+ * Consumed two ways, deliberately: `normalized` is what the *mechanical* check
+ * compares an analyzer citation against (an exact, case-folded string equality —
+ * no linguistics in code), and `term` is what the analyzer and verifier prompts
+ * list so the model can also recognize declined or transliterated forms of an
+ * excluded word. The LLM is never skipped on the strength of this list.
+ */
+export const addressingExclusions = pgTable(
+  "addressing_exclusions",
+  {
+    id: text("id").primaryKey(),
+    /** The word verbatim, as it appeared in the message that mis-triggered. */
+    term: text("term").notNull(),
+    /** Case-folded, whitespace-collapsed form — what the mechanical check matches. */
+    normalized: text("normalized").notNull(),
+    /** The bot display name the false match was made against (informational). */
+    botDisplayName: text("bot_display_name").notNull(),
+    /** Chat the report came from (provenance — the exclusion applies bot-wide). */
+    chatId: text("chat_id"),
+    /** Telegram `message_id` of the bot reply that was reported. */
+    telegramMessageId: bigint("telegram_message_id", { mode: "number" }),
+    /** Who reported it; null once that user is forgotten. */
+    userId: text("user_id").references(() => knownUsers.userId, { onDelete: "set null" }),
+    /** The feedback row that created it, or null when the row is gone. */
+    feedbackId: text("feedback_id").references(() => usersFeedbacks.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("addressing_exclusions_normalized_idx").on(t.normalized)],
+);
+
+export type AddressingExclusionRow = typeof addressingExclusions.$inferSelect;
+export type AddressingExclusionInsert = typeof addressingExclusions.$inferInsert;
 
 /**
  * Queue of raw memory notes the model wrote via the `memory_save` tool during a

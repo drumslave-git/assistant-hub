@@ -15,6 +15,7 @@ import type {
   CommunicationPreference,
   FeedbackReaction,
   FeedbackStatus,
+  FeedbackTopic,
   SelfCorrection,
   UserFeedback,
 } from "../types";
@@ -39,6 +40,7 @@ function mapFeedback(row: UsersFeedbackRow): UserFeedback {
     )
       ? (row.status as FeedbackStatus)
       : "pending",
+    topic: row.topic === "addressing" ? "addressing" : "quality",
     model: row.model,
     reflection: row.reflection,
     reflectionModel: row.reflectionModel,
@@ -106,6 +108,7 @@ export async function upsertFeedback(db: DrizzleDb, values: UpsertFeedback): Pro
         reaction: values.reaction,
         model: values.model,
         status: "pending",
+        topic: "quality",
         feedback: null,
         menuMessageId: null,
         reflection: null,
@@ -137,15 +140,21 @@ export async function setFeedbackMenuMessage(
     .where(eq(usersFeedbacks.id, id));
 }
 
-/** Store the user's answer and complete the row. Returns the updated record. */
+/**
+ * Store the user's answer and complete the row. `topic` records what the answer
+ * is about (see {@link FeedbackTopic}) — it decides whether the daily folds read
+ * this row at all, so it is written with the answer rather than derived later.
+ * Returns the updated record.
+ */
 export async function completeFeedback(
   db: DrizzleDb,
   id: string,
   feedback: string,
+  topic: FeedbackTopic = "quality",
 ): Promise<UserFeedback | null> {
   const [row] = await db
     .update(usersFeedbacks)
-    .set({ feedback, status: "completed", updatedAt: sql`now()` })
+    .set({ feedback, topic, status: "completed", updatedAt: sql`now()` })
     .where(eq(usersFeedbacks.id, id))
     .returning();
   return row ? mapFeedback(row) : null;
@@ -203,22 +212,39 @@ export async function listFeedbacks(db: DrizzleDb): Promise<UserFeedback[]> {
   return rows.map(mapFeedback);
 }
 
-/** Completed feedbacks not yet folded into a preferences version, oldest first. */
+/**
+ * Completed **quality** feedbacks not yet folded into a preferences version,
+ * oldest first. `addressing` rows are deliberately invisible to both folds — see
+ * {@link FeedbackTopic}. They are not left "pending" by this: nothing ever stamps
+ * them, and nothing is meant to.
+ */
 export async function listUnincorporatedForPrefs(db: DrizzleDb): Promise<UserFeedback[]> {
   const rows = await db
     .select()
     .from(usersFeedbacks)
-    .where(and(eq(usersFeedbacks.status, "completed"), isNull(usersFeedbacks.prefsVersion)))
+    .where(
+      and(
+        eq(usersFeedbacks.status, "completed"),
+        eq(usersFeedbacks.topic, "quality"),
+        isNull(usersFeedbacks.prefsVersion),
+      ),
+    )
     .orderBy(usersFeedbacks.createdAt);
   return rows.map(mapFeedback);
 }
 
-/** Completed feedbacks not yet folded into a corrections version, oldest first. */
+/** Completed quality feedbacks not yet folded into a corrections version, oldest first. */
 export async function listUnincorporatedForCorrections(db: DrizzleDb): Promise<UserFeedback[]> {
   const rows = await db
     .select()
     .from(usersFeedbacks)
-    .where(and(eq(usersFeedbacks.status, "completed"), isNull(usersFeedbacks.correctionsVersion)))
+    .where(
+      and(
+        eq(usersFeedbacks.status, "completed"),
+        eq(usersFeedbacks.topic, "quality"),
+        isNull(usersFeedbacks.correctionsVersion),
+      ),
+    )
     .orderBy(usersFeedbacks.createdAt);
   return rows.map(mapFeedback);
 }

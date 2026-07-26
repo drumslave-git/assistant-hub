@@ -3,6 +3,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { ReactionTypeEmoji } from "@grammyjs/types";
 
 import { closePool } from "@/db/pool";
+import { ADDRESSING_CHECK_EVENT } from "@/features/bot-messaging/addressing-trace";
+import {
+  listAddressingExclusions,
+  listAddressingExclusionTerms,
+} from "@/features/bot-messaging/server/exclusions-repository";
 import { chatMessages, knownUsers, selfCorrections, usersCommunicationPreferences, usersFeedbacks } from "@/db/schema";
 import { stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
@@ -19,8 +24,9 @@ import {
   MENU_RECORDED_TOAST,
   OTHER_OPTION,
 } from "../menu";
-import { LIKE_OPTIONS } from "../options";
+import { DISLIKE_OPTIONS, LIKE_OPTIONS, NOT_ADDRESSED_OPTION } from "../options";
 import { runSelfImprovement } from "./analyze";
+import { removeAddressingExclusion } from "./service";
 import { reflectOnFeedback } from "./reflect";
 import {
   completeFeedback,
@@ -753,5 +759,174 @@ describe("prompt injection on the next reply", () => {
     expect(prefsMessage).toBeDefined();
     expect(String(prefsMessage!.content)).toContain("short answers");
     expect(String(prefsMessage!.content)).toContain("emoji walls");
+  });
+});
+
+describe("addressing report (👎 → \"Wasn't talking to you\")", () => {
+  const NOT_ADDRESSED_INDEX = DISLIKE_OPTIONS.indexOf(NOT_ADDRESSED_OPTION);
+
+  /**
+   * The reply trace the report reads back: the bot answered because the analyzer
+   * took `matchedText` for its display name.
+   */
+  async function seedAddressingTrace(options: {
+    source: string;
+    matchedText?: string | null;
+    botDisplayName?: string;
+  }) {
+    const trace = await startTrace({
+      feature: "bot-messaging",
+      action: "reply",
+      trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+    });
+    await trace.event({
+      type: "step",
+      level: "success",
+      message: ADDRESSING_CHECK_EVENT,
+      data: {
+        addressed: true,
+        source: options.source,
+        reason: "display name appears as other_alphabet",
+        matchedText: options.matchedText ?? null,
+        botDisplayName: options.botDisplayName ?? "Aria",
+      },
+    });
+    await trace.succeed();
+  }
+
+  /** React 👎 and press the "Wasn't talking to you" option. Returns the outcome. */
+  async function reportNotAddressed(transport: FeedbackTransport) {
+    await processReactionUpdate(reactionUpdate("👎"), transport);
+    const feedbackId = (await getFeedbackRow())!.id;
+    return processCallbackUpdate(
+      {
+        id: `cb-${feedbackId}`,
+        from: { id: Number(USER_ID), is_bot: false, first_name: "Alice" },
+        data: encodeMenuCallback(feedbackId, NOT_ADDRESSED_INDEX),
+        message: {
+          message_id: MENU_MSG_ID,
+          date: 0,
+          chat: { id: Number(CHAT_ID), type: "private" as const, first_name: "A" },
+        },
+      },
+      transport,
+    );
+  }
+
+  it("files the word the analyzer matched, so it stops summoning the bot", async () => {
+    await seedExchange();
+    await seedAddressingTrace({ source: "analyzer", matchedText: "Георгій" });
+    const { transport } = fakeFeedbackTransport();
+
+    expect((await reportNotAddressed(transport)).status).toBe("recorded");
+
+    // The row is stored as an addressing report, not a complaint about the reply.
+    expect(await getFeedbackRow()).toMatchObject({
+      status: "completed",
+      topic: "addressing",
+      feedback: NOT_ADDRESSED_OPTION,
+    });
+    // ...and the word is excluded, with the provenance of the report on it.
+    const exclusions = await listAddressingExclusions(ctx.db);
+    expect(exclusions).toHaveLength(1);
+    expect(exclusions[0]).toMatchObject({
+      term: "Георгій",
+      normalized: "георгій",
+      botDisplayName: "Aria",
+      chatId: CHAT_ID,
+      telegramMessageId: BOT_MSG_ID,
+      userId: USER_ID,
+    });
+    // The analyzer reads it back as a plain term list.
+    expect(await listAddressingExclusionTerms(ctx.db)).toEqual(["Георгій"]);
+    // The whole report is one story on the feedback trace.
+    const traces = await listTraces({ feature: "user-feedback" });
+    const answer = traces.traces.find((t) => t.action === "answer")!;
+    expect(answer.outputSummary).toContain("excluded from addressing");
+    const full = await getTrace(answer.id);
+    expect(full!.events.some((e) => e.message.includes("addressing exclusion recorded"))).toBe(
+      true,
+    );
+  });
+
+  it("keeps one row when the same word is reported again", async () => {
+    await seedExchange();
+    await seedAddressingTrace({ source: "analyzer", matchedText: "Георгій" });
+    const { transport } = fakeFeedbackTransport();
+
+    await reportNotAddressed(transport);
+    // A repeat reaction reopens the same feedback row; the second report lands on
+    // an already-excluded word.
+    const second = await reportNotAddressed(transport);
+
+    expect(second.status).toBe("recorded");
+    expect(await listAddressingExclusions(ctx.db)).toHaveLength(1);
+    const traces = await listTraces({ feature: "user-feedback" });
+    const answers = traces.traces.filter((t) => t.action === "answer");
+    expect(answers.some((t) => t.outputSummary?.includes("excluded from addressing"))).toBe(true);
+  });
+
+  // The honest bound of the feature: an @mention, a reply, or the name spelled
+  // exactly has no word that could be excluded without deafening the bot.
+  it("records the complaint but excludes nothing when the bot was addressed explicitly", async () => {
+    await seedExchange();
+    await seedAddressingTrace({ source: "mention", matchedText: null });
+    const { transport } = fakeFeedbackTransport();
+
+    expect((await reportNotAddressed(transport)).status).toBe("recorded");
+
+    expect(await getFeedbackRow()).toMatchObject({ topic: "addressing" });
+    expect(await listAddressingExclusions(ctx.db)).toHaveLength(0);
+    const traces = await listTraces({ feature: "user-feedback" });
+    const answer = traces.traces.find((t) => t.action === "answer")!;
+    expect(answer.outputSummary).toContain("nothing to exclude");
+  });
+
+  it("refuses to exclude the bot's own display name", async () => {
+    await seedExchange();
+    await seedAddressingTrace({ source: "analyzer", matchedText: "aria", botDisplayName: "Aria" });
+    const { transport } = fakeFeedbackTransport();
+
+    await reportNotAddressed(transport);
+
+    expect(await listAddressingExclusions(ctx.db)).toHaveLength(0);
+    const traces = await listTraces({ feature: "user-feedback" });
+    expect(traces.traces.find((t) => t.action === "answer")!.outputSummary).toContain(
+      "own display name",
+    );
+  });
+
+  // An addressing report is a routing fault, not a judgment of the reply: folding
+  // it would teach style from a mis-fire (user decision, 2026-07-26).
+  it("is never folded into preferences or self-corrections", async () => {
+    await seedExchange();
+    await seedAddressingTrace({ source: "analyzer", matchedText: "Георгій" });
+    const { transport } = fakeFeedbackTransport();
+    await reportNotAddressed(transport);
+
+    const llm = fakeFoldLlm();
+    const result = await runSelfImprovement({ complete: llm.complete, db: ctx.db });
+
+    expect(result.summary).toBe("nothing to incorporate");
+    expect(llm.calls).toHaveLength(0);
+    const row = await getFeedbackRow();
+    expect(row).toMatchObject({ prefsVersion: null, correctionsVersion: null });
+    expect(await getLatestCorrection(ctx.db)).toBeNull();
+  });
+
+  it("lets the operator undo an exclusion, making the word matchable again", async () => {
+    await seedExchange();
+    await seedAddressingTrace({ source: "analyzer", matchedText: "Георгій" });
+    const { transport } = fakeFeedbackTransport();
+    await reportNotAddressed(transport);
+    const [exclusion] = await listAddressingExclusions(ctx.db);
+
+    const removed = await removeAddressingExclusion(exclusion.id, ctx.db);
+
+    expect(removed).toMatchObject({ term: "Георгій" });
+    expect(await listAddressingExclusionTerms(ctx.db)).toEqual([]);
+    expect(await removeAddressingExclusion(exclusion.id, ctx.db)).toBeNull();
+    const traces = await listTraces({ feature: "user-feedback" });
+    expect(traces.traces.some((t) => t.action === "exclusion-delete")).toBe(true);
   });
 });

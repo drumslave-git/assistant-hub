@@ -48,6 +48,14 @@ export interface AddressResult {
   needsAnalyzer?: boolean;
   /** Human explanation of the verdict, when there is one to give. */
   reason?: string;
+  /**
+   * The word the analyzer took for the display name, when it cited one — recorded
+   * on the trace so a later "wasn't talking to you" report knows exactly which
+   * word to exclude, rather than parsing it back out of {@link reason}. Present
+   * on analyzer verdicts only, and on rejected ones too (a citation that failed
+   * the verifier is still what the model saw).
+   */
+  matchedText?: string;
 }
 
 /** Minimal identity the addressing check needs. */

@@ -27,6 +27,30 @@ describe("buildAnalyzerMessages", () => {
     expect(messages[1].content).toContain("Chat type: supergroup");
     expect(messages[1].content).toContain("Ари, привет");
   });
+
+  it("adds no exclusions block when nothing is excluded", () => {
+    expect(buildAnalyzerMessages({ bot: BOT, chatType: "group", text: "hi" })).toHaveLength(2);
+    expect(
+      buildAnalyzerMessages({ bot: BOT, chatType: "group", text: "hi", exclusions: ["  "] }),
+    ).toHaveLength(2);
+  });
+
+  // The prompt half of an exclusion: a mechanical match only catches the exact
+  // word, so the model is told what the word IS — that is what lets it recognize
+  // a declined or transliterated form of it too.
+  it("lists excluded words as names of other people, not as a ban", () => {
+    const withExclusions = buildAnalyzerMessages({
+      bot: BOT,
+      chatType: "group",
+      text: "Георгію, привіт",
+      exclusions: ["Георгій", "Ivan"],
+    });
+    expect(withExclusions.map((m) => m.role)).toEqual(["system", "system", "user"]);
+    expect(withExclusions[1].content).toContain("NOT to be the bot's display name");
+    expect(withExclusions[1].content).toContain("- Георгій");
+    expect(withExclusions[1].content).toContain("- Ivan");
+    expect(withExclusions[1].content).toContain("inflected forms");
+  });
 });
 
 describe("parseAnalyzerVerdict", () => {
@@ -94,6 +118,27 @@ describe("parseAnalyzerVerdict", () => {
     expect(verdict.matchedText).toBe(null);
   });
 
+  // The mechanical half of an exclusion: the chat already ruled on this exact
+  // word, so the model's answer about it is overruled — without the verifier
+  // call it would otherwise have cost.
+  it("rejects a citation the chat has already excluded", () => {
+    const verdict = parseAnalyzerVerdict(
+      '{"name_match": "other_alphabet", "matched_text": "Георгій"}',
+      { text: "Георгій, ти йдеш?", exclusions: ["георгій"] },
+    );
+    expect(verdict.addressed).toBe(false);
+    expect(verdict.matchedText).toBe("Георгій");
+    expect(verdict.reason).toContain("addressing exclusion list");
+  });
+
+  it("does not exclude a word that merely contains an excluded one", () => {
+    const verdict = parseAnalyzerVerdict(
+      '{"name_match": "inflected", "matched_text": "Аріє"}',
+      { text: "Аріє, шо думаєш?", exclusions: ["Арі"] },
+    );
+    expect(verdict.addressed).toBe(true);
+  });
+
   it("reads an answer the model wrapped in fences or prose", () => {
     const raw = 'Sure!\n```json\n{"name_match": "inflected", "matched_text": "Аріє"}\n```';
     expect(parseAnalyzerVerdict(raw, spoken).addressed).toBe(true);
@@ -128,6 +173,15 @@ describe("buildVerifierMessages", () => {
     expect(messages[0].content).toContain("is_display_name");
     expect(messages[1].content).toContain(`Bot display name: ${BOT.displayName}`);
     expect(messages[1].content).toContain("Word from the message: Аріє");
+  });
+
+  // The cited word is never itself excluded by the time the verifier runs (the
+  // parse dropped those) — but a *form* of an excluded word can be, and this is
+  // the model's chance to notice.
+  it("carries the excluded words so a declined form of one can be spotted", () => {
+    const messages = buildVerifierMessages(BOT, "Георгію", ["Георгій"]);
+    expect(messages.map((m) => m.role)).toEqual(["system", "system", "user"]);
+    expect(messages[1].content).toContain("- Георгій");
   });
 });
 

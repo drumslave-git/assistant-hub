@@ -14,6 +14,16 @@ export type FeedbackReaction = "up" | "down";
  */
 export type FeedbackStatus = "pending" | "awaiting_text" | "completed";
 
+/**
+ * What a feedback answer is about: the reply itself (`quality` — every option
+ * but one, and all free text) or the fact that the bot answered someone who was
+ * not talking to it (`addressing`). An `addressing` answer is a routing report,
+ * so the daily folds skip it (user decision, 2026-07-26) — "you should not have
+ * replied" folded into a per-user preference or the global system prompt would
+ * teach style from a mis-fire. Its actual fix is an addressing exclusion.
+ */
+export type FeedbackTopic = "quality" | "addressing";
+
 /** One collected feedback row (client-safe). */
 export interface UserFeedback {
   id: string;
@@ -25,6 +35,8 @@ export interface UserFeedback {
   /** The chosen option text or the user's own words; null until answered. */
   feedback: string | null;
   status: FeedbackStatus;
+  /** What the answer is about — see {@link FeedbackTopic}. */
+  topic: FeedbackTopic;
   /** Clean model name that generated the reacted reply (informational). */
   model: string;
   /**

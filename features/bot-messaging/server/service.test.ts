@@ -505,6 +505,10 @@ describe("handleIncomingMessage", () => {
       addressed: true,
       source: "private",
       reason: undefined,
+      // No analyzer ran, so there is no cited word — but the identity the check
+      // was made against is always recorded (the exclusion flow reads it).
+      matchedText: null,
+      botDisplayName: "Aria",
     });
     // Request event carries the whole request body (model + full messages), not
     // just the messages — the exact object the generator sent to the provider.
@@ -806,6 +810,53 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     expect(recorder.skip).toHaveBeenCalledOnce();
   });
 
+  // The feedback loop's payoff: a word the chat reported as "wasn't talking to
+  // you" must stop summoning the bot even when the model matches it again.
+  it("stays silent when the analyzer cites a word the chat has excluded", async () => {
+    const analyzeAddressing = analyzer("other_alphabet", "Георгій");
+    const d = deps({
+      analyzeAddressing,
+      loadAddressExclusions: vi.fn().mockResolvedValue(["Георгій"]),
+    });
+    const out = await handleIncomingMessage(groupChatter("Георгій, ти йдеш?"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed", source: "analyzer" });
+    expect(d.generateReply).not.toHaveBeenCalled();
+    // The classification still ran — an exclusion overrules an answer, it never
+    // skips asking — but the excluded citation costs no verifier call.
+    expect(analyzeAddressing).toHaveBeenCalledTimes(1);
+    expect(analyzeAddressing.mock.calls[0][0][1].content).toContain("- Георгій");
+    expect(recorder.skip.mock.calls[0][1].outputSummary).toContain("exclusion list");
+  });
+
+  it("records the applied exclusions and the matched word on the trace", async () => {
+    const d = deps({
+      analyzeAddressing: analyzer("other_alphabet", "Ари"),
+      loadAddressExclusions: vi.fn().mockResolvedValue(["Георгій"]),
+    });
+    await handleIncomingMessage(groupChatter("Ари, привет"), d);
+
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    const applied = events.find((e) => e.message.startsWith("addressing exclusions applied"));
+    expect(applied?.data).toEqual({ exclusions: ["Георгій"] });
+    // The word the bot answered to — what a "wasn't talking to you" report reads.
+    const check = events.find((e) => e.message === "addressing check");
+    expect(check?.data).toMatchObject({ matchedText: "Ари", botDisplayName: "Aria" });
+  });
+
+  // An unreadable exclusion list is an infrastructure problem, not a reason to
+  // drop someone's message.
+  it("still answers when the exclusion list cannot be read", async () => {
+    const d = deps({
+      analyzeAddressing: analyzer("other_alphabet", "Ари"),
+      loadAddressExclusions: vi.fn().mockRejectedValue(new Error("db down")),
+    });
+    expect(await handleIncomingMessage(groupChatter("Ари, привет"), d)).toEqual({
+      status: "replied",
+      text: "hi back",
+    });
+  });
+
   it("replies when the analyzer finds an inflected form of the name", async () => {
     const d = deps({ analyzeAddressing: analyzer("inflected", "Арию") });
     expect(await handleIncomingMessage(groupChatter("Арию спросите"), d)).toEqual({
@@ -841,6 +892,8 @@ describe("handleIncomingMessage — LLM addressing check", () => {
       addressed: false,
       source: "analyzer",
       reason: "display name absent",
+      matchedText: null,
+      botDisplayName: "Aria",
     });
   });
 

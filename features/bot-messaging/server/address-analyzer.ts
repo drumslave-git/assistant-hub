@@ -1,6 +1,7 @@
 import { extractJsonObject } from "@/lib/json";
 import type { ChatMessage } from "@/server/llm/client";
 
+import { isExcludedTerm } from "../exclusions";
 import type { BotIdentity } from "./addressing";
 
 /**
@@ -33,6 +34,17 @@ import type { BotIdentity } from "./addressing";
  * base form first is what makes the weak model notice that a declined generic
  * word is not a name. Both calls fail closed — no readable confirmation, no
  * reply.
+ *
+ * Some false matches survive all of that, because the model believes two
+ * genuinely different names are one name. The people in the chat are the
+ * authority on that, and they say so with 👎 → "Wasn't talking to you", which
+ * files the cited word as an *exclusion* (`features/bot-messaging/exclusions.ts`).
+ * Exclusions enter the decision twice: both prompts list them, so the model can
+ * also recognize a declined or transliterated form of an excluded word, and a
+ * citation that IS an excluded word is dropped mechanically before the verifier
+ * call. Neither path skips the LLM classification — the analyzer still runs on
+ * every undecided message; the list only overrules an answer the chat already
+ * told us was wrong.
  */
 
 /** How the display name appears in the message. Anything but `absent` replies. */
@@ -66,12 +78,37 @@ export interface AnalyzerInput {
   chatType: string;
   /** The message's user text (body or caption). */
   text: string;
+  /**
+   * Words the chat has already told us are not the bot's name (see the module
+   * note). Listed in the prompt so the model can also recognize their declined
+   * and transliterated forms.
+   */
+  exclusions?: readonly string[];
+}
+
+/**
+ * The excluded-words block, or null when there is nothing to exclude. Phrased as
+ * what the words *are* — other people's names — rather than as a ban, because a
+ * model told only "never answer X" still has to be told why X looked like the
+ * name in the first place.
+ */
+function exclusionsBlock(exclusions: readonly string[] | undefined): string | null {
+  const listed = (exclusions ?? []).map((term) => term.trim()).filter(Boolean);
+  if (listed.length === 0) return null;
+  return (
+    "These words have already been confirmed by the people in the chat NOT to be the bot's display name — " +
+    "they name other people or things, even where they may look or sound similar to it:\n" +
+    listed.map((term) => `- ${term}`).join("\n") +
+    "\nAny of these words, including its inflected forms and its spellings in other alphabets, is not the display name."
+  );
 }
 
 /** The messages for one analyzer call: the fixed rules, then this message. */
 export function buildAnalyzerMessages(input: AnalyzerInput): ChatMessage[] {
+  const exclusions = exclusionsBlock(input.exclusions);
   return [
     { role: "system", content: ANALYZER_SYSTEM_PROMPT },
+    ...(exclusions ? [{ role: "system" as const, content: exclusions }] : []),
     {
       role: "user",
       content:
@@ -97,6 +134,8 @@ export interface AnalyzerVerdict {
 export interface AnalyzerVerdictContext {
   /** The message text the analyzer was shown (body, caption, or transcript). */
   text: string;
+  /** Words already confirmed not to be the display name (see the module note). */
+  exclusions?: readonly string[];
 }
 
 /**
@@ -139,6 +178,18 @@ export function parseAnalyzerVerdict(
       reason: `cited match "${cited}" does not occur in the message — treated as absent`,
     };
   }
+  // The chat already ruled on this exact word: it names someone else. An
+  // operator-confirmed fact about one word, not a heuristic about names in
+  // general — the model was still asked, and only its answer about this word is
+  // overruled. Other spellings and inflections of it are the prompt's job.
+  if (isExcludedTerm(cited, context.exclusions ?? [])) {
+    return {
+      addressed: false,
+      nameMatch,
+      matchedText: cited,
+      reason: `cited match "${cited}" is on the addressing exclusion list — treated as absent`,
+    };
+  }
   return {
     addressed: true,
     nameMatch,
@@ -158,10 +209,21 @@ It is NOT the display name when it is:
 
 Reply with ONLY a JSON object of the shape {"base_form": "<the word's base form>", "refers_to": "<what it names or means>", "is_display_name": true | false} — no code fences, no commentary.`;
 
-/** The messages for one verifier call: the fixed rules, then the cited word. */
-export function buildVerifierMessages(bot: BotIdentity, citedText: string): ChatMessage[] {
+/**
+ * The messages for one verifier call: the fixed rules, the excluded words, then
+ * the cited word. The word itself is never one of the exclusions by the time
+ * this runs (the parse dropped those), but a *form* of one can be — which is
+ * exactly what the list is here to let the model notice.
+ */
+export function buildVerifierMessages(
+  bot: BotIdentity,
+  citedText: string,
+  exclusions?: readonly string[],
+): ChatMessage[] {
+  const excluded = exclusionsBlock(exclusions);
   return [
     { role: "system", content: VERIFIER_SYSTEM_PROMPT },
+    ...(excluded ? [{ role: "system" as const, content: excluded }] : []),
     {
       role: "user",
       content:
