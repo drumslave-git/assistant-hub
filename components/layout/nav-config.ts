@@ -37,28 +37,46 @@ export interface NavGroup {
  */
 export const NAV_GROUPS: NavGroup[] = [
   {
-    label: "Main",
+    // Landing pages, no header: they are the entry point, not a category.
     items: [
       { href: "/", label: "Overview", icon: LayoutDashboard },
       { href: "/analytics", label: "Analytics", icon: BarChart3 },
-      { href: "/history", label: "History", icon: MessageSquare },
-      { href: "/memory", label: "Memory", icon: Brain },
-      { href: "/scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock },
-      { href: "/jobs", label: "Background jobs", icon: Activity },
-      { href: "/vision", label: "Vision", icon: Image },
-      { href: "/browser", label: "Browser agent", icon: Globe },
-      { href: "/self-improvement", label: "Self-improvement", icon: Sparkles },
-      { href: "/users", label: "Users", icon: Users },
-      { href: "/groups", label: "Groups", icon: UsersRound },
-      { href: "/debug", label: "Debug", icon: Bug },
     ],
   },
   {
-    label: "Configure",
+    // What the bot has seen and who it talked to.
+    label: "Conversations",
+    items: [
+      { href: "/history", label: "History", icon: MessageSquare },
+      { href: "/vision", label: "Vision", icon: Image },
+      { href: "/users", label: "Users", icon: Users },
+      { href: "/groups", label: "Groups", icon: UsersRound },
+    ],
+  },
+  {
+    // What shapes a reply: persona, durable knowledge, tools, learned corrections.
+    label: "Bot",
+    items: [
+      { href: "/personalities", label: "Personalities", icon: VenetianMask },
+      { href: "/memory", label: "Memory", icon: Brain },
+      { href: "/tools", label: "Tools", icon: Wrench },
+      { href: "/self-improvement", label: "Self-improvement", icon: Sparkles },
+    ],
+  },
+  {
+    // Work that runs without a message triggering it.
+    label: "Automation",
+    items: [
+      { href: "/scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock },
+      { href: "/browser", label: "Browser agent", icon: Globe },
+      { href: "/jobs", label: "Background jobs", icon: Activity },
+    ],
+  },
+  {
+    label: "System",
     items: [
       { href: "/settings", label: "Settings", icon: Settings },
-      { href: "/personalities", label: "Personalities", icon: VenetianMask },
-      { href: "/tools", label: "Tools", icon: Wrench },
+      { href: "/debug", label: "Debug", icon: Bug },
     ],
   },
 ];

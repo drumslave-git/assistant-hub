@@ -30,7 +30,7 @@ function NavLink({
 }) {
   const Icon = item.icon;
   const base =
-    "group flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors";
+    "group flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors";
 
   if (item.soon) {
     return (
@@ -99,9 +99,9 @@ export function Sidebar({
       </div>
 
       {/* Nav groups */}
-      <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
+      <nav className="flex-1 space-y-4 overflow-y-auto px-3 py-4">
         {NAV_GROUPS.map((group, i) => (
-          <div key={group.label ?? i} className="space-y-1">
+          <div key={group.label ?? i} className="space-y-0.5">
             {group.label ? (
               <div className="px-3 pb-1 text-[11px] font-semibold tracking-wider text-faint uppercase">
                 {group.label}
