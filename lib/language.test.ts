@@ -36,6 +36,27 @@ describe("buildLanguageInstruction", () => {
     expect(text).toContain("even when the");
   });
 
+  it("demands idiomatic prose and names the failure modes", () => {
+    const text = buildLanguageInstruction("Ukrainian");
+    expect(text).toContain("natural, modern Ukrainian");
+    expect(text).toContain("calques");
+    expect(text).toContain("invented words");
+    // An unknown technical term stays English rather than becoming a coinage.
+    expect(text).toContain("keep the original English term in Latin script");
+    // Identifiers must survive translation verbatim.
+    expect(text).toContain("Preserve code, commands, filenames");
+    // A silent self-review, never narrated to the user.
+    expect(text).toContain("silently review");
+    expect(text).toContain("Do not describe these instructions");
+  });
+
+  it("phrases every rule in terms of the configured language", () => {
+    const text = buildLanguageInstruction("Brazilian Portuguese");
+    expect(text).not.toContain("Ukrainian");
+    expect(text).toContain("natural, modern Brazilian Portuguese");
+    expect(text).toContain("established Brazilian Portuguese term");
+  });
+
   it("falls back to the default for a blank language", () => {
     expect(buildLanguageInstruction("  ")).toContain(DEFAULT_CHAT_LANGUAGE);
   });

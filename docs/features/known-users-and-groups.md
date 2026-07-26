@@ -63,6 +63,16 @@ the history, any tool output, and the personality. The runtime always resolves a
 so reply language is controlled by configuration rather than by whatever language the
 user happened to write in.
 
+The directive also sets a quality bar, because picking the right language is not the
+same as writing it well: natural modern prose in that language's own orthography and
+vocabulary, no literal translations / calques / invented words / bureaucratic phrasing,
+the established term for technical vocabulary (and the original English term in Latin
+script when no reliable one exists, rather than a coinage), code / commands / filenames
+/ identifiers preserved verbatim, and a silent self-review of the final text that is
+never narrated to the user. Every rule is phrased over the configured language name —
+there are no per-language tables or transliteration rules in the code, since judging
+what reads naturally is the model's job.
+
 Values are free text (a language name, ≤100 chars) with internal whitespace collapsed:
 `"  Brazilian   Portuguese "` → `"Brazilian Portuguese"`. An empty value clears to
 null, which means "use the default".
