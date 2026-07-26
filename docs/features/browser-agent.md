@@ -94,12 +94,17 @@ several or all. That uniformity is the point: an engine's live page and the API
 fallback used to hand the agent two different-shaped things, so its next move
 depended on which source happened to work.
 
-Sources are tried in order:
+Sources, in their *configured* order:
 
 1. **DuckDuckGo** — `duckduckgo.com/?q=`
 2. **Google** — `google.com/search?q=`
 3. **Bing** — `bing.com/search?q=`
 4. **Tavily API** — last resort only, via `features/web-search`
+
+That order is only the starting point. The engines are re-sorted per search by
+their measured success rate — see [the scoreboard](#the-scoreboard) — so whichever
+one is really answering drifts to the front. Tavily is not ranked: it is the
+fallback by definition and always runs last.
 
 #### What the engines actually do (measured 2026-07-26)
 
@@ -111,13 +116,45 @@ From this repo's own headless Chromium, via `search-live.integration.test.ts`:
 | Google | **Captcha** (`/sorry/index`), every time |
 | Bing | **Works** — a real results page, 5/5 relevant, extracted cleanly |
 
-So today Bing is the engine that answers, after ~8s of DuckDuckGo and Google failing
-first. The order is the user's (2026-07-26) and is kept until they change it. Two
-findings worth carrying: the honest bot user-agent is **not** the problem (swapping it
+So today Bing is the engine that answers. The configured order tries the two blocked
+engines first, but the scoreboard fixes that by itself: after the first search
+Bing outranks them and every later search goes to it directly. Two findings worth
+carrying: the honest bot user-agent is **not** the problem (swapping it
 for a Chrome string made DuckDuckGo block harder), and a blocked engine sometimes
 serves a **plausible-looking decoy** — Bing once returned Russian Wikipedia pages
 about toucans for a printing-press query — which is why the live test asserts the
 results are *relevant*, not merely present.
+
+#### The scoreboard
+
+`server/engine-stats.ts` + the `search_engine_stats` table: one row per source with
+`successes`, `failures`, the last success/failure timestamps, and the last failure's
+reason. Every attempt writes its outcome, including Tavily's — so the table also
+answers "how often does the fallback get used, and does it work?".
+
+The cascade sorts the engines by a **smoothed** success rate,
+`(successes + 1) / (attempts + 2)`, not the raw ratio. That choice does two things
+that matter on real data:
+
+- an engine with **no history scores 0.5**, so it is tried in its configured
+  position and gets a real chance to prove itself — a newly added engine is not
+  buried behind a known-bad one;
+- **one lucky hit cannot outrank a long record** — 1/1 scores 0.67 while 40/42
+  scores 0.93.
+
+Ties keep the configured order, so the ranking only ever *reacts* to evidence, and
+a cold install runs exactly the configured order.
+
+Counters are **halved once a source passes 100 attempts**, in the same statement
+that increments them (so two concurrent runs cannot race). Without decay a long
+history freezes the ranking: an engine that starts blocking would keep its good
+score for hundreds of searches, and one that recovers could never climb back. With
+it, the score tracks roughly the last hundred searches — the ranking reacts within
+a few searches, in both directions.
+
+Losing a scoreboard write never fails a search: `recordEngineOutcome` swallows and
+logs its own errors, and an unreadable scoreboard falls back to the configured
+order.
 
 #### How results are recognized
 

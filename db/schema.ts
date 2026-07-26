@@ -1160,3 +1160,31 @@ export const browserRunScreenshots = pgTable(
 
 export type BrowserRunScreenshotRow = typeof browserRunScreenshots.$inferSelect;
 export type BrowserRunScreenshotInsert = typeof browserRunScreenshots.$inferInsert;
+
+/**
+ * Scoreboard for the browser agent's search sources — one row per engine (plus the
+ * API fallback), counting how often each actually returned results. The cascade
+ * sorts itself by these numbers, so an engine that starts blocking us sinks and one
+ * that recovers climbs back, instead of every search paying a fixed toll for a
+ * dead engine ahead of a working one.
+ *
+ * Deliberately a live scoreboard, not a history: this holds the current standing,
+ * and the per-search story is already in the run's activity feed and trace. Counts
+ * are halved once their total passes a cap (see `engine-stats.ts`), so the ranking
+ * keeps reacting instead of being anchored by ancient results.
+ */
+export const searchEngineStats = pgTable("search_engine_stats", {
+  /** Source name as the code knows it (`DuckDuckGo`, `Google`, `Bing`, `Tavily`). */
+  engine: text("engine").primaryKey(),
+  /** Attempts that produced usable results. */
+  successes: integer("successes").notNull().default(0),
+  /** Attempts that produced none — blocked, captcha'd, empty, or errored. */
+  failures: integer("failures").notNull().default(0),
+  lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+  lastFailureAt: timestamp("last_failure_at", { withTimezone: true }),
+  /** Why the last failure failed — the operator's first clue about an engine. */
+  lastError: text("last_error"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type SearchEngineStatRow = typeof searchEngineStats.$inferSelect;

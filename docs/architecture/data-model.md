@@ -246,6 +246,17 @@ the `url` and `title` at capture time. Served by
 `GET /api/browser/{id}/screenshot/{seq}` — never embedded in trace JSON, per the
 binary-payload convention.
 
+### `search_engine_stats`
+
+PK `engine` (`DuckDuckGo`, `Google`, `Bing`, `Tavily`). `successes` / `failures`,
+`last_success_at` / `last_failure_at`, and `last_error`. A **live scoreboard, not a
+history**: the browsing agent sorts its search cascade by a smoothed success rate
+computed from these counts, so a blocked engine sinks and a recovering one climbs
+back. Counters are halved once a row passes 100 attempts (in the same statement that
+increments them), which keeps the ranking reacting to roughly the last hundred
+searches. The per-search story lives in the run's activity feed and trace; this table
+holds only the current standing. No FKs — a source exists because it was tried.
+
 ---
 
 ## Memory

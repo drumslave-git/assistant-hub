@@ -94,6 +94,9 @@ describe.skipIf(!BROWSER_LIVE)("browser search cascade (real network)", () => {
             results: [],
             reason: "fallback stubbed out in this test",
           }),
+          // This suite proves what the *browser* can do; it must not need (or
+          // touch) a database. An empty scoreboard means the configured order.
+          stats: { list: async () => [], record: async () => undefined },
         });
         console.info(
           `\n[search] answered by ${result.source} after [${attempts.join(", ")}]` +

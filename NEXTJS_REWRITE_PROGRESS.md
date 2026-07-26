@@ -238,6 +238,49 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-26c (user follow-up — search sources rank themselves, done): the cascade
+  now sorts its engines by measured success instead of a fixed order, which is what
+  makes the previous entry's finding (only Bing answers, and it was configured last)
+  self-correcting rather than a standing ~8s toll.
+  - **New table `search_engine_stats`** (migration `0040`, applied to the dev DB):
+    PK `engine`, `successes`, `failures`, `last_success_at`, `last_failure_at`,
+    `last_error`. One row per source, **including Tavily** — so the scoreboard also
+    answers "how often does the fallback get used, and does it work?" — though only
+    the engines are ranked; the fallback is last by definition.
+  - **New `features/browser-agent/server/engine-stats.ts`**: `successRate` (pure),
+    `rankEngines` (pure), `listEngineStats`, `recordEngineOutcome`. `runBrowserSearch`
+    orders the engines through it and records every attempt's outcome; the whole
+    scoreboard is an injectable dep, so the unit and live suites never touch a DB.
+  - **Smoothed rate, not the raw ratio:** `(successes + 1) / (attempts + 2)`. An
+    untried source scores **0.5**, so it is tried in its configured position and can
+    prove itself (a newly added engine is not buried behind a known-bad one), and one
+    lucky hit cannot outrank a long record (1/1 = 0.67 vs 40/42 = 0.93). **Ties keep
+    the configured order**, so a cold install runs exactly the order the user set and
+    the ranking only ever reacts to evidence.
+  - **Decay:** both counters are halved once a source passes 100 attempts, in the
+    *same statement* that increments them (so concurrent runs cannot race). Without
+    it a long history freezes the ranking — an engine that starts blocking would keep
+    its good score for hundreds of searches, and a recovering one could never climb
+    back.
+  - **Never fails a search:** `recordEngineOutcome` swallows + logs its own errors,
+    and an unreadable scoreboard falls back to the configured order. The live suite
+    caught a real bug here — `db: DrizzleDb = getDb()` as a **default argument**
+    throws *past* the function's own try/catch when `DATABASE_URL` is unset, so a
+    search that had already succeeded failed on the bookkeeping. The db is now
+    resolved inside the try.
+  - **Tests:** new `engine-stats.test.ts` (10 — cold start, promotion of the engine
+    that answers, an untried engine staying ahead of a proven-bad one, one lucky hit
+    not winning, recovery, tie order, stats for unknown sources ignored) and
+    `engine-stats.integration.test.ts` (6, real Postgres — first-attempt upsert,
+    accumulation, `last_error` surviving a later success, ranked listing, decay past
+    the cap, and a write against a broken db not throwing). `search.test.ts` gained 4
+    (ranked order honoured, engine outcomes recorded, fallback outcome recorded,
+    search still runs when the scoreboard cannot be read).
+  - **Checks:** lint ✓, typecheck ✓, `npm test` ✓ (695 unit), `npm run test:integration`
+    ✓ (288 passed / 30 skipped), live cascade ✓, `db:generate` + `db:migrate` ✓.
+    **Not surfaced in the UI** — the table is server-side only; a card on `/browser`
+    showing the standings was offered, not built.
+
 - 2026-07-26b (user follow-up — unified search results + DuckDuckGo first, done):
   two changes to the cascade landed the same day, and a **correction to the engine
   verdicts recorded in the entry below**.
@@ -3467,6 +3510,7 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | --- | --- | --- | --- |
 | Web tools collapsed into the browser agent (2026-07-26) | done | user | **Delete `read_web_page` and `search_web` as MCP tools; `browse_web` is the only web tool.** Searching moves inside a run as a `browser_search` agent tool that tries **Google, then Bing, then DuckDuckGo** in the live browser and falls back to the **Tavily API** only if all three fail. Rationale: a real browser does both removed jobs better, and three overlapping web tools split the model's choice — the old descriptions had grown into an argument about which one should win (see the 2026-07-21 rows below). Accepted cost: **no synchronous web answer any more** — every web request becomes an ack plus a later report. Measured cost of the engine order: Google (captcha) and Bing (interstitial) both fail for our honest bot user-agent, so each search pays ~10s before DuckDuckGo answers; keeping the order is the user's call. |
 | Search results unified + DuckDuckGo first (2026-07-26) | done | user | **Every source returns the same shape**: the top 5 results as title + URL + snippet, which the agent then chooses to open (one, several, or all) — an engine's live page and the Tavily fallback used to hand it two different-shaped things. Engine order set to **DuckDuckGo → Google → Bing**. **Measured the same day, and it contradicts the engine verdicts recorded hours earlier**: DuckDuckGo renders no results at all (its SPA returns a shell; the earlier "41 results" was its own page chrome passing a link-count check), Google serves a captcha, and **only Bing works** — so the requested order tries the two blocked engines first, ~8s per search. The bot user-agent is not the cause (a Chrome string makes DuckDuckGo block harder). Left as asked; reordering or adding a fourth engine (Brave measured best: 45 relevant results) is the operator's call. |
+| Search sources rank themselves (2026-07-26) | done | user | **A `search_engine_stats` table (engine, successes, failures) ranks the cascade by success ratio, and the engines are sorted by it per search.** Rate is smoothed `(s+1)/(n+2)` so an untried source scores 0.5 (tried in its configured slot, not buried) and one lucky hit cannot beat a long record; ties keep the configured order, so a cold install runs exactly the order the user set. Counters halve past 100 attempts, in the same statement that increments them, so a blocked engine sinks within a few searches and a recovering one climbs back. Tavily is recorded but never ranked — it is the fallback by definition. This is what makes "only Bing answers, and it is configured last" fix itself instead of costing ~8s per search forever. |
 | Addressing exclusions — scope (2026-07-26) | done | user | **Bot-wide.** A word reported as "not the bot's name" is excluded in **every** chat, not only the one it was reported in. The fact being recorded ("Георгій is a different name from the bot's") is true everywhere, and per-chat scope would force the same false trigger to be reported again in every group. `chat_id` / `telegram_message_id` / `user_id` / `feedback_id` are kept on the row as **provenance**, not as scope. |
 | Addressing exclusions — who may create one (2026-07-26) | done | user | **Anyone who reacts 👎.** Any group member's report files the exclusion immediately — they are the authority on their own name — with no owner gate and no approval queue. The operator's control is after the fact: every exclusion is listed on `/self-improvement` → Addressing exclusions and removable there, which makes the word matchable again. Rejected: owner-only (loses the reports from the people actually affected) and approve-before-effect (the bot keeps mis-firing until the operator looks). |
 | Addressing reports are not folded into style (2026-07-26) | done | user | **A "Wasn't talking to you" answer is excluded from the nightly preferences and self-corrections folds**, and gets no self-reflection. It is a routing fault whose fix is the exclusion row, not a judgment of the reply; folding it would distil "you should not have replied" into a per-user preference or the global system prompt from a mis-fire. Implemented as `users_feedbacks.topic` (`quality` \| `addressing`) — both backlog queries read `quality` rows only, so the row is never "pending forever", it is simply not fold input. |
@@ -3604,10 +3648,12 @@ No blockers recorded.
   stop three overlapping tools fighting over the model's choice.
 - **Searching lives inside a run**: `browser_search` →
   `features/browser-agent/server/search.ts`, Google → Bing → DuckDuckGo → Tavily.
-- **Pitfall — only Bing works today, and it is tried last** (~8s of DuckDuckGo and
-  Google failing first). DuckDuckGo renders no results at all; Google serves a
-  captcha. The order is the user's, so **ask before changing it**. The user-agent is
-  NOT the cause — that was measured; a Chrome string makes DuckDuckGo block harder.
+- **Only Bing works today.** DuckDuckGo renders no results at all; Google serves a
+  captcha. The configured order still lists them first, but the **scoreboard**
+  (`search_engine_stats`) re-sorts per search, so after the first search Bing is
+  tried first. Do not "fix" the order by editing `SEARCH_ENGINES` — that list is the
+  user's, and the ranking is what adapts. The user-agent is NOT the cause — that was
+  measured; a Chrome string makes DuckDuckGo block harder.
   Re-measure with
   `BROWSER_LIVE=1 npm run test:integration -- browser-agent/server/search-live`
   (it prints a per-engine verdict line) before assuming today's picture still holds.

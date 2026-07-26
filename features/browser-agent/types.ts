@@ -55,6 +55,23 @@ export interface BrowserRunLiveState {
   progress: string | null;
 }
 
+/**
+ * One search source's standing on the scoreboard the cascade sorts itself by.
+ * Client-safe: the dashboard can show why the agent tries them in this order.
+ */
+export interface EngineStat {
+  /** Source name (`DuckDuckGo`, `Google`, `Bing`, `Tavily`). */
+  engine: string;
+  successes: number;
+  failures: number;
+  /** Smoothed success rate in [0, 1] — what the ordering is actually sorted on. */
+  successRate: number;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  /** Why the last failure failed, or null. */
+  lastError: string | null;
+}
+
 /** A browser-agent run as returned to clients (no secrets — all fields are safe). */
 export interface BrowserAgentRun {
   id: string;

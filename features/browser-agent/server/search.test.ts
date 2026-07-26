@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { PageLink } from "../snapshot";
+import type { EngineStat } from "../types";
 import {
   extractResults,
   FALLBACK_SOURCE,
@@ -46,13 +47,26 @@ function blockedLinks(engineHost = "duckduckgo.com"): PageLink[] {
 
 /** Deps resolving per engine name, with a never-answering fallback by default. */
 function deps(
-  overrides: Partial<BrowserSearchDeps> & { pages?: Record<string, PageLink[] | Error> } = {},
-): BrowserSearchDeps & { attempts: string[] } {
+  overrides: Partial<BrowserSearchDeps> & {
+    pages?: Record<string, PageLink[] | Error>;
+    scores?: EngineStat[];
+  } = {},
+): BrowserSearchDeps & { attempts: string[]; recorded: Array<[string, boolean]> } {
   const attempts: string[] = [];
+  const recorded: Array<[string, boolean]> = [];
   const pages = overrides.pages ?? {};
   let current = SEARCH_ENGINES[0];
   return {
     attempts,
+    recorded,
+    // An empty scoreboard keeps the configured order, so every existing case reads
+    // as before; a case that cares about ranking passes `scores`.
+    stats: {
+      list: async () => overrides.scores ?? [],
+      record: async (engine, ok) => {
+        recorded.push([engine, ok]);
+      },
+    },
     navigate: vi.fn(async (url: string) => {
       current =
         SEARCH_ENGINES.find((e) => url.startsWith(new URL(e.resultsUrl("x")).origin)) ?? current;
@@ -379,6 +393,66 @@ describe("runBrowserSearch", () => {
 
     expect(out.isError).toBe(true);
     expect(out.failures[3]).toContain(FALLBACK_SOURCE);
+  });
+
+  it("tries the engines in the order the scoreboard ranks them", async () => {
+    // The live picture on 2026-07-26: only Bing answers. The cascade must learn
+    // that and stop paying for the two blocked engines first.
+    const scores: EngineStat[] = [
+      { engine: "DuckDuckGo", successes: 0, failures: 20, successRate: 0, lastSuccessAt: null, lastFailureAt: null, lastError: "blocked" },
+      { engine: "Google", successes: 0, failures: 20, successRate: 0, lastSuccessAt: null, lastFailureAt: null, lastError: "captcha" },
+      { engine: "Bing", successes: 20, failures: 0, successRate: 1, lastSuccessAt: null, lastFailureAt: null, lastError: null },
+    ];
+    const d = deps({ scores, pages: { Bing: resultLinks() } });
+    const out = await runBrowserSearch("cats", d);
+
+    expect(d.attempts).toEqual(["Bing"]);
+    expect(out.source).toBe("Bing");
+    expect(out.failures).toEqual([]);
+  });
+
+  it("records every attempt's outcome, so the ranking has something to learn from", async () => {
+    const d = deps({ pages: { Google: resultLinks() } });
+    await runBrowserSearch("cats", d);
+
+    expect(d.recorded).toEqual([
+      ["DuckDuckGo", false],
+      ["Google", true],
+    ]);
+  });
+
+  it("records the fallback's outcome too", async () => {
+    const d = deps({
+      fallback: vi.fn(async () => ({
+        ok: true,
+        reason: "Search completed",
+        results: [{ title: "A", url: "https://a.example", snippet: "" }],
+      })),
+    });
+    await runBrowserSearch("cats", d);
+
+    expect(d.recorded).toEqual([
+      ["DuckDuckGo", false],
+      ["Google", false],
+      ["Bing", false],
+      [FALLBACK_SOURCE, true],
+    ]);
+  });
+
+  it("still searches when the scoreboard cannot be read", async () => {
+    const d = deps({
+      pages: { DuckDuckGo: resultLinks() },
+      stats: {
+        list: async () => {
+          throw new Error("database is down");
+        },
+        record: async () => undefined,
+      },
+    });
+    const out = await runBrowserSearch("cats", d);
+
+    // Falls back to the configured order rather than failing the search.
+    expect(out.source).toBe("DuckDuckGo");
   });
 
   it("does not throw when the fallback itself blows up", async () => {

@@ -4,6 +4,8 @@ import { getWebSearchApiKey } from "@/features/settings/server/service";
 import { runWebSearch } from "@/features/web-search/server/search";
 
 import type { PageLink } from "../snapshot";
+import type { EngineStat } from "../types";
+import { listEngineStats, rankEngines, recordEngineOutcome } from "./engine-stats";
 
 /**
  * The browser agent's search entry point: find pages by driving a REAL search
@@ -38,10 +40,11 @@ export interface SearchEngine {
 }
 
 /**
- * Engines tried in order, before the API fallback. DuckDuckGo leads because it is
- * the one that actually serves this app's headless browser (user decision,
- * 2026-07-26); Google answers with a captcha and Bing with an interstitial, so
- * they now cost nothing when DuckDuckGo works and still cover it when it does not.
+ * The engines, in their *configured* order — the starting point only. The order
+ * actually used is this list re-sorted by each engine's measured success rate
+ * (`engine-stats.ts`), so whichever one is really answering today drifts to the
+ * front and a blocked one sinks, without anybody editing this list. The configured
+ * order still decides ties, so it is what a cold install uses.
  */
 export const SEARCH_ENGINES: SearchEngine[] = [
   {
@@ -117,10 +120,35 @@ export interface BrowserSearchDeps {
   onAttempt?: (source: string) => void | Promise<void>;
   /** The API fallback; defaults to Tavily with the key from settings. */
   fallback?: (query: string) => Promise<{ ok: boolean; results: SearchResult[]; reason: string }>;
+  /** The scoreboard the engine order is sorted by; defaults to the DB-backed one. */
+  stats?: {
+    list: () => Promise<EngineStat[]>;
+    record: (engine: string, ok: boolean, error?: string) => Promise<void>;
+  };
 }
 
 function reason(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** The DB-backed scoreboard the cascade uses unless a test injects its own. */
+const DEFAULT_STATS = {
+  list: () => listEngineStats(),
+  record: (engine: string, ok: boolean, error?: string) => recordEngineOutcome(engine, ok, error),
+};
+
+/**
+ * The engines to try, best-first by measured success rate. A scoreboard that
+ * cannot be read is not a reason to skip searching — fall back to the configured
+ * order, which is what a cold install runs on anyway.
+ */
+async function orderEngines(
+  stats: NonNullable<BrowserSearchDeps["stats"]>,
+): Promise<SearchEngine[]> {
+  const scores = await stats.list().catch(() => [] as EngineStat[]);
+  const byName = new Map(SEARCH_ENGINES.map((engine) => [engine.name, engine]));
+  const ranked = rankEngines([...byName.keys()], scores);
+  return ranked.flatMap((name) => byName.get(name) ?? []);
 }
 
 /** Whether `host` is the engine's own domain (or a subdomain of it). */
@@ -356,8 +384,10 @@ export async function runBrowserSearch(
   deps: BrowserSearchDeps,
 ): Promise<BrowserSearchResult> {
   const failures: string[] = [];
+  const stats = deps.stats ?? DEFAULT_STATS;
+  const engines = await orderEngines(stats);
 
-  for (const engine of SEARCH_ENGINES) {
+  for (const engine of engines) {
     await deps.onAttempt?.(engine.name);
     let attempt: { results: SearchResult[]; reason: string };
     try {
@@ -366,7 +396,9 @@ export async function runBrowserSearch(
     } catch (err) {
       attempt = { results: [], reason: reason(err) };
     }
-    if (attempt.results.length > 0) {
+    const ok = attempt.results.length > 0;
+    await stats.record(engine.name, ok, ok ? undefined : attempt.reason);
+    if (ok) {
       return {
         source: engine.name,
         results: attempt.results,
@@ -383,8 +415,10 @@ export async function runBrowserSearch(
     results: [],
     reason: reason(err),
   }));
+  const fallbackOk = fallback.ok && fallback.results.length > 0;
+  await stats.record(FALLBACK_SOURCE, fallbackOk, fallbackOk ? undefined : fallback.reason);
 
-  if (!fallback.ok || fallback.results.length === 0) {
+  if (!fallbackOk) {
     failures.push(`${FALLBACK_SOURCE}: ${fallback.reason || "returned no results"}`);
     return {
       source: FALLBACK_SOURCE,
