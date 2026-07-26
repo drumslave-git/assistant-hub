@@ -5,6 +5,22 @@ MVP: a Telegram bot powered by an OpenAI-compatible chat completions API, with a
 control/observability dashboard. See `NEXTJS_REWRITE_PLAN.md` for scope and
 `NEXTJS_REWRITE_PROGRESS.md` for current status.
 
+## Documentation
+
+Full documentation lives in [`docs/`](docs/README.md).
+
+| Start here | For |
+| --- | --- |
+| [Getting started](docs/getting-started.md) · [Configuration](docs/configuration.md) | Running it |
+| [Operator guide](docs/operations/operator-guide.md) · [Troubleshooting](docs/operations/troubleshooting.md) | Operating it |
+| [Using the bot in chat](docs/operations/using-the-bot.md) | The people talking to it |
+| [Architecture overview](docs/architecture/overview.md) · [Contributing](docs/development/contributing.md) | Changing it |
+| [Feature docs](docs/features/README.md) | One page per feature |
+| [API reference](docs/api/endpoints.md) · [`openapi.yaml`](docs/api/openapi.yaml) | Calling it |
+| [Deployment](docs/operations/deployment.md) · [Backup and restore](docs/operations/backup-and-restore.md) | Shipping and keeping it |
+
+The rest of this file is the quick reference.
+
 ## Getting Started
 
 ```bash

@@ -1,0 +1,2756 @@
+openapi: 3.1.0
+
+info:
+  title: llm-tg-bot-nextjs dashboard API
+  version: 1.11.4
+  description: |
+    HTTP surface of the operator dashboard for a Telegram bot driven by an
+    OpenAI-compatible LLM.
+
+    Conventions:
+      * Every JSON success body is wrapped as `{ "data": … }`. The exceptions are
+        `/api/health` (bare object), the bundle/export routes (file attachments),
+        the screenshot route (JPEG bytes) and `/api/events` (SSE).
+      * Every failure body is `{ "error": { code, message, details? } }`.
+      * All routes require the operator session cookie except
+        `/api/auth/*` and `/api/health`.
+      * Timestamps are ISO-8601 UTC instants. Wall-clock strings are explicitly
+        typed where they occur (`HH:MM`, `YYYY-MM-DD`, analytics bucket keys).
+
+    Companion documents: `docs/api/README.md` (conventions),
+    `docs/api/endpoints.md` (human reference).
+  license:
+    name: See repository
+
+servers:
+  - url: http://localhost:3200
+    description: Local dev server
+  - url: /
+    description: Same origin as the dashboard
+
+tags:
+  - name: auth
+    description: Operator authentication (public)
+  - name: system
+    description: Health, realtime stream, bot control, tool registry
+  - name: settings
+    description: DB-backed runtime configuration and endpoint probes
+  - name: directory
+    description: Known users and groups
+  - name: personalities
+  - name: history
+  - name: memory
+  - name: vision
+  - name: scheduled-tasks
+  - name: self-improvement
+  - name: browser-agent
+  - name: analytics
+  - name: traces
+
+security:
+  - cookieAuth: []
+
+paths:
+  # ───────────────────────────── auth ─────────────────────────────
+  /api/auth/setup:
+    post:
+      tags: [auth]
+      summary: First-run operator setup
+      description: |
+        Stores the operator password (hashed) and opens a session. Public by
+        necessity — it exists exactly when no credential exists yet — and
+        self-sealing: the service refuses to overwrite an already-set password.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  minLength: 8
+      responses:
+        "200":
+          description: Session opened
+          headers:
+            Set-Cookie:
+              description: The signed session cookie
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkFlag" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: Operator login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Session opened
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: Expire the session cookie
+      description: Public — clearing one's own cookie needs no session, and logout must work with an already-expired one.
+      security: []
+      responses:
+        "200":
+          description: Cookie cleared
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkFlag" }
+
+  # ──────────────────────────── system ────────────────────────────
+  /api/health:
+    get:
+      tags: [system]
+      summary: Liveness and readiness
+      description: |
+        Readiness is a real database probe (`SELECT 1`). Configuration presence
+        and trace-storage health are reported but are deliberately not readiness
+        gates. Public, for the Docker healthcheck and orchestrators.
+      security: []
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: Not ready — the database is unreachable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /api/events:
+    get:
+      tags: [system]
+      summary: Shared realtime stream (SSE)
+      description: |
+        One long-lived connection per dashboard tab carrying every topic; clients
+        filter on the payload's `topic`. A `: ping` comment is sent every 25s.
+        Each data frame is a `RealtimeEvent`.
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/telegram/bot:
+    get:
+      tags: [system]
+      summary: Current poller status
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/BotStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [system]
+      summary: Start or stop the poller
+      description: The bot reads its token from settings, so `start` needs no further input.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [start, stop]
+      responses:
+        "200":
+          description: Status after the transition
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/BotStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/tools:
+    get:
+      tags: [system]
+      summary: Every registered MCP tool
+      description: Read-only. All registered tools are always available to the model.
+      responses:
+        "200":
+          description: Tool list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [tools]
+                        properties:
+                          tools:
+                            type: array
+                            items: { $ref: "#/components/schemas/ToolView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ─────────────────────────── settings ───────────────────────────
+  /api/settings:
+    get:
+      tags: [settings]
+      summary: Read settings
+      description: Secrets are never returned — only `…Configured` booleans.
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Settings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    patch:
+      tags: [settings]
+      summary: Update settings
+      description: |
+        Partial. At least one field is required. For secret fields: omitting leaves
+        the stored value, `null` clears it, a string replaces it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SettingsUpdate" }
+      responses:
+        "200":
+          description: The updated settings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Settings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/settings/test-connection:
+    post:
+      tags: [settings]
+      summary: Probe an OpenAI-compatible chat endpoint
+      description: Calls `/v1/models`. Omitting `apiKey` reuses the stored key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [llmBaseUrl]
+              properties:
+                llmBaseUrl: { type: string, format: uri, maxLength: 500 }
+                apiKey:
+                  type: [string, "null"]
+                  maxLength: 500
+      responses:
+        "200":
+          description: Models served by the endpoint
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [models]
+                        properties:
+                          models:
+                            type: array
+                            items: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /api/settings/test-embeddings:
+    post:
+      tags: [settings]
+      summary: Probe the embedding endpoint
+      description: |
+        Embeds a short string, so it also catches a model whose vector width does
+        not match the stored 1024-wide columns.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                embeddingBaseUrl: { type: [string, "null"], format: uri }
+                embeddingApiKey: { type: [string, "null"] }
+                embeddingModel: { type: [string, "null"] }
+      responses:
+        "200":
+          description: Probe result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [model, dimensions]
+                        properties:
+                          model: { type: string }
+                          dimensions: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /api/settings/test-images:
+    post:
+      tags: [settings]
+      summary: Probe the image endpoint
+      description: Checks the configured model is actually served, rather than generating a picture.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                imageBaseUrl: { type: [string, "null"], format: uri }
+                imageApiKey: { type: [string, "null"] }
+                imageModel: { type: [string, "null"] }
+      responses:
+        "200":
+          description: Probe result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ModelCountProbe" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /api/settings/test-speech:
+    post:
+      tags: [settings]
+      summary: Probe the speech endpoint
+      description: Checks the configured model is actually served, rather than synthesizing audio.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                speechBaseUrl: { type: [string, "null"], format: uri }
+                speechApiKey: { type: [string, "null"] }
+                speechModel: { type: [string, "null"] }
+      responses:
+        "200":
+          description: Probe result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ModelCountProbe" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /api/settings/test-transcription:
+    post:
+      tags: [settings]
+      summary: Probe the transcription endpoint
+      description: |
+        Transcribes a fraction of a second of generated silence — a real
+        `/v1/audio/transcriptions` call, since whisper-class servers often serve
+        it without `/v1/models`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transcriptionBaseUrl: { type: [string, "null"], format: uri }
+                transcriptionApiKey: { type: [string, "null"] }
+                transcriptionModel: { type: [string, "null"] }
+      responses:
+        "200":
+          description: Probe result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [model, text]
+                        properties:
+                          model: { type: string }
+                          text:
+                            type: string
+                            description: What the endpoint transcribed the silence as — usually empty.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  # ────────────────────────── directory ──────────────────────────
+  /api/users:
+    get:
+      tags: [directory]
+      summary: Every user who has messaged the bot
+      responses:
+        "200":
+          description: Known users
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/KnownUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Telegram user id
+        schema: { type: string }
+    patch:
+      tags: [directory]
+      summary: Update a user's curated fields
+      description: |
+        The body carries exactly one of `language` or `aliases`; each is dispatched
+        to its own traced action. Aliases are trimmed, blank-stripped and
+        case-insensitively deduplicated before the bounds are applied. An empty
+        `language` clears to null (the bot then uses the default).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [language]
+                  properties:
+                    language: { type: string, maxLength: 100 }
+                - type: object
+                  required: [aliases]
+                  properties:
+                    aliases:
+                      type: array
+                      maxItems: 20
+                      items: { type: string, maxLength: 60 }
+      responses:
+        "200":
+          description: The updated user
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/KnownUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/groups:
+    get:
+      tags: [directory]
+      summary: Every group the bot is active in
+      responses:
+        "200":
+          description: Known groups with member counts
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/KnownGroupSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/groups/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Telegram chat id
+        schema: { type: string }
+    patch:
+      tags: [directory]
+      summary: Update a group's curated fields
+      description: The body carries exactly one of `language` or `notes`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [language]
+                  properties:
+                    language: { type: string, maxLength: 100 }
+                - type: object
+                  required: [notes]
+                  properties:
+                    notes: { type: string, maxLength: 2000 }
+      responses:
+        "200":
+          description: The updated group
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/KnownGroup" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ──────────────────────── personalities ────────────────────────
+  /api/personalities:
+    get:
+      tags: [personalities]
+      summary: All personalities and the active selection
+      responses:
+        "200":
+          description: Personalities view
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/PersonalitiesView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [personalities]
+      summary: Create a personality
+      description: Names are case-insensitively unique; at most 32 personalities exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+                prompt: { type: string, maxLength: 32000, default: "" }
+      responses:
+        "201":
+          description: The created personality
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Personality" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/personalities/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [personalities]
+      summary: Update a personality
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+                prompt: { type: string, maxLength: 32000 }
+      responses:
+        "200":
+          description: The updated personalities view
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/PersonalitiesView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [personalities]
+      summary: Delete a personality
+      description: Deleting the active personality clears the active selection.
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/personalities/active:
+    put:
+      tags: [personalities]
+      summary: Set or clear the active personality
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [personalityId]
+              properties:
+                personalityId:
+                  type: [string, "null"]
+                  description: Null clears the active selection.
+      responses:
+        "200":
+          description: The updated personalities view
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/PersonalitiesView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ───────────────────────────  history  ──────────────────────────
+  /api/history/summaries:
+    get:
+      tags: [history]
+      summary: Daily summarization job status
+      responses:
+        "200":
+          description: Job info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/SummaryJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/history/summaries/run:
+    post:
+      tags: [history]
+      summary: Run the summarization job now
+      description: |
+        Fire-and-forget — a backlog can take many LLM passes, so the snapshot is
+        returned immediately and progress arrives over the `history` SSE topic.
+      responses:
+        "200":
+          description: Job info at the moment of triggering
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/SummaryJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/history/export:
+    get:
+      tags: [history]
+      summary: CSV export of the history mirror
+      description: Deleted rows are included, flagged. An export round-trips back through the import.
+      parameters:
+        - name: chatId
+          in: query
+          required: false
+          description: Restrict to one chat. Omitted exports every chat.
+          schema: { type: string }
+      responses:
+        "200":
+          description: CSV attachment (UTF-8 with BOM)
+          headers:
+            Content-Disposition:
+              schema: { type: string, examples: ['attachment; filename="history-all.csv"'] }
+          content:
+            text/csv:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/history/import:
+    post:
+      tags: [history]
+      summary: CSV import into the history mirror
+      description: |
+        The server re-parses the raw text with the same module the browser previewed
+        with. Rows whose `(chatId, telegramMessageId)` already exists are skipped,
+        so a partially-applied file can safely be re-run. Also resets the analytics
+        insight scan floor so imported hours are picked up.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [csv, mapping]
+              properties:
+                csv:
+                  type: string
+                  description: The raw file text.
+                mapping:
+                  $ref: "#/components/schemas/HistoryColumnMapping"
+                delimiter:
+                  type: string
+                  minLength: 1
+                  maxLength: 1
+                  description: Override; sniffed from the header when omitted.
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ImportResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ───────────────────────────  memory  ───────────────────────────
+  /api/memory:
+    get:
+      tags: [memory]
+      summary: The memory dashboard view plus job status
+      responses:
+        "200":
+          description: Pending notes, per-person documents, the general document, and job info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/MemoryView"
+                          - type: object
+                            required: [job]
+                            properties:
+                              job: { $ref: "#/components/schemas/MemoryJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/memory/run:
+    post:
+      tags: [memory]
+      summary: Run the nightly memory job now
+      description: Fire-and-forget. Two ordered passes — passive extraction, then consolidation.
+      responses:
+        "200":
+          description: Job info at the moment of triggering
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/MemoryJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/memory/entries/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [memory]
+      summary: Discard a pending note
+      description: The operator's chance to catch a fact the bot should not have saved, before the nightly merge folds it in.
+      responses:
+        "200":
+          description: Discarded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/memory/users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        description: Telegram user id
+        schema: { type: string }
+    patch:
+      tags: [memory]
+      summary: Rewrite one person's memory document
+      description: The rewritten document is re-embedded.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        "200":
+          description: The updated document
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/UserMemory" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [memory]
+      summary: Forget a person
+      description: Drops their memory document and, by cascade, their pending notes.
+      responses:
+        "200":
+          description: Forgotten
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/memory/general:
+    patch:
+      tags: [memory]
+      summary: Write the general-knowledge document
+      description: |
+        An upsert — the first edit creates it. General knowledge is ONE document, so
+        there is no id in the path and no POST.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        "200":
+          description: The updated document
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/GeneralMemory" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [memory]
+      summary: Forget the general-knowledge document
+      responses:
+        "200":
+          description: Forgotten
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ───────────────────────────  vision  ───────────────────────────
+  /api/vision/backfill:
+    get:
+      tags: [vision]
+      summary: Backfill scheduler status and pending media count
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/VisionBackfillSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [vision]
+      summary: Run the backfill as soon as possible
+      responses:
+        "200":
+          description: Status after triggering
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/VisionBackfillSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ────────────────────── scheduled tasks ────────────────────────
+  /api/scheduled-tasks:
+    get:
+      tags: [scheduled-tasks]
+      summary: List scheduled tasks
+      responses:
+        "200":
+          description: Tasks
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [tasks]
+                        properties:
+                          tasks:
+                            type: array
+                            items: { $ref: "#/components/schemas/ScheduledTask" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [scheduled-tasks]
+      summary: Create a scheduled task
+      description: |
+        Times are local wall-clock in the operator timezone. A dashboard-created
+        task has `createdByUserId: null`, so the author-scoped chat tools cannot
+        mutate it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chatId, instruction, scheduleKind, timeOfDay]
+              properties:
+                chatId:
+                  type: string
+                  pattern: '^-?\d+$'
+                threadId: { type: [integer, "null"] }
+                instruction: { type: string, minLength: 2, maxLength: 2000 }
+                scheduleKind: { $ref: "#/components/schemas/ScheduleKind" }
+                timeOfDay: { $ref: "#/components/schemas/TimeOfDay" }
+                weekdays:
+                  type: array
+                  items: { type: integer, minimum: 0, maximum: 6 }
+                  default: []
+                  description: For `weekly`. 0 = Sunday.
+                runDate:
+                  type: [string, "null"]
+                  pattern: '^\d{4}-\d{2}-\d{2}$'
+                  description: Required for `once`.
+                enabled: { type: boolean, default: true }
+      responses:
+        "201":
+          description: The created task
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ScheduledTask" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/scheduled-tasks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [scheduled-tasks]
+      summary: Update a scheduled task
+      description: Partial; at least one field. `nextRunAt` is recomputed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                instruction: { type: string, minLength: 2, maxLength: 2000 }
+                scheduleKind: { $ref: "#/components/schemas/ScheduleKind" }
+                timeOfDay: { $ref: "#/components/schemas/TimeOfDay" }
+                weekdays:
+                  type: array
+                  items: { type: integer, minimum: 0, maximum: 6 }
+                runDate:
+                  type: [string, "null"]
+                  pattern: '^\d{4}-\d{2}-\d{2}$'
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The updated task
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ScheduledTask" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [scheduled-tasks]
+      summary: Delete a scheduled task
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/scheduled-tasks/run:
+    get:
+      tags: [scheduled-tasks]
+      summary: Poller status
+      responses:
+        "200":
+          description: Job info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/TaskSchedulerJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [scheduled-tasks]
+      summary: Run one poll tick now
+      description: Only tasks that are actually due fire — and none do while maintenance mode is on.
+      responses:
+        "200":
+          description: Job info after the tick
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/TaskSchedulerJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ─────────────────────── self-improvement ──────────────────────
+  /api/self-improvement:
+    get:
+      tags: [self-improvement]
+      summary: Feedback, learned artifacts, exclusions, and job status
+      responses:
+        "200":
+          description: View plus job info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/SelfImprovementView"
+                          - type: object
+                            required: [job]
+                            properties:
+                              job: { $ref: "#/components/schemas/DailyJobInfoBase" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/self-improvement/run:
+    post:
+      tags: [self-improvement]
+      summary: Run the daily incorporation job now
+      description: Fire-and-forget — one LLM call per feedback.
+      responses:
+        "200":
+          description: Job info at the moment of triggering
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/DailyJobInfoBase" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/self-improvement/exclusions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [self-improvement]
+      summary: Drop an addressing exclusion
+      description: The operator's undo — after this the analyzer may match that word again.
+      responses:
+        "200":
+          description: Removed, with the row that was removed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [deleted, exclusion]
+                        properties:
+                          deleted: { type: boolean, const: true }
+                          exclusion: { $ref: "#/components/schemas/AddressingExclusion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ───────────────────────── browser agent ───────────────────────
+  /api/browser:
+    get:
+      tags: [browser-agent]
+      summary: List browser-agent runs
+      responses:
+        "200":
+          description: Runs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [runs]
+                        properties:
+                          runs:
+                            type: array
+                            items: { $ref: "#/components/schemas/BrowserAgentRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [browser-agent]
+      summary: Queue a dashboard-started run
+      description: |
+        A dashboard run has no chat to deliver to — the report is stored on the run
+        row. It is treated as the operator's own, so `isOwner` is true and the
+        download tools are enabled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [goal]
+              properties:
+                goal: { type: string, minLength: 4, maxLength: 4000 }
+      responses:
+        "201":
+          description: The queued run
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/BrowserAgentRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/browser/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [browser-agent]
+      summary: One run with its activity feed, screenshots and live state
+      responses:
+        "200":
+          description: Run detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/BrowserAgentRunDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/browser/{id}/screenshot/{seq}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: seq
+        in: path
+        required: true
+        description: Capture-order sequence number, from `screenshotSeqs`.
+        schema: { type: integer, minimum: 0 }
+    get:
+      tags: [browser-agent]
+      summary: One screenshot's JPEG bytes
+      description: The bytes live in Postgres, never in trace JSON. Auth-gated like every other route.
+      responses:
+        "200":
+          description: JPEG image
+          headers:
+            Cache-Control:
+              schema: { type: string, examples: ["private, max-age=3600"] }
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ──────────────────────────  analytics  ────────────────────────
+  /api/analytics/metrics:
+    get:
+      tags: [analytics]
+      summary: Traffic tiles for one card's filters
+      parameters:
+        - $ref: "#/components/parameters/PeriodUnit"
+        - $ref: "#/components/parameters/PeriodAnchor"
+        - $ref: "#/components/parameters/FilterChatId"
+        - $ref: "#/components/parameters/FilterUserId"
+      responses:
+        "200":
+          description: Totals
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/TotalsPayload" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/analytics/series:
+    get:
+      tags: [analytics]
+      summary: One chart card's series
+      description: Every section answers with the same `{ buckets, series }` shape. `mood` requires a `chatId`.
+      parameters:
+        - name: section
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [volume, tokens, users, mood]
+        - $ref: "#/components/parameters/PeriodUnit"
+        - $ref: "#/components/parameters/PeriodAnchor"
+        - $ref: "#/components/parameters/FilterChatId"
+        - $ref: "#/components/parameters/FilterUserId"
+      responses:
+        "200":
+          description: Series
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/SeriesPayload" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/analytics/models:
+    get:
+      tags: [analytics]
+      summary: Model performance for one period
+      description: |
+        Every LLM round recorded in the trace files, grouped by model and by what
+        the call was for, ordered so the biggest consumer of wall time comes first.
+      parameters:
+        - $ref: "#/components/parameters/PeriodUnit"
+        - $ref: "#/components/parameters/PeriodAnchor"
+        - $ref: "#/components/parameters/FilterChatId"
+        - $ref: "#/components/parameters/FilterUserId"
+      responses:
+        "200":
+          description: Models
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ModelsPayload" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/analytics/top-users:
+    get:
+      tags: [analytics]
+      summary: The most active senders in one period
+      parameters:
+        - $ref: "#/components/parameters/PeriodUnit"
+        - $ref: "#/components/parameters/PeriodAnchor"
+        - $ref: "#/components/parameters/FilterChatId"
+        - $ref: "#/components/parameters/FilterUserId"
+      responses:
+        "200":
+          description: Top users
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/TopUsersPayload" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/analytics/insights:
+    get:
+      tags: [analytics]
+      summary: The stored roll-up for one chat's selected period
+      description: Returns `null` when that period has not been rolled up yet — insights only ever cover finished hours.
+      parameters:
+        - $ref: "#/components/parameters/PeriodUnit"
+        - $ref: "#/components/parameters/PeriodAnchor"
+        - name: chatId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The insight, or null
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        oneOf:
+                          - $ref: "#/components/schemas/PeriodInsight"
+                          - type: "null"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/analytics/availability:
+    get:
+      tags: [analytics]
+      summary: Which periods in a range hold data
+      description: |
+        The period picker's calendar marks. Answered from the calling card's own
+        source, so the calendar never offers a date the card would render empty.
+      parameters:
+        - name: source
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [messages, traces, insights]
+        - $ref: "#/components/parameters/PeriodUnit"
+        - name: from
+          in: query
+          required: true
+          description: Inclusive anchor the calendar starts at.
+          schema: { type: string }
+        - name: to
+          in: query
+          required: true
+          description: Inclusive anchor the calendar ends at.
+          schema: { type: string }
+        - $ref: "#/components/parameters/FilterChatId"
+      responses:
+        "200":
+          description: The anchors in range that hold data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: array
+                        items: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/analytics/insights/run:
+    get:
+      tags: [analytics]
+      summary: Insight job status
+      responses:
+        "200":
+          description: Job info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/AnalyticsJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [analytics]
+      summary: Run the insight job now
+      description: A run with no LLM configured, or nothing to compute, settles as a harmless no-op.
+      responses:
+        "200":
+          description: Job info after the run
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/AnalyticsJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/analytics/insights/regenerate:
+    post:
+      tags: [analytics]
+      summary: Drop a period's stored insights and compute them again
+      description: |
+        DESTRUCTIVE and BILLABLE. Every day score covering the period is deleted,
+        along with every roll-up built from it, and each dropped day costs one LLM
+        pass to re-score.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [granularity, bucket]
+              properties:
+                granularity: { $ref: "#/components/schemas/Granularity" }
+                bucket:
+                  type: string
+                  description: 'Bucket key at that granularity: `2026-07-16 14`, `2026-07-16`, `2026-07`, `2026`, `all`.'
+      responses:
+        "200":
+          description: Job info after queueing the regeneration
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/AnalyticsJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ───────────────────────────  traces  ──────────────────────────
+  /api/traces:
+    get:
+      tags: [traces]
+      summary: Trace headers, newest first
+      description: Events are omitted; the detail route loads them.
+      parameters:
+        - name: feature
+          in: query
+          description: A registered feature id, e.g. `bot-messaging`, `mcp-tools-history`.
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/TraceStatus" }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Trace list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [traces, total, features]
+                        properties:
+                          traces:
+                            type: array
+                            items: { $ref: "#/components/schemas/Trace" }
+                          total: { type: integer }
+                          features:
+                            type: array
+                            items: { type: string }
+                            description: Distinct feature ids present in the data, for the filter.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/traces/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [traces]
+      summary: One trace with its ordered events
+      responses:
+        "200":
+          description: Trace
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Trace" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/traces/bundle:
+    get:
+      tags: [traces]
+      summary: Download a bundle for a filtered set of traces
+      description: |
+        Newest first, capped. Contains complete request and response payloads —
+        effectively full conversation content. Handle accordingly.
+      parameters:
+        - name: feature
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/TraceStatus" }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: JSON attachment
+          headers:
+            Content-Disposition:
+              schema: { type: string, examples: ['attachment; filename="traces-all.json"'] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TraceBundle" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/traces/{id}/bundle:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [traces]
+      summary: Download a bundle for one trace
+      responses:
+        "200":
+          description: JSON attachment
+          headers:
+            Content-Disposition:
+              schema: { type: string, examples: ['attachment; filename="trace-abc.json"'] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TraceBundle" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/traces/prune:
+    post:
+      tags: [traces]
+      summary: Delete stored trace months older than a key
+      description: |
+        DESTRUCTIVE and irreversible — the month files are the only copy of the
+        full request/response bodies. Manual-only by decision: no automatic
+        retention exists, so nothing is deleted except through this call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [beforeMonth]
+              properties:
+                beforeMonth:
+                  type: string
+                  pattern: '^\d{4}-\d{2}$'
+                  description: Every stored month file STRICTLY older than this is deleted.
+      responses:
+        "200":
+          description: What was deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [months, traces]
+                        properties:
+                          months:
+                            type: array
+                            items: { type: string }
+                            description: The month keys whose files were deleted, ascending.
+                          traces:
+                            type: integer
+                            description: How many stored traces those files held.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: op_session
+      description: |
+        Signed stateless session cookie set by `/api/auth/login` or
+        `/api/auth/setup`. Value shape `<expiresMs>.<nonce>.<sig>`; valid 30 days.
+
+  parameters:
+    PeriodUnit:
+      name: unit
+      in: query
+      description: The period unit. Defaults to `day`.
+      schema:
+        $ref: "#/components/schemas/PeriodUnit"
+    PeriodAnchor:
+      name: anchor
+      in: query
+      description: |
+        The selected period's key — `2026-07-18` (day), `2026-07-13` (week: its
+        Monday), `2026-07` (month), `2026` (year), `all`. Defaults to the current
+        period in the operator timezone.
+      schema: { type: string }
+    FilterChatId:
+      name: chatId
+      in: query
+      description: Restrict to one Telegram chat.
+      schema: { type: string }
+    FilterUserId:
+      name: userId
+      in: query
+      description: Restrict to one user's own messages.
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Unauthorized:
+      description: No valid operator session
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    NotFound:
+      description: Unknown id
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Conflict:
+      description: Conflicts with existing state
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ValidationError:
+      description: Schema validation failed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ServiceUnavailable:
+      description: A required capability is unconfigured or unreachable
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+
+  schemas:
+    # ── envelopes ──
+    ApiOk:
+      type: object
+      required: [data]
+      properties:
+        data: {}
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                [
+                  bad_request,
+                  validation_error,
+                  unauthorized,
+                  forbidden,
+                  not_found,
+                  conflict,
+                  rate_limited,
+                  not_implemented,
+                  service_unavailable,
+                  internal_error,
+                ]
+            message: { type: string }
+            details:
+              description: Machine-readable detail. Never contains secrets.
+    OkFlag:
+      allOf:
+        - $ref: "#/components/schemas/ApiOk"
+        - properties:
+            data:
+              type: object
+              required: [ok]
+              properties:
+                ok: { type: boolean, const: true }
+    DeletedFlag:
+      allOf:
+        - $ref: "#/components/schemas/ApiOk"
+        - properties:
+            data:
+              type: object
+              required: [deleted]
+              properties:
+                deleted: { type: boolean, const: true }
+
+    # ── scalars ──
+    TimeOfDay:
+      type: string
+      pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+      description: Local wall-clock time, 24-hour `HH:MM`, in the operator timezone.
+    ScheduleKind:
+      type: string
+      enum: [once, daily, weekly]
+    PeriodUnit:
+      type: string
+      enum: [day, week, month, year, all]
+      default: day
+    Granularity:
+      type: string
+      enum: [hour, day, week, month, year, all]
+    TraceStatus:
+      type: string
+      enum: [pending, running, success, error, skipped]
+    RealtimeTopic:
+      type: string
+      enum:
+        [traces, bot, status, history, users, groups, vision, tasks, feedback, memory, analytics, browser]
+
+    RealtimeEvent:
+      type: object
+      required: [topic, at]
+      properties:
+        topic: { $ref: "#/components/schemas/RealtimeTopic" }
+        feature:
+          type: string
+          description: Optional feature scope, so a scoped view can ignore unrelated events.
+        at: { type: string, format: date-time }
+
+    # ── system ──
+    Health:
+      type: object
+      required: [status, time, version, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        time: { type: string, format: date-time }
+        version: { type: string }
+        checks:
+          type: object
+          required: [database, configuration, traceStorage]
+          properties:
+            database:
+              type: object
+              required: [ok, detail]
+              properties:
+                ok: { type: boolean }
+                detail: { type: string }
+            configuration:
+              type: object
+              required: [configured, detail]
+              properties:
+                configured: { type: boolean }
+                detail: { type: string }
+            traceStorage: { $ref: "#/components/schemas/TraceStorageHealth" }
+
+    TraceStorageHealth:
+      type: object
+      required: [ok, detail, pendingCount, lastFlushError]
+      properties:
+        ok: { type: boolean }
+        detail:
+          type: string
+          description: The traces directory when ok; the failure message when not.
+        pendingCount:
+          type: integer
+          description: Settled traces held only in RAM awaiting a successful flush.
+        lastFlushError:
+          type: [object, "null"]
+          description: The standing flush failure, with when it first appeared.
+
+    BotStatus:
+      type: object
+      required: [state, username, since, error]
+      properties:
+        state: { type: string }
+        username: { type: [string, "null"] }
+        since: { type: [string, "null"], format: date-time }
+        error: { type: [string, "null"] }
+
+    ToolView:
+      type: object
+      required: [name, description, feature]
+      properties:
+        name: { type: string, description: The identifier the model calls. }
+        description: { type: string }
+        feature: { type: string, description: The feature that contributes the tool. }
+
+    # ── settings ──
+    Settings:
+      type: object
+      description: Client-facing settings. Secrets appear only as `…Configured` booleans.
+      required:
+        [
+          llmBaseUrl,
+          model,
+          apiKeyConfigured,
+          telegramBotTokenConfigured,
+          webSearchConfigured,
+          embeddingBaseUrl,
+          embeddingModel,
+          embeddingApiKeyConfigured,
+          imageBaseUrl,
+          imageModel,
+          imageApiKeyConfigured,
+          speechBaseUrl,
+          speechModel,
+          speechVoice,
+          speechApiKeyConfigured,
+          transcriptionBaseUrl,
+          transcriptionModel,
+          transcriptionApiKeyConfigured,
+          ownerUserId,
+          ownerUsername,
+          maintenanceModeEnabled,
+          timezone,
+          dailyJobsRunTime,
+          browserDownloadMaxMb,
+          updatedAt,
+        ]
+      properties:
+        llmBaseUrl: { type: [string, "null"], format: uri }
+        model: { type: [string, "null"] }
+        apiKeyConfigured: { type: boolean }
+        telegramBotTokenConfigured: { type: boolean }
+        webSearchConfigured:
+          type: boolean
+          description: Whether a Tavily key is stored, enabling the web-search tool.
+        embeddingBaseUrl: { type: [string, "null"], format: uri }
+        embeddingModel: { type: [string, "null"] }
+        embeddingApiKeyConfigured: { type: boolean }
+        imageBaseUrl: { type: [string, "null"], format: uri }
+        imageModel: { type: [string, "null"] }
+        imageApiKeyConfigured: { type: boolean }
+        speechBaseUrl: { type: [string, "null"], format: uri }
+        speechModel: { type: [string, "null"] }
+        speechVoice: { type: [string, "null"] }
+        speechApiKeyConfigured: { type: boolean }
+        transcriptionBaseUrl: { type: [string, "null"], format: uri }
+        transcriptionModel:
+          type: [string, "null"]
+          description: Null → voice transcription falls back to the chat model.
+        transcriptionApiKeyConfigured: { type: boolean }
+        ownerUserId: { type: [string, "null"] }
+        ownerUsername:
+          type: [string, "null"]
+          description: Denormalized from the chosen known user; display only.
+        maintenanceModeEnabled: { type: boolean }
+        timezone: { type: string, description: Operator IANA timezone. }
+        dailyJobsRunTime: { $ref: "#/components/schemas/TimeOfDay" }
+        browserDownloadMaxMb: { type: integer }
+        updatedAt: { type: [string, "null"], format: date-time }
+
+    SettingsUpdate:
+      type: object
+      minProperties: 1
+      description: |
+        Partial update. Secret fields are write-only: omit to keep, `null` to clear,
+        a string to replace.
+      properties:
+        llmBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
+        model: { type: [string, "null"], maxLength: 200 }
+        apiKey: { type: [string, "null"], maxLength: 500 }
+        telegramBotToken: { type: [string, "null"], maxLength: 200 }
+        tavilyApiKey: { type: [string, "null"], maxLength: 500 }
+        embeddingBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
+        embeddingApiKey: { type: [string, "null"], maxLength: 500 }
+        embeddingModel: { type: [string, "null"], maxLength: 200 }
+        imageBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
+        imageApiKey: { type: [string, "null"], maxLength: 500 }
+        imageModel: { type: [string, "null"], maxLength: 200 }
+        speechBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
+        speechApiKey: { type: [string, "null"], maxLength: 500 }
+        speechModel: { type: [string, "null"], maxLength: 200 }
+        speechVoice: { type: [string, "null"], maxLength: 100 }
+        transcriptionBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
+        transcriptionApiKey: { type: [string, "null"], maxLength: 500 }
+        transcriptionModel: { type: [string, "null"], maxLength: 200 }
+        ownerUserId:
+          type: [string, "null"]
+          pattern: '^\d+$'
+        maintenanceModeEnabled: { type: boolean }
+        timezone: { type: string, minLength: 1, maxLength: 64 }
+        dailyJobsRunTime: { $ref: "#/components/schemas/TimeOfDay" }
+        browserDownloadMaxMb:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: Bounded by Telegram's bot upload ceiling.
+
+    ModelCountProbe:
+      type: object
+      required: [model, modelCount]
+      properties:
+        model: { type: string }
+        modelCount:
+          type: integer
+          description: How many models the endpoint advertises.
+
+    # ── directory ──
+    KnownUser:
+      type: object
+      required: [userId, username, firstName, lastName, aliases, language, firstSeenAt, updatedAt]
+      properties:
+        userId: { type: string }
+        username: { type: [string, "null"] }
+        firstName: { type: [string, "null"] }
+        lastName: { type: [string, "null"] }
+        aliases:
+          type: array
+          items: { type: string }
+        language:
+          type: [string, "null"]
+          description: Governs the bot's reply language in this person's private chat.
+        firstSeenAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    KnownGroup:
+      type: object
+      required: [chatId, title, type, notes, language, firstSeenAt, updatedAt]
+      properties:
+        chatId: { type: string }
+        title: { type: [string, "null"] }
+        type: { type: [string, "null"] }
+        notes: { type: [string, "null"] }
+        language: { type: [string, "null"] }
+        firstSeenAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    KnownGroupSummary:
+      allOf:
+        - $ref: "#/components/schemas/KnownGroup"
+        - type: object
+          required: [memberCount]
+          properties:
+            memberCount: { type: integer }
+
+    # ── personalities ──
+    Personality:
+      type: object
+      required: [id, name, prompt, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        prompt: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    PersonalitiesView:
+      type: object
+      required: [personalities, activeId]
+      properties:
+        personalities:
+          type: array
+          items: { $ref: "#/components/schemas/Personality" }
+        activeId: { type: [string, "null"] }
+
+    # ── jobs ──
+    JobProgress:
+      type: [object, "null"]
+      description: |
+        Live "what it does now" while a run is in flight; null otherwise. Carries the
+        current step, and an `n / total` count when the work is a countable loop.
+    IntervalJobStatus:
+      type: object
+      required: [running, ticking, lastTickAt, lastSummary, lastError, progress]
+      properties:
+        running: { type: boolean, description: Whether the ticker is armed. }
+        ticking: { type: boolean, description: Whether a tick is executing right now. }
+        lastTickAt: { type: [string, "null"], format: date-time }
+        lastSummary: { type: [string, "null"] }
+        lastError: { type: [string, "null"] }
+        progress: { $ref: "#/components/schemas/JobProgress" }
+    IdleJobStatus:
+      type: object
+      required: [phase, lastRunAt, lastSummary, lastError, nextRunAt, progress]
+      properties:
+        phase:
+          type: string
+          enum: [idle, scheduled, running]
+        lastRunAt: { type: [string, "null"], format: date-time }
+        lastSummary: { type: [string, "null"] }
+        lastError: { type: [string, "null"] }
+        nextRunAt: { type: [string, "null"], format: date-time }
+        progress: { $ref: "#/components/schemas/JobProgress" }
+    DailyJobInfoBase:
+      type: object
+      required: [status, nextRunAt, runTime, timezone, lastResult]
+      properties:
+        status: { $ref: "#/components/schemas/IntervalJobStatus" }
+        nextRunAt: { type: [string, "null"], format: date-time }
+        runTime: { $ref: "#/components/schemas/TimeOfDay" }
+        timezone: { type: string }
+        lastResult:
+          type: [object, "null"]
+          description: Outcome of the last ACTUAL run, kept apart from the ticker's waiting summaries.
+          required: [at, summary]
+          properties:
+            at: { type: string, format: date-time }
+            summary: { type: string }
+
+    SummaryJobInfo:
+      allOf:
+        - $ref: "#/components/schemas/DailyJobInfoBase"
+        - type: object
+          required: [pendingDays, embeddingsConfigured]
+          properties:
+            pendingDays: { type: integer, description: Chat-days still awaiting a summary. }
+            embeddingsConfigured: { type: boolean, description: Whether semantic search is on. }
+
+    MemoryJobInfo:
+      allOf:
+        - $ref: "#/components/schemas/DailyJobInfoBase"
+        - type: object
+          required: [pendingNotes, pendingExtractionDays, embeddingsConfigured]
+          properties:
+            pendingNotes: { type: integer, description: Notes still waiting to be folded in. }
+            pendingExtractionDays:
+              type: integer
+              description: Chat-days passive extraction has not read yet.
+            embeddingsConfigured: { type: boolean }
+
+    TaskSchedulerJobInfo:
+      type: object
+      required: [status, paused, overdue, nextRunAt, asOf]
+      properties:
+        status: { $ref: "#/components/schemas/IntervalJobStatus" }
+        paused:
+          type: boolean
+          description: |
+            True when maintenance mode is pausing every fire. Due tasks stay due —
+            they are skipped, not advanced — and deliver once maintenance ends.
+        overdue: { type: integer, description: Enabled tasks whose instant has already passed. }
+        nextRunAt: { type: [string, "null"], format: date-time }
+        asOf: { type: string, format: date-time }
+
+    AnalyticsJobInfo:
+      allOf:
+        - $ref: "#/components/schemas/DailyJobInfoBase"
+        - type: object
+          required: [pendingUnits, llmConfigured, regenerateBuckets]
+          properties:
+            pendingUnits: { type: integer, description: Chat-hours still awaiting an insight. }
+            llmConfigured: { type: boolean }
+            regenerateBuckets:
+              type: object
+              description: The stored bucket keys per granularity, for the Regenerate control.
+              additionalProperties:
+                type: array
+                items: { type: string }
+
+    VisionBackfillSnapshot:
+      type: object
+      required: [status, pending]
+      properties:
+        status: { $ref: "#/components/schemas/IdleJobStatus" }
+        pending: { type: integer, description: Media rows still awaiting a description. }
+
+    # ── history ──
+    HistoryColumnSource:
+      oneOf:
+        - type: object
+          required: [kind, header]
+          properties:
+            kind: { type: string, const: column }
+            header: { type: string, minLength: 1 }
+        - type: object
+          required: [kind, value]
+          properties:
+            kind: { type: string, const: constant }
+            value: { type: string }
+        - type: "null"
+    HistoryColumnMapping:
+      type: object
+      description: |
+        Where each canonical field's value comes from — a column of the file, or a
+        fixed value. `telegram_message_id` cannot take a fixed value: it is the
+        per-chat unique key, so one value would collapse the file into one message.
+      properties:
+        chat_id: { $ref: "#/components/schemas/HistoryColumnSource" }
+        telegram_message_id: { $ref: "#/components/schemas/HistoryColumnSource" }
+        role: { $ref: "#/components/schemas/HistoryColumnSource" }
+        content: { $ref: "#/components/schemas/HistoryColumnSource" }
+        sent_at: { $ref: "#/components/schemas/HistoryColumnSource" }
+        user_id: { $ref: "#/components/schemas/HistoryColumnSource" }
+        reply_to_message_id: { $ref: "#/components/schemas/HistoryColumnSource" }
+        edited_at: { $ref: "#/components/schemas/HistoryColumnSource" }
+        deleted_at: { $ref: "#/components/schemas/HistoryColumnSource" }
+    ImportResult:
+      type: object
+      required: [totalRows, imported, skippedDuplicates, errors, chatIds]
+      properties:
+        totalRows: { type: integer, description: Data rows found (the header is not counted). }
+        imported: { type: integer }
+        skippedDuplicates:
+          type: integer
+          description: Rows whose `(chatId, telegramMessageId)` was already in the mirror.
+        errors:
+          type: array
+          items:
+            type: object
+            required: [line, message]
+            properties:
+              line: { type: integer, description: 1-based data-row number. }
+              message: { type: string }
+        chatIds:
+          type: array
+          items: { type: string }
+
+    # ── memory ──
+    MemoryEntry:
+      type: object
+      required: [id, scope, userId, content, chatId, createdAt]
+      properties:
+        id: { type: string }
+        scope:
+          type: string
+          enum: [user, general]
+        userId:
+          type: [string, "null"]
+          description: Set for `user`, null for `general`.
+        content: { type: string }
+        chatId: { type: [string, "null"], description: Provenance only, not a scope. }
+        createdAt: { type: string, format: date-time }
+    MemoryEntryView:
+      allOf:
+        - $ref: "#/components/schemas/MemoryEntry"
+        - type: object
+          required: [userLabel]
+          properties:
+            userLabel: { type: [string, "null"] }
+    UserMemory:
+      type: object
+      required: [userId, content, embedded, updatedAt]
+      properties:
+        userId: { type: string }
+        content: { type: string }
+        embedded: { type: boolean, description: Whether the row carries an embedding. }
+        updatedAt: { type: string, format: date-time }
+    UserMemoryView:
+      allOf:
+        - $ref: "#/components/schemas/UserMemory"
+        - type: object
+          required: [userLabel, pendingNotes]
+          properties:
+            userLabel: { type: string }
+            pendingNotes: { type: integer }
+    GeneralMemory:
+      type: object
+      required: [content, updatedAt]
+      properties:
+        content: { type: string }
+        updatedAt: { type: string, format: date-time }
+    MemoryView:
+      type: object
+      required: [entries, users, general, generalPendingNotes]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/MemoryEntryView" }
+        users:
+          type: array
+          items: { $ref: "#/components/schemas/UserMemoryView" }
+        general:
+          oneOf:
+            - $ref: "#/components/schemas/GeneralMemory"
+            - type: "null"
+        generalPendingNotes: { type: integer }
+
+    # ── scheduled tasks ──
+    ScheduledTask:
+      type: object
+      required:
+        [
+          id,
+          chatId,
+          threadId,
+          createdByUserId,
+          instruction,
+          scheduleKind,
+          timeOfDay,
+          weekdays,
+          runDate,
+          enabled,
+          attempts,
+          recentDeliveries,
+          lastRunAt,
+          nextRunAt,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string }
+        chatId: { type: string }
+        threadId: { type: [integer, "null"] }
+        createdByUserId:
+          type: [string, "null"]
+          description: The author. Null for a dashboard-created task, which the author-scoped chat tools cannot mutate.
+        instruction: { type: string }
+        scheduleKind: { $ref: "#/components/schemas/ScheduleKind" }
+        timeOfDay: { $ref: "#/components/schemas/TimeOfDay" }
+        weekdays:
+          type: [array, "null"]
+          items: { type: integer, minimum: 0, maximum: 6 }
+        runDate: { type: [string, "null"] }
+        enabled: { type: boolean }
+        attempts:
+          type: integer
+          description: Consecutive failed fires of a due one-shot, capped at 5.
+        recentDeliveries:
+          type: array
+          items: { type: string }
+          description: The last few delivered texts (newest first), for wording variation.
+        lastRunAt: { type: [string, "null"], format: date-time }
+        nextRunAt:
+          type: [string, "null"]
+          format: date-time
+          description: Null when the task will not fire again.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    # ── self-improvement ──
+    UserFeedback:
+      type: object
+      required:
+        [
+          id,
+          chatId,
+          telegramMessageId,
+          userId,
+          reaction,
+          feedback,
+          status,
+          topic,
+          model,
+          reflection,
+          reflectionModel,
+          prefsVersion,
+          correctionsVersion,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string }
+        chatId: { type: string }
+        telegramMessageId: { type: integer }
+        userId: { type: string }
+        reaction:
+          type: string
+          enum: [up, down]
+        feedback:
+          type: [string, "null"]
+          description: The chosen option's text or the user's own words; null until answered.
+        status:
+          type: string
+          enum: [pending, awaiting_text, completed]
+        topic:
+          type: string
+          enum: [quality, addressing]
+        model: { type: string, description: Clean model name that produced the reacted reply. }
+        reflection:
+          type: [string, "null"]
+          description: The bot's own account of why the exchange went that way.
+        reflectionModel: { type: [string, "null"] }
+        prefsVersion: { type: [integer, "null"] }
+        correctionsVersion: { type: [integer, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CommunicationPreference:
+      type: object
+      required: [id, userId, model, likes, dislikes, version, createdAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        model: { type: string }
+        likes: { type: string }
+        dislikes: { type: string }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+    SelfCorrection:
+      type: object
+      required: [id, model, correction, version, createdAt]
+      properties:
+        id: { type: string }
+        model: { type: string }
+        correction: { type: string }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+    AddressingExclusion:
+      type: object
+      required:
+        [id, term, normalized, botDisplayName, chatId, telegramMessageId, userId, feedbackId, createdAt]
+      properties:
+        id: { type: string }
+        term: { type: string, description: The word verbatim, as it appeared in the message that mis-triggered. }
+        normalized: { type: string, description: Case-folded, whitespace-collapsed — what the mechanical check matches. }
+        botDisplayName: { type: string }
+        chatId: { type: [string, "null"] }
+        telegramMessageId: { type: [integer, "null"] }
+        userId: { type: [string, "null"] }
+        feedbackId: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+    SelfImprovementView:
+      type: object
+      required: [feedbacks, preferences, correction, exclusions]
+      properties:
+        feedbacks:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/UserFeedback"
+              - type: object
+                required: [userLabel]
+                properties:
+                  userLabel: { type: string }
+        preferences:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/CommunicationPreference"
+              - type: object
+                required: [userLabel]
+                properties:
+                  userLabel: { type: string }
+        correction:
+          oneOf:
+            - $ref: "#/components/schemas/SelfCorrection"
+            - type: "null"
+        exclusions:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/AddressingExclusion"
+              - type: object
+                required: [userLabel]
+                properties:
+                  userLabel: { type: string }
+
+    # ── browser agent ──
+    BrowserAgentRun:
+      type: object
+      required:
+        [
+          id,
+          chatId,
+          threadId,
+          createdByUserId,
+          isOwner,
+          goal,
+          status,
+          report,
+          error,
+          steps,
+          downloads,
+          traceId,
+          createdAt,
+          startedAt,
+          finishedAt,
+        ]
+      properties:
+        id: { type: string }
+        chatId:
+          type: [string, "null"]
+          description: Null for a dashboard-started run, which delivers nothing.
+        threadId: { type: [integer, "null"] }
+        createdByUserId: { type: [string, "null"] }
+        isOwner:
+          type: boolean
+          description: Resolved at enqueue time; gates the download tools inside the run.
+        goal: { type: string }
+        status:
+          type: string
+          enum: [queued, running, done, failed]
+        report: { type: [string, "null"] }
+        error: { type: [string, "null"] }
+        steps: { type: integer, description: Browser actions performed. }
+        downloads:
+          type: array
+          items:
+            type: object
+            required: [sourceUrl, filename, sizeBytes, inline]
+            properties:
+              sourceUrl: { type: string }
+              filename: { type: string }
+              sizeBytes: { type: integer }
+              inline:
+                type: boolean
+                description: True when the file was small enough to also attach to the chat.
+        traceId: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: [string, "null"], format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
+    BrowserRunStep:
+      type: object
+      required: [seq, tool, action, url, ok, summary, at]
+      properties:
+        seq: { type: integer, description: Order within the run, from 1. }
+        tool: { type: string, examples: [browser_navigate] }
+        action: { type: string }
+        url: { type: [string, "null"] }
+        ok: { type: boolean }
+        summary: { type: string }
+        at: { type: string, format: date-time }
+    BrowserAgentRunDetail:
+      allOf:
+        - $ref: "#/components/schemas/BrowserAgentRun"
+        - type: object
+          required: [activity, screenshotSeqs, live]
+          properties:
+            activity:
+              type: array
+              items: { $ref: "#/components/schemas/BrowserRunStep" }
+            screenshotSeqs:
+              type: array
+              items: { type: integer }
+            live:
+              type: [object, "null"]
+              description: Live state while running; null once settled.
+              required: [currentAction, progress]
+              properties:
+                currentAction: { type: [string, "null"] }
+                progress: { type: [string, "null"] }
+
+    # ── analytics ──
+    MetricContext:
+      type: object
+      required: [unit, anchor, timezone, scope, chatId, userId]
+      properties:
+        unit: { $ref: "#/components/schemas/PeriodUnit" }
+        anchor: { type: string }
+        timezone: { type: string }
+        scope:
+          type: string
+          enum: [global, chat, user]
+        chatId: { type: [string, "null"] }
+        userId: { type: [string, "null"] }
+    TotalsPayload:
+      allOf:
+        - $ref: "#/components/schemas/MetricContext"
+        - type: object
+          required: [totals]
+          properties:
+            totals:
+              type: object
+              required:
+                [handled, replied, failed, tokensProcessed, tokensGenerated, activeUsers, images]
+              properties:
+                handled: { type: integer }
+                replied: { type: integer }
+                failed: { type: integer }
+                tokensProcessed: { type: integer }
+                tokensGenerated: { type: integer }
+                activeUsers: { type: integer }
+                images: { type: integer }
+    SeriesPayload:
+      allOf:
+        - $ref: "#/components/schemas/MetricContext"
+        - type: object
+          required: [section, bucketUnit, buckets, series]
+          properties:
+            section:
+              type: string
+              enum: [volume, tokens, users, mood]
+            bucketUnit:
+              allOf: [{ $ref: "#/components/schemas/Granularity" }]
+              description: The granularity the axis is bucketed at — one step finer than `unit`.
+            buckets:
+              type: array
+              items: { type: string }
+              description: Bucket labels, oldest → newest. Every series is aligned to this.
+            series:
+              type: array
+              items:
+                type: object
+                required: [name, data]
+                properties:
+                  name: { type: string }
+                  data:
+                    type: array
+                    items: { type: [number, "null"] }
+            yMax:
+              type: number
+              description: Fixed y-axis maximum where the metric has one (mood is 0–100).
+    CallKindStat:
+      type: object
+      required:
+        [
+          callKind,
+          calls,
+          avgLatencyMs,
+          latencyP50,
+          latencyP95,
+          totalLatencyMs,
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          tokensPerSec,
+        ]
+      properties:
+        callKind:
+          type: string
+          description: |
+            What the call was for. One of `addressing-check`, `reply-tool-turn`,
+            `reply-final`, `vision-describe`, `voice-transcribe`,
+            `history-summarize`, `memory-extract`, `memory-consolidate`,
+            `insight-hour`, `insight-rollup`, `browser-agent-turn`,
+            `browser-agent-report`, `scheduled-task-fire`, `self-improve-analyze`,
+            `self-improve-reflect`.
+        calls: { type: integer, description: Provider rounds counted. }
+        avgLatencyMs: { type: number }
+        latencyP50: { type: [number, "null"] }
+        latencyP95: { type: [number, "null"] }
+        totalLatencyMs: { type: number }
+        promptTokens: { type: integer }
+        completionTokens: { type: integer }
+        totalTokens: { type: integer }
+        tokensPerSec: { type: [number, "null"] }
+    ModelStat:
+      type: object
+      required:
+        [model, calls, promptTokens, completionTokens, totalTokens, totalLatencyMs, tokensPerSec, callKinds]
+      properties:
+        model: { type: string, description: Clean model name (registry prefixes stripped). }
+        calls: { type: integer }
+        promptTokens: { type: integer }
+        completionTokens: { type: integer }
+        totalTokens: { type: integer }
+        totalLatencyMs: { type: number }
+        tokensPerSec: { type: [number, "null"] }
+        callKinds:
+          type: array
+          items: { $ref: "#/components/schemas/CallKindStat" }
+          description: This model's call kinds, most total time first.
+    ModelsPayload:
+      allOf:
+        - $ref: "#/components/schemas/MetricContext"
+        - type: object
+          required: [models]
+          properties:
+            models:
+              type: array
+              items: { $ref: "#/components/schemas/ModelStat" }
+    TopUsersPayload:
+      allOf:
+        - $ref: "#/components/schemas/MetricContext"
+        - type: object
+          required: [users]
+          properties:
+            users:
+              type: array
+              items:
+                type: object
+                required: [userId, label, messages, tokens]
+                properties:
+                  userId: { type: string }
+                  label: { type: string }
+                  messages: { type: integer }
+                  tokens: { type: integer, description: Prompt tokens attributed to this user's turns. }
+    PeriodInsight:
+      type: object
+      required:
+        [unit, anchor, chatId, wordOfPeriod, topTopic, mood, sourceUnits, messageCount, model, computedAt]
+      properties:
+        unit: { $ref: "#/components/schemas/PeriodUnit" }
+        anchor: { type: string }
+        chatId: { type: string }
+        wordOfPeriod: { type: string }
+        topTopic: { type: string }
+        mood:
+          type: [object, "null"]
+          description: Null when no sub-bucket in the period has been scored yet.
+          required: [moodScore, moodLabel, sourceUnits, messageCount]
+          properties:
+            moodScore: { type: integer, minimum: 0, maximum: 100 }
+            moodLabel: { type: string }
+            sourceUnits: { type: integer }
+            messageCount: { type: integer }
+        sourceUnits: { type: integer, description: Scored hours behind the roll-up. }
+        messageCount: { type: integer }
+        model: { type: string }
+        computedAt: { type: string, format: date-time }
+
+    # ── traces ──
+    LlmUsage:
+      type: object
+      properties:
+        model: { type: string }
+        servedModel: { type: string }
+        callKind: { type: string }
+        promptTokens: { type: integer, minimum: 0 }
+        completionTokens: { type: integer, minimum: 0 }
+        totalTokens: { type: integer, minimum: 0 }
+        latencyMs: { type: number, minimum: 0 }
+    TraceEvent:
+      type: object
+      required: [id, traceId, seq, ts, type, level, message]
+      properties:
+        id: { type: string }
+        traceId: { type: string }
+        seq: { type: integer, minimum: 0, description: Monotonic order within the trace, from 0. }
+        ts: { type: string, format: date-time }
+        type:
+          type: string
+          enum: [step, input, output, external_call, llm_request, llm_response, db, error]
+        level:
+          type: string
+          enum: [debug, info, success, warn, error]
+          default: info
+        message: { type: string, description: A clean human title, not a raw type string. }
+        data: { description: Structured, client-safe payload. }
+        usage: { $ref: "#/components/schemas/LlmUsage" }
+    Trace:
+      type: object
+      required: [id, feature, action, status, trigger, startedAt, finishedAt, error, events]
+      properties:
+        id: { type: string }
+        feature: { type: string, description: A registered feature id from `lib/features.ts`. }
+        action: { type: string, examples: [reply, summarize, test-connection] }
+        status: { $ref: "#/components/schemas/TraceStatus" }
+        trigger:
+          type: object
+          required: [kind]
+          properties:
+            kind:
+              type: string
+              enum: [telegram, dashboard, cron, system, api, test]
+            actor: { type: string, description: Chat id, user, or job name. }
+            correlationId: { type: string, description: Links related traces. }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
+        inputSummary: { type: string }
+        outputSummary: { type: string }
+        error:
+          type: [object, "null"]
+          required: [message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+        relatedIds:
+          type: object
+          description: Related database row ids by table, for operator drill-down.
+          additionalProperties:
+            type: array
+            items: { type: string }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/TraceEvent" }
+          description: Empty on list responses; populated on detail and bundle responses.
+    TraceBundle:
+      type: object
+      required: [schema, exportedAt, traces]
+      properties:
+        schema:
+          type: string
+          const: llm-tg-bot/trace-bundle@1
+        exportedAt: { type: string, format: date-time }
+        traces:
+          type: array
+          items: { $ref: "#/components/schemas/Trace" }

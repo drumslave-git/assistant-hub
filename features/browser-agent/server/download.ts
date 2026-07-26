@@ -22,8 +22,14 @@ import { buildDownloadFilename } from "../files";
  */
 
 /**
- * Project-root downloads folder (Docker-mountable). `DOWNLOADS_DIR` env is a
- * deploy-time bootstrap override (like `DATABASE_URL`), not runtime config.
+ * Downloads folder. `DOWNLOADS_DIR` env is a deploy-time bootstrap override (like
+ * `DATABASE_URL`/`TRACES_DIR`), not runtime config; it defaults to `./downloads`
+ * for local dev.
+ *
+ * Under `docker compose` it is set to `/app/data/downloads` and bind-mounted to the
+ * host, because this directory is the only copy of a downloaded file that was too
+ * large to attach to the chat — an unmounted container path would lose it on the
+ * next image replacement.
  */
 export const DOWNLOADS_DIR = path.resolve(process.env.DOWNLOADS_DIR ?? "downloads");
 

@@ -91,9 +91,17 @@ features/<feature>/
     <Feature>Form.tsx, ...    # Client Components
 
 app/<feature>/page.tsx        # normal dashboard page (Server Component)
-app/<feature>/debug/page.tsx  # dedicated Debug page (shared debug components)
 app/api/<feature>/**/route.ts # thin Route Handlers via shared `defineRoute`
 ```
+
+A feature does **not** get its own Debug route. `/debug` is the single Debug
+explorer for every feature, scoped by the trace `feature` string:
+`/debug?feature=<id>`, built with `featureDebugHref(id)` from `lib/features.ts`.
+An earlier draft of this contract specified a per-feature
+`app/<feature>/debug/page.tsx`; the shared explorer replaced it and is the
+correct approach (user confirmed, 2026-07-26) — one filter list, one detail
+view, one bundle export, and a feature is selectable in the filter the moment it
+is registered, before it has recorded a single trace.
 
 Errors use the shared `lib/api-error` shape and traces use the shared
 `server/trace` recorder; a feature adds its own `errors.ts`/`trace.ts` only
@@ -111,13 +119,15 @@ Each feature must provide:
    - trace context
    - JSON responses
 5. A dashboard page for normal operation.
-6. A dedicated Debug page.
+6. A link into the shared Debug explorer, scoped to the feature
+   (`featureDebugHref(id)`), plus registration in `lib/features.ts` so the scope
+   exists.
 7. Trace recording for each meaningful action.
 8. Log/detail download from the Debug page.
 9. Consistent status reporting for dashboard overview cards.
 10. Unit tests and route/API tests.
 
-Debug pages must allow an operator to inspect:
+The Debug view must allow an operator to inspect:
 
 - when the action happened
 - who or what triggered it
