@@ -29,16 +29,28 @@ Success bodies are shown *unwrapped* — the wire format is `{ "data": … }`.
   "time": "2026-07-26T09:12:03.114Z",
   "version": "1.11.4",
   "checks": {
-    "database":      { "ok": true, "detail": "Connected" },
-    "configuration": { "configured": true, "detail": "LLM endpoint and model set — see Overview for live status." },
-    "traceStorage":  { "ok": true, "detail": "/app/data/traces", "pendingCount": 0, "lastFlushError": null }
+    "database":        { "ok": true, "detail": "Connected" },
+    "configuration":   { "configured": true, "detail": "LLM endpoint and model set — see Overview for live status." },
+    "traceStorage":    { "ok": true, "detail": "/app/data/traces", "pendingCount": 0, "lastFlushError": null },
+    "downloadStorage": { "ok": true, "detail": "/app/data/downloads" }
   }
 }
 ```
 
-Readiness is the **database probe alone** (`SELECT 1`). Configuration and trace
-storage are informational — restart-looping on an unwritable trace volume would drop
-the settled traces still buffered in RAM.
+Readiness is the **database probe alone** (`SELECT 1`). The other three checks are
+informational, each for its own reason:
+
+| Check | Why it is not a gate |
+| --- | --- |
+| `configuration` | The LLM being down must not make the dashboard "unhealthy" |
+| `traceStorage` | While the volume is unwritable, the only copy of the unflushed traces is this process's RAM — restart-looping would destroy exactly the data still savable |
+| `downloadStorage` | The app serves fine without it; only browser-agent downloads fail, and they report it on the run that attempted one |
+
+Both storage checks are **real filesystem probes**: `traceStorage` opens the current
+month's file for append (the operation the flusher performs), `downloadStorage` creates
+and removes a file in the downloads directory. Neither is an env-presence or
+`access(W_OK)` guess — a Docker bind mount the container user cannot write to satisfies
+both of those and still fails.
 
 ## Realtime
 

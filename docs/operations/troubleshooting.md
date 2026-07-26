@@ -5,8 +5,8 @@ because guessing is exactly what the trace archive exists to avoid.
 
 ## Start here
 
-1. **Overview** (`/`) — five real probes: database, LLM endpoint, model, trace storage,
-   bot. Any red one explains most downstream symptoms.
+1. **Overview** (`/`) — six real probes: database, LLM endpoint, model, bot, trace
+   storage, downloads. Any red one explains most downstream symptoms.
 2. **`/jobs`** — every background job's *notice* field: the reason a job is currently
    not doing its work.
 3. **`/debug`** — the trace for the specific thing that went wrong. Filter by feature
@@ -187,13 +187,32 @@ them. Fix the write path first; the probe re-checks and the banner clears.
 Related: `/api/health` deliberately does **not** fail readiness on this, precisely so
 an orchestrator does not restart-loop the container and destroy the buffered traces.
 
+## Every browser-agent download fails
+
+Overview → **Downloads** says "Not writable", the `/browser` page shows a warning
+banner, and `GET /api/health` reports `checks.downloadStorage.ok: false`. The boot log
+also carries a line, because the runner probes the path at startup.
+
+| Cause | Fix |
+| --- | --- |
+| The bind-mounted host directory is not writable by the container's non-root `app` user | `chown` it to that user on the host side |
+| `DOWNLOADS_DIR` points at a path whose parent is a file, or is otherwise unusable | Fix the path. The `detail` field carries the OS error (`ENOTDIR`, `EACCES`, …) |
+| Disk full | Free space |
+
+Browsing, reading pages and reporting all keep working — only saving a file fails.
+Individual runs report it in their activity feed, so a run that needed a download shows
+`ok: false` on that step with the OS error as its summary.
+
+Note that the probe **creates the directory** if it is missing, so "not writable" means
+genuinely not writable rather than merely absent.
+
 ## `GET /api/health` returns 503
 
 The database probe failed. That is the only thing that gates readiness.
 
 Check `DATABASE_URL`, that Postgres is up (`docker compose ps`), and that the app can
-reach it. Configuration presence and trace-storage health in the same body are
-informational and never cause a 503.
+reach it. Configuration presence, trace-storage health and download-storage health in
+the same body are informational and never cause a 503.
 
 ## Locked out of the dashboard
 

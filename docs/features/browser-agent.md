@@ -173,6 +173,29 @@ directly, mirroring the conversational tool without needing Telegram.
 
 Needs a working Chromium and ffmpeg. Both are in the Docker image.
 
+## Download storage health
+
+`getDownloadStorageHealth()` probes the real write path — `mkdir -p`, create a
+pid-scoped file, remove it — mirroring the trace store's probe. Not an
+`access(W_OK)` guess: a Docker bind mount the container user cannot write to satisfies
+that and still fails every download. It creates the directory when missing, so
+"not writable" means genuinely not writable.
+
+Reported in four places, because a download failure is otherwise only discovered by
+whoever asked for a file:
+
+| Surface | Form |
+| --- | --- |
+| Overview | A **Downloads** status card (warning tone, not error) |
+| `/browser` | A warning banner above the runs list |
+| `GET /api/health` | `checks.downloadStorage` — informational, never a readiness gate |
+| Server log | One line at boot, from the runner's start |
+
+Deliberately **not** on the global `SystemAlerts` banner: that surface is reserved for
+failures that silently destroy data, and this one destroys nothing silently — the
+download throws, the tool reports it, and the failure lands on the run's activity feed
+with the OS error as its summary. Keeping the banner rare is what keeps it loud.
+
 ## Tracing
 
 Tracing lives in the **runner**, where the work happens — enqueuing is a plain insert.

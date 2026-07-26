@@ -162,6 +162,18 @@ Deliberately, trace-storage health is **not** a readiness gate on `/api/health`:
 restart-looping the container on an unwritable volume would drop the very traces
 still buffered in RAM.
 
+### The other write path
+
+The browser agent's downloads directory is probed the same way — a real create/unlink
+rather than an `access(W_OK)` guess — and reported on Overview, on `/browser`, in the
+health body, and once in the boot log. It is a **warning**, not an error, and gets no
+global banner: an unwritable downloads directory destroys nothing silently, because the
+download throws and the failure lands on the run row. See
+[the browser agent](../features/browser-agent.md#download-storage-health).
+
+The two probes are the app's only filesystem write paths, and both follow the same rule:
+exercise the real operation, never infer from configuration.
+
 ### Retention
 
 There is **no automatic retention** (user decision, 2026-07-20). Nothing is ever

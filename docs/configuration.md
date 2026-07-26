@@ -168,13 +168,16 @@ Two columns on the same row are managed by other flows and never editable here:
 
 Nothing in this app reports "configured" from the presence of a variable.
 
-- **Overview** runs a real `SELECT 1` and a real `/v1/models` call, and probes
-  the trace directory by opening the current month's file for append — exactly
-  the operation the flusher performs.
+- **Overview** runs a real `SELECT 1` and a real `/v1/models` call, and probes both
+  filesystem write paths: the trace directory by opening the current month's file for
+  append (exactly what the flusher does), and the downloads directory by creating and
+  removing a file (exactly what a download does). Neither is an `access(W_OK)` guess,
+  which a bind mount the container user cannot write to would satisfy.
 - **`GET /api/health`** returns `200`/`503` on the database probe alone.
-  Configuration presence and trace-storage health are reported in the body but
-  are deliberately *not* readiness gates: restart-looping on an unwritable trace
-  volume would drop the settled traces still buffered in RAM.
+  Configuration presence, trace-storage health and download-storage health are
+  reported in the body but are deliberately *not* readiness gates: restart-looping on
+  an unwritable trace volume would drop the settled traces still buffered in RAM, and
+  an unwritable downloads mount breaks only the browser agent's downloads.
 - **Settings probes** (`test-connection`, `test-embeddings`, `test-images`,
   `test-speech`, `test-transcription`) each make a real call and are recorded as
   traces under the `settings` feature.

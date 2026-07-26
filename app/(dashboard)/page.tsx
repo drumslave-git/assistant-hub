@@ -80,6 +80,18 @@ export default async function OverviewPage() {
         hint: `${status.traces.detail} — ${status.traces.pendingCount} unflushed trace(s) buffered in memory`,
       };
 
+  // A failed download reports itself on the run that attempted one, so this is a
+  // warning rather than an error — but it is probed here so the operator learns
+  // about an unwritable mount before a user's request is the thing that finds it.
+  const downloadsItem: StatusItem = status.downloads.ok
+    ? { label: "Downloads", tone: "ok", value: "Writable", hint: status.downloads.detail }
+    : {
+        label: "Downloads",
+        tone: "warn",
+        value: "Not writable",
+        hint: `${status.downloads.detail} — browser-agent downloads will fail`,
+      };
+
   const items: StatusItem[] = [
     {
       label: "Database",
@@ -96,13 +108,15 @@ export default async function OverviewPage() {
     },
     botItem,
     tracesItem,
+    downloadsItem,
   ];
 
   const operational =
     status.db.connected &&
     status.llm.state === "connected" &&
     status.model.selected &&
-    status.traces.ok;
+    status.traces.ok &&
+    status.downloads.ok;
 
   return (
     <>

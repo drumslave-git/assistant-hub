@@ -40,13 +40,21 @@ time, never an "is the variable set" guess:
 | Database | An actual `SELECT 1` |
 | LLM endpoint | An actual `/v1/models` call, with the model count |
 | Model | Whether one is selected, and which |
-| Trace storage | Opening the current month's file for append — the same operation the flusher performs |
 | Telegram bot | The live poller state, with the resolved `@username` |
+| Trace storage | Opening the current month's file for append — the same operation the flusher performs |
+| Downloads | Creating and removing a file in the downloads directory — the same thing a download does |
+
+The two storage cards differ in severity, deliberately. An unwritable **trace**
+directory is an error: settled traces pile up in RAM and are lost on restart, so it
+also raises the global banner. An unwritable **downloads** directory is a warning:
+nothing is silently lost, browsing and reporting still work, and only saving a file
+fails — loudly, on the run that attempted it. The probe exists so you find out from
+this page rather than from a user's failed request.
 
 The bot control card starts and stops the poller. The token comes from Settings, so
 there is nothing to type. If the card says "Not configured", go to Settings first.
 
-**What to do here:** confirm all five are green after any config change or restart.
+**What to do here:** confirm every card is green after any config change or restart.
 This is the page to look at first when something is not working.
 
 ## Analytics (`/analytics`)

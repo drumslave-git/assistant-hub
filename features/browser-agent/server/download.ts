@@ -33,6 +33,43 @@ import { buildDownloadFilename } from "../files";
  */
 export const DOWNLOADS_DIR = path.resolve(process.env.DOWNLOADS_DIR ?? "downloads");
 
+/** Operator-facing health of the download write path — see {@link getDownloadStorageHealth}. */
+export interface DownloadStorageHealth {
+  ok: boolean;
+  /** The downloads directory when ok; the failure message when not. */
+  detail: string;
+}
+
+/**
+ * Probe the REAL write path — create a file in the downloads directory and remove
+ * it — mirroring {@link import("@/server/trace/store").getTraceStorageHealth}. Never
+ * an env-presence guess and never an `fs.access(W_OK)` guess: a Docker bind mount the
+ * container user cannot write to satisfies both and still fails every download.
+ *
+ * A create-then-unlink (rather than the trace probe's zero-byte append to a file that
+ * exists anyway) because there is no always-present file here, and it exercises exactly
+ * what a download does — `mkdir -p`, then open a new file for writing. The probe file is
+ * pid-scoped and removed, so concurrent probes cannot collide and nothing is left in a
+ * directory the operator browses.
+ *
+ * Unlike traces, an unwritable directory here destroys nothing silently: the download
+ * throws, the tool reports it, and the failure lands on the run row. This probe exists
+ * so the operator learns about it from the dashboard instead of from a user's failed
+ * request.
+ */
+export async function getDownloadStorageHealth(): Promise<DownloadStorageHealth> {
+  const probe = path.join(DOWNLOADS_DIR, `.write-probe-${process.pid}`);
+  try {
+    await fs.mkdir(DOWNLOADS_DIR, { recursive: true });
+    await fs.writeFile(probe, "");
+    return { ok: true, detail: DOWNLOADS_DIR };
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  } finally {
+    await fs.rm(probe, { force: true }).catch(() => undefined);
+  }
+}
+
 /** A file streamed to the downloads folder. */
 export interface DiskDownload {
   filePath: string;

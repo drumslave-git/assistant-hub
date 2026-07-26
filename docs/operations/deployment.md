@@ -164,7 +164,9 @@ Two things need care:
 
 - [ ] Claim `/setup` and set the operator password before exposing the port.
 - [ ] `DATABASE_URL` points where you intend (or you are using the bundled `db`).
-- [ ] `TRACES_DATA_DIR` is on a disk with room and is writable by the container user.
+- [ ] `TRACES_DATA_DIR` and `DOWNLOADS_DATA_DIR` are on a disk with room and are
+      writable by the container user. Overview's **Trace storage** and **Downloads**
+      cards probe this for real — check them rather than assuming.
 - [ ] Do not publish `POSTGRES_PORT` beyond localhost.
 - [ ] Configure the LLM connection and model, then confirm Overview shows a live
       probe result — not just "configured".

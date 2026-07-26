@@ -3,6 +3,10 @@ import "server-only";
 import { sql } from "drizzle-orm";
 
 import { getDb, type DrizzleDb } from "@/db/drizzle";
+import {
+  getDownloadStorageHealth,
+  type DownloadStorageHealth,
+} from "@/features/browser-agent/server/download";
 import { getSettingsRecord } from "@/features/settings/server/repository";
 import { listModels } from "@/server/llm/client";
 import { getTraceStorageHealth, type TraceStorageHealth } from "@/server/trace/store";
@@ -41,6 +45,8 @@ export interface SystemStatus {
   model: ModelStatus;
   /** Trace/debug log write path — a real append probe, not a config guess. */
   traces: TraceStorageHealth;
+  /** Browser-agent download write path — a real create/unlink probe, same reasoning. */
+  downloads: DownloadStorageHealth;
 }
 
 function errorMessage(err: unknown): string {
@@ -72,11 +78,18 @@ export async function getConfigReadiness(db: DrizzleDb = getDb()): Promise<Confi
   }
 }
 
-/** Probe the database, the LLM endpoint, the model selection, and trace storage. */
+/**
+ * Probe the database, the LLM endpoint, the model selection, and both filesystem
+ * write paths (trace logs and browser-agent downloads).
+ */
 export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemStatus> {
-  // Trace storage is independent of the DB — probe it first so a DB outage
-  // cannot hide a dying trace volume (each is surfaced on its own).
-  const traces = await getTraceStorageHealth();
+  // Both write paths are independent of the DB — probe them first so a DB outage
+  // cannot hide a dying volume (each is surfaced on its own), and concurrently
+  // since neither touches the other's directory.
+  const [traces, downloads] = await Promise.all([
+    getTraceStorageHealth(),
+    getDownloadStorageHealth(),
+  ]);
 
   // 1. Database — a real query. If it fails, nothing downstream can be checked.
   try {
@@ -88,6 +101,7 @@ export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemSt
       llm: { state: "unconfigured", detail: "Requires a database connection" },
       model: { selected: false, detail: "Requires a database connection" },
       traces,
+      downloads,
     };
   }
 
@@ -115,7 +129,7 @@ export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemSt
     ? { selected: true, detail: settings.model }
     : { selected: false, detail: "No model selected" };
 
-  return { db: { connected: true, detail: "Connected" }, llm, model, traces };
+  return { db: { connected: true, detail: "Connected" }, llm, model, traces, downloads };
 }
 
 export interface HealthReport {
@@ -133,6 +147,14 @@ export interface HealthReport {
    * destroy exactly the data the operator still has a chance to save.
    */
   traceStorage: TraceStorageHealth;
+  /**
+   * Download write-path health (real create/unlink probe). Informational and never a
+   * readiness gate, for a different reason than traces: the app serves fine without
+   * it — only the browser agent's downloads fail, loudly, on the run that attempted
+   * one. Reported here so an unwritable mount is visible to an orchestrator's probe
+   * output without affecting whether the container is considered healthy.
+   */
+  downloadStorage: DownloadStorageHealth;
 }
 
 /**
@@ -154,10 +176,16 @@ export async function getHealth(db: DrizzleDb = getDb()): Promise<HealthReport> 
     ? await getConfigReadiness(db)
     : { configured: false, detail: "Requires a database connection." };
 
+  const [traceStorage, downloadStorage] = await Promise.all([
+    getTraceStorageHealth(),
+    getDownloadStorageHealth(),
+  ]);
+
   return {
     ready: database.ok,
     database,
     configuration,
-    traceStorage: await getTraceStorageHealth(),
+    traceStorage,
+    downloadStorage,
   };
 }

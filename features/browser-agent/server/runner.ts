@@ -23,6 +23,7 @@ import { startTrace } from "@/server/trace";
 import type { BrowserAgentRun, BrowserDownloadRecord } from "../types";
 import { runBrowserAgent } from "./agent";
 import { formatDownloadLine, formatRunReport } from "../format";
+import { getDownloadStorageHealth } from "./download";
 import { clearLiveState, setLiveAction, setLiveProgress } from "./live-state";
 import {
   appendBrowserRunStep,
@@ -340,6 +341,17 @@ export function startBrowserAgentRunner(db: DrizzleDb = getDb()): void {
   started = true;
   setRunEnqueuedListener(() => void pump(db));
   void (async () => {
+    // Probe the download write path at boot so an unwritable mount screams in the
+    // server log immediately — not on the first user who asks for a file. The
+    // dashboard reads the same health (Overview card, /api/health, this page's
+    // notice); this is only the log line. Never gates the runner: a run that needs
+    // no download still works, and one that does reports its own failure.
+    const storage = await getDownloadStorageHealth().catch(() => null);
+    if (storage && !storage.ok) {
+      console.error(
+        `Browser-agent downloads directory is NOT writable (${storage.detail}). Downloads will fail until this is fixed; for a Docker bind mount, fix the host directory's ownership.`,
+      );
+    }
     await failStaleRunningRuns(db).catch(() => undefined);
     void pump(db);
   })();

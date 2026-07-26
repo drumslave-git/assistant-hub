@@ -26,6 +26,9 @@ export const GET = defineRoute(async () => {
         // Informational, not a readiness gate: restart-looping the container on
         // an unwritable volume would drop the RAM-buffered traces (see getHealth).
         traceStorage: health.traceStorage,
+        // Informational too: an unwritable downloads mount breaks only the browser
+        // agent's downloads, and does so loudly on the run that attempted one.
+        downloadStorage: health.downloadStorage,
       },
     },
     { status: health.ready ? 200 : 503 },

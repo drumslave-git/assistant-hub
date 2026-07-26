@@ -1835,7 +1835,7 @@ components:
         version: { type: string }
         checks:
           type: object
-          required: [database, configuration, traceStorage]
+          required: [database, configuration, traceStorage, downloadStorage]
           properties:
             database:
               type: object
@@ -1850,9 +1850,13 @@ components:
                 configured: { type: boolean }
                 detail: { type: string }
             traceStorage: { $ref: "#/components/schemas/TraceStorageHealth" }
+            downloadStorage: { $ref: "#/components/schemas/DownloadStorageHealth" }
 
     TraceStorageHealth:
       type: object
+      description: |
+        A real probe of the trace write path: the current month's file is opened for
+        append, exactly the operation the flusher performs.
       required: [ok, detail, pendingCount, lastFlushError]
       properties:
         ok: { type: boolean }
@@ -1865,6 +1869,18 @@ components:
         lastFlushError:
           type: [object, "null"]
           description: The standing flush failure, with when it first appeared.
+
+    DownloadStorageHealth:
+      type: object
+      description: |
+        A real probe of the browser-agent download write path: a file is created in the
+        downloads directory and removed again. Not an `access(W_OK)` guess.
+      required: [ok, detail]
+      properties:
+        ok: { type: boolean }
+        detail:
+          type: string
+          description: The downloads directory when ok; the OS failure message when not.
 
     BotStatus:
       type: object
