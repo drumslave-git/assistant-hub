@@ -17,10 +17,8 @@ Feature ids are the ones in `lib/features.ts` — the same strings that appear a
 | Memory | `memory`, `memory-extraction` | `/memory` | [memory.md](memory.md) |
 | Vision | `vision`, `vision-backfill` | `/vision` | [vision.md](vision.md) |
 | Voice | `voice` | `/vision` | [voice.md](voice.md) |
-| Web search | `mcp-tools-web-search` | `/tools` | [web-search.md](web-search.md) |
-| Link reading | `mcp-tools-link-fetch` | `/tools` | [link-fetch.md](link-fetch.md) |
 | Image generation | `mcp-tools-image-gen` | `/tools`, `/vision` | [image-generation.md](image-generation.md) |
-| Browser agent | `browser-agent`, `mcp-tools-browser-agent` | `/browser` | [browser-agent.md](browser-agent.md) |
+| Browser agent (all web access) | `browser-agent`, `mcp-tools-browser-agent` | `/browser` | [browser-agent.md](browser-agent.md) |
 | Scheduled tasks | `scheduled-tasks`, `mcp-tools-scheduled-tasks` | `/scheduled-tasks` | [scheduled-tasks.md](scheduled-tasks.md) |
 | Self-improvement | `user-feedback`, `self-improvement` | `/self-improvement` | [self-improvement.md](self-improvement.md) |
 | Analytics | `analytics`, `analytics-insights` | `/analytics` | [analytics.md](analytics.md) |
@@ -29,6 +27,8 @@ Feature ids are the ones in `lib/features.ts` — the same strings that appear a
 | MCP tools registry | — | `/tools` | [../architecture/llm-and-mcp.md](../architecture/llm-and-mcp.md) |
 | Traces / Debug | `traces` | `/debug` | [../architecture/observability.md](../architecture/observability.md) |
 | Auth | `auth` | `/login`, `/setup` | [../architecture/security.md](../architecture/security.md) |
+| Browsing infrastructure (no tool) | — | — | [link-fetch.md](link-fetch.md) |
+| Search fallback, Tavily (no tool) | — | `/settings` | [web-search.md](web-search.md) |
 
 ## What shapes a reply
 

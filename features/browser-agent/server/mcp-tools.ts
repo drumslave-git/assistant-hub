@@ -11,10 +11,16 @@ import { emitRunEnqueued } from "./signal";
 
 /**
  * The browser agent exposed as a single MCP tool. `browse_web` enqueues a
- * background run: a sub-agent LLM drives a full browser (navigate, click, type,
- * scroll, read, screenshot, download) to accomplish the goal, then reports back
- * to this chat. The chat model calls this and moves on — it does not drive the
+ * background run: a sub-agent LLM drives a full browser (search, navigate, click,
+ * type, scroll, read, screenshot, download) to accomplish the goal, then reports
+ * back to this chat. The chat model calls this and moves on — it does not drive the
  * browser itself (recorded decision: background run, not inline).
+ *
+ * This is the bot's ONLY web-facing tool (user decision, 2026-07-26): the earlier
+ * `search_web` (Tavily snippets) and `read_web_page` (one-shot page read) tools are
+ * gone, because a real browser does both better and two weaker alternatives only
+ * split the model's choice. Searching now happens inside a run, on live search
+ * engines, with the Tavily API kept as the last-resort fallback there.
  *
  * The generic browser tools the run uses are NOT MCP tools and are never offered
  * here; only this dispatch tool is. Anyone may start a run; the download tool
@@ -26,35 +32,29 @@ export const BROWSE_WEB_TOOL = "browse_web";
 export const BROWSER_AGENT_TOOL_NAMES = [BROWSE_WEB_TOOL];
 
 const BROWSE_WEB_DESCRIPTION =
-  "Start a background web-browsing agent that opens a REAL browser and can do things you cannot do " +
-  "yourself: navigate pages, follow links, search a site, click, fill forms, read content behind a " +
+  "Start a background web agent that opens a REAL browser and does everything on the web for you: " +
+  "SEARCH the web, open and read any page, follow links, click, fill forms, read content behind a " +
   "click, read a page's LIVE rendered values, AND download files (documents, images, videos, archives) " +
-  "to send to the user. " +
+  "to send to the user. This is the ONLY way you can reach the internet — you have no other way to " +
+  "search, open a link, or fetch a file. " +
   "You CAN get a file for the user through this tool — so when a user gives you a link and asks you " +
   "to download / save / grab / get / fetch it (or the video/image/file on it), DO NOT reply that you " +
   "are 'just a language model' or 'cannot download files': call this tool instead. That refusal is " +
   "wrong — this is exactly the tool for it. " +
-  "MUST call when: (a) the user asks to download or save a file, video, image, or document; (b) the " +
-  "user names a specific site, service, or page to get data FROM (e.g. 'on <site>', 'check <site>', " +
-  "'from <site>') — go read it there; (c) the user wants a LIVE or CURRENT value that a web-search " +
-  "snippet cannot give reliably — a live player/viewer/user count, live stats, charts or a dashboard, a " +
-  "current price, stock, or availability — because those pages compute their numbers in the browser and " +
-  "a search snippet is usually stale or plain wrong. (Commodity live values that a plain search shows " +
-  "accurately — the weather, the current time, a well-known exchange rate — do NOT need this; use a " +
-  "normal search for those. This is for a value tied to a specific site/service the user named, like a " +
-  "live count or price rendered on that site's own page.) (d) the task needs any multi-step interaction " +
-  "on the web. " +
-  "In those cases go read the real value on the page instead of answering from a search snippet. " +
-  "Use it for these EVEN IF earlier in this same conversation a similar question was answered with a " +
-  "plain web search — that was the weaker, stale path; a named site or a live value should be read live " +
-  "in the browser, so do not just copy the previous approach. " +
+  "MUST call when: (a) the user asks you to look something up, search for something, or check what is " +
+  "online right now; (b) the user shares a URL, or asks about the content of a page whose URL is in " +
+  "the conversation — go read that page instead of answering from memory; (c) the user asks to " +
+  "download or save a file, video, image, or document; (d) the user names a specific site, service, or " +
+  "page to get data FROM (e.g. 'on <site>', 'check <site>', 'from <site>') — go read it there; (e) the " +
+  "user wants a LIVE or CURRENT value — the weather, a price, a rate, live stats, a player/viewer/user " +
+  "count, a chart or dashboard, availability, today's news — because those change constantly and your " +
+  "own knowledge is stale; (f) the task needs any multi-step interaction on the web. " +
+  "In all of those, go get the real value from the real page instead of answering from memory. " +
   "The agent works step by step and reports back to this chat when it is done (this may take a while). " +
-  "Do NOT call only for a quick fact you already know, or when a general web search or a single static " +
-  "page genuinely answers it (general news, a definition, a well-known fact) — but a download, a named " +
-  "site to read from, a live/current value, or any multi-step interaction IS a reason to use this, not " +
-  "a plain search. " +
-  "Write the goal as a clear, self-contained instruction, and INCLUDE ALL links and site names the user " +
-  "gave — the agent starts from nothing but this text. " +
+  "Do NOT call for casual chat, an opinion, or a stable fact you already know well and the user did " +
+  "not ask you to verify (a definition, a historical date, arithmetic) — that is not a web task. " +
+  "Write the goal as a clear, self-contained instruction, and INCLUDE ALL links, site names, and " +
+  "search terms the user gave — the agent starts from nothing but this text. " +
   "The agent replies to the chat itself, so just tell the user you're on it; do not invent results.";
 
 /** Register the browser-agent MCP tool on the shared server. */

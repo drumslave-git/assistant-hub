@@ -6,10 +6,13 @@ import { newGuardedContext, type GuardedContext } from "@/features/link-fetch/se
 import { isSafePublicUrl, normalizeUrl } from "@/features/link-fetch/url-safety";
 
 import {
+  buildLinksScript,
   buildSnapshotScript,
+  MAX_PAGE_LINKS,
   MAX_SNAPSHOT_ELEMENTS,
   MAX_SNAPSHOT_TEXT_CHARS,
   REF_ATTR,
+  type PageLink,
   type PageSnapshot,
   type SnapshotElement,
 } from "../snapshot";
@@ -142,6 +145,18 @@ export class BrowserAgentSession {
       text: result.text.replace(/\s+/g, " ").trim().slice(0, MAX_SNAPSHOT_TEXT_CHARS),
       elements: result.elements,
     };
+  }
+
+  /**
+   * The current page's outbound links with the text around each — a list-shaped
+   * page read as data. Same settle grace as {@link read}, so a page that is still
+   * rendering gets the same chance.
+   */
+  async links(limit: number = MAX_PAGE_LINKS): Promise<PageLink[]> {
+    const page = await this.ensurePage();
+    await page.waitForLoadState("domcontentloaded", { timeout: NAVIGATION_TIMEOUT_MS }).catch(() => {});
+    await page.waitForTimeout(SETTLE_MS);
+    return (await page.evaluate(buildLinksScript(limit))) as PageLink[];
   }
 
   /** Open a URL (SSRF-checked before and during navigation). */

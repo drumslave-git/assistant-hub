@@ -48,7 +48,7 @@ that persists every changed field regardless of which tab is active:
 | **Images** | The endpoint powering image generation |
 | **Speech** | The endpoint powering voice replies |
 | **Transcription** | The speech-to-text endpoint for voice messages (chat-model fallback) |
-| **Integrations** | Optional feature keys — Tavily for web search |
+| **Integrations** | Optional feature keys — Tavily, the browsing agent's search fallback |
 
 The repeated machinery lives in shared modules rather than being copied per section:
 `ui/connection.ts` holds the probe flow and the write-only secret-input state machines
@@ -96,7 +96,7 @@ resolved runtime:
 | Every daily scheduler | The run time, the timezone, and whether an LLM is configured |
 | Embedding/image/speech/transcription paths | Their own runtime, with the core-connection fallback applied |
 | Telegram bot manager | The bot token |
-| Web search | The Tavily key, read at call time |
+| Search fallback | The Tavily key, read at call time |
 
 Because these are resolved per run or per turn, a settings change takes effect
 immediately — no restart.

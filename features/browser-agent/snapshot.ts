@@ -12,6 +12,14 @@
 export const MAX_SNAPSHOT_TEXT_CHARS = 8_000;
 export const MAX_SNAPSHOT_ELEMENTS = 80;
 
+/** How many links {@link buildLinksScript} collects before it stops walking. */
+export const MAX_PAGE_LINKS = 150;
+/** Bounds on one collected link's text, so a chatty page can't blow up a result. */
+const MAX_LINK_TITLE_CHARS = 200;
+const MAX_LINK_SNIPPET_CHARS = 400;
+/** Ancestors folded into a link's group signature (see {@link PageLink.group}). */
+const GROUP_SIGNATURE_DEPTH = 3;
+
 /** Attribute name used to bind numbered refs to DOM elements between calls. */
 export const REF_ATTR = "data-agent-ref";
 
@@ -28,6 +36,35 @@ export interface PageSnapshot {
   title: string;
   text: string;
   elements: SnapshotElement[];
+}
+
+/**
+ * One outbound link with the text around it — the raw material for reading a
+ * list-shaped page (search results, an index, a feed) as data rather than prose.
+ * Deliberately generic: no notion of a "search result" exists at this layer.
+ */
+export interface PageLink {
+  /** Absolute http(s) destination. */
+  url: string;
+  /** The link's own visible text. */
+  title: string;
+  /** Text of the nearest enclosing block that says more than the link itself. */
+  snippet: string;
+  /**
+   * Signature of the link's position in the DOM — the tag+class chain of its
+   * nearest ancestors. Links sharing a signature are the *same kind of thing*
+   * repeated: the rows of a list, the items of a feed, the results of a search.
+   * A one-off (a promo, a nav item, a footer link) shares its signature with
+   * nothing. Callers use it to tell a page's list apart from its chrome without
+   * knowing anything about the site.
+   */
+  group: string;
+  /**
+   * Whether the link sits inside the page's main content region (`<main>` or
+   * `role="main"`) — the standard way a document marks "this is the content, the
+   * rest is chrome". The complement of it is menus, banners, and promos.
+   */
+  inMain: boolean;
 }
 
 /**
@@ -84,6 +121,80 @@ export function buildSnapshotScript(attr: string, limit: number): string {
     }
     var body = document.body ? document.body.innerText : "";
     return { text: body || "", elements: out };
+  })()`;
+}
+
+/**
+ * In-page link collector, as a STRING for the same reason as
+ * {@link buildSnapshotScript}. Walks visible anchors in DOM order and, for each,
+ * climbs at most four ancestors looking for the nearest block whose text says
+ * meaningfully more than the link's own — a result's description, a headline's
+ * standfirst — and records the ancestor tag/class chain as the link's
+ * {@link PageLink.group}. Structure only: it knows nothing about any particular
+ * site, and the class names never have to mean anything or stay stable between
+ * pages — only to repeat *within* one page, which is what makes a list a list.
+ */
+export function buildLinksScript(limit: number): string {
+  return `(() => {
+    var limit = ${Number(limit)};
+    var maxTitle = ${MAX_LINK_TITLE_CHARS};
+    var maxSnippet = ${MAX_LINK_SNIPPET_CHARS};
+    var groupDepth = ${GROUP_SIGNATURE_DEPTH};
+    function clean(value) {
+      return (value || "").replace(/\\s+/g, " ").trim();
+    }
+    function signature(el) {
+      var parts = [];
+      var node = el.parentElement;
+      for (var d = 0; d < groupDepth && node; d++) {
+        var classes = (node.getAttribute("class") || "").split(/\\s+/).filter(Boolean).slice(0, 3);
+        parts.push(node.tagName.toLowerCase() + (classes.length ? "." + classes.join(".") : ""));
+        node = node.parentElement;
+      }
+      return parts.join(">");
+    }
+    function inMainRegion(el) {
+      var node = el.parentElement;
+      while (node) {
+        if (node.tagName.toLowerCase() === "main" || node.getAttribute("role") === "main") return true;
+        node = node.parentElement;
+      }
+      return false;
+    }
+    var out = [];
+    var anchors = document.querySelectorAll("a[href]");
+    for (var i = 0; i < anchors.length && out.length < limit; i++) {
+      var a = anchors[i];
+      var href = String(a.href || "");
+      if (!/^https?:/i.test(href)) continue;
+      var rect = a.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) continue;
+      var title = clean(a.textContent);
+      if (!title) continue;
+      var snippet = "";
+      var node = a;
+      for (var d = 0; d < 4; d++) {
+        node = node.parentElement;
+        if (!node) break;
+        // innerText is the rendered text, but it comes back empty on pages that
+        // defer layout of their list items (Bing's result blocks do); textContent
+        // always has it, so fall through rather than lose every description.
+        var text = clean(node.innerText || node.textContent);
+        if (text.length >= title.length + 40) {
+          // Drop the link text itself so the snippet is the *extra* context.
+          snippet = clean(text.split(title).join(" "));
+          break;
+        }
+      }
+      out.push({
+        url: href,
+        title: title.slice(0, maxTitle),
+        snippet: snippet.slice(0, maxSnippet),
+        group: signature(a),
+        inMain: inMainRegion(a),
+      });
+    }
+    return out;
   })()`;
 }
 

@@ -17,9 +17,11 @@ import { BROWSE_WEB_TOOL } from "./mcp-tools";
  * with a canned result — so no browser launches and no run is enqueued.
  *
  * The tool description is the one part no unit test can vouch for: its job is to
- * make the model start a browsing run when a request needs live web interaction,
- * and *not* for a quick fact or casual chat. Both directions are asserted — a
- * tool that fires on "cool website!" is worse than one that never fires.
+ * make the model start a browsing run for ANY web task — it is the only web tool
+ * the bot has — and *not* for a fact it already knows or casual chat. Both
+ * directions are asserted: a tool that fires on "cool website!" is worse than one
+ * that never fires, and a bot that answers a live question from memory is worse
+ * than one that goes and looks.
  *
  * All fixtures are synthetic (example.com / made-up placeholders); no real user
  * data is used.
@@ -51,8 +53,6 @@ describe.skipIf(!LLM_LIVE)("browser agent tool selection (live)", () => {
     "browses (and carries the link) when the goal needs interaction beyond one page",
     async () => {
       const run = await runToolSelection({
-        // "Follow the link" is a click — a genuine browsing task, not a single
-        // page read (which the description tells the model to hand to read_web_page).
         userText:
           "Go to https://example.com, follow its 'More information' link, and tell me what page it leads to.",
         cannedResults: {
@@ -122,18 +122,24 @@ describe.skipIf(!LLM_LIVE)("browser agent tool selection (live)", () => {
   );
 
   it(
-    "does not over-trigger: a commodity live value's PRIMARY action stays a plain search",
+    "browses for a plain lookup, now that it is the only way to reach the web",
     async () => {
-      // The live-value trigger must not make weather spin up a background browse run
-      // as its primary action — no site named, and a search snippet answers it well.
-      // Asserted on the FIRST tool because the model is stochastic and the multi-round
-      // harness may also fire a later browse call; what matters is that its primary
-      // move is the search, which it answers from and stops.
+      // Regression for the tool-surface change (2026-07-26): with search_web and
+      // read_web_page removed, an ordinary "look this up" must reach browse_web —
+      // the old description told the model to prefer a plain search for exactly this.
+      const run = await runToolSelection({
+        userText: "look up what the current version of Node.js is",
+      });
+      expectToolCalled(run, BROWSE_WEB_TOOL);
+    },
+    TOOL_SELECTION_TIMEOUT,
+  );
+
+  it(
+    "browses for a commodity live value instead of answering from memory",
+    async () => {
       const run = await runToolSelection({ userText: "what's the weather in London right now?" });
-      expect(
-        run.toolNames[0],
-        `expected weather's primary tool to be search_web, got: [${run.toolNames.join(", ")}]`,
-      ).toBe("search_web");
+      expectToolCalled(run, BROWSE_WEB_TOOL);
     },
     TOOL_SELECTION_TIMEOUT,
   );

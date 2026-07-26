@@ -33,7 +33,7 @@ export const settingsSchema = z.object({
   apiKeyConfigured: z.boolean(),
   /** Whether a Telegram bot token is stored (the value itself is never exposed). */
   telegramBotTokenConfigured: z.boolean(),
-  /** Whether a Tavily API key is stored, enabling the web-search tool (value never exposed). */
+  /** Whether a Tavily API key is stored, enabling the browsing agent's search fallback (value never exposed). */
   webSearchConfigured: z.boolean(),
   /** Embedding endpoint base URL, or null to reuse the LLM connection. */
   embeddingBaseUrl: baseUrl.nullable(),

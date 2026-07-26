@@ -151,7 +151,7 @@ it without `/v1/models`.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `tavilyApiKey` | secret | Enables the `search_web` tool. Unset, the tool returns a clear error result |
+| `tavilyApiKey` | secret | The browsing agent's search fallback, used only when no search engine loads in the browser. Unset, a run whose engines are all blocked reports the search as failed |
 
 ### Not on the form
 

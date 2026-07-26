@@ -174,16 +174,6 @@ export const FEATURES = {
     label: "User tools",
     path: "/tools",
   },
-  "mcp-tools-web-search": {
-    id: "mcp-tools-web-search",
-    label: "Web search tool",
-    path: "/tools",
-  },
-  "mcp-tools-link-fetch": {
-    id: "mcp-tools-link-fetch",
-    label: "Link reader tool",
-    path: "/tools",
-  },
   "mcp-tools-scheduled-tasks": {
     id: "mcp-tools-scheduled-tasks",
     label: "Scheduled task tools",

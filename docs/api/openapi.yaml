@@ -1938,7 +1938,7 @@ components:
         telegramBotTokenConfigured: { type: boolean }
         webSearchConfigured:
           type: boolean
-          description: Whether a Tavily key is stored, enabling the web-search tool.
+          description: Whether a Tavily key is stored, enabling the browsing agent's search fallback.
         embeddingBaseUrl: { type: [string, "null"], format: uri }
         embeddingModel: { type: [string, "null"] }
         embeddingApiKeyConfigured: { type: boolean }

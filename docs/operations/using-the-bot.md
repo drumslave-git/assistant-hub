@@ -112,9 +112,9 @@ size limit the operator configured. Larger files stay on the server.
 **Downloading is restricted to the bot's configured owner.** Anyone can start a
 browsing session; only the owner's sessions may download.
 
-Use this rather than a web search for anything computed in the browser — a live count,
-live stats, a chart or dashboard, a current price — because a search snippet for those
-is usually stale or plain wrong.
+This is the bot's **only** way to reach the internet — searching, opening a link you
+sent, reading a live value, and downloading all go through it. So anything web-shaped
+takes the "I'm on it, back shortly" shape rather than an instant answer.
 
 ### Generate an image
 

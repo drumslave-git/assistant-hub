@@ -6,13 +6,18 @@ import {
   formatWebSearchFailure,
   normalizeTavilyResults,
 } from "../format";
-import type { WebSearchPayload, WebSearchSource } from "../types";
+import type { WebSearchPayload, WebSearchResult, WebSearchSource } from "../types";
 
 /**
- * Tavily-backed web search. `runWebSearch` is the boundary the MCP tool calls:
- * it always resolves (never throws) so the tool can hand the model a usable
- * success or failure message. The `fetch` implementation is injectable so the
- * behavior is unit-testable without hitting the network.
+ * Tavily-backed web search — the browsing agent's LAST-RESORT search fallback,
+ * used only when no search engine will render results in the real browser (see
+ * `features/browser-agent/server/search.ts`). There is no web-search MCP tool: the
+ * bot searches by browsing (user decision, 2026-07-26), and this API path exists
+ * so a blocked/captcha'd browser still returns something.
+ *
+ * `runWebSearch` always resolves (never throws) so the caller can hand the model a
+ * usable success or failure message. The `fetch` implementation is injectable so
+ * the behavior is unit-testable without hitting the network.
  */
 
 const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
@@ -30,6 +35,12 @@ export interface WebSearchConfig {
 export interface WebSearchOutput {
   ok: boolean;
   sources: WebSearchSource[];
+  /**
+   * The normalized rows (title + url + snippet). The browser agent renders these
+   * into the SAME result list it builds from a search engine's page, so the agent
+   * cannot tell — and does not have to care — which source answered.
+   */
+  results: WebSearchResult[];
   /** Text injected into the model's turn (success context or failure message). */
   context: string;
   /** Short reason for the outcome (for logs/results). */
@@ -77,6 +88,7 @@ export async function runWebSearch(query: string, config: WebSearchConfig): Prom
     return {
       ok: false,
       sources: [],
+      results: [],
       context: formatWebSearchFailure("", new Error("Empty search query")),
       reason: "Empty query",
     };
@@ -87,6 +99,7 @@ export async function runWebSearch(query: string, config: WebSearchConfig): Prom
     return {
       ok: true,
       sources: extractWebSearchSources(payload),
+      results: payload.results,
       context: formatWebSearchContext(trimmed, payload),
       reason: "Search completed",
     };
@@ -94,6 +107,7 @@ export async function runWebSearch(query: string, config: WebSearchConfig): Prom
     return {
       ok: false,
       sources: [],
+      results: [],
       context: formatWebSearchFailure(trimmed, err),
       reason: err instanceof Error ? err.message : "Search failed",
     };

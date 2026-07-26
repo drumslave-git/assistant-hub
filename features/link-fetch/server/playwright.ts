@@ -2,19 +2,19 @@ import "server-only";
 
 import type { Browser, BrowserContext } from "playwright";
 
-import type { FetchedPage } from "../types";
 import { getSharedAdBlocker } from "./adblock";
 import { hostResolvesPublic } from "./resolve-safety";
 
 /**
- * Headless Chromium page reader for the read-link tool. The browser is expensive
- * to launch (~1s), so a single instance is kept alive on a `globalThis` singleton
- * — the same pattern the bot manager and MCP registry use — so it survives Next
- * bundle re-evaluation and dev hot-reload instead of leaking a Chromium process
- * per module copy. Each read gets its own short-lived context (isolated cookies,
- * fixed user-agent), with ad/tracker subresources dropped via the shared filter
- * engine (see `adblock.ts`). When the browser agent feature (priority 13) lands
- * it can reuse this singleton rather than launch a second Chromium.
+ * Shared headless Chromium plus the guarded browser context every page load in
+ * this app goes through — today the browser agent's per-run sessions
+ * (`features/browser-agent/server/session.ts`), which is the only way the bot
+ * reads the web. The browser is expensive to launch (~1s), so a single instance is
+ * kept alive on a `globalThis` singleton — the same pattern the bot manager and
+ * MCP registry use — so it survives Next bundle re-evaluation and dev hot-reload
+ * instead of leaking a Chromium process per module copy. Each consumer opens its
+ * own short-lived context (isolated cookies, fixed user-agent), with ad/tracker
+ * subresources dropped via the shared filter engine (see `adblock.ts`).
  *
  * `playwright` is loaded lazily (dynamic `import` inside {@link getSharedChromium})
  * rather than at module top level. It is a `serverExternalPackage`, so a static
@@ -22,12 +22,10 @@ import { hostResolvesPublic } from "./resolve-safety";
  * reachable from the instrumentation hook via the MCP registry) — and any problem
  * resolving it, e.g. a data file like `browsers.json` missing from the traced
  * standalone output, would then crash the whole app at startup. Loading it only
- * when a page is actually read keeps boot independent of the browser runtime and
- * confines any Chromium/provisioning failure to the read that needs it.
+ * when a page is actually opened keeps boot independent of the browser runtime and
+ * confines any Chromium/provisioning failure to the run that needs it.
  */
 
-const NAVIGATION_TIMEOUT_MS = 60_000;
-const MAX_PAGE_TEXT_CHARS = 12_000;
 const USER_AGENT =
   "Mozilla/5.0 (compatible; LLMTGBot/1.0; +https://github.com/drumslave-git/llm-tg-bot-nextjs)";
 
@@ -92,17 +90,11 @@ export async function closeSharedChromium(): Promise<void> {
   s.launching = null;
 }
 
-/** Collapse whitespace and bound the length of extracted page text. */
-function trimPageText(text: string): string {
-  return text.replace(/\s+/g, " ").trim().slice(0, MAX_PAGE_TEXT_CHARS);
-}
-
 /**
  * A browser context with the safety routing installed: every request — redirect
  * hops and subresources included — is DNS-checked so a public page cannot bounce
  * or embed its way to an internal address, and ad/tracker subresources are
- * dropped via the shared filter engine. Shared by the one-shot page reader below
- * and the browser agent's long-lived session.
+ * dropped via the shared filter engine.
  */
 export interface GuardedContext {
   context: BrowserContext;
@@ -169,49 +161,4 @@ export async function newGuardedContext(): Promise<GuardedContext> {
       return blocked;
     },
   };
-}
-
-/**
- * Read one page's title + readable text with headless Chromium. Never throws:
- * a navigation/render failure resolves to a `FetchedPage` carrying the `error`,
- * so the tool boundary can always hand the model a usable result.
- */
-export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage> {
-  let guarded: GuardedContext | null = null;
-  try {
-    guarded = await newGuardedContext();
-    // The URL-shape guard ran at the tool boundary; this is the DNS half.
-    if (!(await guarded.hostAllowed(new URL(url).hostname))) {
-      return {
-        url,
-        title: "",
-        text: "",
-        error: "URL blocked for safety (hostname resolves to a private network address)",
-      };
-    }
-
-    const page = await guarded.context.newPage();
-    try {
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
-      const title = (await page.title()).trim();
-      const rawText = await page.evaluate(() => document.body?.innerText ?? "");
-      return { url, title, text: trimPageText(rawText) };
-    } finally {
-      await page.close().catch(() => {});
-    }
-  } catch (err) {
-    // A navigation the interception aborted surfaces as a cryptic
-    // net::ERR_BLOCKED_BY_CLIENT — name the real reason instead.
-    if (guarded?.consumeBlockedNavigation()) {
-      return {
-        url,
-        title: "",
-        text: "",
-        error: "URL blocked for safety (redirects to a private network address)",
-      };
-    }
-    return { url, title: "", text: "", error: err instanceof Error ? err.message : String(err) };
-  } finally {
-    if (guarded) await guarded.context.close().catch(() => {});
-  }
 }

@@ -71,7 +71,7 @@ describe("buildTimeContext", () => {
     const out = buildTimeContext(now, "UTC");
     expect(out).toContain("in 5 minutes");
     expect(out).toContain("tomorrow");
-    expect(out).not.toMatch(/tasks_create|search_web|read_web_page|history_/);
+    expect(out).not.toMatch(/tasks_create|browse_web|history_/);
   });
 
   it("falls back to UTC for an unusable timezone instead of throwing", () => {

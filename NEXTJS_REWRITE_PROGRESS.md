@@ -13,8 +13,8 @@ Status values:
 ## Current Summary
 
 Status: in-progress
-Owner: agent/2026-07-22
-Last updated: 2026-07-22
+Owner: agent/2026-07-26
+Last updated: 2026-07-26
 
 > **Dev LLM tokens are free** (operator, 2026-07-16): the dev LLM is **local and
 > self-hosted**, so token spend is not a reason to skip anything — *"you can test as
@@ -237,6 +237,127 @@ Realtime: the dashboard now updates **live over SSE** (user decision — not pol
 Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the new priority 11, ahead of Image generation per the user; the remaining order is Image generation → Browser agent → Mood, now 12 → 13 → 14). Image generation: generate images through a configured provider with dashboard/debug visibility and downloadable traces — the provider boundary is the open design question (which is a decision to put to the user, per `decisions-ask-dont-document`), and it should reuse the DB-backed settings pattern (`config-in-db-not-env`) rather than an env key. Flows are verified with the **bot-less simulation harness** (`simulateUpdate` / injected deps against real Postgres) — a real bot token is not a testing gate, only the live Telegram send/receive adapters remain out of in-process scope.
 
 ### Session log
+
+- 2026-07-26b (user follow-up — unified search results + DuckDuckGo first, done):
+  two changes to the cascade landed the same day, and a **correction to the engine
+  verdicts recorded in the entry below**.
+  - **Unified result shape (user: "make its result unified with tavily … agent
+    should receive lets say 5 top urls and decide which to visit").** `browser_search`
+    no longer dumps the results *page* at the agent; every source now returns the same
+    thing — the top 5 results as title + URL + snippet — and the tool text tells the
+    agent to open the useful ones (one, several, or all) and read the real pages,
+    since snippets are previews. `runWebSearch` gained `results` (the normalized rows)
+    so the Tavily path renders through the identical formatter.
+  - **DuckDuckGo moved to the front** of the order (user), ahead of Google and Bing.
+  - **New generic session primitive** `session.links()` + `buildLinksScript` in
+    `snapshot.ts` (pure): every visible http(s) anchor with its title, the text of
+    the nearest block that says more than the link itself, a structural `group`
+    signature (ancestor tag+class chain), and `inMain`. It knows nothing about search.
+  - **CORRECTION to the previous entry's live verdicts.** It recorded "DuckDuckGo →
+    41 real result links". That was **wrong**: the old check (≥8 links, ≥400 chars)
+    was satisfied by DuckDuckGo's *own page chrome*, and the run never had results at
+    all. Extracting results instead of counting links exposed it. Re-measured, with a
+    relevance assertion so a decoy page cannot pass:
+    - **DuckDuckGo: broken** — the SPA renders no results for this browser; `html.`
+      and `lite.` endpoints are refused; with a *Chrome* user-agent it hard-blocks
+      (`static-pages/418.html`).
+    - **Google: captcha** (`/sorry/index`), unchanged.
+    - **Bing: works** — 5/5 relevant results, extracted cleanly.
+    - Also disproved: the honest bot user-agent is **not** the cause (a Chrome UA made
+      DuckDuckGo worse), and a blocked engine may serve a **plausible decoy** — Bing
+      once returned Russian Wikipedia pages about toucans for a printing-press query,
+      which is why the live test now asserts relevance rather than presence.
+    - Probed alternatives, for the record: **Brave 45 relevant, Ecosia 22, Marginalia
+      102**; Mojeek and Startpage blocked. Not added — the user named three engines;
+      adding a fourth is their call.
+  - **Extraction rules** (`extractResults`, all structural — `no-linguistic-heuristics-in-code`):
+    (1) only links inside `<main>`/`role="main"`, because DuckDuckGo's off-site promos
+    (App Store, Play Store, blog) are described, repeated and sit above the results —
+    the first cut shipped them *as* the results; (2) within main, bucket links by their
+    `group` signature and take the bucket with the most described members (results come
+    from a template and repeat; chrome does not); (3) merge duplicate destinations,
+    keeping the headline over the citation line and the longer snippet, then strip the
+    citation out of the snippet using the result's own host. Redirect wrappers are
+    unwrapped mechanically (`/url?q=`, `/l/?uddg=`, Bing's base64 `/ck/a?u=`) — without
+    that, every Bing result reads as a `bing.com` link and is dropped as navigation.
+  - **Also fixed:** the snippet source falls back to `textContent` when `innerText` is
+    empty — Bing defers layout of its result blocks, so every description came back
+    blank.
+  - **Checks:** lint ✓, typecheck ✓, `npm test` ✓ (681 unit; 23 in `search.test.ts`),
+    live cascade ✓ (`BROWSER_LIVE=1`, DuckDuckGo → Google → **Bing answers**, 5
+    relevant results, first result opens). **Open question for the operator:** the
+    requested order puts the two blocked engines ahead of the working one (~8s per
+    search); reordering, or adding Brave, needs a decision.
+
+- 2026-07-26 (user decision — the browser agent replaces both web tools, done):
+  `read_web_page` and `search_web` are **gone as MCP tools**; `browse_web` is the
+  bot's only web-facing tool, and searching moved *inside* a run onto live search
+  engines with Tavily kept as the last resort. The user chose the surface
+  explicitly ("delete both; only browse_web") and the shape of the search
+  ("browser_search tool: google → bing → duckduckgo → tavily").
+  - **New `features/browser-agent/server/search.ts`** — the cascade. `SEARCH_ENGINES`
+    (Google `google.com/search?q=`, Bing `bing.com/search?q=`, DuckDuckGo
+    `duckduckgo.com/?q=`) tried in the user's order, then `runWebSearch` (Tavily,
+    key read at call time). `checkResultsPage` decides "did results render?" on
+    **mechanical facts only** — ≥8 href-carrying elements and ≥400 chars of text —
+    never on what the page says (`no-linguistic-heuristics-in-code`); a
+    captcha/consent page is near-empty of both. `tryEngine` gives each engine
+    exactly **one** second chance (wait 3s, re-read) because both first-read misses
+    are timing, not verdicts: client-side rendering, and an interstitial redirect
+    that destroys the page mid-snapshot ("Execution context was destroyed"). A
+    successful engine leaves the results page **open in the session**, so the agent
+    clicks results by ref; the Tavily path says plainly that it is snippets and not
+    a live page. Total failure returns an `isError` result naming every attempt
+    (visible in the activity feed + trace) and telling the agent not to invent
+    results.
+  - **New agent tool `browser_search(query)`** (first in `BROWSER_AGENT_TOOLS`),
+    dispatched in `tools.ts`; each attempt re-labels via `onAction`, so the live
+    indicator and the recorded step name the source that actually answered
+    ("search "…" on DuckDuckGo"). `browser_navigate`'s description narrowed to
+    "when you already have a URL"; the agent system prompt now says to start with
+    search when the goal carries no URL and **never to guess a URL**.
+  - **Removed:** `features/link-fetch/server/mcp-tools.ts` + the now-dead read path
+    (`fetch-link.ts`, `format.ts`, `types.ts`, `fetchPageWithPlaywright`, their
+    tests) and `features/web-search/server/mcp-tools.ts`; both registrations in
+    `server/mcp/runtime.ts`; `mcp-tools-web-search` / `mcp-tools-link-fetch` from
+    `lib/features.ts` (old traces keep their string and fall back to the raw id as
+    the label). `features/link-fetch/*` survives as **shared browsing
+    infrastructure** (Chromium singleton, `newGuardedContext`, adblock, SSRF);
+    `features/web-search/*` survives as the **Tavily client**.
+  - **`browse_web` description rewritten.** With no cheaper web tool left, every
+    "prefer a plain search for this" carve-out is gone (the old weather/general-fact
+    exceptions pointed at a tool that no longer exists). MUST-call now covers: look
+    something up, a URL in the conversation, download/save, a named site, any
+    live/current value, multi-step interaction. DO-NOT is only casual chat, an
+    opinion, or a stable known fact.
+  - **Verified live** (`BROWSER_LIVE=1`, real network, new
+    `search-live.integration.test.ts`): **Google → captcha** (`/sorry/index`, 1
+    link / 348 chars), **Bing → interstitial bounce** (13 links / 99 chars, first
+    read throws "Execution context was destroyed"), **DuckDuckGo → 41 real result
+    links**. The cascade lands on DDG in ~13s and the agent gets a clickable page.
+    So the first two engines are, today, a ~10s toll on the way to the third —
+    caused by the honest bot user-agent in `newGuardedContext`; **the operator's
+    call** whether to reorder or change the UA, so nothing was changed silently.
+  - **Tests:** new `features/browser-agent/server/search.test.ts` (10: verdict
+    thresholds, first-engine hit, late render, fall-through, retry-after-throw
+    recovery, fallback only after all three, total failure, fallback that throws) +
+    `search-live.integration.test.ts` (gated). Updated: `test/tool-selection.ts`
+    (canned results — `browse_web` replaces both), the browser-agent tool-selection
+    suite (the weather case now asserts browse_web *is* chosen — it was the
+    over-trigger guard for a tool that no longer exists; plus a new plain-lookup
+    case), `features/mcp-tools/server/service.test.ts`, `server/mcp/tool-trace.test.ts`,
+    `features/bot-messaging/server/prompt.test.ts`.
+  - **Also:** the Tavily setting is reworded as a fallback (Settings hint + schema
+    doc), and the docs follow — `docs/features/link-fetch.md` retitled "Browsing
+    infrastructure", `web-search.md` retitled "Search fallback (Tavily)",
+    `browser-agent.md` gained the cascade section with the measured verdicts, plus
+    `llm-and-mcp.md`, `data-model.md`, `security.md`, `configuration.md`,
+    `testing.md`, `getting-started.md`, `troubleshooting.md`, `using-the-bot.md`,
+    `operator-guide.md`, `settings.md`, `openapi.yaml`, `features/README.md`.
+  - **Checks:** lint ✓, typecheck ✓, `npm test` ✓ (668 unit), live search cascade ✓.
+    **Not verified:** a real chat turn in Telegram — `browse_web` is offered from
+    the boot-bound MCP registry, so the operator must restart the dev server for the
+    removed tools to disappear from a live bot.
 
 - 2026-07-25 (user-reported — analyzer citation gamed by a generic word, done):
   follow-up to the citation fix below. Live trace eb2eac98: for "залив фікс для
@@ -3288,8 +3409,8 @@ Features not listed here are not v1 by default. Add any additional feature to th
 | 2 | System and personality prompts | done | defined (see 2026-07-12 log) | yes (`/personalities/debug` + shared `/debug`; `system prompt composed` step shows the full composed prompt) | yes (shared `/api/traces/**/bundle`) | yes (`prompt.ts` composition, personalities service/schema/integration, bot-messaging service) | settings, LLM provider | Live token run shares feature-1's gate; next → priority 3 (history) |
 | 3 | History feature | done | defined (see 2026-07-12 follow-up 4 log; **completed 2026-07-14** with summarization + vectors + recall tool) | yes (`/history/debug` edit traces + `history window loaded` step on every reply; **`/debug?feature=history-summaries`** for summary runs, full bodies per batch) | yes (shared `/api/traces/**/bundle`) | yes (`format.ts`, `summary.ts` pure core, history + **summarize** integration incl. hybrid search against real pgvector, bot-messaging injection, live tool-selection) | bot messaging, shared traces, DB schema, embeddings, background job model | **Complete.** Recall now spans all of history: 24h window verbatim → literal tools (search/range/by-id) → **`history_recall_topics`** over daily embedded topic summaries. Notes: user-initiated Telegram deletes can't be mirrored (Bot API limitation); the recall tool needs a dev-server restart to enter the boot-bound MCP registry |
 | 4 | MCP tools basic support | done | defined (see 2026-07-12 follow-up 7/8 logs) | n/a (pure infra, no feature mutations) — tool **calls** appear as `external_call` events on the bot-messaging **reply** traces in `/debug` | yes (shared `/api/traces/**/bundle`) | yes (mcp registry/openai-tools/tool-loop/mcp-tools-service unit, history search/range integration, bot-messaging tool-event flow) | LLM core, shared traces, history | Live LLM tool round-trip shares the token gate; next → priority 5 (search) |
-| 5 | Search MCP tool | done | defined (see 2026-07-13 log) | n/a (read-only tool) — calls appear as `external_call` events on the bot-messaging **reply** traces in `/debug` | yes (shared `/api/traces/**/bundle`) | yes (web-search format/search unit, mcp-tools 4-tool service, settings Tavily-key integration) | MCP basic support | Live LLM + Tavily round-trip shares the token gate; next → priority 6 (visit/read link) |
-| 6 | Visit/read link MCP tool | done | defined (see 2026-07-13 log) | n/a (read-only tool) — calls trace under `mcp-tools-link-fetch` | yes (shared `/api/traces/**/bundle`) | yes (url-safety/SSRF, format, fetch-link unit) | MCP basic support | Complete (Playwright/headless Chromium, SSRF-guarded) |
+| 5 | Search MCP tool | **superseded (2026-07-26)** | originally defined (see 2026-07-13 log) | n/a | yes (shared `/api/traces/**/bundle`) | yes (web-search format/search unit) | MCP basic support | **The `search_web` MCP tool was removed** (user decision): the bot searches by browsing (`browser_search` inside a run — Google → Bing → DuckDuckGo). `features/web-search/*` survives as the **Tavily last-resort fallback** the cascade calls |
+| 6 | Visit/read link MCP tool | **superseded (2026-07-26)** | originally defined (see 2026-07-13 log) | n/a | yes (shared `/api/traces/**/bundle`) | yes (url-safety/SSRF unit) | MCP basic support | **The `read_web_page` MCP tool and its read path were removed** (user decision): the browser agent reads pages. `features/link-fetch/*` survives as the **shared browsing infrastructure** (Chromium singleton, guarded context, adblock, SSRF) |
 | 7 | Bot messaging: vision | done | defined (see 2026-07-13 log) | shared `/debug?feature=vision` | yes (shared `/api/traces/**/bundle`) | yes (detect/format/normalize unit, vision integration) | bot messaging, media schema, LLM provider | Complete; live photo round-trip shares the operator token gate |
 | 8 | Vision backfill background job | done | defined (see 2026-07-13 log) | shared `/debug?feature=vision-backfill` | yes (shared `/api/traces/**/bundle`) | yes (idle-scheduler unit, backfill integration incl. lock + idempotency) | bot vision, background job model | Complete (idle-debounced scheduler + advisory lock) |
 | 9 | Scheduled tasks feature | done | defined (see 2026-07-14 log) | shared `/debug?feature=scheduled-tasks` (create/update/delete/**fire** traces) + tool scope `mcp-tools-scheduled-tasks` | yes (shared `/api/traces/**/bundle`) | yes (schedule math, interval-scheduler, fire unit, author rule; service/repository + settings-timezone integration; **full `runDueScheduledTasks` fire→deliver→mirror→advance integration via a capturing sink + deterministic generator — no bot**) | background job model, bot messaging | Complete + verified (create live; fire simulated end-to-end); next → priority 10 (memory) |
@@ -3344,6 +3465,8 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 
 | Topic | Status | Decided by | Decision |
 | --- | --- | --- | --- |
+| Web tools collapsed into the browser agent (2026-07-26) | done | user | **Delete `read_web_page` and `search_web` as MCP tools; `browse_web` is the only web tool.** Searching moves inside a run as a `browser_search` agent tool that tries **Google, then Bing, then DuckDuckGo** in the live browser and falls back to the **Tavily API** only if all three fail. Rationale: a real browser does both removed jobs better, and three overlapping web tools split the model's choice — the old descriptions had grown into an argument about which one should win (see the 2026-07-21 rows below). Accepted cost: **no synchronous web answer any more** — every web request becomes an ack plus a later report. Measured cost of the engine order: Google (captcha) and Bing (interstitial) both fail for our honest bot user-agent, so each search pays ~10s before DuckDuckGo answers; keeping the order is the user's call. |
+| Search results unified + DuckDuckGo first (2026-07-26) | done | user | **Every source returns the same shape**: the top 5 results as title + URL + snippet, which the agent then chooses to open (one, several, or all) — an engine's live page and the Tavily fallback used to hand it two different-shaped things. Engine order set to **DuckDuckGo → Google → Bing**. **Measured the same day, and it contradicts the engine verdicts recorded hours earlier**: DuckDuckGo renders no results at all (its SPA returns a shell; the earlier "41 results" was its own page chrome passing a link-count check), Google serves a captcha, and **only Bing works** — so the requested order tries the two blocked engines first, ~8s per search. The bot user-agent is not the cause (a Chrome string makes DuckDuckGo block harder). Left as asked; reordering or adding a fourth engine (Brave measured best: 45 relevant results) is the operator's call. |
 | Addressing exclusions — scope (2026-07-26) | done | user | **Bot-wide.** A word reported as "not the bot's name" is excluded in **every** chat, not only the one it was reported in. The fact being recorded ("Георгій is a different name from the bot's") is true everywhere, and per-chat scope would force the same false trigger to be reported again in every group. `chat_id` / `telegram_message_id` / `user_id` / `feedback_id` are kept on the row as **provenance**, not as scope. |
 | Addressing exclusions — who may create one (2026-07-26) | done | user | **Anyone who reacts 👎.** Any group member's report files the exclusion immediately — they are the authority on their own name — with no owner gate and no approval queue. The operator's control is after the fact: every exclusion is listed on `/self-improvement` → Addressing exclusions and removable there, which makes the word matchable again. Rejected: owner-only (loses the reports from the people actually affected) and approve-before-effect (the bot keeps mis-firing until the operator looks). |
 | Addressing reports are not folded into style (2026-07-26) | done | user | **A "Wasn't talking to you" answer is excluded from the nightly preferences and self-corrections folds**, and gets no self-reflection. It is a routing fault whose fix is the exclusion row, not a judgment of the reply; folding it would distil "you should not have replied" into a per-user preference or the global system prompt from a mis-fire. Implemented as `users_feedbacks.topic` (`quality` \| `addressing`) — both backlog queries read `quality` rows only, so the row is never "pending forever", it is simply not fold input. |
@@ -3472,6 +3595,35 @@ No blockers recorded.
 - Confirm v1 scope before implementation.
 - Do not copy MVP modules by default.
 - Keep shared patterns ahead of feature-specific code.
+
+### State at handoff (2026-07-26, after the web-tool collapse)
+
+- **`browse_web` is the only web tool.** `read_web_page` and `search_web` no longer
+  exist (user decision — see the Decision Notes row and the 2026-07-26 session log).
+  Do **not** reintroduce a cheap search/read tool "for speed": the whole point was to
+  stop three overlapping tools fighting over the model's choice.
+- **Searching lives inside a run**: `browser_search` →
+  `features/browser-agent/server/search.ts`, Google → Bing → DuckDuckGo → Tavily.
+- **Pitfall — only Bing works today, and it is tried last** (~8s of DuckDuckGo and
+  Google failing first). DuckDuckGo renders no results at all; Google serves a
+  captcha. The order is the user's, so **ask before changing it**. The user-agent is
+  NOT the cause — that was measured; a Chrome string makes DuckDuckGo block harder.
+  Re-measure with
+  `BROWSER_LIVE=1 npm run test:integration -- browser-agent/server/search-live`
+  (it prints a per-engine verdict line) before assuming today's picture still holds.
+- **Pitfall — a blocked engine can serve a convincing decoy.** Bing once returned
+  Russian Wikipedia pages about toucans for a printing-press query. Any check that
+  counts links or results will pass on that; the live test asserts *relevance*.
+- **Pitfall — result recognition is structural on purpose** (inside `<main>`, the
+  repeated `group` bucket, ≥3 results). Do not "improve" it with engine-specific
+  selectors or by reading what the page says; `no-linguistic-heuristics-in-code`
+  applies. Each of those three rules exists because a real engine defeated the
+  simpler version — see the 2026-07-26b log entry before relaxing any of them.
+- **Restart gate:** the MCP registry is a boot-bound singleton, so a live bot keeps
+  offering the removed tools until the server restarts.
+- **Next best task:** none queued by this change. If the operator reports slow
+  searches, the two levers are the engine order and the user-agent — both need a
+  decision, not a patch.
 
 ### State at handoff (2026-07-17, after image generation)
 

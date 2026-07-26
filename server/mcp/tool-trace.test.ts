@@ -25,12 +25,12 @@ describe("tracedToolCall", () => {
   });
 
   it("settles success but flags an error result (isError) rather than failing the trace", async () => {
-    await tracedToolCall("web-search", "search_web", { q: "x" }, async () => ({
+    await tracedToolCall("memory", "memory_search", { q: "x" }, async () => ({
       text: "nope",
       isError: true,
     }));
-    const { traces } = await listTraces({ feature: "mcp-tools-web-search" });
-    expect(traces[0]).toMatchObject({ action: "search_web", status: "success" });
+    const { traces } = await listTraces({ feature: "mcp-tools-memory" });
+    expect(traces[0]).toMatchObject({ action: "memory_search", status: "success" });
     expect(traces[0].outputSummary).toBe("error result");
   });
 

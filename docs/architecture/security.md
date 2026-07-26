@@ -150,7 +150,7 @@ model; code checks only mechanical facts.
 
 ## SSRF defense
 
-The model supplies URLs (`read_web_page`, the browser agent's navigate and
+The model supplies URLs (the browser agent's navigate and
 download tools), so a real browser is pointed at attacker-influenced input. Two
 halves:
 

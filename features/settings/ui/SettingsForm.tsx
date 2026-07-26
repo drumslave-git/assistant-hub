@@ -692,7 +692,7 @@ export function SettingsForm({
       <Field
         id="tavilyApiKey"
         label="Tavily API key"
-        hint="Enables the web-search tool. Stored securely; never shown again."
+        hint="Fallback search API for the browsing agent, used only when no search engine will load in the browser. Stored securely; never shown again."
       >
         {({ id, describedBy }) => (
           <Input

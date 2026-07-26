@@ -220,16 +220,19 @@ self-contained and one per call.
 Not owner-gated (a recorded decision, unlike the MVP): any participant may create
 tasks. Authorship is what limits mutation.
 
-### Web — `mcp-tools-web-search`, `mcp-tools-link-fetch`
+### Web — `mcp-tools-browser-agent`
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `search_web` | `query` | Tavily search returning a summary with citable sources |
-| `read_web_page` | `url` | Read ONE public page with headless Chromium and return its readable text |
+| `browse_web` | `goal` | Enqueue a background browsing run: search, read, interact, download |
 
-Both read their credentials/configuration at call time, so a key change takes
-effect immediately. `read_web_page` is SSRF-checked before the browser touches the
-URL — see [Security](security.md#ssrf-defense).
+**This is the only web-facing tool.** `search_web` (Tavily) and `read_web_page`
+(one-shot Chromium read) were removed on 2026-07-26 (user decision) — searching and
+page reading both happen inside a run now, on a real browser, where the agent can
+follow up on what it finds. Two weaker alternatives alongside it only split the
+model's choice. See [Browser agent](../features/browser-agent.md); every URL the
+model supplies is SSRF-checked before the browser touches it
+([Security](security.md#ssrf-defense)).
 
 ### Images — `mcp-tools-image-gen`
 

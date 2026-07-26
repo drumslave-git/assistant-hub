@@ -17,10 +17,6 @@ import {
   registerKnownUsersMcpTools,
 } from "@/features/known-users/server/mcp-tools";
 import {
-  LINK_FETCH_TOOL_NAMES,
-  registerLinkFetchMcpTools,
-} from "@/features/link-fetch/server/mcp-tools";
-import {
   MEMORY_TOOL_NAMES,
   registerMemoryMcpTools,
 } from "@/features/memory/server/mcp-tools";
@@ -28,10 +24,6 @@ import {
   registerScheduledTasksMcpTools,
   SCHEDULED_TASKS_TOOL_NAMES,
 } from "@/features/scheduled-tasks/server/mcp-tools";
-import {
-  registerWebSearchMcpTools,
-  WEB_SEARCH_TOOL_NAMES,
-} from "@/features/web-search/server/mcp-tools";
 import { BotMcpRegistry } from "./registry";
 
 /**
@@ -62,8 +54,6 @@ async function build(): Promise<BotMcpRegistry> {
   const registry = new BotMcpRegistry();
   registry.registerTools("history", registerHistoryMcpTools, HISTORY_TOOL_NAMES);
   registry.registerTools("known-users", registerKnownUsersMcpTools, KNOWN_USERS_TOOL_NAMES);
-  registry.registerTools("web-search", registerWebSearchMcpTools, WEB_SEARCH_TOOL_NAMES);
-  registry.registerTools("link-fetch", registerLinkFetchMcpTools, LINK_FETCH_TOOL_NAMES);
   registry.registerTools(
     "scheduled-tasks",
     registerScheduledTasksMcpTools,

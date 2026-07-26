@@ -55,7 +55,7 @@ reads and writes the one row.
 | `operator_password_hash` | text | scrypt, self-describing format. Null → `/setup` is open |
 | `session_secret` | text | HMAC key for session cookies. Rotating it invalidates every session |
 | `telegram_bot_token` | text | Secret |
-| `tavily_api_key` | text | Secret; enables `search_web` |
+| `tavily_api_key` | text | Secret; the browsing agent's search fallback |
 | `embedding_base_url`, `embedding_api_key`, `embedding_model` | text | Null base URL/key reuses the core connection |
 | `image_base_url`, `image_api_key`, `image_model` | text | Same fallback |
 | `speech_base_url`, `speech_api_key`, `speech_model`, `speech_voice` | text | Same fallback |

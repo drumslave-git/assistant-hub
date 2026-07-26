@@ -44,7 +44,8 @@ function buildAgentSystemPrompt(isOwner: boolean, requiredLanguage: string | nul
     `You are given a goal and a set of browser tools. Accomplish the goal by ` +
     `navigating the web step by step, then write a final report.\n\n` +
     `Rules:\n` +
-    `- Start with browser_navigate. After each action you get the page text plus a ` +
+    `- Start with browser_navigate when the goal gives you a URL, and with browser_search ` +
+    `when it does not — never guess a URL you were not given. After each action you get the page text plus a ` +
     `numbered list of interactive elements — each link shows its destination URL after "->". ` +
     `Click or type using the ref numbers.\n` +
     `- Refs are re-assigned on every action: always use refs from the LATEST page state.\n` +

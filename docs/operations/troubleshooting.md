@@ -143,7 +143,7 @@ than as an opaque Postgres rejection inside a nightly job.
 | Row status is `unavailable` | The file could not be downloaded from Telegram — the token, or Telegram's file retention |
 | GIF/video rows fail | `ffmpeg` is missing. The Docker image installs it; locally it must be on `PATH` |
 
-## `read_web_page` or the browser agent fails to launch
+## The browser agent fails to launch
 
 Chromium is missing. Locally:
 
@@ -155,7 +155,7 @@ Or set `CHROMIUM_EXECUTABLE_PATH` to an existing browser. In the Docker image th
 distro Chromium is installed and pointed at already — if it fails there, check the
 image built the `apk add` layer.
 
-Note that a Playwright/Chromium failure is confined to the read that needs it: the
+Note that a Playwright/Chromium failure is confined to the run that needs it: the
 package is imported lazily precisely so it cannot crash server startup.
 
 ## A URL is rejected as unsafe

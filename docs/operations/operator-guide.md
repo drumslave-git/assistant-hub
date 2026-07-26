@@ -272,7 +272,7 @@ tab is open.
 | **Images** | Image generation |
 | **Speech** | Voice replies |
 | **Transcription** | Voice-message speech-to-text (falls back to the chat model when unset) |
-| **Integrations** | Tavily key for web search |
+| **Integrations** | Tavily key — the browsing agent's search fallback |
 
 Every "Test …" button makes a **real call** and is recorded as a trace. Use them: they
 catch things a config check cannot, such as an embedding model whose vector width does

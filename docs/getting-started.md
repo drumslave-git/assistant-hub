@@ -55,7 +55,7 @@ Playwright is a declared dependency but its browser binaries are not installed b
 npx playwright install chromium
 ```
 
-Without it, the `read_web_page` tool and the browser agent fail with a clear
+Without it, the browser agent (the bot's only web access) fails with a clear
 launch error; nothing else is affected. To point at an already-installed browser
 instead, set `CHROMIUM_EXECUTABLE_PATH` (this is what the Docker image does).
 
@@ -115,7 +115,7 @@ real probe button:
 | Images | An endpoint serving `/v1/images/generations` | The `image_generate` tool |
 | Speech | An endpoint serving `/v1/audio/speech` | Voice replies |
 | Transcription | An endpoint serving `/v1/audio/transcriptions` | Voice-message transcription (falls back to the audio-capable chat model when unset) |
-| Web search | A Tavily API key | The `search_web` tool |
+| Web search fallback | A Tavily API key | Searching when no engine loads in the browser (optional — Bing works today) |
 
 ## Scripts
 

@@ -17,8 +17,8 @@ import type { McpToolCallResult } from "@/server/mcp/tool-result";
  *
  * The point is to test *tool selection*, not tool execution: the tools are never
  * actually run. Every tool call is intercepted, recorded, and answered with a
- * canned result — so no Tavily HTTP request, no headless browser, and no DB
- * mutation happens. The model sees the same tool contract it sees in production
+ * canned result — so no browsing run is enqueued, no headless browser launches,
+ * and no DB mutation happens. The model sees the same tool contract it sees in production
  * (schemas come straight through {@link getToolset}), so its choice is faithful.
  *
  * Canned results let multi-step flows proceed: e.g. "cancel my reminder" makes the
@@ -31,12 +31,13 @@ import type { McpToolCallResult } from "@/server/mcp/tool-result";
 
 /** Realistic canned results so a chosen tool "succeeds" and the loop can continue. */
 const DEFAULT_CANNED: Record<string, McpToolCallResult> = {
-  search_web: {
-    text: "Search results:\n1. Example headline — https://example.com/a\n2. Another source — https://example.com/b",
-    structuredContent: { ok: true, sources: [{ title: "Example", url: "https://example.com/a" }] },
-  },
-  read_web_page: {
-    text: "Page content: Example Domain. This domain is for use in illustrative examples in documents.",
+  // The only web tool: a background run that reports to the chat itself, so the
+  // canned result carries no findings for the model to relay.
+  browse_web: {
+    text:
+      "Browsing run started in the background. Tell the user you're on it and will report back " +
+      "here with what you find. Do not make up results — the run posts them itself.",
+    structuredContent: { ok: true, runId: "run_demo_1" },
   },
   history_search: {
     text: "[#42] [2026-07-01T10:00:00Z] user: I drive a blue Volvo.",
@@ -242,7 +243,7 @@ export function expectToolCalled(run: ToolSelectionRun, tool: string): void {
   ).toContain(tool);
 }
 
-/** Assert the model did NOT choose `tool` (e.g. no web search for general knowledge). */
+/** Assert the model did NOT choose `tool` (e.g. no browsing run for general knowledge). */
 export function expectToolNotCalled(run: ToolSelectionRun, tool: string): void {
   expect(
     run.toolNames,

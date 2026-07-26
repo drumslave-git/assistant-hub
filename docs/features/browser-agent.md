@@ -3,9 +3,16 @@
 **Feature ids:** `browser-agent`, `mcp-tools-browser-agent` ·
 **Dashboard:** `/browser` · **SSE topic:** `browser` · **Priority 13**
 
-A sub-agent that drives a **real browser** to accomplish a goal: navigate, click,
-type, scroll, read, inspect network traffic, screenshot, download. It runs in the
-background and reports back to the chat when done.
+A sub-agent that drives a **real browser** to accomplish a goal: search, navigate,
+click, type, scroll, read, inspect network traffic, screenshot, download. It runs in
+the background and reports back to the chat when done.
+
+This is the bot's **only** web-facing tool (user decision, 2026-07-26). The earlier
+`search_web` (Tavily snippets) and `read_web_page` (one-shot page read) MCP tools are
+**gone**: a real browser does both jobs better, and offering the model two weaker
+alternatives only split its choice — every phrasing became a fight over which tool
+should win. Searching now happens *inside* a run, on live search engines, with the
+Tavily API kept as a last-resort fallback there.
 
 ## Two layers, deliberately separated
 
@@ -27,22 +34,22 @@ Output: `{ ok, runId? }`.
 The description is unusually forceful, and for a documented reason: models
 persistently refuse this class of request. It explicitly says that replying "I'm just
 a language model" or "I cannot download files" is **wrong** when a user asks to
-download or save something, because this is exactly the tool for it. It lists four
-MUST-call cases:
+download or save something, because this is exactly the tool for it. It lists the MUST-call cases:
 
-1. The user asks to download or save a file, video, image or document.
-2. The user names a specific site, service or page to get data **from**.
-3. The user wants a **live or current** value that a search snippet cannot give
-   reliably — a live viewer count, live stats, a chart or dashboard, a current price
-   or availability — because those pages compute their numbers in the browser.
-   (Commodity live values a plain search shows accurately — weather, current time, a
-   well-known exchange rate — do not need this.)
-4. The task needs multi-step interaction on the web.
+1. The user asks you to look something up or check what is online right now.
+2. The user shares a URL, or asks about the content of a page whose URL is in the
+   conversation — read that page instead of answering from memory.
+3. The user asks to download or save a file, video, image or document.
+4. The user names a specific site, service or page to get data **from**.
+5. The user wants a **live or current** value — weather, a price, a rate, live stats,
+   a viewer count, a dashboard, availability, today's news.
+6. The task needs multi-step interaction on the web.
 
-It also says to call in those cases **even if** a similar question earlier in the same
-conversation was answered from a search snippet — because the base system prompt
-warns the model that its own past replies may have settled for less than the fullest
-available capability.
+And the one DO-NOT: casual chat, an opinion, or a stable fact the model already knows
+well and was not asked to verify. Since there is no cheaper web tool left, the
+description no longer has to argue about when to prefer a plain search — the earlier
+carve-outs for "a commodity live value" and "a general lookup" are gone, and those
+requests now browse too.
 
 Anyone may start a run. The **download tools inside the run** are gated to
 owner-started runs, resolved at enqueue time — not at call time, and not from
@@ -67,6 +74,7 @@ the matching download tool. There is no media-sniffing heuristic baked in.
 
 | Tool | Purpose |
 | --- | --- |
+| `browser_search` | Find pages: top 5 results (title + URL + snippet) to choose from (see below) |
 | `browser_navigate`, `browser_back` | Movement |
 | `browser_click`, `browser_type`, `browser_scroll` | Interaction, by element ref |
 | `browser_read`, `browser_source` | Readable text / raw source |
@@ -75,6 +83,76 @@ the matching download tool. There is no media-sniffing heuristic baked in.
 | `browser_wait` | Let a page settle |
 | `browser_download_file` | Stream a direct URL to disk (plain HTTP) |
 | `browser_download_stream` | Mux an HLS/DASH **manifest** into a single MP4 with ffmpeg |
+
+### Search — the engine cascade
+
+`server/search.ts`. `browser_search` is where a run starts when the goal carries no
+URL (the agent's system prompt says so explicitly, and forbids guessing a URL it was
+not given). Whatever answers, the agent gets the **same thing**: a numbered list of
+the top 5 results — title, URL, snippet — and it decides which to open, one or
+several or all. That uniformity is the point: an engine's live page and the API
+fallback used to hand the agent two different-shaped things, so its next move
+depended on which source happened to work.
+
+Sources are tried in order:
+
+1. **DuckDuckGo** — `duckduckgo.com/?q=`
+2. **Google** — `google.com/search?q=`
+3. **Bing** — `bing.com/search?q=`
+4. **Tavily API** — last resort only, via `features/web-search`
+
+#### What the engines actually do (measured 2026-07-26)
+
+From this repo's own headless Chromium, via `search-live.integration.test.ts`:
+
+| Engine | Result |
+| --- | --- |
+| DuckDuckGo | Serves a page whose results **never render** — its SPA returns a shell. The `html.` and `lite.` endpoints are refused outright. With a *browser* user-agent instead of the bot one it is worse: a hard `418` block page |
+| Google | **Captcha** (`/sorry/index`), every time |
+| Bing | **Works** — a real results page, 5/5 relevant, extracted cleanly |
+
+So today Bing is the engine that answers, after ~8s of DuckDuckGo and Google failing
+first. The order is the user's (2026-07-26) and is kept until they change it. Two
+findings worth carrying: the honest bot user-agent is **not** the problem (swapping it
+for a Chrome string made DuckDuckGo block harder), and a blocked engine sometimes
+serves a **plausible-looking decoy** — Bing once returned Russian Wikipedia pages
+about toucans for a printing-press query — which is why the live test asserts the
+results are *relevant*, not merely present.
+
+#### How results are recognized
+
+Structurally, never by what the page says (`no-linguistic-heuristics-in-code`). Three
+filters, each earned from a real engine's behaviour:
+
+1. **Inside `<main>` / `role="main"`.** Off-site-ness recognizes nothing on its own:
+   DuckDuckGo's promos (its apps in the App Store and Play Store, its blog) are
+   off-site, described, repeated, and sit *above* where results would be — the first
+   version of this shipped them as search results. A results page marks its results
+   as the document's main region; a shell or a consent wall has none, which is
+   exactly the "no results" answer the cascade needs to move on.
+2. **The repeated block.** Within main, links are bucketed by a structural signature
+   (the tag+class chain of their ancestors, `PageLink.group`). Results come from a
+   template and repeat; stray controls do not. The bucket with the most *described*
+   members wins, size breaking the tie. Class names never have to mean anything or
+   stay stable between pages — only to repeat within one page.
+3. **One entry per destination.** Engines link the same result twice: the headline
+   and the citation line above it. They merge, keeping the title that is not a URL
+   and the longer snippet, and the citation is stripped out of the snippet using the
+   result's own host.
+
+Redirect wrappers are unwrapped mechanically — Google's `/url?q=`, DuckDuckGo's
+`/l/?uddg=`, Bing's base64 `/ck/a?u=` — accepting a candidate only if it parses as an
+http(s) URL. Without this, Bing's results all look like `bing.com` links and get
+dropped as navigation.
+
+An engine yielding fewer than 3 results is written off, and gets exactly **one**
+second chance first (wait 3s, re-read), because both ways a first read can miss are
+timing rather than a verdict: results that paint client-side, and an interstitial
+redirect that destroys the page mid-read ("Execution context was destroyed").
+
+The Tavily fallback maps its rows into the same shape. If it is unconfigured or empty
+too, the tool returns an error result naming every attempt and telling the agent not
+to invent results — visible in the run's activity feed and its trace, never silent.
 
 ### Snapshots and refs
 

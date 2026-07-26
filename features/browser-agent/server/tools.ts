@@ -10,13 +10,14 @@ import { formatBytes } from "../files";
 import { formatSnapshot, type PageSnapshot } from "../snapshot";
 import type { BrowserDownloadRecord } from "../types";
 import { downloadToDisk, type DiskDownload } from "./download";
+import { runBrowserSearch } from "./search";
 import { downloadStreamToDisk, FfmpegMissingError } from "./stream-download";
 import type { BrowserAgentSession, NetworkEntry } from "./session";
 
 /**
  * The browser agent's generic toolset (recorded decision: no scenario-specific
  * tools — the model composes primitives instead of the code encoding any one
- * task): navigate, back, click, type, scroll, read page, read raw source,
+ * task): search, navigate, back, click, type, scroll, read page, read raw source,
  * inspect network requests, screenshot, wait, download a direct file, download an
  * HLS/DASH stream. Finding "the video" is the model's job — it reads the page or
  * the network, picks the URL, and calls the matching download tool — not a
@@ -82,8 +83,22 @@ function fn(
 /** OpenAI tool definitions for the browser agent loop. */
 export const BROWSER_AGENT_TOOLS: ChatCompletionFunctionTool[] = [
   fn(
+    "browser_search",
+    "Search the web. Start here whenever you were NOT given a URL and need to FIND pages, sources, facts, news, or a site for the goal. It runs the query on a live search engine (trying several, so a blocked or captcha'd one does not stop you) and returns the top 5 results as a numbered list of title + URL + snippet. Then YOU choose what to open: navigate to the results worth reading — one, several, or all of them — and read the actual pages. The snippets are only previews, so do not answer from them alone.",
+    {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search-engine query — keywords, in the language the sources are in",
+        },
+      },
+      required: ["query"],
+    },
+  ),
+  fn(
     "browser_navigate",
-    "Open a URL in the browser and return the page's text and interactive elements. Start here.",
+    "Open a URL in the browser and return the page's text and interactive elements. Start here when you already have a URL to open.",
     {
       type: "object",
       properties: {
@@ -271,6 +286,20 @@ async function dispatchTool(
   args: Record<string, unknown>,
 ): Promise<McpToolCallResult> {
   switch (name) {
+    case "browser_search": {
+      const query = str(args, "query").trim();
+      if (!query) return errorResult("query is required");
+      // Each attempt re-labels the action, so the live indicator (and the step the
+      // feed records) names the source that actually answered.
+      const result = await runBrowserSearch(query, {
+        navigate: (url) => ctx.session.navigate(url),
+        links: () => ctx.session.links(),
+        wait: (seconds) => ctx.session.wait(seconds),
+        onAttempt: (source) =>
+          ctx.onAction(`search "${query}" on ${source}`, ctx.session.currentUrl()),
+      });
+      return { text: result.text, ...(result.isError ? { isError: true } : {}) };
+    }
     case "browser_navigate": {
       const url = str(args, "url");
       await ctx.onAction(`navigate ${url}`, ctx.session.currentUrl());

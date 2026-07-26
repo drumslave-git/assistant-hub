@@ -127,7 +127,7 @@ actually pick the right tool for the phrasings people use?**
 ```ts
 const run = await runToolSelection({ prompt: "what did we decide about the invoice?" });
 expectToolCalled(run, "history_recall_topics");
-expectToolNotCalled(run, "search_web");
+expectToolNotCalled(run, "browse_web");
 ```
 
 It loads the app's real environment (`@next/env`), resolves the configured LLM runtime
@@ -138,9 +138,9 @@ including message ids on a recalled topic so a "recall then read the originals"
 two-step has ids to follow.
 
 These tests are the regression net for tool **descriptions**. A description is
-production behavior: when it changes, which tool the model picks changes. `search_web`
-must not be chosen for a URL already in the conversation; `browse_web` must be chosen
-when a user asks to download something. `expectToolNotCalled` matters as much as
+production behavior: when it changes, which tool the model picks changes. `browse_web`
+must be chosen when a user asks to download something, or to look anything up — and
+must **not** fire on casual chat or a fact the model already knows. `expectToolNotCalled` matters as much as
 `expectToolCalled`.
 
 They need a reachable LLM and a configured model, and they cost tokens. In this
