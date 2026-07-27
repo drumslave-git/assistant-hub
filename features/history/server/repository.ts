@@ -36,6 +36,12 @@ export interface AppendChatMessage {
   content: string;
   replyToMessageId?: number | null;
   sentAt: Date;
+  /**
+   * Live-processing semaphore (see `chat_messages.processed`). The live reply
+   * pipeline appends with `false` and releases via {@link markMessageProcessed}
+   * in a `finally`; every other writer omits it (defaults to `true`).
+   */
+  processed?: boolean;
 }
 
 /** A per-chat rollup for the History dashboard. */
@@ -80,12 +86,34 @@ export async function appendChatMessage(
       content: values.content,
       replyToMessageId: values.replyToMessageId ?? null,
       sentAt: values.sentAt,
+      ...(values.processed != null ? { processed: values.processed } : {}),
     })
     .onConflictDoNothing({
       target: [chatMessages.chatId, chatMessages.telegramMessageId],
     })
     .returning();
   return row ? mapRow(row) : null;
+}
+
+/**
+ * Release a message's live-processing hold (`processed` → true). Idempotent and
+ * safe for messages that never took a hold; a missing row is a no-op.
+ */
+export async function markMessageProcessed(
+  db: DrizzleDb,
+  chatId: string,
+  telegramMessageId: number,
+): Promise<void> {
+  await db
+    .update(chatMessages)
+    .set({ processed: true })
+    .where(
+      and(
+        eq(chatMessages.chatId, chatId),
+        eq(chatMessages.telegramMessageId, telegramMessageId),
+        eq(chatMessages.processed, false),
+      ),
+    );
 }
 
 /** Fields for restoring a message from an export (carries the mirror's flags). */

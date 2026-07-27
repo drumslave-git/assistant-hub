@@ -26,6 +26,7 @@ import {
   getChatMessagesForDay,
   getChatMessagesSince,
   listChatSummaries,
+  markMessageProcessed,
   updateChatMessageContent,
   type ChatMessageRecord,
   type ChatSummary,
@@ -62,6 +63,12 @@ export interface IncomingHistoryMessage {
   sentAt: Date;
   /** When true, empty content is allowed (a media message with no caption). */
   hasMedia?: boolean;
+  /**
+   * Live-processing semaphore: the live reply pipeline mirrors with `false` and
+   * releases via {@link markIncomingMessageProcessed} once the turn settles.
+   * Omitted (imports, tests) → the row lands released (`true`).
+   */
+  processed?: boolean;
 }
 
 /** Input for capturing a delivered assistant reply. */
@@ -97,9 +104,24 @@ export async function recordIncomingMessage(
     content: parsed.data.content,
     replyToMessageId: parsed.data.replyToMessageId ?? null,
     sentAt: parsed.data.sentAt,
+    // Internal flag, not user input — carried past validation on purpose.
+    processed: input.processed,
   });
   if (record) publishEvent(FEATURE.realtimeTopic);
   return record;
+}
+
+/**
+ * Release a message's live-processing hold (see `chat_messages.processed`).
+ * Called from the reply pipeline's `finally` so every exit path — replied,
+ * ignored, errored — frees the message's media for the vision backfill.
+ */
+export async function markIncomingMessageProcessed(
+  chatId: string,
+  telegramMessageId: number,
+  db: DrizzleDb = getDb(),
+): Promise<void> {
+  await markMessageProcessed(db, chatId, telegramMessageId);
 }
 
 /**

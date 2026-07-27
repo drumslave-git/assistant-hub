@@ -227,7 +227,7 @@ export interface BotMessagingDeps {
    * photo they replied to"). Null when the turn carries no media. Best-effort —
    * the reply proceeds text-only if this fails.
    */
-  loadVision?: () => Promise<{ imageParts: ChatContentPart[]; note?: string } | null>;
+  loadVision?: (trace: TraceRecorder) => Promise<{ imageParts: ChatContentPart[]; note?: string } | null>;
   /** Persist the delivered assistant reply into the history mirror (best-effort). */
   recordReply: (input: {
     content: string;
@@ -267,6 +267,13 @@ export interface BotMessagingDeps {
    * absent → no directive (older tests); the runtime always resolves a value.
    */
   requiredLanguage?: string | null;
+  /**
+   * A reply trace the runtime already opened for this message, when pre-reply
+   * work had to be recorded before this service ran (eager voice transcription).
+   * The service adopts it — same one-trace-per-message rule — and settles it on
+   * every path, including the early ignores. Absent → opened lazily as before.
+   */
+  trace?: TraceRecorder;
   db?: DrizzleDb;
 }
 
@@ -378,37 +385,65 @@ async function runAddressAnalyzer(
 }
 
 /**
+ * Open the reply trace for an incoming message — the single trace the whole
+ * turn records into. Exported so the Telegram runtime can open it *before* this
+ * service runs when pre-reply work must land on it (the eager voice
+ * transcription), passing it in via {@link BotMessagingDeps.trace}.
+ */
+export async function startReplyTrace(input: {
+  chatId: number | string;
+  messageId: number;
+  fromId?: number;
+  /** The whole incoming message, never trimmed (may be updated later — voice). */
+  inputSummary: string;
+}): Promise<TraceRecorder> {
+  return startTrace({
+    feature: FEATURE.id,
+    action: "reply",
+    trigger: {
+      kind: "telegram",
+      actor: input.fromId != null ? String(input.fromId) : String(input.chatId),
+      correlationId: `${input.chatId}:${input.messageId}`,
+    },
+    inputSummary: input.inputSummary,
+  });
+}
+
+/**
  * Handle one incoming Telegram message end to end: decide, generate, deliver,
- * and trace. Cheap ignore checks run before any trace is opened.
+ * and trace. Cheap ignore checks run before any trace is opened — but a trace
+ * the runtime already opened (voice) is settled even on those paths, so no
+ * trace is ever left running.
  */
 export async function handleIncomingMessage(
   incoming: IncomingMessage,
   deps: BotMessagingDeps,
 ): Promise<HandleOutcome> {
-  if (incoming.fromIsBot) return ignored("from_bot");
-
   const text = incoming.text.trim();
+
+  // One trace per handled message — adopted from the runtime when it opened one
+  // for pre-reply work, otherwise opened on first need — and shared by every
+  // path below (analyzer, maintenance, reply): a message must never produce two.
+  let trace: TraceRecorder | null = deps.trace ?? null;
+  const openTrace = async (): Promise<TraceRecorder> =>
+    (trace ??= await startReplyTrace({
+      chatId: incoming.chatId,
+      messageId: incoming.messageId,
+      fromId: incoming.fromId,
+      inputSummary: text,
+    }));
+
+  /** Early ignore: nothing is traced unless a pre-opened trace must be settled. */
+  const ignoredEarly = async (reason: IgnoreReason): Promise<HandleOutcome> => {
+    if (trace) await trace.skip(reason);
+    return ignored(reason);
+  };
+
+  if (incoming.fromIsBot) return ignoredEarly("from_bot");
+
   // A media-only message (no caption) still carries content — its image — so it
   // is processed like any other message rather than ignored as empty.
-  if (!text && !incoming.hasVision) return ignored("no_content");
-
-  // One trace per handled message, opened on first need and shared by every path
-  // below (analyzer, maintenance, reply) — a message must never produce two.
-  let trace: TraceRecorder | null = null;
-  const openTrace = async (): Promise<TraceRecorder> =>
-    (trace ??= await startTrace(
-      {
-        feature: FEATURE.id,
-        action: "reply",
-        trigger: {
-          kind: "telegram",
-          actor: incoming.fromId != null ? String(incoming.fromId) : String(incoming.chatId),
-          correlationId: `${incoming.chatId}:${incoming.messageId}`,
-        },
-        // The whole incoming message, never trimmed.
-        inputSummary: text,
-      }
-    ));
+  if (!text && !incoming.hasVision) return ignoredEarly("no_content");
 
   let decision = checkAddressed(
     incoming.message,
@@ -564,8 +599,9 @@ export async function handleIncomingMessage(
           // current message.
           deps.loadHistory(),
           // 3b. Vision — any image(s) on this turn (or a replied-to image), to
-          // attach to the current user message below.
-          deps.loadVision?.() ?? null,
+          // attach to the current user message below. Takes the reply trace so
+          // the recognize pass (describe + store) records into this same flow.
+          deps.loadVision?.(trace) ?? null,
         ]);
 
       if (chatContext) {

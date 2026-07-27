@@ -113,7 +113,7 @@ export async function runVisionBackfill(
             const result = await describeAndStore(
               { chatId: row.chatId, telegramMessageId: row.telegramMessageId },
               deps,
-              db,
+              { db },
             );
             if (result && result.status === "described") described += 1;
             else unresolved += 1;

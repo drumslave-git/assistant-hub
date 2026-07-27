@@ -1,9 +1,11 @@
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { messageMedia } from "@/db/schema";
 import type { ChatCompletionResult } from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { listTraces } from "@/server/trace";
-import { startTestDb, type TestDb } from "@/test/db";
+import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
 
 import { runVisionBackfill } from "./backfill";
 import { countPendingMedia, insertMedia, listPendingMedia } from "./repository";
@@ -22,7 +24,13 @@ beforeEach(async () => {
   await ctx.truncate();
 });
 
-async function seedPending(telegramMessageId: number, chatId = "5") {
+async function seedPending(
+  telegramMessageId: number,
+  chatId = "5",
+  over?: { processed?: boolean },
+) {
+  // Media rows require their mirrored message (FK) — mirror first, like the pipeline.
+  await seedMirrorMessage(ctx.db, { chatId, telegramMessageId, processed: over?.processed });
   return insertMedia(ctx.db, {
     id: crypto.randomUUID(),
     chatId,
@@ -113,6 +121,35 @@ describe("runVisionBackfill", () => {
     expect(result.interrupted).toBe(true);
     expect(result.described).toBe(1);
     expect(await countPendingMedia(ctx.db)).toBe(2);
+  });
+
+  it("leaves media alone while its message is still held by the live pipeline", async () => {
+    await seedPending(10, "5", { processed: false }); // live reply still in flight
+    await seedPending(11); // released — a genuine leftover
+
+    // The scan itself excludes the held row…
+    expect((await listPendingMedia(ctx.db)).map((r) => r.telegramMessageId)).toEqual([11]);
+
+    // …so a run describes only the leftover and never races the live pass.
+    const result = await runVisionBackfill(
+      { complete: async () => fakeComplete("a photo") },
+      {},
+      ctx.db,
+    );
+    expect(result.described).toBe(1);
+    expect(await countPendingMedia(ctx.db)).toBe(1);
+  });
+
+  it("reclaims a held row once the hold times out (crashed pipeline)", async () => {
+    const row = await seedPending(10, "5", { processed: false });
+    // Backdate the media past the hold timeout — a pipeline that died before
+    // its `finally` released the hold must not hide the row forever.
+    await ctx.db
+      .update(messageMedia)
+      .set({ createdAt: new Date(Date.now() - 11 * 60_000) })
+      .where(eq(messageMedia.id, row!.id));
+
+    expect(await listPendingMedia(ctx.db)).toHaveLength(1);
   });
 
   it("skips (does not run) when the advisory lock is already held", async () => {

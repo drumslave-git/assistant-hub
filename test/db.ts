@@ -52,6 +52,32 @@ export interface TestDb {
  */
 const POSTGRES_IMAGE = "pgvector/pgvector:pg17";
 
+/**
+ * Seed a minimal `chat_messages` mirror row. Media rows now require one (the
+ * `message_media` → `chat_messages` FK: media never floats free of the mirror),
+ * so any test inserting media directly must seed its message first — exactly
+ * what the live pipeline does (mirror first, ingest second).
+ */
+export async function seedMirrorMessage(
+  db: DrizzleDb,
+  input: { chatId: string; telegramMessageId: number; processed?: boolean },
+): Promise<void> {
+  await db
+    .insert(schema.chatMessages)
+    .values({
+      chatId: input.chatId,
+      telegramMessageId: input.telegramMessageId,
+      role: "user",
+      userId: null,
+      content: "",
+      sentAt: new Date(),
+      ...(input.processed != null ? { processed: input.processed } : {}),
+    })
+    .onConflictDoNothing({
+      target: [schema.chatMessages.chatId, schema.chatMessages.telegramMessageId],
+    });
+}
+
 export async function startTestDb(): Promise<TestDb> {
   const container: StartedPostgreSqlContainer = await new PostgreSqlContainer(
     POSTGRES_IMAGE,

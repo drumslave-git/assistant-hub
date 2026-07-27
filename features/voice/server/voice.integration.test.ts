@@ -3,14 +3,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   getMediaByMessage,
   insertMedia,
+  markDescribed,
 } from "@/features/vision/server/repository";
 import {
   describeAndStore,
   getMediaSuffixesForMessages,
 } from "@/features/vision/server/service";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
-import { getTraceDetail, listTraces } from "@/server/trace";
-import { startTestDb, type TestDb } from "@/test/db";
+import { getTraceDetail, listTraces, startTrace } from "@/server/trace";
+import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
 
 /**
  * Voice messages ride the vision media pipeline (`message_media`, kind `voice`);
@@ -57,10 +58,13 @@ function tinyWavBase64(): string {
 }
 
 async function seedVoice(over?: { telegramMessageId?: number; dataBase64?: string }) {
+  const telegramMessageId = over?.telegramMessageId ?? 70;
+  // Media rows require their mirrored message (FK) — mirror first, like the pipeline.
+  await seedMirrorMessage(ctx.db, { chatId: "5", telegramMessageId });
   return insertMedia(ctx.db, {
     id: crypto.randomUUID(),
     chatId: "5",
-    telegramMessageId: over?.telegramMessageId ?? 70,
+    telegramMessageId,
     kind: "voice",
     fileId: "voice-70",
     fileUniqueId: "vu70",
@@ -97,7 +101,7 @@ describe("describeAndStore — voice dispatch", () => {
         },
         target: TARGET,
       },
-      ctx.db,
+      { db: ctx.db },
     );
 
     // The request was a transcription pass: strict system prompt + one audio part.
@@ -173,7 +177,7 @@ describe("describeAndStore — voice dispatch", () => {
         },
         transcribeTarget: { baseUrl: "https://whisper.example.com/v1", model: "large-v3" },
       },
-      ctx.db,
+      { db: ctx.db },
     );
 
     expect(completeCalled).toBe(false);
@@ -197,10 +201,83 @@ describe("describeAndStore — voice dispatch", () => {
     const result = await describeAndStore(
       { chatId: "5", telegramMessageId: 71 },
       { complete: async () => fakeComplete("[no speech]") },
-      ctx.db,
+      { db: ctx.db },
     );
     expect(result?.status).toBe("described");
     expect(result?.description).toBe("(no speech)");
+  });
+
+  it("records into a passed parent trace instead of opening its own (live reply path)", async () => {
+    await seedVoice({ telegramMessageId: 74 });
+    const before = (await listTraces({ feature: "voice" })).traces.length;
+
+    const parent = await startTrace({
+      feature: "bot-messaging",
+      action: "reply",
+      trigger: { kind: "telegram", actor: "5", correlationId: "5:74" },
+    });
+    const result = await describeAndStore(
+      { chatId: "5", telegramMessageId: 74 },
+      { complete: async () => fakeComplete("nested transcript") },
+      { db: ctx.db, trace: parent },
+    );
+    await parent.succeed({ outputSummary: "done" });
+
+    expect(result?.description).toBe("nested transcript");
+    // No standalone voice trace was opened — the transcription events belong to
+    // the reply trace: one trace per handled message.
+    expect((await listTraces({ feature: "voice" })).traces).toHaveLength(before);
+    const detail = await getTraceDetail(parent.id);
+    const messages = detail?.events.map((e) => e.message) ?? [];
+    expect(messages).toContain("transcribe request");
+    expect(messages).toContain("transcribe response");
+    expect(messages).toContain("voice message transcribed");
+  });
+
+  it("returns the winner's transcript — never a failure — when a concurrent pass wins the write race", async () => {
+    const seeded = await seedVoice({ telegramMessageId: 76 });
+
+    const result = await describeAndStore(
+      { chatId: "5", telegramMessageId: 76 },
+      {
+        complete: async () => {
+          // A concurrent pass describes the row while our LLM call is in flight,
+          // so this pass's markDescribed will match nothing.
+          await markDescribed(ctx.db, seeded!.id, "the winner's transcript");
+          return fakeComplete("the loser's transcript");
+        },
+      },
+      { db: ctx.db },
+    );
+
+    // The caller still gets a described record with real text (the winner's) —
+    // this exact race used to surface as "voice message could not be transcribed"
+    // while a transcript sat in the DB.
+    expect(result?.status).toBe("described");
+    expect(result?.description).toBe("the winner's transcript");
+    const traces = await listTraces({ feature: "voice" });
+    expect(traces.traces[0]?.status).toBe("success");
+  });
+
+  it("reuses an already-stored transcript without spending a call (re-delivered update)", async () => {
+    const seeded = await seedVoice({ telegramMessageId: 77 });
+    await markDescribed(ctx.db, seeded!.id, "already transcribed");
+
+    let called = false;
+    const result = await describeAndStore(
+      { chatId: "5", telegramMessageId: 77 },
+      {
+        complete: async () => {
+          called = true;
+          return fakeComplete("unused");
+        },
+      },
+      { db: ctx.db },
+    );
+
+    expect(called).toBe(false);
+    expect(result?.status).toBe("described");
+    expect(result?.description).toBe("already transcribed");
   });
 
   it("leaves the row pending (for the backfill retry) when the audio cannot be transcoded", async () => {
@@ -209,7 +286,7 @@ describe("describeAndStore — voice dispatch", () => {
     const result = await describeAndStore(
       { chatId: "5", telegramMessageId: 72 },
       { complete: async () => fakeComplete("unused") },
-      ctx.db,
+      { db: ctx.db },
     );
     expect(result).toBeNull();
     const row = await getMediaByMessage(ctx.db, "5", 72);

@@ -28,6 +28,55 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Voice/vision trace + describe-race overhaul (`done`, 2026-07-27)
+
+Root cause of the "transcription succeeded but the bot said it couldn't hear"
+incident (trace `11162be5…` / `69761c50…`): `describeAndStore` handed the
+transcript back only through `markDescribed`'s row, which returns null when a
+concurrent pass described the row first — the caller then read `description:
+null` from the stale pre-read row and told the model transcription failed,
+while the trace recorded a clean success. All user decisions 2026-07-27:
+
+- **One reply trace per incoming message.** Live transcribe/describe passes
+  record into the `bot-messaging`/`reply` trace (`describeAndStore` takes an
+  optional parent `TraceRecorder`; the runtime opens the reply trace before
+  eager voice transcription via `startReplyTrace` and the service adopts and
+  settles it on every path). Standalone `voice`/`transcribe` and
+  `vision`/`describe` traces remain only for backfill/probe passes. Side
+  effect (accepted): the `/debug` voice/vision feature filters now show only
+  those standalone traces; live passes are inside reply traces. Analytics is
+  unaffected — usage events carry explicit `callKind`.
+- **Honest describe results.** `describeAndStore` returns the text it produced
+  or found: a lost `markDescribed` race re-reads and reuses the winner's text
+  (warn event), an already-described row is reused without an LLM call, and a
+  parent-trace failure becomes a warn event + null, never a fake success.
+- **`message_media` → `chat_messages` FK** on `(chat_id, telegram_message_id)`
+  (cascade): media never floats free of the mirror. Migration `0041` sweeps
+  orphans first (stub mirror rows for `described` orphans, delete the rest).
+  Consequences implemented: media from bot-authored messages is no longer
+  ingested (was also wasting transcription calls on other bots' voice), and a
+  mirror failure now blocks media handling (warn event on the reply trace).
+- **Live-processing semaphore** `chat_messages.processed` (user-proposed): the
+  live pipeline mirrors with `false` and releases to `true` in `processUpdate`'s
+  `finally`; `listPendingMedia` only returns released rows, with a **10-minute
+  timeout** fallback so a crashed pipeline can't hide a row forever. This is
+  DB-level, so it also fences a backfill in another process sharing the DB.
+
+Proof: files — `db/schema.ts`, `db/migrations/0041_slimy_molten_man.sql`,
+`features/vision/server/{service,repository,backfill}.ts`,
+`features/history/server/{service,repository}.ts`,
+`features/bot-messaging/server/service.ts`, `server/telegram/process-update.ts`,
+`server/trace/{recorder,store,with-trace}.ts` (new `setInputSummary`),
+`test/db.ts` (`seedMirrorMessage`), docs (`vision.md`, `voice.md`,
+`history.md`). Tests: new coverage for the write-race reuse, parent-trace
+nesting, re-delivery reuse, semaphore gating + timeout, pre-opened-trace
+settlement; `npm run lint`, `typecheck`, `test`, `test:integration`, `build`
+all green (see handoff note below if any flipped). Migration applied to the
+dev DB. Remaining risk: the production incident's *second* transcriber was
+never identified from the two exported traces alone — if it recurs, check the
+trace list for the correlation id and whether another process shares the
+production DB.
+
 ## Priority 15 — Specialists (`todo`)
 
 Operator-authored bot roles ("specialists") that store, operate on and analyze

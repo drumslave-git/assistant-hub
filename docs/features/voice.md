@@ -7,8 +7,7 @@ user, 2026-07-23)
 Both directions of speech: the bot hears voice messages, and — when a speech
 endpoint is configured — answers with one.
 
-Voice rides the vision media pipeline (`message_media`, `kind = 'voice'`) but
-traces as its **own** feature, so "what did the bot hear / say" filters cleanly.
+Voice rides the vision media pipeline (`message_media`, `kind = 'voice'`).
 
 ## Hearing: voice → text
 
@@ -19,6 +18,20 @@ traces as its **own** feature, so "what did the bot hear / say" filters cleanly.
    turn and the reply all read the words as if they had been typed.
 4. It is stored verbatim as the media row's `description`, so later transcripts and
    replies read it back like any other described media.
+
+### One trace per voice turn (user decision, 2026-07-27)
+
+A live voice message produces **one** trace — the `bot-messaging`/`reply` trace,
+opened by the runtime *before* transcription so the transcribe request/response/db
+events land at the top of the same flow the reply then continues (receive →
+transcribe → addressing → context → reply). The trace's `inputSummary` is filled
+with the transcript once it exists. Separate `voice`/`transcribe` traces remain
+only for passes with no reply turn: the backfill job and the Settings probe.
+
+The transcript is also handed back **in-process**, not re-read through the DB
+write: if a concurrent pass described the row first, `describeAndStore` re-reads
+and reuses the stored text (with a warn event saying so) instead of telling the
+reply the transcription failed while a transcript exists.
 
 Audio must be transcoded: Telegram delivers voice as OGG/Opus, which
 OpenAI-compatible `input_audio` parts do not accept (the spec allows only `wav` and

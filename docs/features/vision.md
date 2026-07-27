@@ -66,10 +66,18 @@ for **45 seconds**; `pokeVisionBackfill()` is called on every handled message,
 which re-arms the wait **and aborts a batch in flight**. Backfill therefore never
 competes with a live reply for the LLM.
 
+- **Live-processing semaphore** (user decision, 2026-07-27): the mirror row is
+  written with `chat_messages.processed = false` and released to `true` in the
+  pipeline's `finally`; `listPendingMedia` only returns media whose message is
+  released — or whose hold is older than **10 minutes** (a crashed pipeline must
+  not hide a row forever). Unlike the in-process debounce, this also stops a
+  backfill in *another process sharing the DB* from racing the live pass.
 - Locking: a cross-process advisory lock.
 - Idempotency: per-row `status = 'pending'` gating, and `describeAndStore`
-  re-checks status before spending a call. Together that means a redeploy overlap
-  can never double-describe a row.
+  re-checks status before spending a call — and if it still loses the write race,
+  it **reuses the winner's stored text** (warn event on the trace) rather than
+  reporting a failure while a description exists. Together that means a redeploy
+  overlap can never double-describe a row or drop a paid-for description.
 - The LLM connection is read fresh per run, so a settings change takes effect on the
   next run without a restart.
 - At boot the scheduler arms an initial run, so media left `pending` from before the
@@ -79,7 +87,7 @@ competes with a live reply for the LLM.
 
 | Table | Notes |
 | --- | --- |
-| `message_media` | `kind`, `file_id`, `mime_type`, `vision_hint`, `description`, `status` (`pending` \| `described` \| `unavailable`), `described_at`. Unique on `(chat_id, telegram_message_id)` |
+| `message_media` | `kind`, `file_id`, `mime_type`, `vision_hint`, `description`, `status` (`pending` \| `described` \| `unavailable`), `described_at`. Unique on `(chat_id, telegram_message_id)`, which is also a **FK to `chat_messages`** (user decision, 2026-07-27): media never floats free of the mirror — mirror first, ingest second, and bot-authored media is not ingested at all (the bot never answers bots) |
 | `media_blobs` | Real `bytea`, one row per frame, **only while the row is `pending`**. The repository converts to/from base64, so callers never handle `Buffer`s |
 
 ## Dashboard
@@ -116,11 +124,15 @@ independent of grammy, so the backfill can re-download without a live `Context`.
 
 | Feature id | Action |
 | --- | --- |
-| `vision` | `describe` for the addressed turn |
+| `vision` | `describe` — backfill rows only |
 | `vision-backfill` | The backfill run |
 
-`relatedIdsKey` for both is `message_media`, so a trace links to the media row it
-captioned.
+A **live** turn's recognize pass records into the `bot-messaging`/`reply` trace
+instead of opening its own (user decision, 2026-07-27): receive → describe →
+reply is one flow, one trace. `describeAndStore` takes the reply trace as an
+optional parent; without one (backfill) it opens and settles its own trace as
+before. `relatedIdsKey` is `message_media`, so a standalone trace links to the
+media row it captioned.
 
 ## Tests
 

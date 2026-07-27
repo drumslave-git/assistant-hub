@@ -355,6 +355,17 @@ export function appendTraceEvent(traceId: string, event: TraceEvent): void {
   if (trace) trace.events.push(event);
 }
 
+/**
+ * Replace an open trace's input summary. For flows whose real input is only
+ * known mid-flight — a voice reply's input is the transcript, which exists only
+ * after the transcription events already recorded on the trace. No-op once
+ * settled.
+ */
+export function setTraceInputSummary(traceId: string, inputSummary: string): void {
+  const trace = store().open.get(traceId);
+  if (trace) trace.inputSummary = inputSummary;
+}
+
 export interface SettleTraceInput {
   status: Extract<TraceStatus, "success" | "error" | "skipped">;
   finishedAt: string;

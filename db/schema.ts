@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   customType,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -357,6 +358,17 @@ export const chatMessages = pgTable(
     editedAt: timestamp("edited_at", { withTimezone: true }),
     /** Set when the message is known to be deleted (see table note). */
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    /**
+     * Live-processing semaphore: `false` while the reply pipeline is still
+     * working on this message, flipped to `true` when it settles (in a
+     * `finally`, so every exit path releases it). The vision backfill only
+     * touches media whose message is released — or whose hold has clearly
+     * expired (a crashed pipeline must not hide a row forever) — so a background
+     * describe can never race the live pass. Non-live writers (imports,
+     * restores, assistant mirrors) default to `true`: they were never "in
+     * flight".
+     */
+    processed: boolean("processed").notNull().default(true),
     /** When we captured the row (may differ from `sent_at`). */
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -492,6 +504,15 @@ export const messageMedia = pgTable(
   },
   (t) => [
     uniqueIndex("message_media_chat_msg_idx").on(t.chatId, t.telegramMessageId),
+    // Media never floats free: every row belongs to a mirrored chat message
+    // (media that was never a Telegram message does not exist). Mirror first,
+    // ingest second — a failed mirror now fails the media store loudly instead
+    // of leaving an orphan. Cascade: purging a message purges its media.
+    foreignKey({
+      columns: [t.chatId, t.telegramMessageId],
+      foreignColumns: [chatMessages.chatId, chatMessages.telegramMessageId],
+      name: "message_media_message_fk",
+    }).onDelete("cascade"),
     // Backfill (priority 8) scans for pending rows oldest-first.
     index("message_media_status_idx").on(t.status, t.createdAt),
     check("message_media_status_check", sql`${t.status} in ('pending', 'described', 'unavailable')`),

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const recorder = vi.hoisted(() => ({
   id: "t1",
   event: vi.fn().mockResolvedValue(undefined),
+  setInputSummary: vi.fn(),
   succeed: vi.fn().mockResolvedValue(undefined),
   skip: vi.fn().mockResolvedValue(undefined),
   fail: vi.fn().mockResolvedValue(undefined),
@@ -121,6 +122,73 @@ describe("handleIncomingMessage", () => {
     expect(startTrace).not.toHaveBeenCalled();
     expect(d.generateReply).not.toHaveBeenCalled();
     expect(d.startTyping).not.toHaveBeenCalled();
+  });
+
+  it("adopts a pre-opened trace instead of opening a second one, and settles it", async () => {
+    // The runtime opens the reply trace before the service for a voice turn
+    // (its transcription records there first) — one trace per message, still.
+    const pre = {
+      id: "pre",
+      event: vi.fn().mockResolvedValue(undefined),
+      setInputSummary: vi.fn(),
+      succeed: vi.fn().mockResolvedValue(undefined),
+      skip: vi.fn().mockResolvedValue(undefined),
+      fail: vi.fn().mockResolvedValue(undefined),
+    };
+    const d = deps({ trace: pre });
+    const out = await handleIncomingMessage(incoming({ text: "hello", isVoice: true }), d);
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(startTrace).not.toHaveBeenCalled();
+    expect(pre.succeed).toHaveBeenCalledOnce();
+  });
+
+  it("settles a pre-opened trace as skipped on an early ignore (failed voice turn)", async () => {
+    // A voice message whose transcription failed arrives with empty text and no
+    // vision — the pre-opened trace (carrying the transcription events) must not
+    // be left running.
+    const pre = {
+      id: "pre",
+      event: vi.fn().mockResolvedValue(undefined),
+      setInputSummary: vi.fn(),
+      succeed: vi.fn().mockResolvedValue(undefined),
+      skip: vi.fn().mockResolvedValue(undefined),
+      fail: vi.fn().mockResolvedValue(undefined),
+    };
+    const d = deps({ trace: pre });
+    const out = await handleIncomingMessage(
+      incoming({ text: "", hasVision: false, isVoice: true }),
+      d,
+    );
+    expect(out).toEqual({ status: "ignored", reason: "no_content" });
+    expect(pre.skip).toHaveBeenCalledWith("no_content");
+    expect(d.generateReply).not.toHaveBeenCalled();
+  });
+
+  it("settles a pre-opened trace as skipped for un-addressed group voice chatter", async () => {
+    const pre = {
+      id: "pre",
+      event: vi.fn().mockResolvedValue(undefined),
+      setInputSummary: vi.fn(),
+      succeed: vi.fn().mockResolvedValue(undefined),
+      skip: vi.fn().mockResolvedValue(undefined),
+      fail: vi.fn().mockResolvedValue(undefined),
+    };
+    const d = deps({ trace: pre });
+    const m = makeMessage({ message_id: 7, chat: { id: 5, type: "group" }, text: "" });
+    const out = await handleIncomingMessage(
+      incoming({ message: m, chatType: "group", text: "unrelated words", isVoice: true, hasVision: true }),
+      d,
+    );
+    expect(out).toMatchObject({ status: "ignored", reason: "not_addressed" });
+    expect(pre.skip).toHaveBeenCalledOnce();
+    expect(startTrace).not.toHaveBeenCalled();
+  });
+
+  it("passes the reply trace to loadVision so recognition records into the same flow", async () => {
+    const loadVision = vi.fn().mockResolvedValue(null);
+    const d = deps({ loadVision });
+    await handleIncomingMessage(incoming({ text: "look at this", hasVision: true }), d);
+    expect(loadVision).toHaveBeenCalledWith(recorder);
   });
 
   it("generates and delivers a reply for an addressed message, and traces it", async () => {

@@ -12,7 +12,7 @@ import type {
   TraceTrigger,
 } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { appendTraceEvent, createTrace, settleTrace } from "./store";
+import { appendTraceEvent, createTrace, setTraceInputSummary, settleTrace } from "./store";
 
 /**
  * Trace recorder — the single entry point features use to record a meaningful
@@ -57,6 +57,11 @@ export interface TraceRecorder {
   readonly id: string;
   /** Append an ordered event to the trace. */
   event(input: EventInput): Promise<TraceEvent>;
+  /**
+   * Replace the input summary, for a flow whose input is only known mid-flight
+   * (a voice reply's input is its transcript, produced after the trace opened).
+   */
+  setInputSummary(summary: string): void;
   /** Settle the trace as successful. */
   succeed(input?: FinishInput): Promise<void>;
   /** Settle the trace as skipped (nothing to do / short-circuited). */
@@ -204,6 +209,10 @@ export async function startTrace(input: StartTraceInput): Promise<TraceRecorder>
     async event(eventInput) {
       ensureOpen();
       return appendEvent(eventInput);
+    },
+    setInputSummary(summary) {
+      // Lenient on purpose: a late call after settle is a no-op, not a crash.
+      if (!settled) setTraceInputSummary(id, summary);
     },
     async succeed(finish) {
       ensureOpen();

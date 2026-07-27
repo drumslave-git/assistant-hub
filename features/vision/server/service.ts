@@ -7,7 +7,7 @@ import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import { llmUsageOf, sanitizeMessagesForTrace, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
-import { startTrace } from "@/server/trace";
+import { startTrace, type TraceRecorder } from "@/server/trace";
 
 import {
   getLlmRuntime,
@@ -143,15 +143,28 @@ async function loadDetectedMedia(
 
 /**
  * Ingest media on an incoming message: download, normalize, and store a pending
- * row. Returns the normalized image(s) for immediate use in the reply pass and
- * the stored record (or null when the message has no media). Best-effort:
- * media that cannot be loaded is recorded as `unavailable` and returns no images.
+ * row. Returns the normalized image(s) for immediate use in the reply pass plus
+ * the stored row (or null when the message has no media). Best-effort: media
+ * that cannot be loaded is recorded as `unavailable` and returns no images.
  * Passive and untraced — the stored row is the record.
  */
 export async function ingestMessageMedia(
   params: { token: string; chatId: string; telegramMessageId: number; message: Message },
   db: DrizzleDb = getDb(),
-): Promise<{ images: ImagePayload[]; kind: MediaKind; note: string | null } | null> {
+): Promise<{
+  images: ImagePayload[];
+  kind: MediaKind;
+  note: string | null;
+  /**
+   * The stored row for this message: the fresh insert, or — for a re-delivered
+   * update — the row that already existed (possibly already described, so its
+   * text can be reused instead of paying for a second pass). Null only when the
+   * row could not be stored at all (e.g. the history mirror row is missing, so
+   * the FK rejects the insert) — callers must then skip describe/transcribe
+   * work for this turn.
+   */
+  media: MediaRecord | null;
+} | null> {
   const detected = detectMessageMedia(params.message);
   if (!detected) return null;
 
@@ -174,7 +187,7 @@ export async function ingestMessageMedia(
   // sequence (its first frame doubles as the dashboard preview); a voice message
   // stores its raw audio (played back on the dashboard while pending).
   const isSequence = loaded.images.length > 1;
-  await insertMedia(db, {
+  const inserted = await insertMedia(db, {
     id: crypto.randomUUID(),
     chatId: params.chatId,
     telegramMessageId: params.telegramMessageId,
@@ -186,9 +199,13 @@ export async function ingestMessageMedia(
     frames: isSequence ? loaded.images.map((image) => image.base64) : null,
     visionHint: loaded.hint,
   }).catch(() => null);
+  // Conflict (re-delivered update) → the existing row is the truth, not a failure.
+  const media =
+    inserted ??
+    (await getMediaByMessage(db, params.chatId, params.telegramMessageId).catch(() => null));
   publishEvent(FEATURE.realtimeTopic);
 
-  return { images: loaded.images, kind: detected.kind, note: loaded.note };
+  return { images: loaded.images, kind: detected.kind, note: loaded.note, media };
 }
 
 /**
@@ -348,43 +365,93 @@ export async function resolveDescribeDeps(): Promise<DescribeDeps | null> {
   };
 }
 
+/** How a describe/transcribe pass records itself and where it reads/writes. */
+export interface DescribeAndStoreOptions {
+  db?: DrizzleDb;
+  /**
+   * Record into this (open) trace instead of opening a dedicated one — the live
+   * reply path passes its reply trace so the whole turn reads as one flow. The
+   * parent is never settled here: a failure becomes a warn event and a null
+   * return, and the caller decides how the turn proceeds. Without it (backfill),
+   * the pass opens and settles its own `vision/describe` / `voice/transcribe`
+   * trace as before.
+   */
+  trace?: TraceRecorder;
+}
+
 /**
  * Describe a message's stored media and drop its bytes. Dispatches by kind: an
- * image/video is captioned by the vision model (traced under `vision`/`describe`);
- * a voice message is transcribed by the audio-capable chat model (traced under
- * `voice`/`transcribe`) with the transcript stored as its description. A no-op
+ * image/video is captioned by the vision model; a voice message is transcribed
+ * (dedicated STT endpoint when configured, else the audio-capable chat model)
+ * with the transcript stored as its description. A row that is already
+ * described resolves to its stored text without spending a call. A no-op
  * (skipped) when the message has no pending media. Best-effort: on failure the
  * row stays `pending` for the backfill job to retry.
+ *
+ * The returned record always carries the description that was produced or
+ * found — never a stale null because a concurrent pass won the DB write.
  */
 export async function describeAndStore(
   params: { chatId: string; telegramMessageId: number },
   deps: DescribeDeps,
-  db: DrizzleDb = getDb(),
+  options: DescribeAndStoreOptions = {},
 ): Promise<MediaRecord | null> {
+  const db = options.db ?? getDb();
   const media = await getMediaByMessage(db, params.chatId, params.telegramMessageId).catch(
     () => null,
   );
   const isVoice = media?.kind === "voice";
   const feature = isVoice ? FEATURES["voice"] : FEATURE;
-  const trace = await startTrace(
-    {
-      feature: feature.id,
-      action: isVoice ? "transcribe" : "describe",
-      trigger: {
-        kind: "telegram",
-        actor: params.chatId,
-        correlationId: `${params.chatId}:${params.telegramMessageId}`,
-      },
-      inputSummary: `media on message ${params.telegramMessageId}`,
-    }
-  );
+  const relatedKey = feature.relatedIdsKey ?? FEATURE.relatedIdsKey;
+  // Own trace only when no parent was given (backfill / standalone passes).
+  const ownTrace = options.trace
+    ? null
+    : await startTrace(
+        {
+          feature: feature.id,
+          action: isVoice ? "transcribe" : "describe",
+          trigger: {
+            kind: "telegram",
+            actor: params.chatId,
+            correlationId: `${params.chatId}:${params.telegramMessageId}`,
+          },
+          inputSummary: `media on message ${params.telegramMessageId}`,
+        }
+      );
+  const trace = options.trace ?? ownTrace!;
+
+  /** Nothing to do: settle an owned trace as skipped, or leave a step in the parent. */
+  const skip = async (reason: string): Promise<null> => {
+    if (ownTrace) await ownTrace.skip(reason);
+    else await trace.event({ type: "step", message: reason });
+    return null;
+  };
+
   try {
-    if (isVoice) {
-      const audioBase64 = media?.status === "pending" ? media.dataBase64 : null;
-      if (!media || !audioBase64) {
-        await trace.skip("no pending voice message to transcribe");
-        return null;
+    if (!media) return await skip("no media stored for this message");
+
+    // A re-delivered update (or a pass that lost an earlier race) finds the row
+    // already described: its stored text is the answer — reuse it, spend nothing.
+    if (media.status === "described" && media.description) {
+      await trace.event({
+        type: "db",
+        message: isVoice
+          ? "voice message already transcribed — reusing stored transcript"
+          : "media already described — reusing stored description",
+        data: { mediaId: media.id, chars: media.description.length },
+      });
+      if (ownTrace) {
+        await ownTrace.succeed({
+          outputSummary: media.description,
+          relatedIds: { [relatedKey]: [media.id] },
+        });
       }
+      return media;
+    }
+
+    if (isVoice) {
+      const audioBase64 = media.status === "pending" ? media.dataBase64 : null;
+      if (!audioBase64) return await skip("no pending voice message to transcribe");
 
       // OGG/Opus → 16 kHz mono WAV: what both transcription paths consume. A
       // transcode failure leaves the row pending.
@@ -440,25 +507,21 @@ export async function describeAndStore(
       // "(no speech)" is terminal on purpose: leaving a speechless recording
       // pending would make the backfill re-transcribe it forever.
       const transcript = parseTranscript(rawText) || "(no speech)";
-      const updated = await markDescribed(db, media.id, transcript);
-      await trace.event({
-        type: "db",
+      const stored = await storeDescription(db, trace, media, transcript, {
         message: "voice message transcribed",
-        data: { chars: transcript.length },
       });
       publishEvent(FEATURE.realtimeTopic);
-      await trace.succeed({
-        outputSummary: transcript,
-        relatedIds: { [feature.relatedIdsKey ?? FEATURE.relatedIdsKey]: [media.id] },
-      });
-      return updated ?? media;
+      if (ownTrace) {
+        await ownTrace.succeed({
+          outputSummary: stored.description ?? transcript,
+          relatedIds: { [relatedKey]: [media.id] },
+        });
+      }
+      return stored;
     }
 
-    const images = media?.status === "pending" ? storedMediaImages(media) : null;
-    if (!media || !images) {
-      await trace.skip("no pending media to describe");
-      return null;
-    }
+    const images = media.status === "pending" ? storedMediaImages(media) : null;
+    if (!images) return await skip("no pending media to describe");
 
     // A video/GIF describes from its ordered frame sequence; a still image from
     // its single frame. The hint tells the model the frames are one clip in order.
@@ -482,27 +545,75 @@ export async function describeAndStore(
     });
 
     const description = result.content.trim();
-    if (!description) {
-      await trace.skip("empty description");
-      return null;
-    }
+    if (!description) return await skip("empty description");
 
-    const updated = await markDescribed(db, media.id, description);
-    await trace.event({
-      type: "db",
+    const stored = await storeDescription(db, trace, media, description, {
       message: "media described",
-      data: { kind: media.kind, chars: description.length },
+      extra: { kind: media.kind },
     });
     publishEvent(FEATURE.realtimeTopic);
-    await trace.succeed({
-      outputSummary: description,
-      relatedIds: { [FEATURE.relatedIdsKey]: [media.id] },
-    });
-    return updated ?? media;
+    if (ownTrace) {
+      await ownTrace.succeed({
+        outputSummary: stored.description ?? description,
+        relatedIds: { [relatedKey]: [media.id] },
+      });
+    }
+    return stored;
   } catch (err) {
-    await trace.fail(err);
+    if (ownTrace) {
+      await ownTrace.fail(err);
+    } else {
+      // Never settle the parent (the reply goes on) — but the failure must be
+      // visible in its flow, not just in a caller's fallback behavior.
+      await trace.event({
+        type: "error",
+        level: "warn",
+        message: isVoice ? "voice transcription failed" : "media describe failed",
+        data: { error: err instanceof Error ? err.message : String(err) },
+      });
+    }
     return null;
   }
+}
+
+/**
+ * Persist a produced description honestly. `markDescribed` only lands on a row
+ * still `pending`; when a concurrent pass won the write during the LLM call,
+ * the paid-for text is not discarded and the trace does not pretend a clean
+ * write happened — the stored row (the winner's text) is re-read and returned,
+ * with a warn event saying so. The returned record always carries a description.
+ */
+async function storeDescription(
+  db: DrizzleDb,
+  trace: TraceRecorder,
+  media: MediaRecord,
+  text: string,
+  event: { message: string; extra?: Record<string, unknown> },
+): Promise<MediaRecord> {
+  const updated = await markDescribed(db, media.id, text);
+  if (updated) {
+    await trace.event({
+      type: "db",
+      message: event.message,
+      data: { ...event.extra, mediaId: media.id, chars: text.length },
+    });
+    return updated;
+  }
+  const current = await getMediaById(db, media.id).catch(() => null);
+  const description = current?.description ?? text;
+  await trace.event({
+    type: "db",
+    level: "warn",
+    message: `${event.message} — a concurrent pass already described this row; reusing the stored text`,
+    data: { ...event.extra, mediaId: media.id, chars: description.length },
+  });
+  return {
+    ...(current ?? media),
+    description,
+    status: "described",
+    dataBase64: null,
+    frames: null,
+  };
 }
 
 /** Media annotations for a set of messages in a chat (for the history transcript). */

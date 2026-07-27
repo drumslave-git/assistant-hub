@@ -13,6 +13,7 @@ import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/ex
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import {
   handleIncomingMessage,
+  startReplyTrace,
   type BotMessagingDeps,
   type HandleOutcome,
   type IncomingMessage,
@@ -21,6 +22,7 @@ import {
   applyMessageEdit,
   composeCurrentTurn,
   getConversationWindow,
+  markIncomingMessageProcessed,
   recordAssistantMessage,
   recordIncomingMessage,
 } from "@/features/history/server/service";
@@ -65,6 +67,7 @@ import {
 } from "@/server/llm/client";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import { runWithToolContext } from "@/server/mcp/context";
+import type { TraceRecorder } from "@/server/trace";
 
 import type { IncomingUpdate, ReplyTransport } from "./transport";
 
@@ -165,6 +168,12 @@ interface BuildDepsInput {
     /** Whether to attach the images to the reply (pass 2 — only when the message has text). */
     attachToReply: boolean;
   } | null;
+  /**
+   * The reply trace, when the runtime opened it before the service runs (a voice
+   * turn records its transcription on it first). Handed to the service so the
+   * whole turn stays one trace.
+   */
+  trace?: TraceRecorder;
   overrides?: ProcessOverrides;
 }
 
@@ -182,6 +191,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     isVoiceTurn,
     collectImage,
     visionAttachment,
+    trace,
     overrides,
   } = input;
   const message = update.message;
@@ -200,11 +210,12 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     selfCorrection,
     timeContext,
     requiredLanguage,
+    trace,
     // Called only for an addressed message about to be answered (after the
     // addressing/maintenance gates), so recognition here runs exactly when the
     // flow wants it: recognize → store in history → reply with images + result.
     loadVision: visionAttachment
-      ? async () => {
+      ? async (replyTrace) => {
           const va = visionAttachment;
           let note = va.note;
           let description: string | null = null;
@@ -212,12 +223,14 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           // Pass 1 (always for the current media): recognize it and store the
           // description on the media row — this drops the stored bytes, so the
           // /history mirror shows it and there is nothing left to backfill.
+          // Records into the reply trace: the recognition is part of this turn.
           if (va.recognizeMessageId != null) {
             const describeDeps = await resolveDescribeDeps().catch(() => null);
             if (describeDeps) {
               const described = await describeAndStore(
                 { chatId, telegramMessageId: va.recognizeMessageId },
                 describeDeps,
+                { trace: replyTrace },
               ).catch(() => null);
               if (described?.description) {
                 description = described.description;
@@ -442,6 +455,7 @@ export async function processUpdate(
   // so the operator sees who talks to the bot and the history window has the full
   // running conversation. Both are best-effort and must not block handling.
   const from = message.from;
+  const fromIsBot = from?.is_bot ?? false;
   const text = message.text ?? message.caption ?? "";
   const chat = message.chat;
   const chatId = String(chat.id);
@@ -470,6 +484,11 @@ export async function processUpdate(
     // own failures, and the mirror is caught here — a DB hiccup degrades to a
     // reply without this message in history rather than dropping the update.
     if (text.trim() || hasMedia) {
+      // `processed: false` takes the live-processing hold: the vision backfill
+      // leaves this message's media alone until the `finally` below releases it.
+      // A mirror failure degrades further than before: the media FK then rejects
+      // the media row too, so this turn gets no vision/transcript (recorded on
+      // the reply trace) — media must never float free of the mirror.
       await recordIncomingMessage({
         chatId,
         telegramMessageId: message.message_id,
@@ -478,6 +497,7 @@ export async function processUpdate(
         replyToMessageId: message.reply_to_message?.message_id ?? null,
         sentAt: new Date(message.date * 1000),
         hasMedia,
+        processed: false,
       }).catch((err) => {
         console.warn(`History mirror failed for ${chatId}:${message.message_id}:`, err);
         return null;
@@ -485,6 +505,13 @@ export async function processUpdate(
     }
   }
 
+  // The reply trace — opened early for a voice turn, so the transcription that
+  // must run before any addressing decision records into the same trace the
+  // reply then continues in. Every other turn gets it opened lazily by the
+  // service. Outside the `try` so the catch can settle it if the pipeline dies
+  // between opening and the service (which otherwise settles it on every path).
+  let replyTrace: TraceRecorder | null = null;
+  try {
   // Feedback capture: a reply to an `awaiting_text` feedback menu from the
   // reactor is the free-text answer to the 👍/👎 menu — record it and stop, the
   // message is not a turn for the bot to answer (it stays mirrored above). The
@@ -522,7 +549,11 @@ export async function processUpdate(
   const isVoiceMessage = Boolean(message.voice);
   let voiceTranscript: string | null = null;
   const replyMedia = hasMedia ? null : findReplyMediaMessage(message);
-  if (hasMedia || replyMedia) {
+  // Media from another bot is never ingested: the bot never answers bots, so
+  // describing/transcribing it would spend LLM calls on turns that do not
+  // exist — and the mirror stores no row for bot messages, which the media FK
+  // now enforces structurally.
+  if (!fromIsBot && (hasMedia || replyMedia)) {
     const token = await update.resolveToken().catch(() => null);
     if (token) {
       if (hasMedia) {
@@ -537,7 +568,17 @@ export async function processUpdate(
           // in a group whether the message even summons the bot ("hey <name>, …")
           // is only knowable from the words. The transcript lands on the media
           // row (bytes dropped), so history annotates it with no backfill needed.
-          if (ingested) {
+          // The whole turn — transcription included — is one reply trace, so it
+          // is opened here, ahead of the service.
+          replyTrace = await startReplyTrace({
+            chatId: chat.id,
+            messageId: message.message_id,
+            fromId: from?.id,
+            // The real input is the transcript, which does not exist yet;
+            // filled in via setInputSummary once transcription lands.
+            inputSummary: "",
+          });
+          if (ingested?.media) {
             // Transcription is a real wait (seconds) that happens before the
             // reply flow's own typing starts. When the turn is certain to be
             // answered — a DM, or a group reply to the bot — show typing now;
@@ -556,12 +597,25 @@ export async function processUpdate(
                 const transcribed = await describeAndStore(
                   { chatId, telegramMessageId: message.message_id },
                   describeDeps,
+                  { trace: replyTrace },
                 ).catch(() => null);
                 voiceTranscript = transcribed?.description ?? null;
               }
             } finally {
               stopTranscribeTyping?.();
             }
+          } else {
+            // No stored row to transcribe from: download failed (`unavailable`
+            // row) or the row could not be stored at all (mirror row missing —
+            // the FK refused). Recorded on the turn's trace, not just implied
+            // by the fallback reply.
+            await replyTrace.event({
+              type: "error",
+              level: "warn",
+              message: ingested
+                ? "voice media could not be stored — transcription skipped"
+                : "voice message could not be downloaded — transcription skipped",
+            });
           }
           // With a transcript the turn is answered from the words; without one
           // (transcode/LLM failure — the row stays pending for the backfill) the
@@ -610,6 +664,8 @@ export async function processUpdate(
   // A voice message's effective text is its transcript: addressing, the current
   // turn, and the reply all read the words as if they had been typed.
   const effectiveText = isVoiceMessage ? (voiceTranscript ?? "") : text;
+  // The pre-opened voice trace was created before its input existed.
+  if (effectiveText) replyTrace?.setInputSummary(effectiveText);
 
   const incoming: IncomingMessage = {
     message,
@@ -617,7 +673,7 @@ export async function processUpdate(
     chatType: chat.type,
     messageId: message.message_id,
     fromId: from?.id,
-    fromIsBot: from?.is_bot ?? false,
+    fromIsBot,
     text: effectiveText,
     // A loadable image (on this message or a replied-to one) makes a caption-less
     // message real content, so it is answered and described like any other.
@@ -662,6 +718,7 @@ export async function processUpdate(
       isVoiceTurn: isVoiceMessage,
       collectImage: (base64) => generatedImages.push(base64),
       visionAttachment,
+      trace: replyTrace ?? undefined,
       overrides,
     }),
   );
@@ -676,6 +733,20 @@ export async function processUpdate(
   }
 
   return outcome;
+  } catch (err) {
+    // The service settles the trace on every one of its paths; this catches a
+    // failure *around* it (settings loads, transcription plumbing) so a
+    // pre-opened trace is never left running. Settling twice is a harmless no-op.
+    if (replyTrace) await replyTrace.fail(err).catch(() => undefined);
+    throw err;
+  } finally {
+    // Release the live-processing hold taken by the mirror write above — on
+    // every exit path (replied, ignored, feedback-captured, errored). From here
+    // on, any media still `pending` is a leftover the backfill may claim.
+    if (from && !from.is_bot && (text.trim() || hasMedia)) {
+      await markIncomingMessageProcessed(chatId, message.message_id).catch(() => undefined);
+    }
+  }
 }
 
 /**

@@ -1,9 +1,9 @@
 import "server-only";
 
-import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
-import { mediaBlobs, messageMedia, type MessageMediaRow } from "@/db/schema";
+import { chatMessages, mediaBlobs, messageMedia, type MessageMediaRow } from "@/db/schema";
 
 import type { MediaAnnotation, MediaKind, MediaStatus } from "../types";
 
@@ -275,10 +275,23 @@ export interface PendingMediaRef {
 }
 
 /**
+ * How long a message's live-processing hold is honored. No reply pipeline
+ * legitimately runs this long, so a `processed = false` older than this means
+ * the pipeline died before its `finally` released the hold — the row must
+ * become backfill-eligible again rather than stay hidden forever.
+ */
+const LIVE_HOLD_TIMEOUT = sql`now() - interval '10 minutes'`;
+
+/**
  * Oldest pending media rows, for the vision backfill job (priority 8).
  * Oldest-first so the backlog drains in arrival order. Deliberately byte-free:
  * `describeAndStore` re-reads each row (with bytes) when its turn comes, so the
  * batch scan never loads payloads it may not use.
+ *
+ * Rows whose message is still held by the live reply pipeline
+ * (`chat_messages.processed = false`, see the semaphore column) are excluded —
+ * backfill only ever picks up leftovers, never work in flight — unless the hold
+ * has clearly expired (crashed pipeline).
  */
 export async function listPendingMedia(db: DrizzleDb, limit = 20): Promise<PendingMediaRef[]> {
   return db
@@ -288,7 +301,19 @@ export async function listPendingMedia(db: DrizzleDb, limit = 20): Promise<Pendi
       telegramMessageId: messageMedia.telegramMessageId,
     })
     .from(messageMedia)
-    .where(eq(messageMedia.status, "pending"))
+    .innerJoin(
+      chatMessages,
+      and(
+        eq(chatMessages.chatId, messageMedia.chatId),
+        eq(chatMessages.telegramMessageId, messageMedia.telegramMessageId),
+      ),
+    )
+    .where(
+      and(
+        eq(messageMedia.status, "pending"),
+        or(eq(chatMessages.processed, true), lt(messageMedia.createdAt, LIVE_HOLD_TIMEOUT)),
+      ),
+    )
     .orderBy(asc(messageMedia.createdAt))
     .limit(limit);
 }

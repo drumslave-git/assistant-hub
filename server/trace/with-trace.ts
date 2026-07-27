@@ -21,6 +21,7 @@ export async function withTrace<T>(
   const trace: TraceRecorder = {
     id: inner.id,
     event: (event) => inner.event(event),
+    setInputSummary: (summary) => inner.setInputSummary(summary),
     async succeed(finish) {
       settled = true;
       await inner.succeed(finish);

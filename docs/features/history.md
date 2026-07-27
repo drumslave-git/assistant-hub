@@ -16,6 +16,14 @@ Two layers of conversation memory with opposite properties:
 **every** human message passively — including un-addressed group chatter — and
 every delivered reply. Edits and deletes are mirrored as flags.
 
+The mirror is also the anchor for media: `message_media` has a FK onto
+`(chat_id, telegram_message_id)`, so mirroring must succeed before media can be
+stored. And it carries the live-processing semaphore (`processed`, user decision
+2026-07-27): the live pipeline mirrors with `false` and releases to `true` in a
+`finally`, which is what keeps the vision backfill off media the reply is still
+working on. Non-live writers (imports, restores, assistant replies) always land
+released.
+
 Passive capture is high-volume and intentionally **untraced**: the mirror itself is
 the record. Mutating operations (a CSV import) are traced end to end.
 

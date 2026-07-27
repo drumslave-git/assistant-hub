@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mediaBlobs } from "@/db/schema";
 import type { ChatCompletionResult } from "@/server/llm/client";
 import { listTraces } from "@/server/trace";
-import { startTestDb, type TestDb } from "@/test/db";
+import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
 
 import {
   getMediaAnnotations,
@@ -36,10 +36,14 @@ beforeEach(async () => {
 });
 
 async function seedPending(over?: { chatId?: string; telegramMessageId?: number }) {
+  const chatId = over?.chatId ?? "5";
+  const telegramMessageId = over?.telegramMessageId ?? 10;
+  // Media rows require their mirrored message (FK) — mirror first, like the pipeline.
+  await seedMirrorMessage(ctx.db, { chatId, telegramMessageId });
   return insertMedia(ctx.db, {
     id: crypto.randomUUID(),
-    chatId: over?.chatId ?? "5",
-    telegramMessageId: over?.telegramMessageId ?? 10,
+    chatId,
+    telegramMessageId,
     kind: "photo",
     fileId: "file-1",
     fileUniqueId: "u1",
@@ -70,6 +74,7 @@ describe("message_media repository", () => {
   });
 
   it("records an unavailable placeholder with no bytes", async () => {
+    await seedMirrorMessage(ctx.db, { chatId: "5", telegramMessageId: 11 });
     const row = await insertUnavailableMedia(ctx.db, {
       id: crypto.randomUUID(),
       chatId: "5",
@@ -101,6 +106,7 @@ describe("message_media repository", () => {
     const frames = ["frame-one", "frame-two", "frame-three"].map((text) =>
       Buffer.from(text).toString("base64"),
     );
+    await seedMirrorMessage(ctx.db, { chatId: "5", telegramMessageId: 50 });
     await insertMedia(ctx.db, {
       id: crypto.randomUUID(),
       chatId: "5",
@@ -170,7 +176,7 @@ describe("describeAndStore", () => {
     const result = await describeAndStore(
       { chatId: "5", telegramMessageId: 30 },
       { complete: async () => fakeComplete("a red car on a street") },
-      ctx.db,
+      { db: ctx.db },
     );
     expect(result?.status).toBe("described");
     expect(result?.description).toBe("a red car on a street");
@@ -183,6 +189,7 @@ describe("describeAndStore", () => {
   });
 
   it("describes a video from its ordered frame sequence, then drops all frames", async () => {
+    await seedMirrorMessage(ctx.db, { chatId: "5", telegramMessageId: 40 });
     await insertMedia(ctx.db, {
       id: crypto.randomUUID(),
       chatId: "5",
@@ -205,7 +212,7 @@ describe("describeAndStore", () => {
           return fakeComplete("a man lighting his beard on fire across the clip");
         },
       },
-      ctx.db,
+      { db: ctx.db },
     );
 
     // The describe request carried all three frames as separate, ordered images.
@@ -226,7 +233,7 @@ describe("describeAndStore", () => {
     const result = await describeAndStore(
       { chatId: "5", telegramMessageId: 999 },
       { complete: async () => fakeComplete("unused") },
-      ctx.db,
+      { db: ctx.db },
     );
     expect(result).toBeNull();
     const traces = await listTraces({ feature: "vision" });
@@ -242,7 +249,7 @@ describe("describeAndStore", () => {
           throw new Error("provider down");
         },
       },
-      ctx.db,
+      { db: ctx.db },
     );
     expect(result).toBeNull();
     const annotations = await getMediaAnnotationsForMessages("5", [31], ctx.db);
