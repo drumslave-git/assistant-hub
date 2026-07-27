@@ -73,9 +73,11 @@ whole dependency manifest into the browser bundle).
 ## DB-backed Settings
 
 One typed row (`settings`, `id = 'singleton'`). Read with `GET /api/settings`,
-written with `PATCH /api/settings`; the dashboard form (Settings page) has six
+written with `PATCH /api/settings`; the dashboard form (Settings page) has seven
 tabs and one Save button that persists every changed field regardless of which
-tab is open.
+tab is open. The exception is the **Security** tab: the password change there
+posts to its own endpoint (`POST /api/auth/change-password`) with its own
+button, because it is an auth action, not a settings patch.
 
 Secrets are **write-only**. They are accepted on input and never returned — the
 client-facing shape exposes only a `…Configured: boolean`. Omitting a secret key
@@ -159,7 +161,7 @@ Two columns on the same row are managed by other flows and never editable here:
 
 | Column | Owner |
 | --- | --- |
-| `operator_password_hash`, `session_secret` | `/setup` and the auth service (see [Security](architecture/security.md)) |
+| `operator_password_hash`, `session_secret` | `/setup`, the Security tab's password change, and the auth service (see [Security](architecture/security.md)) |
 | `active_personality_id` | The Personalities page (`PUT /api/personalities/active`) |
 
 ---
@@ -189,4 +191,4 @@ Nothing in this app reports "configured" from the presence of a variable.
 | Any runtime setting | Settings page, or `PATCH /api/settings`. Effective immediately |
 | Database location | `DATABASE_URL`, then restart |
 | Trace directory | `TRACES_DIR`, then restart |
-| Operator password | Clear `operator_password_hash` and `session_secret` in the database, then run `/setup` again — there is deliberately no authenticated change-password flow yet. Rotating invalidates every session. See [Security](architecture/security.md) |
+| Operator password | Settings → Security (requires the current password; signs out every other session). Forgotten password: clear `operator_password_hash` and `session_secret` in the database, then run `/setup` again. See [Security](architecture/security.md) |

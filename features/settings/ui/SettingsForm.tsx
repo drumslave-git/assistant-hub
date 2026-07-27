@@ -15,19 +15,21 @@ import {
   useProbe,
   useSecretField,
 } from "./connection";
+import { ChangePasswordSection } from "./ChangePasswordSection";
 import { ConnectionSection } from "./ConnectionSection";
 
 /**
- * Bot settings editor. Client Component with six tabs: **Core** (the LLM
+ * Bot settings editor. Client Component with seven tabs: **Core** (the LLM
  * connection + model, Telegram token, owner, and maintenance mode — without which
  * the bot cannot run), **Embeddings** (the endpoint powering semantic recall over
  * history summaries), **Images** (the endpoint powering image generation),
  * **Speech** (the endpoint powering voice replies), **Transcription** (the
- * speech-to-text endpoint for voice messages, chat-model fallback), and
- * **Integrations** (optional feature keys like Tavily for web search). One Save
- * button below the tabs persists every changed field regardless of the active
- * tab. Secret keys are write-only — shown as "configured" but their values never
- * leave the server.
+ * speech-to-text endpoint for voice messages, chat-model fallback),
+ * **Integrations** (optional feature keys like Tavily for web search), and
+ * **Security** (operator password change — its own endpoint and button, not part
+ * of the settings patch). One Save button below the tabs persists every changed
+ * field regardless of the active tab. Secret keys are write-only — shown as
+ * "configured" but their values never leave the server.
  *
  * The repeated machinery lives in `connection.ts` (probe + secret-input + backend
  * state hooks) and `ConnectionSection.tsx` (the embeddings/images section shell);
@@ -120,6 +122,10 @@ export function SettingsForm({
   const sttKey = useSecretField(initial.transcriptionApiKeyConfigured);
 
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
+  // Controlled so the global Save row can step aside on the Security tab, whose
+  // password change has its own endpoint and button — two visible submit
+  // buttons for one visible form invite pressing the wrong one.
+  const [activeTab, setActiveTab] = useState("core");
 
   // Probe the LLM endpoint (a user action, not an effect); its model list also
   // feeds the dropdowns below.
@@ -716,28 +722,33 @@ export function SettingsForm({
     { id: "speech", label: "Speech", content: speechTab },
     { id: "transcription", label: "Transcription", content: transcriptionTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },
+    { id: "security", label: "Security", content: <ChangePasswordSection /> },
   ];
 
   return (
     <form onSubmit={onTest} className="space-y-6">
-      <Tabs tabs={tabs} />
+      <Tabs tabs={tabs} value={activeTab} onValueChange={setActiveTab} />
 
-      <div className="flex items-center gap-3 border-t border-border pt-4">
-        <Button
-          type="button"
-          onClick={onSave}
-          disabled={save.kind === "saving"}
-          leftIcon={<Save className="h-4 w-4" />}
-        >
-          {save.kind === "saving" ? "Saving…" : "Save settings"}
-        </Button>
-        {save.kind === "saved" ? (
-          <span className="inline-flex items-center gap-1 text-sm text-success">
-            <Check className="h-4 w-4" aria-hidden /> Saved
-          </span>
-        ) : null}
-        {save.kind === "error" ? <span className="text-sm text-danger">{save.message}</span> : null}
-      </div>
+      {activeTab !== "security" ? (
+        <div className="flex items-center gap-3 border-t border-border pt-4">
+          <Button
+            type="button"
+            onClick={onSave}
+            disabled={save.kind === "saving"}
+            leftIcon={<Save className="h-4 w-4" />}
+          >
+            {save.kind === "saving" ? "Saving…" : "Save settings"}
+          </Button>
+          {save.kind === "saved" ? (
+            <span className="inline-flex items-center gap-1 text-sm text-success">
+              <Check className="h-4 w-4" aria-hidden /> Saved
+            </span>
+          ) : null}
+          {save.kind === "error" ? (
+            <span className="text-sm text-danger">{save.message}</span>
+          ) : null}
+        </div>
+      ) : null}
     </form>
   );
 }

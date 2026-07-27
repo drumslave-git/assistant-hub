@@ -140,7 +140,7 @@ Sign out button in the top bar ends one.
   ```
 
   Restart is not required; the next dashboard visit redirects to `/setup`.
-- **Changing the password** is the same procedure (there is deliberately no
-  authenticated change-password flow yet). Rotating it invalidates every
-  session.
+- **Changing the password** is done in the dashboard at Settings → Security. It
+  requires the current password and signs out every other session (the browser
+  making the change stays signed in).
 - `/api/health` stays public for the Docker healthcheck and orchestrators.

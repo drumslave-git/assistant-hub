@@ -28,7 +28,8 @@ config living in the database rather than env.
 | Validity | A token is valid iff its signature checks out and it has not expired. There is no session table |
 | Revocation | Rotating `session_secret` (a new setup) invalidates every session at once |
 
-Every setup and login attempt is traced under the `auth` feature.
+Every setup, login, and password-change attempt is traced under the `auth`
+feature — never including any password value.
 
 ### Where the gates are
 
@@ -58,10 +59,20 @@ localhost or your LAN.
 `/setup` is self-sealing: the service refuses to overwrite an already-set password,
 and the page permanently redirects to `/login` once one exists.
 
-### Password recovery and rotation
+### Password change
 
-There is deliberately no authenticated change-password flow yet. Both recovery and
-rotation are the same procedure — clear the columns and run setup again:
+The dashboard changes the password at **Settings → Security**
+(`POST /api/auth/change-password`). The route is session-gated like everything
+else, and the service additionally requires the **current password** — a live
+session left on an unattended browser must not be enough to take over the
+account. A successful change rotates `session_secret`, signing out every other
+session; the response sets a fresh cookie so only the calling browser stays in.
+Failed attempts pay the same flat delay as failed logins.
+
+### Password recovery
+
+For a *forgotten* password the procedure is unchanged — clear the columns and
+run setup again:
 
 ```bash
 docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "update settings set operator_password_hash = null, session_secret = null"

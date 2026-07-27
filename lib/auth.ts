@@ -6,3 +6,6 @@
 
 /** The operator session cookie. Value format/verification: `server/auth/session.ts`. */
 export const SESSION_COOKIE = "op_session";
+
+/** Minimum operator password length, shared by the server checks and form hints. */
+export const MIN_PASSWORD_LENGTH = 8;

@@ -6,6 +6,7 @@ import { getDb } from "@/db/drizzle";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getSettingsRecord, upsertSettings } from "@/features/settings/server/repository";
 import { ApiError } from "@/lib/api-error";
+import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { withTrace } from "@/server/trace";
@@ -24,7 +25,7 @@ import { mintSessionToken, readSessionCookie, verifySessionToken } from "./sessi
 
 const FEATURE = FEATURES["auth"];
 
-export const MIN_PASSWORD_LENGTH = 8;
+export { MIN_PASSWORD_LENGTH };
 
 /** A flat cost on every failed login, blunting online brute force. */
 const FAILED_LOGIN_DELAY_MS = 500;
@@ -87,6 +88,43 @@ export async function loginOperator(
       }
       await trace.succeed({ outputSummary: "login ok; session opened" });
       return { token: mintSessionToken(record.sessionSecret) };
+    },
+  );
+}
+
+/**
+ * Change the operator password from inside an authenticated session. The current
+ * password is required even though the route is session-gated — a walked-up-to
+ * browser with a live session must not be enough to take over the account. The
+ * session secret is rotated, so every existing session is signed out; the fresh
+ * token returned here keeps only the caller signed in.
+ */
+export async function changeOperatorPassword(
+  currentPassword: string,
+  newPassword: string,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<{ token: string }> {
+  return withTrace(
+    // Neither password may ever appear anywhere in the trace.
+    { feature: FEATURE.id, action: "change-password", trigger, inputSummary: "operator password change" },
+    async (trace) => {
+      if (newPassword.length < MIN_PASSWORD_LENGTH) {
+        throw ApiError.badRequest(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+      }
+      const record = await getSettingsRecord(db);
+      if (!record?.operatorPasswordHash || !record.sessionSecret) {
+        throw ApiError.badRequest("No operator password is set — run first-time setup");
+      }
+      if (!verifyPassword(currentPassword, record.operatorPasswordHash)) {
+        await sleep(FAILED_LOGIN_DELAY_MS);
+        throw ApiError.unauthorized("Wrong current password");
+      }
+      const sessionSecret = randomBytes(32).toString("base64url");
+      await upsertSettings(db, { operatorPasswordHash: hashPassword(newPassword), sessionSecret });
+      await trace.event({ type: "db", message: "password hash replaced; session secret rotated" });
+      await trace.succeed({ outputSummary: "password changed; all previous sessions invalidated" });
+      return { token: mintSessionToken(sessionSecret) };
     },
   );
 }

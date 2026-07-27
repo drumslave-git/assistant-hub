@@ -1,6 +1,7 @@
 import "server-only";
 
 export {
+  changeOperatorPassword,
   isAuthConfigured,
   judgeSessionToken,
   loginOperator,
