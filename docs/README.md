@@ -4,10 +4,11 @@ Full documentation for **llm-tg-bot-nextjs** — a Telegram bot driven by an
 OpenAI-compatible LLM, with an operator dashboard for control, configuration and
 observability.
 
-Everything here describes the code in this repository. Two other top-level files
-hold project *history* rather than documentation: `NEXTJS_REWRITE_PLAN.md` (scope
-and the feature contract) and `NEXTJS_REWRITE_PROGRESS.md` (per-task progress log
-and Decision Notes).
+Everything here describes the code in this repository. Pending and upcoming
+work — features with their agreed specs and decisions, plus open operational
+items — is tracked in [TODO](TODO.md). (The rewrite-era planning files,
+`NEXTJS_REWRITE_PLAN.md` and `NEXTJS_REWRITE_PROGRESS.md`, were retired on
+2026-07-27; their history lives in git.)
 
 ## Reading paths
 
@@ -82,6 +83,7 @@ its behavior, configuration, data, traces and tests.
 | [Contributing](development/contributing.md) | Engineering standards, the feature contract, where code goes |
 | [Testing](development/testing.md) | Unit tests, Testcontainers integration tests, the bot-less simulation harness |
 | [UI kit](development/ui-kit.md) | The design system, shared components, and the UI conventions features must follow |
+| [TODO](TODO.md) | The working tracker: pending features with their agreed specs, and open items |
 
 ## Conventions used in these docs
 
@@ -90,5 +92,7 @@ its behavior, configuration, data, traces and tests.
   user configured as the bot's owner in Settings — a different concept.
 - Times shown in the dashboard are always rendered in the configured operator
   timezone, never the viewer's local zone.
-- Where a doc states a decision was the user's, it is recorded in the Decision
-  Notes table of `NEXTJS_REWRITE_PROGRESS.md`.
+- Where a doc states a decision was the user's, it was made by asking the user
+  directly. Decisions for pending work are recorded in [TODO](TODO.md); the
+  historical Decision Notes table lives in git history
+  (`NEXTJS_REWRITE_PROGRESS.md`, retired 2026-07-27).

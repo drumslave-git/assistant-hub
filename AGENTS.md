@@ -18,9 +18,9 @@ together, proxy to each other, share runtime state, or communicate.
 
 Before doing implementation work, read:
 
-1. `NEXTJS_REWRITE_PLAN.md`
-2. `NEXTJS_REWRITE_PROGRESS.md`
-3. Relevant installed Next.js docs under `node_modules/next/dist/docs/`
+1. `docs/TODO.md` — the working tracker: pending features with their agreed
+   specs and decisions, plus open operational items
+2. Relevant installed Next.js docs under `node_modules/next/dist/docs/`
 
 This is not optional. The installed Next.js version may have APIs and
 conventions that differ from memory or older documentation.
@@ -68,8 +68,9 @@ Code must be clean, readable, and DRY.
 
 ## Feature Contract
 
-Every feature must follow the standard feature contract from
-`NEXTJS_REWRITE_PLAN.md`.
+Every feature must follow the standard feature contract, as established by
+`features/settings` (the reference implementation) and documented in
+`docs/development/contributing.md`.
 
 A feature is not done until it has:
 
@@ -79,20 +80,24 @@ A feature is not done until it has:
 - typed persistence where needed
 - Route Handlers using shared wrappers
 - normal dashboard UI where applicable
-- dedicated Debug page
+- registration in `lib/features.ts` and a link into the shared `/debug`
+  explorer scoped to the feature (`featureDebugHref(id)`) — features do not
+  get their own Debug route
 - trace recording for every meaningful action
 - downloadable JSON log/trace bundle
 - tests for service logic, Route Handlers, and critical UI/debug behavior
 
-Debug pages must use shared debug components unless the feature has a genuinely
+Debug views must use shared debug components unless the feature has a genuinely
 unique visualization need.
 
 ## Feature Priority
 
-Follow the authoritative order in `NEXTJS_REWRITE_PLAN.md` and
-`NEXTJS_REWRITE_PROGRESS.md`.
+The v1 rewrite is complete: priorities 1–14 below are done. Priorities 5 and 6
+were later superseded (user decision, 2026-07-26): the `search_web` and
+`read_web_page` MCP tools were removed and `browse_web` is the only web tool.
+Remaining work is tracked in `docs/TODO.md`.
 
-Current priority order:
+Priority order:
 
 1. Bot messaging: text receive/reply
 2. System and personality prompts
@@ -108,6 +113,7 @@ Current priority order:
 12. Image generation
 13. Browser agent feature
 14. Voice messages (added by the user, 2026-07-23)
+15. Specialists feature (added by the user, 2026-07-27)
 
 The Mood feature (the bot's own mood state injected into replies) is
 **deprecated and dropped** by the user (2026-07-16). Do not implement it, and do
@@ -116,15 +122,16 @@ behavior comes from the base system prompt plus the active personality only.
 This does not touch the analytics-only mood score in the Analytics dashboard
 (priority 11), which stays.
 
-Features not listed there are not v1 by default. Add a feature to the tracker
-with explicit priority, acceptance criteria, and dependencies before
-implementing it.
+Features not listed here are not in scope by default. Add a feature to
+`docs/TODO.md` with explicit priority, acceptance criteria, and dependencies
+before implementing it.
 
 ## Progress Tracking
 
 Track progress in repository files, not only in chat.
 
-Update `NEXTJS_REWRITE_PROGRESS.md` before and after substantial work.
+`docs/TODO.md` is the working tracker. Update it before and after substantial
+work.
 
 Use these statuses:
 
@@ -141,20 +148,23 @@ For every `done` item, record proof:
 - build/typecheck/lint status where relevant
 - remaining risks
 
+Prune an entry once the work is shipped and documented under `docs/` — git
+history is the archive; the tracker holds only open work.
+
 For every `blocked` item, record:
 
 - blocker
 - attempted approach
 - next decision needed
 
-At handoff, update "Next Agent Notes" with current state, next best task,
-known pitfalls, and commands that passed or failed.
+At handoff, leave short notes in `docs/TODO.md` with current state, next best
+task, known pitfalls, and commands that passed or failed.
 
 ## Decision Notes
 
 Per user preference, non-standard infrastructure or behavior decisions are
-made by asking the user directly and recording the outcome in the Decision
-Notes table in `NEXTJS_REWRITE_PROGRESS.md`. Do not write
+made by asking the user directly and recording the outcome in `docs/TODO.md`,
+against the entry the decision belongs to. Do not write
 `docs/decisions/*.md` files.
 
 Asking first is required for:
@@ -193,4 +203,4 @@ broader checks when the change is large enough:
 - `npm run test` once configured
 - `npm run build`
 
-If a check cannot be run, record why in `NEXTJS_REWRITE_PROGRESS.md`.
+If a check cannot be run, record why in `docs/TODO.md`.

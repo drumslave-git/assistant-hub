@@ -2,8 +2,8 @@
 
 A Next.js rewrite of the [ollama-tg-bot](https://github.com/drumslave-git/ollama-tg-bot)
 MVP: a Telegram bot powered by an OpenAI-compatible chat completions API, with a
-control/observability dashboard. See `NEXTJS_REWRITE_PLAN.md` for scope and
-`NEXTJS_REWRITE_PROGRESS.md` for current status.
+control/observability dashboard. Pending work is tracked in
+[`docs/TODO.md`](docs/TODO.md).
 
 ## Documentation
 
@@ -69,7 +69,7 @@ Boundaries are intentional; keep feature-specific plumbing out of shared modules
 | --- | --- |
 | `app/` | App Router routes, layouts, and Route Handlers (`app/api/**/route.ts`). Handlers stay thin and delegate to `server/`. |
 | `components/` | Shared, presentational dashboard UI (no feature business logic). `components/ui/` is the design-system kit (import via `@/components/ui`); `components/layout/` is the responsive app shell (sidebar/drawer/topbar, nav config); `components/theme/` holds the theme toggle + pre-hydration script. |
-| `features/` | Product feature modules (server service, schemas, API, UI, tests) following the feature contract in the plan. |
+| `features/` | Product feature modules (server service, schemas, API, UI, tests) following the feature contract in [Contributing](docs/development/contributing.md). |
 | `server/` | Server-only domain logic and shared infrastructure. Modules that touch secrets, DB, filesystem, Telegram, or the LLM provider import `server-only`. |
 | `db/` | Drizzle schema (`schema.ts`), generated SQL migrations (`migrations/`), pooled Drizzle handle (`getDb()`), and the migrator. |
 | `lib/` | Small shared utilities and pure contracts (error shape, trace types) importable by both client and server. |

@@ -1,8 +1,8 @@
 # Contributing
 
 Read this alongside `AGENTS.md` (the short, authoritative version), and check
-`NEXTJS_REWRITE_PLAN.md` for scope plus `NEXTJS_REWRITE_PROGRESS.md` for current
-status and Decision Notes before starting implementation work.
+[`docs/TODO.md`](../TODO.md) — pending features with their agreed specs and
+decisions, plus open items — before starting implementation work.
 
 ## Non-negotiables
 
@@ -108,8 +108,8 @@ metadata and token usage, generated outputs, errors, and related row ids.
     tool-selection test if you added a tool.
 12. **Docs** — a page under `docs/features/`, and a row in
     `docs/features/README.md`.
-13. **Progress** — update `NEXTJS_REWRITE_PROGRESS.md` with files changed, checks run,
-    and remaining risks.
+13. **Progress** — update `docs/TODO.md` with files changed, checks run, and
+    remaining risks; prune the entry once the work is shipped and documented.
 
 ## UI conventions that are not optional
 
@@ -168,7 +168,7 @@ npm run build
 ```
 
 `npm run test:integration` needs Docker; run it when you touched persistence. If a
-check cannot be run, record why in `NEXTJS_REWRITE_PROGRESS.md`.
+check cannot be run, record why in `docs/TODO.md`.
 
 Two local-development cautions:
 
@@ -178,24 +178,26 @@ Two local-development cautions:
 
 ## Progress tracking
 
-Update `NEXTJS_REWRITE_PROGRESS.md` before and after substantial work, using the
-statuses `todo`, `in-progress`, `blocked`, `done`, `deferred`.
+Update `docs/TODO.md` before and after substantial work, using the statuses
+`todo`, `in-progress`, `blocked`, `done`, `deferred`. Prune entries once the
+work is shipped and documented under `docs/` — git history is the archive; the
+tracker holds only open work.
 
 | For a | Record |
 | --- | --- |
 | `done` item | Files changed, tests run, build/typecheck/lint status, remaining risks |
 | `blocked` item | The blocker, what was attempted, the next decision needed |
-| Handoff | "Next Agent Notes": current state, next best task, known pitfalls, commands that passed or failed |
+| Handoff | Short handoff notes: current state, next best task, known pitfalls, commands that passed or failed |
 
-Decisions go in the Decision Notes **table** in that file. Do not write
-`docs/decisions/*.md` files.
+Decisions are recorded in `docs/TODO.md`, against the entry they belong to. Do
+not write `docs/decisions/*.md` files.
 
 ## Feature priority
 
-The authoritative order lives in `NEXTJS_REWRITE_PLAN.md` and
-`NEXTJS_REWRITE_PROGRESS.md`. Features not listed there are not v1 by default — add
-one to the tracker with explicit priority, acceptance criteria and dependencies before
-implementing it.
+The priority list lives in `AGENTS.md`; remaining work is tracked in
+`docs/TODO.md`. Features not listed are not in scope by default — add one to
+`docs/TODO.md` with explicit priority, acceptance criteria and dependencies
+before implementing it.
 
 The **Mood** feature (the bot's own mood injected into replies) is deprecated and
 dropped (user decision, 2026-07-16). Do not implement it and do not re-add it to the
