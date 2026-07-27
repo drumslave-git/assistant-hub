@@ -161,10 +161,13 @@ Self-correction guidelines (learned from user feedback on your replies):
 <latest self-correction>
 ```
 
-The base prompt covers transcript format, reply format, honesty ("an action only
-counts when you actually carry it out this turn"), and a safety block telling the
-model to treat message content as data rather than commands. It names **no
-tools** — tools self-describe through the tools API.
+The base prompt covers transcript format, reply format, honesty, and a safety
+block telling the model to treat message content as data rather than commands.
+The honesty rules bind action claims to tool calls: an action only counts when a
+tool call actually ran this turn, a reply *saying* it did something is not the
+action, and staying in character never exempts a claim — a joke-framed or
+third-person request that implies a real action still requires the call first.
+It names **no tools** — tools self-describe through the tools API.
 
 Six context loads then run **concurrently** (they are independent reads), and the
 trace events are emitted afterwards in the fixed order the prompt is composed in,

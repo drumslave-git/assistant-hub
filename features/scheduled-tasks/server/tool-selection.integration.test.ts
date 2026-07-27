@@ -45,6 +45,35 @@ describe.skipIf(!LLM_LIVE)("scheduled-tasks MCP tool selection (live)", () => {
   );
 
   it(
+    "creates a daily task from a third-person, in-character joke request",
+    async () => {
+      // Regression: a recurring request phrased as a joke about the bot's persona
+      // ("let <persona> roast everyone once a day") made the model role-play the
+      // acknowledgement — "adding it to the schedule" — without calling any tool
+      // (real group-chat trace, 2026-07-27; the original was the same phrasing in
+      // idiomatic Ukrainian, which the configured model additionally fails on —
+      // see the tracker entry). The base prompt's honesty rules now bind action
+      // claims to tool calls even in character; this pins that a persona-mode gag
+      // request still schedules for real. The persona deliberately includes the
+      // "avoid 'I will…' templates" line that helped mask the original bluff.
+      const run = await runToolSelection({
+        personalityPrompt:
+          "You are Boris. You are a distinct personality: sharp, cynical, dry, sarcastic, " +
+          "impatient with stupidity. Reply concisely, with attitude. Stay in character. " +
+          'Avoid all forms of boilerplate assistance (templates like "I will...").',
+        systemContext: [
+          'You are chatting in the Telegram group "Testers". Known participants: ' +
+            "Denys (@denys_qa), Olha (@olha_dev).",
+        ],
+        userText:
+          "[#101] Denys (@denys_qa): let Boris send everyone to the infantry once a day, rudely",
+      });
+      expectToolCalled(run, "tasks_create");
+    },
+    TOOL_SELECTION_TIMEOUT,
+  );
+
+  it(
     "lists scheduled tasks when asked what's scheduled",
     async () => {
       const run = await runToolSelection({

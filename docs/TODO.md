@@ -171,6 +171,30 @@ be followed by `db:migrate` on the dev DB.
 
 ## Other open items
 
+- **Ukrainian idiomatic joke requests never trigger tools on gemma4:12b
+  (`blocked` on a model decision;** from the 2026-07-27 "lied about scheduling"
+  trace `64067530…`**)** — a persona-mode, third-person recurring gag request
+  in idiomatic Ukrainian ("let \<persona\> send everyone ... once a day",
+  phrased colloquially) made the model claim it had scheduled the task without
+  calling `tasks_create`. Fixes landed: the base prompt's Honesty rules now
+  bind action claims to tool calls (in character too), the Conversation rules
+  treat third-person requests about the bot as requests to it, and the
+  `tasks_create` description covers joke/third-person recurring phrasings —
+  verified live: the model no longer fabricates the action, and both the
+  identical English joke phrasing and a plain Ukrainian daily-reminder request
+  now select `tasks_create`. But the idiomatic-Ukrainian variant failed 5/5
+  live runs — a cross-lingual gap in gemma4:12b itself. The English variant is
+  pinned in `features/scheduled-tasks/server/tool-selection.integration.test.ts`;
+  the Ukrainian one is deliberately NOT pinned in code (no Cyrillic in code —
+  user rule, 2026-07-27) and lives only in the exported trace. Next decision
+  needed (operator): try a stronger/tool-tuned model in Settings for the reply
+  path, or accept the gap; re-verify against the trace phrasing after any
+  model change. Related observation feeding the same decision: the plain
+  English "what reminders do I have?" live case intermittently fabricates a
+  full reminder list without calling `tasks_list` (seen 2 of ~6 live suite
+  runs, 2026-07-27) — same bluffing pattern, worth including when evaluating a
+  replacement model.
+
 - **Traces bind-mount permissions (`blocked` on an operator decision;** from
   the 2026-07-22 prod data-loss incident**)** — Docker auto-creates
   `./data/traces` root-owned while the app runs as the non-root `app` user, so

@@ -123,6 +123,13 @@ export interface RecordedToolCall {
 export interface ToolSelectionCase {
   /** The current user message to answer — the thing under test. */
   userText: string;
+  /**
+   * Persona instructions composed into the system prompt exactly as in production
+   * (below the base prompt, as "Additional instructions"). For cases where the
+   * failure mode only appears in character — e.g. a joke-framed request the model
+   * is tempted to role-play instead of act on.
+   */
+  personalityPrompt?: string;
   /** Extra system messages to inject after the base prompt (identity/roster context). */
   systemContext?: string[];
   /** Prior conversation turns to inject before the current message (history window). */
@@ -173,7 +180,7 @@ export async function runToolSelection(testCase: ToolSelectionCase): Promise<Too
   const timeContext = buildTimeContext(new Date(), timezone);
 
   const messages: ChatMessage[] = [
-    { role: "system", content: buildSystemPrompt() },
+    { role: "system", content: buildSystemPrompt({ personalityPrompt: testCase.personalityPrompt }) },
     ...(testCase.systemContext ?? []).map((content) => ({ role: "system" as const, content })),
     ...(testCase.priorTurns ?? []),
     { role: "system", content: timeContext },

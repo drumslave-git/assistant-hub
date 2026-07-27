@@ -110,7 +110,10 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
         "Schedule a task for THIS chat — a reminder/nudge the bot delivers at a set time. Use " +
         "whenever a user asks to be reminded or to have something happen later or on a schedule, " +
         "including one-off and relative requests like 'remind me in 5 minutes', 'in an hour', " +
-        "'tonight', or 'tomorrow at 9'. Resolve any relative/named time against the current " +
+        "'tonight', or 'tomorrow at 9'. This includes playful or in-character requests, and ones " +
+        "phrased in the third person about the bot ('let <bot name> roast everyone once a day') — " +
+        "a recurring bit or gag is still a schedule request: create the task, then answer in " +
+        "character. Resolve any relative/named time against the current " +
         "date/time given in context, then pass a concrete time. 'instruction' is what to do " +
         "(self-contained). Times are in the operator timezone. schedule_kind: once=a single " +
         "run (give 'date' YYYY-MM-DD + 'time'); daily=every day at 'time'; weekly=given " +

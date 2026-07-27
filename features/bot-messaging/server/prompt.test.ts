@@ -51,6 +51,25 @@ describe("buildSystemPrompt", () => {
   });
 });
 
+describe("BASE_SYSTEM_PROMPT honesty rules", () => {
+  it("binds action claims to tool calls made this turn", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "The only way you actually do anything beyond writing text is by calling one of the provided tools in this same turn.",
+    );
+    expect(BASE_SYSTEM_PROMPT).toContain("without the corresponding tool call, nothing happened");
+  });
+
+  it("denies persona/role-play exemption from the tool-call rule", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("Staying in character never exempts you from this.");
+    expect(BASE_SYSTEM_PROMPT).toContain("make the tool call first");
+    expect(BASE_SYSTEM_PROMPT).toContain("say you cannot instead of playing along");
+  });
+
+  it("stays tool-agnostic: names the mechanism but never a specific tool", () => {
+    expect(BASE_SYSTEM_PROMPT).not.toMatch(/tasks_create|browse_web|history_|memory_|image_generate/);
+  });
+});
+
 describe("buildTimeContext", () => {
   // A fixed instant: 2026-07-14T13:34:00Z.
   const now = new Date("2026-07-14T13:34:00Z");
