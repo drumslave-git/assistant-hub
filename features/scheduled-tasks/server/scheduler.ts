@@ -5,12 +5,15 @@ import { getDb } from "@/db/drizzle";
 import { recordAssistantMessage } from "@/features/history/server/service";
 import { getGroupLanguage } from "@/features/known-groups/server/service";
 import { getUserLanguage } from "@/features/known-users/server/service";
+import { getToolset } from "@/features/mcp-tools/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import { getBotPolicy, getLlmRuntime, getTimezone } from "@/features/settings/server/service";
+import { getActiveSpecialistInstructions } from "@/features/specialists/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
 import { isGroupChatId } from "@/lib/telegram";
 import { chatCompletion, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import {
   createIntervalScheduler,
   type IntervalJobStatus,
@@ -24,7 +27,7 @@ import { sendChatMessage } from "@/server/telegram/bot-manager";
 
 import { computeNextRun } from "../schedule";
 import { MAX_ONE_SHOT_ATTEMPTS } from "../types";
-import { fireScheduledTask } from "./fire";
+import { fireScheduledTask, type FireToolCall } from "./fire";
 import {
   deleteScheduledTask,
   listDueScheduledTasks,
@@ -64,8 +67,15 @@ export interface DueRunDeps {
   timezone: string;
   /** Active persona prompt for the fire's system prompt, or null. */
   personalityPrompt: string | null;
-  /** Generate the task message (real: `chatCompletion`). */
-  complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  /**
+   * Generate the task message (real: `chatCompletionWithTools` when tools are
+   * registered, else `chatCompletion`). Called inside the task chat's tool
+   * context; tool calls are reported back for the fire trace.
+   */
+  complete: (
+    messages: ChatMessage[],
+    onToolCall?: (call: FireToolCall) => void | Promise<void>,
+  ) => Promise<ChatCompletionResult>;
   /** Deliver to a chat (real: the bot's `sendChatMessage`); resolves the message id. */
   send: (chatId: string, text: string, opts: { threadId?: number | null }) => Promise<{ messageId: number }>;
   /** Mirror a delivered message into history (real: `recordAssistantMessage`). */
@@ -105,8 +115,14 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
     const storedLanguage = await (
       isGroupChatId(task.chatId) ? getGroupLanguage(task.chatId) : getUserLanguage(task.chatId)
     ).catch(() => null);
+    // The firing chat's active specialist — per chat, so it is resolved per
+    // task, like the language. Best-effort: unreadable → the generic bot.
+    const specialistInstructions = await getActiveSpecialistInstructions(task.chatId, db).catch(
+      () => null,
+    );
     const result = await fireScheduledTask(task, {
       personalityPrompt: deps.personalityPrompt,
+      specialistInstructions,
       requiredLanguage: resolveRequiredLanguage(storedLanguage),
       complete: deps.complete,
       send: (text) => deps.send(task.chatId, text, { threadId: task.threadId }),
@@ -160,14 +176,28 @@ async function runTick(ctx?: IntervalRunContext): Promise<{ summary: string }> {
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
 
   const outcome = await withAdvisoryLock("scheduled-tasks", async () => {
-    const [timezone, personalityPrompt] = await Promise.all([
+    const [timezone, personalityPrompt, toolset] = await Promise.all([
       getTimezone().catch(() => "UTC"),
       getActivePersonalityPrompt().catch(() => null),
+      // Fires run with the full toolset, like a live reply, so a specialist
+      // check-in can read/write its own entries mid-fire (the fire binds the
+      // task's chat as the tool context). No tools registered → plain completion.
+      getToolset().catch(() => null),
     ]);
     return runDueScheduledTasks({
       timezone,
       personalityPrompt,
-      complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }),
+      complete: (messages, onToolCall) =>
+        toolset
+          ? chatCompletionWithTools(conn, {
+              model: runtime.model,
+              messages,
+              tools: toolset.tools,
+              callTool: toolset.callTool,
+              onToolCall: (rec) =>
+                onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
+            })
+          : chatCompletion(conn, { model: runtime.model, messages }),
       send: (chatId, text, opts) => sendChatMessage(chatId, text, opts),
       onProgress: ctx?.reportProgress,
       recordReply: (input) =>

@@ -7,15 +7,25 @@ import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { llmUsageOf, sanitizeMessagesForTrace } from "@/server/llm/client";
+import { runWithToolContext } from "@/server/mcp/context";
+import type { McpToolCallResult } from "@/server/mcp/tool-result";
 import { startTrace } from "@/server/trace";
 
 import type { ScheduledTask } from "../types";
 
 /**
  * Firing a scheduled task: compose an out-of-band prompt (base system prompt +
- * active persona + the task directive), have the LLM write an in-character chat
- * message that *performs* the directive, deliver it, mirror it into history, and
- * record the whole pass as a trace under the `scheduled-tasks` feature.
+ * active persona + the firing chat's active specialist + the task directive),
+ * have the LLM write an in-character chat message that *performs* the directive,
+ * deliver it, mirror it into history, and record the whole pass as a trace under
+ * the `scheduled-tasks` feature.
+ *
+ * The fire composes the firing chat's specialist context exactly like the live
+ * reply path (the load-bearing integration — user decision, 2026-07-27):
+ * instructions stack into the system prompt, and the completion runs with the
+ * task's chat bound as the tool context, so a tool-capable `complete` (the real
+ * scheduler binding) lets a specialist check-in read/write its own entries
+ * instead of waking up as the generic bot.
  *
  * Collaborators (LLM completion, delivery, history mirror) are injected so the
  * fire is unit-testable without a live LLM or Telegram, and so the scheduler can
@@ -26,18 +36,38 @@ import type { ScheduledTask } from "../types";
 
 const FEATURE = FEATURES["scheduled-tasks"];
 
+/** One tool call executed during a fire, reported for trace recording. */
+export interface FireToolCall {
+  name: string;
+  args: Record<string, unknown>;
+  result: McpToolCallResult;
+  ok: boolean;
+}
+
 /** Collaborators the fire needs. */
 export interface FireDeps {
   /** The active personality prompt to compose into the system prompt, or null. */
   personalityPrompt: string | null;
+  /**
+   * The firing chat's active specialist instructions, stacked into the system
+   * prompt like the live reply path. Null/absent → no specialist block.
+   */
+  specialistInstructions?: string | null;
   /**
    * The reply language required for this task's chat (operator-configured, or the
    * default). Injected as a strict directive before the task directive so the
    * fired message is in the chat's language. Null/absent → no directive.
    */
   requiredLanguage?: string | null;
-  /** Generate the task message. Throws on provider/config failure. */
-  complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  /**
+   * Generate the task message. Throws on provider/config failure. Runs inside
+   * the task chat's tool context; a tool-capable implementation reports each
+   * executed tool call via `onToolCall` so the fire trace records it.
+   */
+  complete: (
+    messages: ChatMessage[],
+    onToolCall?: (call: FireToolCall) => void | Promise<void>,
+  ) => Promise<ChatCompletionResult>;
   /** Deliver the message to the chat; resolves the delivered Telegram message id. */
   send: (text: string) => Promise<{ messageId: number }>;
   /** Mirror the delivered message into history (best-effort). */
@@ -108,7 +138,13 @@ export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Pr
       ? buildLanguageInstruction(deps.requiredLanguage)
       : null;
     const messages: ChatMessage[] = [
-      { role: "system", content: buildSystemPrompt({ personalityPrompt: deps.personalityPrompt }) },
+      {
+        role: "system",
+        content: buildSystemPrompt({
+          personalityPrompt: deps.personalityPrompt,
+          specialistInstructions: deps.specialistInstructions,
+        }),
+      },
       ...(languageInstruction
         ? [{ role: "system" as const, content: languageInstruction }]
         : []),
@@ -117,12 +153,35 @@ export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Pr
     await trace.event({
       type: "llm_request",
       message: "request",
-      data: { messages: sanitizeMessagesForTrace(messages) },
+      data: {
+        messages: sanitizeMessagesForTrace(messages),
+        specialistApplied: Boolean(deps.specialistInstructions?.trim()),
+      },
     });
 
     let reply: ChatCompletionResult;
     try {
-      reply = await deps.complete(messages);
+      // The completion runs with the task's chat bound as the tool context —
+      // like the live reply path — so any tool the model calls (a specialist
+      // reading its entries, a task listing) is scoped to the firing chat. No
+      // `collectImage` sink: a fire is text-only delivery, and image-producing
+      // tools must refuse rather than generate into a void.
+      reply = await runWithToolContext(
+        {
+          chatId: task.chatId,
+          userId: task.createdByUserId ?? null,
+          threadId: task.threadId ?? null,
+        },
+        () =>
+          deps.complete(messages, async (call) => {
+            await trace.event({
+              type: "external_call",
+              level: call.ok ? "info" : "warn",
+              message: `tool: ${call.name}`,
+              data: { args: call.args, result: call.result },
+            });
+          }),
+      );
     } catch (err) {
       await trace.event({
         type: "step",

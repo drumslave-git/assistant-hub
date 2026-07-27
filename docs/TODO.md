@@ -77,97 +77,46 @@ never identified from the two exported traces alone — if it recurs, check the
 trace list for the correlation id and whether another process shares the
 production DB.
 
-## Priority 15 — Specialists (`todo`)
+## Priority 15 — Specialists (`done`, 2026-07-27)
 
-Operator-authored bot roles ("specialists") that store, operate on and analyze
-their own data, and proactively message the chat. The user's examples: a daily
-psycho journal with analysis, grocery management, a planning advisor. Added by
-the user 2026-07-27; every design point below is a user decision from the same
-day. No schema, code, seeds or migrations exist yet.
+Implemented per the user-decided design of 2026-07-27 (now documented in
+`docs/features/specialists.md`): operator-only `/specialists` CRUD, one shared
+MCP data toolkit over a unified `specialist_entries` store (free-text
+collection + JSONB payload), per-chat activation stacking base + personality +
+specialist, in-tool switch gating (self-serve in own DM, owner-only in
+groups), the per-specialist `per-chat`/`shared` data-scope flag, proactivity
+via the existing scheduled-tasks engine, and three editable seed rows.
 
-### Design (all user-decided, 2026-07-27)
+Implementation choices within the decided guardrails (values were unspecified):
+payload cap 16 384 bytes/entry, query cap 50 results, collection label ≤128
+chars, max 32 specialists (the personalities bound). Load-bearing integration
+delivered by making scheduled-task fires run with the full registered toolset
+(`chatCompletionWithTools`) inside the task chat's tool context — so a
+specialist's check-in queries its own entries mid-fire; tool calls are
+recorded on the fire trace as `external_call` events.
 
-- **Authoring — operator-only, via a `/specialists` dashboard CRUD page** (the
-  personalities pattern): name, description, instructions, data-scope flag.
-  Telegram users use specialists but never author them. Rejected:
-  conversational authoring by Telegram users; a tiered catalog with per-user
-  private specialists.
-- **Anatomy — prompt + one shared toolkit; no per-specialist tables, schemas
-  or code.** All specialists share one generic MCP data toolkit (save / query /
-  update / delete entries) over a single unified `specialist_entries` store:
-  specialist id, chat id, author user id, a free-text `collection` label the
-  model picks, and a JSONB payload whose shape the model decides — the skills
-  model: instructions over shared tools. Toolkit tools stay always-registered
-  (the registry convention) and return a clear "no specialist is active in
-  this chat" result when unscoped; each description self-describes. Guardrails:
-  payload-size cap per entry, result cap per query, **no retention/expiry in
-  v1**. Rejected: author-declared collections with field schemas (revisit only
-  if freeform shapes prove too messy for the local model); code-level plugins.
-- **Activation — per chat, default none.** A new chat→specialist mapping (the
-  active personality stays a single global setting — deliberately different).
-  Deactivating returns the chat to the no-specialist default. Prompt
-  composition **always stacks**: base system prompt + active personality +
-  specialist instructions. Rejected: global or per-user activation; a
-  replace-personality mode; a suppress-personality toggle.
-- **Switching — self-serve in own DM, owner-only in groups.** Surfaces: an MCP
-  switch/list tool plus dashboard per-chat assignment (no Telegram command
-  menu). Permission is enforced **inside the tool** (the browser-downloads
-  owner-gate precedent; no lexical pre-filter — a denied caller gets a refusal
-  the model relays): in a private chat the user may switch their own chat's
-  specialist; in groups only the owner (settings owner identity). User's
-  wording: *"users can switch specialists in their own dm chat, in groups -
-  only by owner."*
-- **Data scope — a per-specialist flag**: `per-chat` (default — each chat is
-  its own silo; right for the journal) or `shared` (one pool across every chat
-  where it's active; right for a grocery list reachable from both the family
-  group and the owner's DM). Per-chat filters on (specialist id, chat id);
-  shared filters on specialist id alone. Entries always record chat + author
-  user id as provenance. Rejected: always-per-chat; always-shared.
-- **Proactivity — self-scheduling via the existing scheduled-tasks engine
-  only.** A specialist keeps itself proactive by calling the existing
-  scheduled-tasks MCP tool (e.g. "keep a daily 21:00 check-in scheduled");
-  fires deliver through the existing poller + `sendChatMessage`. **The
-  load-bearing integration: the scheduled-task fire path must compose the
-  firing chat's active specialist context (instructions + toolkit scope)
-  exactly like the live reply path** — otherwise the check-in wakes up as the
-  generic bot. Analysis is not a separate engine: "how was my week" is the
-  model querying its own entries, and digests are self-scheduled tasks.
-  Rejected for v1 (each needs a new decision): an author-defined cron field;
-  data-driven triggers on stored entries.
-- **Seeds — three editable seed specialists ship with the feature**: daily
-  psycho journal (with analysis), grocery management, planning advisor —
-  ordinary editable rows, not fixtures, so the operator tunes
-  instructions/tone/language afterward.
-- **Memory-feature overlap — deliberately orthogonal in v1** (user: "leave for
-  now"): specialist-driven chatter stays visible to the nightly memory
-  extraction. Revisit only if the memory documents actually get polluted.
-
-### Acceptance criteria
-
-The standard feature contract (`docs/development/contributing.md`), plus:
-
-- `/specialists` dashboard page: CRUD, a per-chat assignment view (every
-  chat's active specialist, assign/clear), and an entries browser (filter by
-  specialist/chat/collection, full raw JSON payloads, live via SSE).
-- Feature registration in `lib/features.ts`; traces for
-  switch/save/query/prompt-composition with full raw bodies;
-  `/debug?feature=specialists` + tool scope `mcp-tools-specialists`.
-- Migrations generated **and applied** to the dev DB.
-- Tests: service, routes, toolkit (incl. the no-active-specialist result),
-  switch gating (DM vs group), scope-flag queries, prompt composition incl.
-  the scheduled-fire path, seeds.
-
-### Suggested implementation order
-
-1. Schema (specialists table, chat→active mapping, `specialist_entries`) +
-   service + the generic toolkit.
-2. Prompt composition — the live reply path **and** the scheduled-task fire
-   path.
-3. `/specialists` dashboard page, seeds, debug wiring.
-
-Known pitfalls: the MCP registry and the schedulers are boot-bound singletons
-(new tools are not offered until a dev-server restart), and `db:generate` must
-be followed by `db:migrate` on the dev DB.
+Proof: files — `db/schema.ts` + migration `0042_next_iron_monger.sql` (three
+tables + seeds; **applied to the dev DB**), `features/specialists/*`
+(schema/repository/service/mcp-tools/UI), `app/api/specialists/**`,
+`app/(dashboard)/specialists/page.tsx`, `lib/features.ts`
+(`specialists` + `mcp-tools-specialists`), `lib/realtime.ts` (`specialists`
+topic), `server/mcp/runtime.ts`, `components/layout/nav-config.ts`,
+`features/bot-messaging/server/{prompt,service}.ts`,
+`server/telegram/process-update.ts`,
+`features/scheduled-tasks/server/{fire,scheduler}.ts`, docs
+(`docs/features/specialists.md`, features README, AGENTS.md). Tests: new
+`specialists.integration.test.ts` (18: seeds, CRUD, assignment, switch gating
+DM vs group, scope silos, caps, browser, traces), `mcp-tools.test.ts`
+(no-active-specialist result, save normalization, switch relaying), prompt
+stacking + fire-path composition/tool-context tests added to existing suites.
+`npm run lint`, `typecheck`, `test` (716), `test:integration` (311 passed / 31
+skipped — the live-LLM-gated ones), `build` all green. Remaining risks: the
+dashboard page was verified only by build + tests (operator auth blocks an
+agent from logging in — check `/specialists` renders after the next dev-server
+restart, which is also when the new MCP tools appear, registry being
+boot-bound); gemma4:12b tool-selection quality over the new toolkit is
+unmeasured — if the model ignores `specialist_*` tools live, tune the seed
+instructions/tool descriptions like the tasks tools were.
 
 ## Other open items
 

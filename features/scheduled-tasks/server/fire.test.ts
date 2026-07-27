@@ -12,6 +12,7 @@ vi.mock("@/server/trace", () => ({ startTrace: vi.fn().mockResolvedValue(recorde
 vi.mock("@/db/drizzle", () => ({ getDb: () => ({}) }));
 
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import { tryGetToolContext } from "@/server/mcp/context";
 
 import type { ScheduledTask } from "../types";
 import { buildTaskDirectiveMessage, fireScheduledTask, type FireDeps } from "./fire";
@@ -98,6 +99,47 @@ describe("fireScheduledTask", () => {
       content: "Hey, don't forget to call your mom!",
     });
     expect(recorder.succeed).toHaveBeenCalled();
+  });
+
+  it("stacks the chat's specialist instructions into the system prompt", async () => {
+    const d = deps({
+      personalityPrompt: "Be terse.",
+      specialistInstructions: "Keep a daily journal.",
+    });
+    await fireScheduledTask(task(), d);
+    const messages = (d.complete as ReturnType<typeof vi.fn>).mock.calls[0][0] as ChatMessage[];
+    const system = messages[0].content as string;
+    expect(system).toContain("Be terse.");
+    expect(system).toContain("Active specialist role for this chat");
+    expect(system).toContain("Keep a daily journal.");
+    // The persona comes first; the specialist stacks on top (never replaces).
+    expect(system.indexOf("Be terse.")).toBeLessThan(system.indexOf("Keep a daily journal."));
+  });
+
+  it("binds the task's chat as the tool context and records reported tool calls", async () => {
+    let bound: { chatId: string; userId?: string | null; threadId?: number | null } | null = null;
+    const d = deps({
+      complete: vi.fn(async (_messages: ChatMessage[], onToolCall?) => {
+        bound = tryGetToolContext();
+        await onToolCall?.({
+          name: "specialist_query_entries",
+          args: { collection: "journal" },
+          result: { text: "(no matching entries)" },
+          ok: true,
+        });
+        return completion("Journal check-in!");
+      }),
+    });
+    const result = await fireScheduledTask(task({ threadId: 7 }), d);
+    expect(result.ok).toBe(true);
+    // The fire composes the same tool scope a live reply gets: this chat only.
+    expect(bound).toMatchObject({ chatId: "555", userId: "100", threadId: 7 });
+    expect(recorder.event).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "external_call",
+        message: "tool: specialist_query_entries",
+      }),
+    );
   });
 
   it("returns ok:false without delivering when generation throws", async () => {

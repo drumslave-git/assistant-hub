@@ -94,6 +94,13 @@ export const FEATURES = {
     relatedIdsKey: "scheduled_tasks",
     path: "/scheduled-tasks",
   },
+  specialists: {
+    id: "specialists",
+    label: "Specialists",
+    realtimeTopic: "specialists",
+    relatedIdsKey: "specialists",
+    path: "/specialists",
+  },
   settings: {
     id: "settings",
     label: "Settings",
@@ -192,6 +199,11 @@ export const FEATURES = {
   "mcp-tools-browser-agent": {
     id: "mcp-tools-browser-agent",
     label: "Browser agent tool",
+    path: "/tools",
+  },
+  "mcp-tools-specialists": {
+    id: "mcp-tools-specialists",
+    label: "Specialist tools",
     path: "/tools",
   },
 } as const satisfies Record<string, FeatureDescriptor>;

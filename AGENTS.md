@@ -92,7 +92,7 @@ unique visualization need.
 
 ## Feature Priority
 
-The v1 rewrite is complete: priorities 1–14 below are done. Priorities 5 and 6
+The v1 rewrite is complete: priorities 1–15 below are done. Priorities 5 and 6
 were later superseded (user decision, 2026-07-26): the `search_web` and
 `read_web_page` MCP tools were removed and `browse_web` is the only web tool.
 Remaining work is tracked in `docs/TODO.md`.

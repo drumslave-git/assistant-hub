@@ -9,6 +9,7 @@ import {
 } from "@/features/settings/server/service";
 import type { BotPolicy } from "@/features/settings/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
+import { getActiveSpecialistInstructions } from "@/features/specialists/server/service";
 import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/exclusions-repository";
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import {
@@ -140,6 +141,7 @@ interface BuildDepsInput {
   transport: ReplyTransport;
   policy: BotPolicy;
   personalityPrompt: string | null;
+  specialistInstructions: string | null;
   selfCorrection: string | null;
   timeContext: string | null;
   requiredLanguage: string | null;
@@ -184,6 +186,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     transport,
     policy,
     personalityPrompt,
+    specialistInstructions,
     selfCorrection,
     timeContext,
     requiredLanguage,
@@ -207,6 +210,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     bot,
     policy,
     personalityPrompt,
+    specialistInstructions,
     selfCorrection,
     timeContext,
     requiredLanguage,
@@ -685,9 +689,12 @@ export async function processUpdate(
   // DM setting for a private chat (a private chat's id equals the user id). Falls
   // back to the default when unset — the bot is always given a language directive.
   const isGroup = chat.type !== "private";
-  const [policy, personalityPrompt, selfCorrection, timezone, storedLanguage] = await Promise.all([
+  const [policy, personalityPrompt, specialistInstructions, selfCorrection, timezone, storedLanguage] = await Promise.all([
     getBotPolicy(),
     getActivePersonalityPrompt(),
+    // The chat's active specialist role — stacked onto the persona, never
+    // replacing it. Best-effort: an unreadable activation degrades to no role.
+    getActiveSpecialistInstructions(chatId).catch(() => null),
     getLatestSelfCorrectionPrompt().catch(() => null),
     getTimezone().catch(() => "UTC"),
     (isGroup ? getGroupLanguage(chatId) : getUserLanguage(chatId)).catch(() => null),
@@ -711,6 +718,7 @@ export async function processUpdate(
       transport,
       policy,
       personalityPrompt,
+      specialistInstructions,
       selfCorrection,
       timeContext,
       requiredLanguage,

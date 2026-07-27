@@ -9,7 +9,7 @@
  */
 
 /** Topics a client can subscribe to. Add new live surfaces here. */
-export const REALTIME_TOPICS = ["traces", "bot", "status", "history", "users", "groups", "vision", "tasks", "feedback", "memory", "analytics", "browser"] as const;
+export const REALTIME_TOPICS = ["traces", "bot", "status", "history", "users", "groups", "vision", "tasks", "feedback", "memory", "analytics", "browser", "specialists"] as const;
 export type RealtimeTopic = (typeof REALTIME_TOPICS)[number];
 
 /** A single server→client notification. Payload stays intentionally small. */

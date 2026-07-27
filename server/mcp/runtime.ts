@@ -24,6 +24,10 @@ import {
   registerScheduledTasksMcpTools,
   SCHEDULED_TASKS_TOOL_NAMES,
 } from "@/features/scheduled-tasks/server/mcp-tools";
+import {
+  registerSpecialistsMcpTools,
+  SPECIALISTS_TOOL_NAMES,
+} from "@/features/specialists/server/mcp-tools";
 import { BotMcpRegistry } from "./registry";
 
 /**
@@ -59,6 +63,7 @@ async function build(): Promise<BotMcpRegistry> {
     registerScheduledTasksMcpTools,
     SCHEDULED_TASKS_TOOL_NAMES,
   );
+  registry.registerTools("specialists", registerSpecialistsMcpTools, SPECIALISTS_TOOL_NAMES);
   registry.registerTools("memory", registerMemoryMcpTools, MEMORY_TOOL_NAMES);
   registry.registerTools("image-gen", registerImageGenMcpTools, IMAGE_GEN_TOOL_NAMES);
   registry.registerTools(
