@@ -204,8 +204,9 @@ query words it), while recall searches by meaning.
 
 `memory_save`'s description is long by design: it states that saying "I'll
 remember that" without calling the tool is a false promise, when to save
-proactively, what never belongs in `general` scope, and that facts must be
-self-contained and one per call.
+proactively, which scope a fact about a person belongs in (`user` for someone this
+chat knows, `general` for anyone else), and that facts must be self-contained and
+one per call.
 
 ### Scheduled tasks — `mcp-tools-scheduled-tasks`
 

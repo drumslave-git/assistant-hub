@@ -123,14 +123,14 @@ describe("buildExtractionRequest", () => {
     expect(request).toContain("User 9999: I live in Porto");
   });
 
-  it("tells a day with nobody storable to store nothing about anyone, not to reach for general", () => {
+  it("sends a day with nobody storable to general knowledge rather than to nothing", () => {
     const request = buildExtractionRequest(
       "2026-07-13",
       [message({ userId: null, label: "Bot", role: "assistant" })],
       [],
     );
-    expect(request).toContain("do not store a fact about any person today");
-    expect(request).not.toContain("naming the person in the fact itself");
+    expect(request).toContain("must be saved as general knowledge");
+    expect(request).toContain("naming the person in the fact itself");
   });
 });
 
@@ -141,8 +141,11 @@ describe("buildExtractionRequest", () => {
  * deleting one; the behaviour they buy is covered end-to-end by the integration test.
  */
 describe("EXTRACTION_SYSTEM", () => {
-  it("bans general scope as a home for facts about people", () => {
-    expect(EXTRACTION_SYSTEM).toContain('Never use "general" to record something about a person.');
+  it("keeps general scope for people it cannot file, and bans it for people it can", () => {
+    expect(EXTRACTION_SYSTEM).toContain("a fact about someone with no id here");
+    expect(EXTRACTION_SYSTEM).toContain(
+      'Never use "general" for a fact about someone who DOES have an id in the participants list.',
+    );
   });
 
   it("requires a fact about a person to come from that person", () => {
@@ -150,8 +153,9 @@ describe("EXTRACTION_SYSTEM", () => {
     expect(EXTRACTION_SYSTEM).toContain("hearsay");
   });
 
-  it("drops a person it cannot identify rather than re-filing them", () => {
-    expect(EXTRACTION_SYSTEM).toContain("drop the fact");
+  it("re-files a person it cannot identify instead of losing them", () => {
+    expect(EXTRACTION_SYSTEM).toContain("cannot have a fact filed under them");
+    expect(EXTRACTION_SYSTEM).toContain("with their name written into the sentence");
   });
 
   it("refuses to treat the bot itself as a person with a biography", () => {

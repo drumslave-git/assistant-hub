@@ -289,10 +289,11 @@ semantic memory search.
 ### `general_memories`
 
 Singleton (`id = 'singleton'`, default). **One** document of cross-chat shared
-knowledge: definitions, rules, conventions — knowledge about *nobody*. Facts
-about people never belong here (user decision, 2026-07-17): the document has no
-identity model, so name-keyed biography got merged across people. Never searched,
-always injected in full.
+knowledge: definitions, rules, conventions — knowledge about *nobody* — plus facts
+about people who have no document of their own (user decision, 2026-07-28,
+reversing 2026-07-17). The document has no identity model, so the identity check
+sits at the write gate instead: a fact about someone the bot can key on is refused
+here and filed under them. Never searched, always injected in full.
 
 ### `memory_extraction_days`
 

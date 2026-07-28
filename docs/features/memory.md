@@ -19,11 +19,28 @@ Both are stored as merged documents rather than sets of independent facts
 resolution possible at all: the model sees the whole picture it is rewriting, so
 "moved to Lisbon" can supersede "lives in Porto".
 
-`general` is knowledge about *nobody*: definitions, rules, conventions, how things
-work. It is explicitly **not** a home for facts about people the bot cannot key on
-(operator decision, 2026-07-17) — such a fact is dropped. Keeping it there was the
-biggest source of wrong memory: the document has no identity model, so name-keyed
-biography got merged across people and nicknames grew into people of their own.
+`general` holds two things: knowledge about *nobody* (definitions, rules,
+conventions, how things work), and facts about people who have **no document of
+their own** — someone talked about in a chat they are not a member of (operator
+decision, 2026-07-28).
+
+That reverses the 2026-07-17 rule, which dropped such a fact outright. Dropping
+targeted a real failure — the document has no identity model, so name-keyed
+biography got merged across people and nicknames grew into people of their own —
+but it also destroyed facts the bot had just been asked to remember, and it did so
+silently. Two guards replace it:
+
+- **The identity check moved to the gate.** A fact about someone the bot *can* key
+  on is refused under `general` and must be filed under them
+  (`checkGeneralNoteSubject`), so the shared document only ever holds outsiders.
+  Conversely, a `user` save naming someone this chat does not know is refused with
+  a pointer to `general` rather than a dead end (`resolveMemorySubject`).
+- **The merge may not invent an identity.** `GENERAL_MERGE_PROMPT` forbids merging
+  two lines about people into one subject or concluding that two names are the
+  same person — the mechanism by which one name used to absorb another.
+
+The gate can only act on the subject the model declares (`person`); a `general`
+note that names nobody is taken at its word as being about nobody.
 
 ## The pipeline
 
@@ -51,8 +68,9 @@ Called by the model while composing a reply. One fact per call. Its description 
 long by design and states the things a model gets wrong otherwise: that saying
 "I'll remember that" without calling the tool is a false promise; that it must save
 proactively when someone reveals something lastingly true about themselves; that a
-fact about a person never belongs in `general` even with the name written in; and
-that facts must be self-contained.
+fact about someone in this chat belongs under `user` and is refused under
+`general`, while a fact about anyone else belongs in `general` with their name
+written into it; and that facts must be self-contained.
 
 ### Producer 2: passive extraction
 

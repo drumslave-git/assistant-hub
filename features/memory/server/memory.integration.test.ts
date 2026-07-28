@@ -16,11 +16,13 @@ import { runMemoryConsolidation, type ConsolidateDeps } from "./consolidate";
 import { runMemoryExtraction, type ExtractDeps } from "./extract";
 import { getGeneralMemory, getUserMemory, listMemoryEntries, searchMemories } from "./repository";
 import {
+  checkGeneralNoteSubject,
   editGeneralMemory,
   editUserMemory,
   forgetGeneralMemory,
   getMemoryContext,
   readMemory,
+  resolveMemorySubject,
   saveMemoryNote,
   searchMemory,
 } from "./service";
@@ -143,6 +145,95 @@ describe("memory_save (the write path)", () => {
     expect(saved.ok).toBe(true);
     const entries = await listMemoryEntries(ctx.db);
     expect(entries[0]).toMatchObject({ scope: "general", userId: null });
+  });
+});
+
+/**
+ * Which document a fact is allowed to land in. The rule (operator decision,
+ * 2026-07-28): someone this chat knows gets their own document and may not be
+ * written into shared knowledge; anyone else is shared knowledge and must not be
+ * lost. Both halves are enforced here, at the gate, so the merge prompts never
+ * have to guess who the bot can identify.
+ */
+describe("subject placement", () => {
+  /** Both people have spoken in the group, so both resolve as participants. */
+  async function seedSpeakers(): Promise<void> {
+    await seedUser(ADA, "Ada");
+    await seedUser(GRACE, "Grace");
+    await seedGroup();
+    await ctx.db.insert(chatMessages).values([
+      {
+        chatId: GROUP_ID,
+        telegramMessageId: 1,
+        role: "user",
+        userId: ADA,
+        content: "hi",
+        sentAt: new Date("2026-07-28T10:00:00.000Z"),
+      },
+      {
+        chatId: GROUP_ID,
+        telegramMessageId: 2,
+        role: "user",
+        userId: GRACE,
+        content: "hello",
+        sentAt: new Date("2026-07-28T10:01:00.000Z"),
+      },
+    ]);
+  }
+
+  it("binds an unnamed subject to the speaker, and resolves a named participant", async () => {
+    await seedSpeakers();
+
+    const speaker = await resolveMemorySubject(
+      { chatId: GROUP_ID, speakerId: ADA },
+      ctx.db,
+    );
+    expect(speaker).toEqual({ ok: true, userId: ADA });
+
+    const named = await resolveMemorySubject(
+      { person: "Grace", chatId: GROUP_ID, speakerId: ADA },
+      ctx.db,
+    );
+    expect(named).toEqual({ ok: true, userId: GRACE });
+  });
+
+  /**
+   * The reversal of the 2026-07-17 rule: this used to tell the model to drop the
+   * fact, which silently destroyed facts the bot had just been asked to remember.
+   */
+  it("points a fact about an outsider at general knowledge instead of dropping it", async () => {
+    await seedSpeakers();
+
+    const subject = await resolveMemorySubject(
+      { person: "Muradyan", chatId: GROUP_ID, speakerId: ADA },
+      ctx.db,
+    );
+    expect(subject.ok).toBe(false);
+    if (!subject.ok) {
+      expect(subject.error).toContain("'general'");
+      expect(subject.error).not.toContain("Drop");
+    }
+  });
+
+  it("lets a general fact be about someone this chat does not know", async () => {
+    await seedSpeakers();
+
+    expect(await checkGeneralNoteSubject({ person: "Muradyan", chatId: GROUP_ID }, ctx.db)).toEqual({
+      ok: true,
+    });
+    // No subject named at all: knowledge about nobody, taken at its word.
+    expect(await checkGeneralNoteSubject({ chatId: GROUP_ID }, ctx.db)).toEqual({ ok: true });
+  });
+
+  it("refuses a general fact about someone who has a document of their own", async () => {
+    await seedSpeakers();
+
+    const allowed = await checkGeneralNoteSubject({ person: "Ada", chatId: GROUP_ID }, ctx.db);
+    expect(allowed.ok).toBe(false);
+    if (!allowed.ok) {
+      expect(allowed.error).toContain("'user'");
+      expect(allowed.error).toContain("Ada");
+    }
   });
 });
 

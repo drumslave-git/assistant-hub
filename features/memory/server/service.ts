@@ -5,6 +5,7 @@ import { getDb } from "@/db/drizzle";
 import { getGroupMembers } from "@/features/known-groups/server/repository";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUser, getKnownUsersByIds } from "@/features/known-users/server/repository";
+import { resolveChatUserByReference } from "@/features/known-users/server/service";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
@@ -142,6 +143,94 @@ export async function getMemoryContext(
       factCount,
       generalFactCount: generalFacts.length,
     },
+  };
+}
+
+/* -------------------------------------------------- subject identity policy */
+
+/** A resolved subject, or the refusal to hand back to the model. */
+export type MemorySubjectResult = { ok: true; userId: string } | { ok: false; error: string };
+
+/**
+ * Who a `user`-scope memory operation is about, as a known-user id.
+ *
+ * The model never sees numeric ids, so it names a person the way the conversation
+ * does — first name, @username, a nickname — and that reference is resolved against
+ * the *participants of this chat only*, so a tool can never reach someone who has
+ * not messaged here. With no reference at all it binds the speaker (the only
+ * subject in a DM, and the common case in a group).
+ *
+ * A reference that matches nobody is not a dead end any more (operator decision,
+ * 2026-07-28): the refusal points the model at `general`, where a fact about an
+ * outsider belongs. See {@link import("../prompt").UNIDENTIFIED_PERSON_RULE}.
+ */
+export async function resolveMemorySubject(
+  params: { person?: string; chatId: string; speakerId: string | null | undefined },
+  db: DrizzleDb = getDb(),
+): Promise<MemorySubjectResult> {
+  const reference = params.person?.trim();
+  if (!reference) {
+    if (!params.speakerId) {
+      return { ok: false, error: "No one is identified to save this about — name the person." };
+    }
+    return { ok: true, userId: params.speakerId };
+  }
+
+  const resolved = await resolveChatUserByReference(params.chatId, reference, db);
+  if (resolved.status === "not_found") {
+    return {
+      ok: false,
+      error:
+        `No one in this chat is known as "${reference}", so a fact cannot be filed under them. ` +
+        "Save it with scope 'general' instead, keeping their name in the fact itself — that is " +
+        "where a fact about someone outside this chat belongs.",
+    };
+  }
+  if (resolved.status === "ambiguous") {
+    return {
+      ok: false,
+      error: `"${reference}" matches ${resolved.count} people here — be more specific (e.g. use their @username).`,
+    };
+  }
+  return { ok: true, userId: resolved.user.userId };
+}
+
+/**
+ * The gate on the other side: a `general` note may be *about* a person, but only
+ * one who has no memory of their own.
+ *
+ * This is what keeps the identity model at the door rather than inside the shared
+ * document. If the named person is a participant of this chat, the fact has a real
+ * home and belongs there — filing it as general instead would put a line about
+ * someone the bot knows into a document that has no ids, which is how name-keyed
+ * lines about different people used to be merged into one subject.
+ *
+ * Only enforceable when the model declares the subject in `person`; a general note
+ * with no subject named is taken at its word as being about nobody.
+ */
+export async function checkGeneralNoteSubject(
+  params: { person?: string; chatId: string },
+  db: DrizzleDb = getDb(),
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const reference = params.person?.trim();
+  if (!reference) return { ok: true };
+
+  const resolved = await resolveChatUserByReference(params.chatId, reference, db);
+  if (resolved.status === "ambiguous") {
+    return {
+      ok: false,
+      error: `"${reference}" matches ${resolved.count} people here — be more specific (e.g. use their @username).`,
+    };
+  }
+  // Nobody here goes by that name: exactly the case general knowledge is for.
+  if (resolved.status === "not_found") return { ok: true };
+
+  return {
+    ok: false,
+    error:
+      `"${reference}" is ${formatKnownUserLabel(resolved.user)}, someone in this chat, so a fact ` +
+      "about them is not general knowledge — it belongs in their own memory. Save it again with " +
+      `scope 'user' and person "${reference}".`,
   };
 }
 

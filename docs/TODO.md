@@ -118,6 +118,70 @@ boot-bound); gemma4:12b tool-selection quality over the new toolkit is
 unmeasured — if the model ignores `specialist_*` tools live, tune the seed
 instructions/tool descriptions like the tasks tools were.
 
+## Memory scope placement — `general` holds outsiders again (`done`, 2026-07-28)
+
+*What happened.* Trace `833006d7…`: a user told the bot to remember, once and for
+all, who a person discussed in the chat is. The model called `memory_save` with
+`scope: "general"`, the tool returned `saved: true`, the bot replied "записав",
+and the 17:20 consolidation run reported `general knowledge updated`. The fact was
+nowhere afterwards. `GENERAL_MERGE_PROMPT` had been told biography "is a line to
+drop" (2026-07-17 rule), so the merge correctly excluded it — and
+`runMemoryConsolidation` deletes every note in the batch whenever the merge
+returns a non-empty document, kept or not. Confirmed promise, silent loss.
+
+*Decision (operator, 2026-07-28), reversing 2026-07-17.* Placement is decided by
+**who the fact is about**: someone this chat knows → `user`; anyone else →
+`general` is the right home, name written into the fact. The two follow-ups
+offered — "don't delete what the merge didn't keep" and "surface the discard" —
+were explicitly declined; the gate is the fix.
+
+*Fixes landed.*
+1. **Gate, both directions** (`features/memory/server/service.ts`) —
+   `resolveMemorySubject` (chat-scoped reference → known-user id; a reference
+   matching nobody now points the model at `general` instead of "drop the fact")
+   and `checkGeneralNoteSubject` (a `general` note whose declared `person`
+   resolves to a chat participant is refused and sent back as `user`). Both are
+   service-level, so the `memory_save` tool and passive extraction clear the same
+   bar (extraction already writes through `saveMemoryNote`, and its rejections are
+   already traced as warnings).
+2. **`mcp-tools.ts` thinned** — the old local `resolveSubjectId` is gone;
+   `memory_save`/`memory_get` call the service. Tool description rewritten: which
+   scope a person-fact belongs in, and that `person` is meaningful for `general`
+   too.
+3. **Prompts realigned** — `UNIDENTIFIED_PERSON_RULE` now says "save it as general
+   with their name in" (shared by the tool and `EXTRACTION_SYSTEM`);
+   `GENERAL_MERGE_PROMPT`'s biography ban replaced with "keep every named fact",
+   retaining the never-merge-two-people guard that makes the reversal safe;
+   extraction's `general` scope line and empty-roster fallback updated to match.
+
+Files changed: `features/memory/prompt.ts` + `prompt.test.ts`,
+`features/memory/extract-prompt.ts` + `extract-prompt.test.ts`,
+`features/memory/types.ts`, `features/memory/server/service.ts`,
+`features/memory/server/mcp-tools.ts`,
+`features/memory/server/memory.integration.test.ts` (new `subject placement`
+block), `docs/features/memory.md`, `docs/architecture/data-model.md`,
+`docs/architecture/llm-and-mcp.md`.
+
+Verified: `npm test` (75 files, 741 passed), `npm run lint`, `npm run typecheck`,
+`npm run build` — all clean. **`npm run test:integration` could not be run** on
+this machine: testcontainers finds no container runtime (`docker` is not
+installed), so the new `subject placement` tests are unexecuted — run them where
+a runtime exists.
+
+*Remaining risks.*
+- The gate only sees the subject the model **declares**. A `general` save that
+  names no `person` is taken at its word, so a person-fact can still slip in
+  unfiled. Content-scanning was considered and rejected: the triggering fact
+  ("Muradyan is a friend of \<user A\> who pranked \<user B\>") names two known
+  people incidentally while being about a third, so a mention-based guard would
+  have rejected exactly the fact this change exists to keep.
+- The merge can still fail to carry a note forward for its own reasons, and the
+  batch is still deleted either way (declined above). A note lost that way is
+  still silent.
+- The 2026-07-17 failure mode (name-keyed lines merging across people) is now held
+  off by prompt text alone in the merge, plus the gate keeping known people out.
+  Watch `/memory` → General knowledge for two outsiders collapsing into one.
+
 ## Other open items
 
 - **Ukrainian idiomatic joke requests never trigger tools on gemma4:12b

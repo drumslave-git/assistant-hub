@@ -3,7 +3,6 @@ import "server-only";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { resolveChatUserByReference } from "@/features/known-users/server/service";
 import { getToolContext } from "@/server/mcp/context";
 
 import {
@@ -16,7 +15,13 @@ import {
   UNIDENTIFIED_PERSON_RULE,
 } from "../prompt";
 import type { MemoryMatch } from "../types";
-import { readMemory, saveMemoryNote, searchMemory } from "./service";
+import {
+  checkGeneralNoteSubject,
+  readMemory,
+  resolveMemorySubject,
+  saveMemoryNote,
+  searchMemory,
+} from "./service";
 
 /**
  * The memory MCP tools. Each is self-describing and names no other tool
@@ -25,52 +30,14 @@ import { readMemory, saveMemoryNote, searchMemory } from "./service";
  *
  * The current chat and speaker come from the per-turn tool context, never from
  * the model — a tool cannot be talked into writing memory into another
- * conversation. The person a `user` fact is *about* defaults to whoever the bot
- * is talking to (the bound speaker) and is otherwise named by a name the model
- * already sees — never a numeric id, which the model is never given. That
- * reference is resolved to a real participant of the current chat here, so a tool
- * can only ever touch someone who has actually messaged in this conversation.
+ * conversation. The person a fact is *about* defaults to whoever the bot is
+ * talking to (the bound speaker) and is otherwise named by a name the model
+ * already sees — never a numeric id, which the model is never given. Resolving
+ * that reference against the chat's participants is what decides scope: someone
+ * this chat knows gets their own document, and anyone else is shared knowledge.
+ * The policy itself lives in the service (`resolveMemorySubject`,
+ * `checkGeneralNoteSubject`); these handlers only carry it to the model.
  */
-
-/**
- * Resolve the person a `user`-scope memory operation is about to a numeric known-user
- * id. With no `person` reference it binds the current speaker (the only subject in a
- * DM, and the common case in a group); with one, it resolves that name/@username
- * against this chat's participants. Returns a model-facing error otherwise.
- */
-async function resolveSubjectId(
-  person: string | undefined,
-): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
-  const { chatId, userId: speakerId } = getToolContext();
-  const reference = person?.trim();
-  if (!reference) {
-    if (!speakerId) {
-      return { ok: false, error: "No one is identified to save this about — name the person." };
-    }
-    return { ok: true, userId: speakerId };
-  }
-  const resolved = await resolveChatUserByReference(chatId, reference);
-  if (resolved.status === "not_found") {
-    return {
-      ok: false,
-      // A refusal with no way forward, deliberately (operator decision, 2026-07-17).
-      // This used to point the model at scope 'general' with the name written into
-      // the fact, which is exactly how general knowledge filled up with biography
-      // about people the bot could not identify. Dropping the fact is the fix.
-      error:
-        `No one in this chat is known as "${reference}", so a fact cannot be filed under them. ` +
-        "Do not save it as 'general' with their name in it — general knowledge is not about " +
-        "people. Drop the fact.",
-    };
-  }
-  if (resolved.status === "ambiguous") {
-    return {
-      ok: false,
-      error: `"${reference}" matches ${resolved.count} people here — be more specific (e.g. use their @username).`,
-    };
-  }
-  return { ok: true, userId: resolved.user.userId };
-}
 
 export const MEMORY_SAVE_TOOL = "memory_save";
 export const MEMORY_GET_TOOL = "memory_get";
@@ -134,13 +101,16 @@ export function registerMemoryMcpTools(server: McpServer): void {
         `themselves — ${DURABLE_FACT_KINDS}. Saving proactively is expected of ` +
         "you, not optional: prefer saving a fact that turns out to be minor over losing one that " +
         "mattered.\n" +
-        "Use scope 'user' for a fact about a specific person (this is how you remember someone " +
-        "across chats). By default the fact is saved about the person you are talking to right " +
-        "now; to save it about someone else in this chat, name them in 'person' by a name you " +
-        "already see for them (their first name, @username, or a known nickname) — never a numeric " +
-        "id. Use scope 'general' ONLY for knowledge that is about nobody — a definition, a rule, " +
-        "a convention, how something works. A fact about a person never belongs in 'general', not " +
-        "even with their name written into it.\n" +
+        "Use scope 'user' for a fact about a person this chat knows (this is how you remember " +
+        "someone across chats). By default the fact is saved about the person you are talking to " +
+        "right now; to save it about someone else in this chat, name them in 'person' by a name " +
+        "you already see for them (their first name, @username, or a known nickname) — never a " +
+        "numeric id.\n" +
+        "Use scope 'general' for knowledge that is about nobody — a definition, a rule, a " +
+        "convention, how something works — and ALSO for a fact about a person who is not in this " +
+        "chat and so has no memory of their own: name them in 'person', and write their name into " +
+        "the fact itself so it still says who it is about. A fact about someone who IS in this " +
+        "chat is refused under 'general' — it belongs in their own memory.\n" +
         `Evidence: ${FIRST_PERSON_EVIDENCE_RULE}.\n` +
         `Identity: ${UNIDENTIFIED_PERSON_RULE}.\n` +
         `Do NOT save: ${NON_DURABLE_FACT_KINDS}. Do not re-save something you have already saved.\n` +
@@ -154,7 +124,9 @@ export function registerMemoryMcpTools(server: McpServer): void {
           .optional()
           .describe(
             "Who the fact is about, named by a name you already see for them (first name, @username, " +
-              "or known nickname). Omit to save it about the person you are talking to now. Ignored for scope 'general'.",
+              "or known nickname). For scope 'user', omit to save it about the person you are talking " +
+              "to now. For scope 'general', name them whenever the fact is about a person, and omit it " +
+              "only when the fact is about nobody.",
           ),
         content: z
           .string()
@@ -176,15 +148,22 @@ export function registerMemoryMcpTools(server: McpServer): void {
       },
     },
     async ({ scope, person, content }) => {
-      const { chatId } = getToolContext();
+      const { chatId, userId: speakerId } = getToolContext();
 
       let subjectId: string | null = null;
       if (scope === "user") {
-        const subject = await resolveSubjectId(person);
+        const subject = await resolveMemorySubject({ person, chatId, speakerId });
         if (!subject.ok) {
           return { content: [{ type: "text" as const, text: subject.error }], isError: true };
         }
         subjectId = subject.userId;
+      } else {
+        // A general note may be about a person — but only one this chat cannot
+        // file under an id of their own.
+        const allowed = await checkGeneralNoteSubject({ person, chatId });
+        if (!allowed.ok) {
+          return { content: [{ type: "text" as const, text: allowed.error }], isError: true };
+        }
       }
 
       const outcome = await saveMemoryNote({ scope, userId: subjectId, content, chatId });
@@ -242,7 +221,8 @@ export function registerMemoryMcpTools(server: McpServer): void {
       },
     },
     async ({ person }) => {
-      const subject = await resolveSubjectId(person);
+      const { chatId, userId: speakerId } = getToolContext();
+      const subject = await resolveMemorySubject({ person, chatId, speakerId });
       if (!subject.ok) {
         return { content: [{ type: "text" as const, text: subject.error }], isError: true };
       }

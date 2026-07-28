@@ -6,13 +6,15 @@
  *  - `user`    one document per person, injected into the replies of the chats
  *              they take part in.
  *  - `general` ONE document of cross-chat shared knowledge, injected into every
- *              reply. Knowledge that is about *nobody*: definitions, rules,
- *              conventions, how things work. Explicitly **not** a home for facts
- *              about people the bot cannot key on (operator decision,
- *              2026-07-17) — such a fact is dropped. Keeping it here by name was
- *              the biggest source of wrong memory: this document has no identity
- *              model, so name-keyed biography got merged across people and
- *              nicknames grew into people of their own.
+ *              reply. Knowledge that is about *nobody* (definitions, rules,
+ *              conventions, how things work) **and** facts about people who have
+ *              no document of their own — someone talked about in a chat they are
+ *              not in (operator decision, 2026-07-28, reversing the 2026-07-17
+ *              rule that dropped such a fact). This document has no identity
+ *              model, so the identity check sits at the gate instead: a fact
+ *              about someone the bot *can* key on is refused here and filed under
+ *              them, and the merge is forbidden from deciding two names are one
+ *              person.
  *
  * Both are written the same way: a note reaches the pending queue (from the
  * `memory_save` tool mid-reply, or from the nightly passive extraction over the

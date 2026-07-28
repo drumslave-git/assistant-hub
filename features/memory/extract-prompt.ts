@@ -48,7 +48,8 @@ export interface ExtractionParticipant {
    * nickname, never by the `First Last (@username)` label the roster is built
    * from, so without these the model cannot tell that the person saying something
    * about themselves is a person it is allowed to store a fact about — and under
-   * {@link UNIDENTIFIED_PERSON_RULE} it must then drop the fact.
+   * {@link UNIDENTIFIED_PERSON_RULE} the fact then lands in shared knowledge
+   * instead of in the document of the person it is actually about.
    */
   aliases: string[];
 }
@@ -59,7 +60,7 @@ Extract a fact when someone reveals something lastingly true about themselves �
 
 Scopes:
 - "user": a fact about one specific person in the participants list, stated by that person about themselves. Set user_id to their id from that list. This is how someone is remembered across chats.
-- "general": shared knowledge that is NOT about any person — a definition, a rule, a convention, how something works. Never use "general" to record something about a person.
+- "general": everything that cannot be filed under a person in that list — shared knowledge that is about nobody (a definition, a rule, a convention, how something works), and a fact about someone with no id here (write their name into the fact itself, so it still says who it is about). Never use "general" for a fact about someone who DOES have an id in the participants list.
 
 Identity:
 - The participants list is the only set of people you may store a fact about. Each entry may also list other names that person goes by ("also called"); those name the same person, so a fact they state about themselves while being called a nickname belongs to their id.
@@ -143,9 +144,10 @@ function rosterLine(participant: ExtractionParticipant): string {
  * were mirrored into history but never registered (imported history does exactly
  * this), and offering their ids only produces facts the store then refuses.
  *
- * A fact about anyone else is dropped (operator decision, 2026-07-17) — see
- * {@link UNIDENTIFIED_PERSON_RULE} for why keeping it as named `general` knowledge
- * was worse than losing it.
+ * A fact about anyone else is kept as named `general` knowledge (operator decision,
+ * 2026-07-28) rather than dropped — see {@link UNIDENTIFIED_PERSON_RULE}. The
+ * roster is still what decides *which* of the two a fact is: only someone offered
+ * here can have a document of their own.
  *
  * Each entry carries the person's aliases, because the roster's job is to be
  * *recognizable*: a group says "Гоша", not "First Last (@username)", and an entry
@@ -160,7 +162,7 @@ export function buildExtractionRequest(
   const roster =
     storable.length > 0
       ? storable.map(rosterLine).join("\n")
-      : "(nobody here can be filed under an id — do not store a fact about any person today; only general knowledge that is about nobody)";
+      : "(nobody here can be filed under an id — a fact about a person today must be saved as general knowledge, naming the person in the fact itself)";
   const transcript = messages.map((m) => toExtractionLine(m, storableIds)).join("\n");
   return [
     `Date of this conversation: ${date}.`,

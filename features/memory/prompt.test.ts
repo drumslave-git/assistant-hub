@@ -85,4 +85,21 @@ describe("buildGeneralMergeRequest", () => {
   it("instructs that every line names its own subject", () => {
     expect(GENERAL_MERGE_PROMPT).toContain("name its own subject");
   });
+
+  /**
+   * The merge used to be told that biography "is a line to drop", which threw away
+   * facts about people the bot cannot file under an id — the only place those can
+   * live. Placement is decided at the gate now (see `checkGeneralNoteSubject`), so
+   * by the time a fact reaches this prompt it has already been established that it
+   * belongs here.
+   */
+  it("keeps facts about people rather than dropping them as biography", () => {
+    expect(GENERAL_MERGE_PROMPT).toContain("Keep every named fact");
+    expect(GENERAL_MERGE_PROMPT).not.toContain("is a line to drop");
+  });
+
+  /** The guard that replaced the ban: no identity model, so never invent one. */
+  it("forbids merging two people into one subject", () => {
+    expect(GENERAL_MERGE_PROMPT).toContain("never conclude that two names are the same person");
+  });
 });

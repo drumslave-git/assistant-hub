@@ -59,19 +59,28 @@ export const FIRST_PERSON_EVIDENCE_RULE =
 
 /**
  * What to do with a fact about someone who cannot be resolved to a known-user id
- * (operator decision, 2026-07-17): drop it.
+ * (operator decision, 2026-07-28): keep it as `general` knowledge, with their name
+ * written into the sentence.
  *
- * Both producers previously did the opposite — they re-filed such a fact as
- * `general` knowledge with the person's name written into the sentence. That was
- * the single biggest source of wrong memory: general knowledge has no identity
- * model, so name-keyed lines about different people were merged into one subject,
- * and a nickname the bot could not resolve became a person of its own.
+ * This reverses the 2026-07-17 decision to *drop* such a fact. Dropping was aimed
+ * at a real failure — general knowledge has no identity model, so name-keyed lines
+ * about different people were being merged into one subject — but it also silently
+ * destroyed facts the bot had just been told to remember, about people who are
+ * talked about in a group and will never be members of it. Those people are
+ * exactly what shared knowledge is for.
+ *
+ * Two guards replace the ban, so the old failure does not come back:
+ *  - the identity model moved to the *gate*, not the document: a fact about someone
+ *    the bot **can** identify is refused under `general` and must be filed under
+ *    them (see `checkGeneralNoteSubject`), so `general` only ever holds outsiders.
+ *  - {@link GENERAL_MERGE_PROMPT} forbids merging two lines about people into one
+ *    subject, which is how one name used to absorb another.
  */
 export const UNIDENTIFIED_PERSON_RULE =
-  "a person you cannot match to a known id is a person you cannot store a fact about: drop the " +
-  "fact rather than inventing an id, guessing which known person was meant, or saving it as " +
-  "general knowledge with their name written in — an unidentified person's fact is worse than no " +
-  "fact, because it will later be read as if it were about someone you do know";
+  "a person you cannot match to a known id cannot have a fact filed under them, but the fact is " +
+  "not lost: save it as 'general' knowledge with their name written into the sentence, so it is " +
+  "still known without pretending to be about someone you can identify — never invent an id, and " +
+  "never guess which known person was meant";
 
 /** How a stored fact must be written, so it survives losing its conversation. */
 export const SELF_CONTAINED_FACT_RULE =
@@ -148,14 +157,15 @@ export const GENERAL_MERGE_PROMPT =
   "shared facts, definitions, rules and conventions, and how things work. You are given the " +
   "current document and newly saved facts. Rewrite the document to incorporate the new facts.\n" +
   "Rules:\n" +
-  "- This document is NOT about people. Biography does not belong here: a person's name, job, " +
-  "history, nicknames, tastes, or habits belong to that person's own document, and a line of it " +
-  "here is a line to drop — including any already in the current document. Keep a person's name " +
-  "only where it is incidental to a fact that is really about something else.\n" +
+  "- This document holds two kinds of fact: knowledge that is about nobody, and facts about " +
+  "people who have no document of their own — someone talked about in chat who is not in it. " +
+  "Both belong here. Keep every named fact: a fact only reaches this document once it has been " +
+  "decided that its subject has nowhere else to live, so dropping a person's line here loses it " +
+  "for good.\n" +
   "- Never merge two lines about people into one subject, and never conclude that two names are " +
   "the same person. You have no way to tell, and guessing wrong invents a person.\n" +
   "- Preserve every unique durable detail. This is lossless except where a fact is a duplicate, " +
-  "is contradicted, was never durable, or is biography per the rules above.\n" +
+  "is contradicted, or was never durable.\n" +
   "- Drop duplicates and near-duplicates: if a new fact restates something already there in " +
   "different words, keep one concise version.\n" +
   "- When a new fact contradicts an old one, keep the new one and drop the outdated line — " +
