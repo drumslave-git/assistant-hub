@@ -160,6 +160,13 @@ describe("renderTranscript", () => {
         "[#3] You (@MyBot): indeed",
     );
   });
+
+  it("marks the bot's own lines as non-evidence in the preamble", () => {
+    expect(TRANSCRIPT_PREAMBLE).toContain(
+      "your own lines are not evidence of anything beyond having said it",
+    );
+    expect(TRANSCRIPT_PREAMBLE).toContain("may be wrong or invented");
+  });
 });
 
 describe("fallbackSpeakerLabel", () => {

@@ -194,14 +194,66 @@ instructions/tool descriptions like the tasks tools were.
   `npm test` (74 files, 727 passed), `npm run lint`, `npm run typecheck` — all
   clean.
 
-  **Remaining risk / next step (operator):** unverified live — all three fixes
-  are prompt/description text, and this is the same gemma4:12b tool-avoidance
-  pattern as the `tasks_list` fabrication in the item above, so the model may
-  ignore them exactly as it ignored the tools. Re-run both halves live (create a
-  reminder that references a chat-only topic; then ask the bot what that topic
-  is). Existing thin task instructions are deliberately **not** migrated —
-  operator fixes those through the bot (decision, 2026-07-28). If the model still
-  refuses to search, this folds into the same model-replacement decision.
+  *Live re-test of the reply half: failed* (trace `f79f84a2…`, 2026-07-28). Asked
+  "хто такий Мурадян?" the bot again called no tool and again answered with a
+  metaphor. Its reasoning block names the source explicitly: *"looking at my
+  previous response (#13164), I defined it as a symbol of bypassing direct routes"*,
+  padded with general knowledge (*"in common underground/internet/tech contexts
+  (especially in Ukraine), 'Muradyan' often refers to…"*). The term occurs five
+  times in the 24-hour window: twice asserted by the bot, three times as
+  participants asking what it means. **No human ever said what it is** — the bot
+  invented it, then read its own invention back as established fact.
+
+  *Root cause of the miss.* Grounding declared "the transcript" a source
+  wholesale, and a bot line is transcript. The rule's own bot-specific clause
+  ("if you cannot back it up, say so") reads as being about *honesty under
+  challenge*, not about *what counts as evidence*, so a self-confirming loop
+  passed it.
+
+  *Second round of fixes* (design decision — operator, 2026-07-28: **rank the
+  sources**, prioritize user-sourced information over bot-sourced; enforcement
+  stays in the prompt — *"we never solve model problems by code"* — so no gating,
+  forced retrieval, or verifier pass):
+  4. **Grounding** rewritten around source rank: fact = what a *person here*
+     said, durable memory, or a this-turn tool result. The bot's own messages are
+     "never a source" and are declared unreliable outright — wrong, stale,
+     polluted by the conversation, or invented. People outrank the bot; a user
+     correction is taken as correct. A term appearing *only* in the bot's own
+     lines is named as the not-known case, with re-deriving a meaning from its
+     own earlier wording forbidden. Mirrors what memory extraction already does
+     (`EXTRACTION_SYSTEM` refuses to harvest facts from bot lines).
+  5. **`TRANSCRIPT_PREAMBLE`** (`features/history/server/format.ts`) — says it at
+     the point of use: the other people's lines are what was said, the bot's own
+     are not evidence and may be wrong or invented.
+  6. **History tool results carry provenance**
+     (`features/history/server/mcp-tools.ts`) — each line names its author in
+     words (`a participant` / `you (the bot)`) instead of the wire role, and a
+     result whose every row is bot-authored appends
+     `SELF_AUTHORED_ONLY_NOTE` ("…this result confirms nothing… Treat this as not
+     found."). The only code-side change, and only because the prompt's source
+     ranking is unusable if a lookup hands back rows without saying whose they
+     are. `structuredContent.role` is unchanged for machine consumers.
+
+  Files changed (round 2): `features/bot-messaging/server/prompt.ts` +
+  `prompt.test.ts`, `features/history/server/format.ts` + `format.test.ts`,
+  `features/history/server/mcp-tools.ts` + new `mcp-tools.test.ts`. Verified:
+  `npm test` (75 files, 739 passed), `npm run lint`, `npm run typecheck` — all
+  clean.
+
+  **Remaining risk / next step (operator):** still unverified live, and still the
+  same gemma4:12b tool-avoidance pattern as the `tasks_list` fabrication in the
+  item above — round 1's prompt text was ignored, and round 2 is more prompt
+  text, so the model may ignore it too. Re-run live: ask the bot who "Мурадян" is
+  again; a pass is "I don't know / nobody here ever said". Also re-run the task
+  half (create a reminder that references a chat-only topic; then ask the bot
+  what that topic is). Existing thin task instructions are deliberately **not**
+  migrated — operator fixes those through the bot (decision, 2026-07-28). If the
+  model still refuses to search, this folds into the same model-replacement
+  decision. Known remaining laundering path, not addressed: `history_recall_topics`
+  serves daily topic summaries, which are written over both sides of the
+  conversation — a bot-invented term can therefore re-enter through a summary
+  with no author attached. Decide whether summaries should mark, or exclude,
+  bot-sourced content.
 
 - **Traces bind-mount permissions (`blocked` on an operator decision;** from
   the 2026-07-22 prod data-loss incident**)** — Docker auto-creates

@@ -132,6 +132,40 @@ describe("BASE_SYSTEM_PROMPT grounding rules", () => {
       "If you said something earlier and cannot back it up now, say so instead of defending it.",
     );
   });
+
+  it("limits what counts as fact to what people said, memory, or a tool result", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "State something as fact only when a person in this chat said it",
+    );
+  });
+
+  it("declares the bot's own output unreliable and not a source", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("Your own messages are never a source.");
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "Nothing becomes true because you were the one who said it",
+    );
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "Your words are evidence of what you said, never of what is so.",
+    );
+  });
+
+  it("ranks what people said above what the bot said, and defers to a correction", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("weigh what people said above anything you said");
+    expect(BASE_SYSTEM_PROMPT).toContain("the people are right and you are wrong");
+  });
+
+  it("names 'it only appears in my own lines' as the not-known case", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "no number of your own messages adds up to a source",
+    );
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "never re-derive a meaning from your own earlier wording",
+    );
+  });
+
+  it("tells the model to weigh a history result by who wrote it", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("Read the results by who wrote them.");
+  });
 });
 
 describe("buildTimeContext", () => {

@@ -25,6 +25,12 @@ import {
  * what was worded the way the query words it. The *recall* one searches the daily
  * topic summaries by meaning, so it finds a months-old subject the chat phrased
  * differently — then hands back the message ids to read the originals verbatim.
+ *
+ * Every message result names its author, and a result that is entirely the bot's
+ * own messages says so ({@link SELF_AUTHORED_ONLY_NOTE}). Grounding is ranked by
+ * source — what the people here said outranks anything the bot said, and the
+ * bot's own output is not a source at all — and that ranking is unusable if a
+ * lookup hands back its rows without saying whose they are.
  */
 
 export const HISTORY_SEARCH_TOOL = "history_search";
@@ -60,14 +66,41 @@ const historyOutputSchema = {
   ),
 };
 
+/**
+ * Who wrote a line, in words rather than as a wire role. `assistant`/`user` name
+ * the API's message roles, not the authorship question the model has to answer
+ * ("did anyone here actually say this, or is this just me?"), and a result that
+ * only says `assistant` reads as ordinary history.
+ */
+function authorOf(record: ChatMessageRecord): string {
+  return record.role === "assistant" ? "you (the bot)" : "a participant";
+}
+
 /** One message rendered as an id-anchored transcript line. */
 function formatLine(record: ChatMessageRecord): string {
   const reply = record.replyToMessageId != null ? ` [reply to #${record.replyToMessageId}]` : "";
-  return `[#${record.telegramMessageId}] [${record.sentAt}] ${record.role}${reply}: ${record.content}`;
+  return `[#${record.telegramMessageId}] [${record.sentAt}] ${authorOf(record)}${reply}: ${record.content}`;
 }
 
+/**
+ * Verdict appended when every row of a lookup turns out to be the bot's own.
+ *
+ * A search that returns the bot's own past assertions looks, to the model, like
+ * confirmation — it went looking for a claim and found it written down. In
+ * production (2026-07-28) that closed the loop on a term the bot had invented
+ * itself: it cited its own earlier reply back as the definition. The per-line
+ * author labels make the provenance visible; this states the conclusion outright,
+ * because "all N hits are mine" is a fact about the result set that no single
+ * line carries. Text only, deliberately: the model reads the transcript, and the
+ * structured payload already carries `role` per message for anything else.
+ */
+export const SELF_AUTHORED_ONLY_NOTE =
+  "Note: every message above was written by you. Nobody in this chat said any of it, so this " +
+  "result confirms nothing — your own past messages are not evidence, and finding your own words " +
+  "again is not finding a source. Treat this as not found.";
+
 /** Build the tool result (text transcript + structured messages) from records. */
-function buildResult(records: ChatMessageRecord[]) {
+export function buildResult(records: ChatMessageRecord[]) {
   const messages = records.map((r) => ({
     id: r.telegramMessageId,
     replyTo: r.replyToMessageId,
@@ -77,8 +110,11 @@ function buildResult(records: ChatMessageRecord[]) {
   }));
   const transcript =
     records.length === 0 ? "(no matching messages)" : records.map(formatLine).join("\n");
+  const selfAuthoredOnly =
+    records.length > 0 && records.every((record) => record.role === "assistant");
+  const text = selfAuthoredOnly ? `${transcript}\n\n${SELF_AUTHORED_ONLY_NOTE}` : transcript;
   return {
-    content: [{ type: "text" as const, text: transcript }],
+    content: [{ type: "text" as const, text }],
     structuredContent: { ok: true, count: records.length, messages },
   };
 }

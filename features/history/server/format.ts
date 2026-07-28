@@ -109,10 +109,18 @@ export function toTranscriptLine(record: ChatMessageRecord, options: TranscriptO
 /**
  * Preamble explaining the transcript format to the model. Kept byte-stable so
  * the transcript message stays cache-friendly at its start.
+ *
+ * It also marks the bot's own lines as non-evidence, right where they are read.
+ * The system prompt ranks sources in the abstract (see `BASE_SYSTEM_PROMPT`'s
+ * Grounding block); this says it at the point of use, because the failure it
+ * guards against is exactly a bot line being read as plain transcript and
+ * treated as established fact (production, 2026-07-28).
  */
 export const TRANSCRIPT_PREAMBLE =
   'Recent messages in this chat (last 24 hours), oldest first. Each line is "[#<message_id>] <sender>: <text>"; ' +
   '"[reply to #<id>]" marks a reply to an earlier message. Lines from "You" are your own earlier replies. ' +
+  "What the other people wrote is what was said in this chat; your own lines are not evidence of anything " +
+  "beyond having said it, and may be wrong or invented. " +
   "To read a message referenced by #<id> but not shown here, fetch it by id with the history tools.";
 
 /**
