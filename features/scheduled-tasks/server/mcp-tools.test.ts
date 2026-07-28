@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ScheduledTask } from "../types";
-import { checkOwnership } from "./mcp-tools";
+import { TASKS_CREATE_DESCRIPTION, checkOwnership } from "./mcp-tools";
 
 /**
  * The author rule for the task MCP tools: a chat participant may edit/cancel only
@@ -61,5 +61,30 @@ describe("checkOwnership", () => {
 
   it("denies a missing task", () => {
     expect(checkOwnership(null, { chatId: "555", userId: "100" }, "task-1")?.isError).toBe(true);
+  });
+});
+
+describe("TASKS_CREATE_DESCRIPTION", () => {
+  it("warns that a fire sees only the instruction, with no chat context", () => {
+    expect(TASKS_CREATE_DESCRIPTION).toContain(
+      "when the task fires you will have ONLY the 'instruction' text: no chat transcript",
+    );
+  });
+
+  it("requires resolving a chat-specific reference from history before creating", () => {
+    expect(TASKS_CREATE_DESCRIPTION).toContain("search the conversation history for it FIRST");
+    expect(TASKS_CREATE_DESCRIPTION).toContain("history_search");
+    expect(TASKS_CREATE_DESCRIPTION).toContain("history_get_in_range");
+    expect(TASKS_CREATE_DESCRIPTION).toContain("write what you found INTO the instruction");
+  });
+
+  it("says to ask rather than store an empty pointer when the lookup fails", () => {
+    expect(TASKS_CREATE_DESCRIPTION).toContain(
+      "ask the user what it refers to instead of storing the empty phrasing",
+    );
+  });
+
+  it("keeps the third-person/joke schedule rule from the earlier fix", () => {
+    expect(TASKS_CREATE_DESCRIPTION).toContain("a recurring bit or gag is still a schedule request");
   });
 });

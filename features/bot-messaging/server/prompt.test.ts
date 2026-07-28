@@ -102,6 +102,38 @@ describe("BASE_SYSTEM_PROMPT honesty rules", () => {
   });
 });
 
+describe("BASE_SYSTEM_PROMPT grounding rules", () => {
+  it("requires a history search before answering about something it cannot find", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "search the chat history for it with the tools before you answer",
+    );
+    expect(BASE_SYSTEM_PROMPT).toContain("Do not reconstruct it from general knowledge");
+  });
+
+  it("makes admitting the gap an acceptable answer", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain('"I don\'t know" and "I could not find it" are complete answers');
+  });
+
+  it("forbids covering a gap by accusing the asker or bluffing", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "Never tell someone they are forgetting, pretending, or playing games in order to avoid a question you cannot answer",
+    );
+    expect(BASE_SYSTEM_PROMPT).toContain("Never bluff, deflect, or change the subject to cover a gap.");
+  });
+
+  it("subordinates the persona to the truth, not just to the tool-call rule", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "the persona sets your tone, never the truth of what you say",
+    );
+  });
+
+  it("holds the bot to its own earlier claims", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "If you said something earlier and cannot back it up now, say so instead of defending it.",
+    );
+  });
+});
+
 describe("buildTimeContext", () => {
   // A fixed instant: 2026-07-14T13:34:00Z.
   const now = new Date("2026-07-14T13:34:00Z");

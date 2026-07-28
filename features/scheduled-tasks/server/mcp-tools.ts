@@ -101,26 +101,51 @@ function toolTrigger(chatId: string, userId?: string | null): TraceTrigger {
 }
 
 /** Register the scheduled-tasks MCP tools on the shared server. */
+/**
+ * `tasks_create`'s description — exported so the behavioural rules it carries can
+ * be pinned by tests. Two of them are load-bearing and were each written against
+ * a production failure: third-person/joke phrasings still being schedule requests
+ * (2026-07-27), and the instruction having to carry its own facts because a fire
+ * gets no transcript (2026-07-28 — a "remind him who X is" task fired as exactly
+ * that sentence, since the firing model had never seen X mentioned).
+ */
+export const TASKS_CREATE_DESCRIPTION =
+  "Schedule a task for THIS chat — a reminder/nudge the bot delivers at a set time. Use " +
+  "whenever a user asks to be reminded or to have something happen later or on a schedule, " +
+  "including one-off and relative requests like 'remind me in 5 minutes', 'in an hour', " +
+  "'tonight', or 'tomorrow at 9'. This includes playful or in-character requests, and ones " +
+  "phrased in the third person about the bot ('let <bot name> roast everyone once a day') — " +
+  "a recurring bit or gag is still a schedule request: create the task, then answer in " +
+  "character. Resolve any relative/named time against the current " +
+  "date/time given in context, then pass a concrete time. " +
+  "IMPORTANT — when the task fires you will have ONLY the 'instruction' text: no chat " +
+  "transcript, no conversation context. So if the request points at a person, event, " +
+  "joke, or topic from this chat rather than spelling it out, search the conversation " +
+  "history for it FIRST (history_search, then history_get_in_range around the matches if " +
+  "the matches alone are thin) and write what you found INTO the instruction. " +
+  "'Remind Kyrylo who X is' is worthless at fire time; 'Remind Kyrylo that X is <who they " +
+  "are and why it came up>' works. If you cannot find it, ask the user what it refers to " +
+  "instead of storing the empty phrasing. " +
+  "Times are in the operator timezone. schedule_kind: once=a single " +
+  "run (give 'date' YYYY-MM-DD + 'time'); daily=every day at 'time'; weekly=given " +
+  "'weekdays' at 'time'. For a one-off 'in N minutes/hours' or 'tomorrow' reminder use " +
+  "once with the computed date and HH:MM time.";
+
 export function registerScheduledTasksMcpTools(server: McpServer): void {
   server.registerTool(
     TASKS_CREATE_TOOL,
     {
       title: "Create scheduled task",
-      description:
-        "Schedule a task for THIS chat — a reminder/nudge the bot delivers at a set time. Use " +
-        "whenever a user asks to be reminded or to have something happen later or on a schedule, " +
-        "including one-off and relative requests like 'remind me in 5 minutes', 'in an hour', " +
-        "'tonight', or 'tomorrow at 9'. This includes playful or in-character requests, and ones " +
-        "phrased in the third person about the bot ('let <bot name> roast everyone once a day') — " +
-        "a recurring bit or gag is still a schedule request: create the task, then answer in " +
-        "character. Resolve any relative/named time against the current " +
-        "date/time given in context, then pass a concrete time. 'instruction' is what to do " +
-        "(self-contained). Times are in the operator timezone. schedule_kind: once=a single " +
-        "run (give 'date' YYYY-MM-DD + 'time'); daily=every day at 'time'; weekly=given " +
-        "'weekdays' at 'time'. For a one-off 'in N minutes/hours' or 'tomorrow' reminder use " +
-        "once with the computed date and HH:MM time.",
+      description: TASKS_CREATE_DESCRIPTION,
       inputSchema: {
-        instruction: z.string().min(2).describe("What the task should do, as a self-contained directive"),
+        instruction: z
+          .string()
+          .min(2)
+          .describe(
+            "What the task should do — self-contained, carrying the facts it needs. At fire " +
+              "time this text is the only context available, so resolve any reference to this " +
+              "chat's people/events/topics from the history and state it here explicitly.",
+          ),
         schedule_kind: scheduleKind.describe("once, daily, or weekly"),
         time: z.string().describe("Local time of day as HH:MM (24-hour)"),
         weekdays: z
@@ -171,7 +196,13 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
         "Get the id from tasks_list.",
       inputSchema: {
         id: z.string().min(1).describe("Task id to update (from tasks_list)"),
-        instruction: z.string().default("").describe("New instruction (optional)"),
+        instruction: z
+          .string()
+          .default("")
+          .describe(
+            "New instruction (optional) — same rule as on create: self-contained, carrying the " +
+              "facts, since the fire sees no chat context.",
+          ),
         schedule_kind: z.enum(["once", "daily", "weekly", ""]).default("").describe("New schedule kind (optional)"),
         time: z.string().default("").describe("New time HH:MM (optional)"),
         weekdays: z

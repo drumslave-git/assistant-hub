@@ -96,6 +96,15 @@ function hasVisibleContent(text: string): boolean {
  * fed back so the model varies its wording; a one-shot has none. Grounded in the
  * MVP `features/tasks/fire.ts` `buildTaskUserMessage`, trimmed for this project's
  * plain-text (no chat-tag) delivery.
+ *
+ * A fire carries **no transcript** — the directive is the model's whole world.
+ * When the directive points at something instead of stating it ("remind him who
+ * X is"), the message that comes out is the pointer, not the reminder (observed
+ * in production, 2026-07-28). `tasks_create` now pushes the facts into the
+ * instruction at creation time; this block is the second line of defence, telling
+ * the fire it may look the reference up in history before writing, and to be
+ * honest rather than parrot the directive when it cannot. The fire runs with the
+ * full toolset bound to the task's chat, so the lookup is actually available.
  */
 export function buildTaskDirectiveMessage(
   instruction: string,
@@ -114,8 +123,10 @@ export function buildTaskDirectiveMessage(
     `The message IS the reminder/nudge itself, spoken to the people it concerns.\n` +
     `- Do NOT restate the directive as an instruction. Never write "remind X to …" — instead say what you would actually tell them (e.g. directive "remind me to call mom" → "Hey, don't forget to call your mom").\n` +
     `- Address people by name when you know it; if it concerns the person who set it up, address them directly ("you").\n` +
+    `- You have no chat transcript here — the directive above is all you were given. If it names a person, event, joke, or topic without saying what it is, search this chat's history for it first (search for the name, then read the surrounding messages if the matches are thin) and put what you find into the message. The reminder must carry the substance, not point at it.\n` +
+    `- If the lookup turns up nothing, say plainly what the directive was about and that you cannot recall the details — do not invent them, and do not just repeat the directive back as if it were the message.\n` +
     `- Plain spoken text only. Do not mention that this is scheduled or automated.${previousBlock}\n` +
-    `Output only the message text.`
+    `Once you have what you need, output only the message text.`
   );
 }
 

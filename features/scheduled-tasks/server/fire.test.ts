@@ -75,6 +75,19 @@ describe("buildTaskDirectiveMessage", () => {
     expect(msg).toContain("2. older line");
     expect(msg).toContain("DIFFERENT way");
   });
+
+  it("tells the fire it has no transcript and must look up an unresolved reference", () => {
+    const msg = buildTaskDirectiveMessage("remind Kyrylo who Muradyan is", []);
+    expect(msg).toContain("You have no chat transcript here");
+    expect(msg).toContain("search this chat's history for it first");
+    expect(msg).toContain("The reminder must carry the substance, not point at it.");
+  });
+
+  it("forbids inventing details or parroting the directive when the lookup finds nothing", () => {
+    const msg = buildTaskDirectiveMessage("water the plants", []);
+    expect(msg).toContain("do not invent them");
+    expect(msg).toContain("do not just repeat the directive back as if it were the message");
+  });
 });
 
 describe("fireScheduledTask", () => {

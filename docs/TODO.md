@@ -144,6 +144,65 @@ instructions/tool descriptions like the tasks tools were.
   runs, 2026-07-27) — same bluffing pattern, worth including when evaluating a
   replacement model.
 
+- **Context-free reminders + bluffing instead of searching history
+  (`in-progress`;** from the 2026-07-28 traces `257ad4e9…` and `925ecf31…`, plus
+  the operator's account of how the task was set up**)** — one incident, two
+  defects, at opposite ends of the same feature.
+
+  *What happened.* A person was discussed in the chat over several days. A user
+  asked the bot to remind another participant daily who that person is. The bot
+  created a scheduled task whose instruction was the surface phrasing of the
+  request ("remind X who \<person\> is") rather than the substance, so every fire
+  delivered that sentence back — a reminder that points at a fact instead of
+  carrying it. When the reminded user then asked outright who the person was, the
+  bot never called a history tool across five consecutive turns
+  (`finish_reason: stop`, zero tool calls, all 21 tools offered), accused them of
+  faking amnesia, and answered with an empty metaphor. Its own reasoning trace
+  states it cannot find the term, then improvises anyway.
+
+  *Root cause of the reminder half.* `fireScheduledTask` composes base prompt +
+  persona + specialist + language + directive and **loads no transcript at all**
+  (`features/scheduled-tasks/server/fire.ts`), so the firing model has no way to
+  know what the instruction refers to. `tasks_create` only ever asked for a
+  "self-contained" instruction without saying that self-contained means carrying
+  the facts.
+
+  *Fixes landed* (design decision — operator, 2026-07-28: fix at **both** ends
+  rather than either alone, since a 12B model may miss either step):
+  1. **Grounding** block in `BASE_SYSTEM_PROMPT`
+     (`features/bot-messaging/server/prompt.ts`) — factual claims limited to
+     transcript / durable memory / this-turn tool results; searching history is
+     mandatory for an unfindable reference; "I don't know" is an acceptable
+     answer; covering a gap by accusing the asker is forbidden; the persona
+     governs tone and never truth.
+  2. **`TASKS_CREATE_DESCRIPTION`** (extracted to an exported constant so it can
+     be pinned) — states that a fire sees only the instruction text, requires
+     `history_search` → `history_get_in_range` before creating a task that
+     references chat-specific people/events/topics, requires the findings be
+     written into the instruction, and says to ask the user rather than store an
+     empty pointer. Same rule echoed on the `instruction` field of
+     `tasks_create`/`tasks_update`.
+  3. **`buildTaskDirectiveMessage`** (`fire.ts`) — second line of defence: tells
+     the fire it has no transcript, to look the reference up in history before
+     writing, and to be honest rather than parrot the directive when the lookup
+     comes up empty. The fire already runs with the full toolset bound to the
+     task's chat, so the lookup is available.
+
+  Files changed: `features/bot-messaging/server/prompt.ts` + `prompt.test.ts`,
+  `features/scheduled-tasks/server/mcp-tools.ts` + `mcp-tools.test.ts`,
+  `features/scheduled-tasks/server/fire.ts` + `fire.test.ts`. Verified:
+  `npm test` (74 files, 727 passed), `npm run lint`, `npm run typecheck` — all
+  clean.
+
+  **Remaining risk / next step (operator):** unverified live — all three fixes
+  are prompt/description text, and this is the same gemma4:12b tool-avoidance
+  pattern as the `tasks_list` fabrication in the item above, so the model may
+  ignore them exactly as it ignored the tools. Re-run both halves live (create a
+  reminder that references a chat-only topic; then ask the bot what that topic
+  is). Existing thin task instructions are deliberately **not** migrated —
+  operator fixes those through the bot (decision, 2026-07-28). If the model still
+  refuses to search, this folds into the same model-replacement decision.
+
 - **Traces bind-mount permissions (`blocked` on an operator decision;** from
   the 2026-07-22 prod data-loss incident**)** — Docker auto-creates
   `./data/traces` root-owned while the app runs as the non-root `app` user, so
