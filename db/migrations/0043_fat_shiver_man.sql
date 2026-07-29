@@ -1,0 +1,1 @@
+ALTER TABLE "settings" ADD COLUMN "browser_download_limit_gb" integer DEFAULT 10 NOT NULL;

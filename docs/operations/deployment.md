@@ -78,7 +78,8 @@ Deliberate choices worth knowing before you change them:
 | `npm install`, not `npm ci` | `package-lock.json` is generated on Windows and omits Linux-only optional native deps (musl builds of `lightningcss` / `tailwind-oxide`, `@emnapi/*`), which `npm ci`'s strict sync check rejects |
 | Native deps installed **inside** the image | Host `node_modules` must never be copied in — they are built for the wrong platform |
 | `output: "standalone"` | The runner ships only traced runtime deps (`.next/standalone`), not a full `node_modules` |
-| `ffmpeg` from apk | Vision samples video frames with it, and voice transcodes both ways (user decision: system ffmpeg over a bundled/WASM build) |
+| `ffmpeg` from apk | Vision samples video frames with it, voice transcodes both ways, and the browser agent muxes streams with it (user decision: system ffmpeg over a bundled/WASM build) |
+| `yt-dlp` from apk | The browser agent's media downloader; a media site's player has no file URL to fetch (user decision, 2026-07-29). Pulls python3 in, and is frozen per Alpine release — rebuild against a newer base image if downloads start failing |
 | `chromium` + `nss`/`freetype`/`harfbuzz`/fonts from apk | Playwright's own download is a glibc build that will not run on Alpine (musl). `CHROMIUM_EXECUTABLE_PATH` points at the distro browser |
 | `playwright` and `playwright-core` copied **whole** over the traced copies | They are `serverExternalPackages`, so Next's file tracer copies only statically resolvable JS and misses runtime data files like `playwright-core/browsers.json` |
 | `sharp` needs no apk package | It ships its own musl libvips binary via npm |

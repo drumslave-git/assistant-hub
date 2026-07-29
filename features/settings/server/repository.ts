@@ -59,6 +59,8 @@ export interface SettingsRecord {
   dailyJobsRunTime: string;
   /** Largest browser-agent download (MB) also attached to the chat. */
   browserDownloadMaxMb: number;
+  /** Hard ceiling (GB) on any single browser-agent download, for every tool. */
+  browserDownloadLimitGb: number;
   /** Operator password (scrypt, self-describing). Secret — never in any view. */
   operatorPasswordHash: string | null;
   /** Session-cookie HMAC key. Secret — never in any view. */
@@ -93,6 +95,7 @@ export interface SettingsPatch {
   timezone?: string;
   dailyJobsRunTime?: string;
   browserDownloadMaxMb?: number;
+  browserDownloadLimitGb?: number;
   operatorPasswordHash?: string | null;
   sessionSecret?: string | null;
 }
@@ -142,6 +145,7 @@ function mapRow(row: SettingsRow): SettingsRecord {
     timezone: row.timezone,
     dailyJobsRunTime: row.dailyJobsRunTime,
     browserDownloadMaxMb: row.browserDownloadMaxMb,
+    browserDownloadLimitGb: row.browserDownloadLimitGb,
     operatorPasswordHash: row.operatorPasswordHash,
     sessionSecret: row.sessionSecret,
     updatedAt: row.updatedAt.toISOString(),

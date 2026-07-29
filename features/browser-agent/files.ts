@@ -19,6 +19,18 @@ export function formatBytes(bytes: number): string {
   return `${gb.toFixed(gb < 10 ? 2 : 1)} GB`;
 }
 
+/** One in-flight transfer's progress line, shared by every download tool. */
+export function formatTransferLine(progress: {
+  receivedBytes: number;
+  totalBytes: number;
+  bytesPerSec: number;
+}): string {
+  const rate = `(${formatBytes(progress.bytesPerSec)}/s)`;
+  return progress.totalBytes
+    ? `Downloading ${formatBytes(progress.receivedBytes)} / ${formatBytes(progress.totalBytes)} ${rate}`
+    : `Downloading ${formatBytes(progress.receivedBytes)} ${rate}`;
+}
+
 /**
  * Sanitize to a safe single-segment filename, keeping Unicode letters (page
  * titles are often non-Latin) and only stripping characters invalid on disk
@@ -73,6 +85,33 @@ export function extForUrl(url: string, mime: string): string {
     if (m.includes(needle)) return ext;
   }
   return "bin";
+}
+
+/**
+ * Extension → content type, for a file that arrived without one. The HTTP
+ * downloaders read `Content-Type` off the response; the media downloader only
+ * ever sees a file yt-dlp wrote to disk, so its type has to come from the name.
+ * Covers the containers yt-dlp actually produces; anything else is served as a
+ * generic binary, which Telegram sends as a plain document.
+ */
+const EXTENSION_MIMES: Record<string, string> = {
+  mp4: "video/mp4",
+  mkv: "video/x-matroska",
+  webm: "video/webm",
+  mov: "video/quicktime",
+  m4a: "audio/mp4",
+  mp3: "audio/mpeg",
+  opus: "audio/opus",
+  ogg: "audio/ogg",
+  flac: "audio/flac",
+  wav: "audio/wav",
+  aac: "audio/aac",
+};
+
+/** Content type for a filename, by extension. Falls back to a generic binary. */
+export function mimeForFilename(filename: string): string {
+  const ext = filename.match(/\.([a-z0-9]{1,5})$/i)?.[1].toLowerCase() ?? "";
+  return EXTENSION_MIMES[ext] ?? "application/octet-stream";
 }
 
 /**

@@ -31,7 +31,14 @@ ENV HOSTNAME=0.0.0.0
 
 # System packages resolved at runtime:
 # - ffmpeg: the vision feature samples video/GIF frames with it
-#   (features/vision/server/frames.ts).
+#   (features/vision/server/frames.ts), voice transcodes both ways with it, and the
+#   browser agent muxes HLS/DASH streams with it.
+# - yt-dlp: the browser agent's browser_download_media tool. A media site's player
+#   derives ciphered per-session stream URLs in its own JavaScript, so there is no
+#   file to GET and no manifest to mux — yt-dlp is the only way to download from
+#   one. It pulls python3 in. Note the distro package is frozen per Alpine release
+#   while these sites change often; if downloads start failing, rebuild against a
+#   newer base image.
 # - chromium (+ nss/freetype/harfbuzz/fonts/ca-certificates): the read-link tool
 #   drives headless Chromium via Playwright. Playwright's own download is a glibc
 #   build that won't run on Alpine (musl), so we install the distro browser and
@@ -39,6 +46,7 @@ ENV HOSTNAME=0.0.0.0
 # sharp ships its own musl libvips binary via npm, so it needs no system package.
 RUN apk add --no-cache \
     ffmpeg \
+    yt-dlp \
     chromium \
     nss \
     freetype \

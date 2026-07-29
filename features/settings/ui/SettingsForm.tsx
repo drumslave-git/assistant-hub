@@ -89,6 +89,9 @@ export function SettingsForm({
   const [browserDownloadMaxMb, setBrowserDownloadMaxMb] = useState(
     String(initial.browserDownloadMaxMb),
   );
+  const [browserDownloadLimitGb, setBrowserDownloadLimitGb] = useState(
+    String(initial.browserDownloadLimitGb),
+  );
 
   // Optional backends. Editing a section invalidates its own probe result.
   const embedProbe = useProbe<{ model: string; dimensions: number }>(
@@ -218,6 +221,15 @@ export function SettingsForm({
     ) {
       patch.browserDownloadMaxMb = downloadMb;
     }
+    const limitGb = Number(browserDownloadLimitGb);
+    if (
+      Number.isInteger(limitGb) &&
+      limitGb !== initial.browserDownloadLimitGb &&
+      limitGb >= 1 &&
+      limitGb <= 100
+    ) {
+      patch.browserDownloadLimitGb = limitGb;
+    }
     if (emb.resolvedUrl !== (initial.embeddingBaseUrl ?? null)) {
       patch.embeddingBaseUrl = emb.resolvedUrl;
     }
@@ -293,6 +305,7 @@ export function SettingsForm({
       setTimezone(data.timezone);
       setDailyJobsRunTime(data.dailyJobsRunTime);
       setBrowserDownloadMaxMb(String(data.browserDownloadMaxMb));
+      setBrowserDownloadLimitGb(String(data.browserDownloadLimitGb));
       emb.applySaved({ baseUrl: data.embeddingBaseUrl, model: data.embeddingModel });
       img.applySaved({ baseUrl: data.imageBaseUrl, model: data.imageModel });
       spc.applySaved({ baseUrl: data.speechBaseUrl, model: data.speechModel });
@@ -536,6 +549,25 @@ export function SettingsForm({
             value={browserDownloadMaxMb}
             onChange={(e) => setBrowserDownloadMaxMb(e.target.value)}
             placeholder="20"
+          />
+        )}
+      </Field>
+
+      <Field
+        id="browserDownloadLimitGb"
+        label="Browser download size limit (GB)"
+        hint="Hard ceiling on a single download, whichever tool the agent uses — a file, a muxed stream, or a media extraction. A disk guard only: it never makes the agent pick a lower quality. 1–100."
+      >
+        {({ id, describedBy }) => (
+          <Input
+            id={id}
+            type="number"
+            min={1}
+            max={100}
+            aria-describedby={describedBy}
+            value={browserDownloadLimitGb}
+            onChange={(e) => setBrowserDownloadLimitGb(e.target.value)}
+            placeholder="10"
           />
         )}
       </Field>

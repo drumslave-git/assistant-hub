@@ -243,8 +243,11 @@ Runs are unbounded by design: only the stall guard ends one that stops progressi
 If a run is stuck, that is what to expect it to eventually do — and the forced final
 round will still produce a report from what was gathered.
 
-Files larger than `browserDownloadMaxMb` (Settings → Core) are kept in the
-`downloads/` folder rather than attached to the chat.
+Two size settings, both under Settings → Core, doing different jobs. Files larger than
+`browserDownloadMaxMb` are kept in the `downloads/` folder rather than attached to the
+chat — they still download. `browserDownloadLimitGb` is the ceiling on what may be
+downloaded **at all**; past it the file tool gives up, the stream tool keeps a
+truncated but playable video, and the media tool refuses before it starts.
 
 ## Background jobs (`/jobs`)
 

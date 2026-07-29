@@ -73,6 +73,8 @@ export const settingsSchema = z.object({
   dailyJobsRunTime: z.string(),
   /** Largest browser-agent download (MB) also attached to the chat. */
   browserDownloadMaxMb: z.number().int(),
+  /** Hard ceiling (GB) on any single browser-agent download, for every tool. */
+  browserDownloadLimitGb: z.number().int(),
   /** Last write time, or null if never configured. */
   updatedAt: z.string().datetime().nullable(),
 });
@@ -110,6 +112,8 @@ export const updateSettingsSchema = z
     dailyJobsRunTime: timeOfDay,
     /** Bounded 1–50: Telegram's bot upload ceiling. */
     browserDownloadMaxMb: z.number().int().min(1).max(50),
+    /** Bounded 1–100 GB: a disk guard, not a quality choice. */
+    browserDownloadLimitGb: z.number().int().min(1).max(100),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, {

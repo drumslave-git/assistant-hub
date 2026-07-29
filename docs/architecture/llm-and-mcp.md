@@ -263,8 +263,8 @@ The chat model calls this and moves on — it does not drive the browser itself
 (`browser_navigate`, `browser_back`, `browser_click`, `browser_type`,
 `browser_scroll`, `browser_read`, `browser_source`, `browser_get_network`,
 `browser_screenshot`, `browser_wait`, `browser_download_file`,
-`browser_download_stream`) are plain OpenAI tool definitions for the *agent's own*
-loop. They are **not** MCP tools and are never offered to the main chat model.
+`browser_download_stream`, `browser_download_media`) are plain OpenAI tool
+definitions for the *agent's own* loop. They are **not** MCP tools and are never offered to the main chat model.
 
 ## Adding a tool
 

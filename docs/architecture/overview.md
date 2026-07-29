@@ -179,6 +179,7 @@ unwritable trace directory surfaces on the dashboard instead of crashing boot.
 | One SSE connection per tab | Browsers allow ~6 concurrent HTTP/1.1 connections per origin; per-component `EventSource`es would exhaust the budget |
 | No separate worker service | One container, in-process singletons, advisory locks for cross-process safety |
 | System ffmpeg over a bundled/WASM build | User decision; the image installs it |
+| System yt-dlp for media-page downloads | User decision, 2026-07-29; a media site's player exposes no file or manifest URL, so the existing download tools cannot reach it at all. The image installs it from apk |
 | Playwright loaded lazily | It is a `serverExternalPackage`; a static import would put the native package in the boot graph and any resolution problem would crash startup |
 
 Deviating from these requires asking the user first — see the "Decision Notes"

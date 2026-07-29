@@ -173,9 +173,10 @@ the Docker host gateway, and literal private / loopback / link-local IPs.
 *hostname* can simply resolve to `10.x.x.x` or `169.254.169.254`, so the fetch
 layer re-checks what the name actually resolves to, and re-checks again on every
 redirect hop (redirect interception in `playwright.ts`). The download tools check
-the URL at every redirect hop too, and the stream downloader checks the manifest
-before handing it to ffmpeg — ffmpeg's own redirects are out of our hands, so only
-public hosts are passed to it.
+the URL at every redirect hop too; the stream downloader checks the manifest before
+handing it to ffmpeg, and the media downloader checks the page URL before handing it
+to yt-dlp. What those two binaries then follow — ffmpeg's redirects, yt-dlp's CDN
+URLs — is out of our hands, so only public hosts are passed to them.
 
 **Accepted residual gap:** a DNS-rebinding server can answer our lookup with a
 public address and Chromium's own lookup with a private one (TOCTOU). Closing that
@@ -184,8 +185,9 @@ per page load to shrink both the window and the cost.
 
 Additional hardening on the browsing paths: each read gets its own short-lived
 browser context (isolated cookies, fixed user-agent), ad/tracker subresources are
-dropped by the shared filter engine, and downloads have a size cap
-(`browserDownloadMaxMb`, ≤50 — Telegram's bot upload ceiling).
+dropped by the shared filter engine, and downloads have two size caps —
+`browserDownloadMaxMb` (≤50, Telegram's bot upload ceiling) for what is attached to
+the chat, and `browserDownloadLimitGb` for what may be written to disk at all.
 
 The adblock engine is matched inside the fetcher's existing `context.route`
 handler rather than via the library's own `enableBlockingInPage`, which would

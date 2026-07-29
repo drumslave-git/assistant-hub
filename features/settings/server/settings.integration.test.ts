@@ -66,6 +66,7 @@ describe("getSettings", () => {
       timezone: "UTC",
       dailyJobsRunTime: "04:00",
       browserDownloadMaxMb: 20,
+      browserDownloadLimitGb: 10,
       updatedAt: null,
     });
   });

@@ -45,6 +45,15 @@ download or save something, because this is exactly the tool for it. It lists th
    a viewer count, a dashboard, availability, today's news.
 6. The task needs multi-step interaction on the web.
 
+It also requires the goal to **keep the user's request intact** (user report,
+2026-07-29). Asked only "«link» download track", the chat model composed the goal
+*"Navigate to «link» to identify the track and find a way to download it **or provide
+direct info about what it is**"* — inventing an easier alternative the user never
+offered. The sub-agent then took it: it reported what the track was and stopped. A
+weaker branch in the goal is read as permission to stop early, so the description now
+forbids adding one ("or describe it", "or explain how to get it") and asks the model
+to say whether audio or video is wanted.
+
 And the one DO-NOT: casual chat, an opinion, or a stable fact the model already knows
 well and was not asked to verify. Since there is no cheaper web tool left, the
 description no longer has to argue about when to prefer a plain search — the earlier
@@ -65,6 +74,15 @@ the loop's stall guard ends a run that stops progressing — three rounds that e
 introduce no new tool call — and its forced tools-free final round then salvages a
 report from whatever was gathered.
 
+For an owner-started run the system prompt also carries two download rules, stated
+there as well as in the tool descriptions because the failure they address is a
+*decision the agent makes before it ever looks at a tool*: a goal that asks for a file
+is not done until a download tool has been called, and finishing by telling the user
+to download it themselves (or naming a program for them to run) is forbidden — either
+the file, or exactly which tool was called and how it failed. The second rule points
+media-site pages at `browser_download_media` and tells the agent not to go hunting for
+a media URL that does not exist.
+
 ### The toolset
 
 Generic primitives only. Recorded decision: **no scenario-specific tools** — the
@@ -83,6 +101,10 @@ the matching download tool. There is no media-sniffing heuristic baked in.
 | `browser_wait` | Let a page settle |
 | `browser_download_file` | Stream a direct URL to disk (plain HTTP) |
 | `browser_download_stream` | Mux an HLS/DASH **manifest** into a single MP4 with ffmpeg |
+| `browser_download_media` | Extract the audio or video of a media **page** with yt-dlp |
+
+Three download tools rather than one because the three cases take genuinely
+different inputs: a whole-file URL, a manifest URL, and the page URL itself.
 
 ### Search — the engine cascade
 
@@ -236,7 +258,23 @@ Mirrors the MVP:
 - A **dashboard-started run has no `chatId`** and delivers nothing; its report is
   stored on the run row and read on the page.
 
-A separate hard cap protects the disk: a single download may not exceed 2 GB.
+### The size limit
+
+A separate cap protects the disk: `settings.browser_download_limit_gb` (1–100,
+default **10**), one number for all three download tools. It is a disk guard, never a
+quality choice — the stream and media tools always take the best available rendition.
+
+One setting, three enforcement mechanisms, because the tools can't fail the same way:
+
+| Tool | Enforced by | On hitting the cap |
+| --- | --- | --- |
+| `browser_download_file` | byte count in the write stream | aborts, **deletes** the partial, throws — an arbitrary HTTP body cut in half is not a smaller version of itself |
+| `browser_download_stream` | ffmpeg `-fs` | stops muxing and **keeps** the partial; it is a valid, playable MP4, so the run counts it as success |
+| `browser_download_media` | yt-dlp `--max-filesize` | refuses **before** downloading, from the format's declared size, so nothing is written |
+
+Before 2026-07-29 this was two unrelated constants — 2 GB for files, 4 GB for streams —
+with no recorded reason for the difference, and the 4 GB one was undocumented. A third
+tool would have made it a third arbitrary number, so the operator made it a setting.
 
 ### Stream downloads
 
@@ -247,6 +285,48 @@ is not ffmpeg's default lowest rung and does not lose its soundtrack.
 
 SSRF: ffmpeg's own redirects are out of our hands, so the **manifest** is checked and
 only public hosts are handed to ffmpeg.
+
+### Media downloads (yt-dlp)
+
+`media-download.ts` + the pure `ytdlp.ts`. `browser_download_media` takes the **page
+URL a human would open** — a YouTube / YouTube Music / SoundCloud / Vimeo / TikTok /
+Bandcamp watch or track page — and hands it to yt-dlp.
+
+It exists because the other two tools cannot reach that content *at all*: those
+players derive ciphered, per-session, per-format stream URLs in their own
+JavaScript, so there is no file to GET and no manifest to mux. Reading the page
+source or the network requests finds nothing downloadable — which is exactly how the
+2026-07-28 YouTube Music run ended with the agent telling the owner to run yt-dlp
+themselves (user decision, 2026-07-29: add the tool).
+
+- **`mode`** — `audio` takes the best audio-only rendition and extracts it in its
+  native container (m4a/opus); **no transcode to mp3**, because re-encoding a lossy
+  source only loses more. `video` takes best video + best audio and merges, mp4
+  preferred, falling back to a container that can hold the chosen codecs. Default
+  `video`. There is **no quality ceiling** on either (user decision, 2026-07-29) —
+  only the 4 GB disk guard below.
+- **Naming** comes from the media's own title, not the page title the other tools
+  use: `VIRUS (Fytch Remix).m4a`, not `VIRUS (Fytch Remix) - YouTube.mp4`.
+- **`--no-playlist`** matters: a YouTube Music watch URL usually carries a playlist
+  id, and without it one track becomes the whole radio queue.
+- **`--ignore-config --no-cache-dir`** keep the run hermetic — no stray config file
+  changing behaviour, and no write to a home directory the container's non-root user
+  may not have.
+- yt-dlp writes into a scratch directory *inside* the downloads folder, and the
+  finished file is renamed into place. Inside, because that rename must not cross a
+  filesystem — under Compose the downloads folder is a bind mount.
+- The kept file is the largest non-`.part`/`.ytdl` file in the scratch directory, and
+  a non-zero exit with a good file still counts (yt-dlp exits non-zero on
+  post-processing complaints).
+- **SSRF:** the page URL is checked like every server-side fetch; yt-dlp then follows
+  the site's own CDN URLs, the same accepted limit ffmpeg has above.
+- A missing binary is reported as an operator-fixable environment fact
+  (`YtDlpMissingError`), mirroring `FfmpegMissingError`; any other failure carries
+  yt-dlp's own `ERROR:` line (private video, sign-in wall, region block) so the agent
+  reports the real reason instead of improvising one.
+
+`ytdlp.ts` is pure — argv, progress lines, error text — so the whole contract with the
+binary is unit-tested without it installed.
 
 ## Live state
 
@@ -285,8 +365,15 @@ directly, mirroring the conversational tool without needing Telegram.
 | `llmBaseUrl` + `model` | Without them a run settles as a failure |
 | `ownerUserId` | Only owner-started runs may download |
 | `browserDownloadMaxMb` | Largest file also attached to the chat (1–50) |
+| `browserDownloadLimitGb` | Hard ceiling on any single download (1–100, default 10) |
 
-Needs a working Chromium and ffmpeg. Both are in the Docker image.
+Needs a working Chromium, ffmpeg and yt-dlp. All three are in the Docker image
+(`apk add`). Locally they must be on `PATH`; without yt-dlp, `browser_download_media`
+reports that it is not installed and the run continues.
+
+The distro yt-dlp package is frozen per Alpine release while the sites it supports
+change often, so a media download that starts failing across the board usually means
+a rebuild against a newer base image is due.
 
 ## Download storage health
 
@@ -320,7 +407,11 @@ under `mcp-tools-browser-agent`.
 
 ## Tests
 
-Unit: `files.test.ts`, `format.test.ts`, `hls.test.ts`, `snapshot.test.ts`.
+Unit: `files.test.ts`, `format.test.ts`, `hls.test.ts`, `snapshot.test.ts`,
+`ytdlp.test.ts` (the yt-dlp argv/progress/error contract, no binary needed),
+`server/tools.test.ts` (the media tool's owner gate and mode default),
+`server/media-download.test.ts` (the spawn plumbing, against a **stub** `yt-dlp`
+placed on `PATH` — no network).
 Integration (live, and marked as such): `server/browse-live.integration.test.ts`,
 `server/browser-agent.integration.test.ts`,
 `server/primitives-live.integration.test.ts`,

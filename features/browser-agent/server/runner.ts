@@ -5,6 +5,7 @@ import { getDb } from "@/db/drizzle";
 import { recordAssistantMessage } from "@/features/history/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import {
+  getBrowserDownloadLimitBytes,
   getBrowserDownloadMaxMb,
   getBotPolicy,
   getLlmRuntime,
@@ -135,8 +136,9 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
       return;
     }
 
-    const [downloadMaxMb, personalityPrompt, storedLanguage] = await Promise.all([
+    const [downloadMaxMb, downloadLimitBytes, personalityPrompt, storedLanguage] = await Promise.all([
       getBrowserDownloadMaxMb(),
+      getBrowserDownloadLimitBytes(),
       getActivePersonalityPrompt().catch(() => null),
       run.chatId
         ? (isGroupChatId(run.chatId) ? getGroupLanguage(run.chatId) : getUserLanguage(run.chatId)).catch(
@@ -152,6 +154,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
       session,
       isOwner: run.isOwner,
       downloadMaxMb,
+      downloadLimitBytes,
       downloads,
       onAction: (action, url) => {
         // Reflect the in-flight action immediately for the live "current action"

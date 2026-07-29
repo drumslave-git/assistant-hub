@@ -53,6 +53,7 @@ describe.skipIf(!LLM_LIVE)("browser agent — real browse (live)", () => {
         session,
         isOwner: true,
         downloadMaxMb: 20,
+        downloadLimitBytes: 10 * 1024 ** 3,
         downloads,
         onAction: (action) => {
           actions.push(action);

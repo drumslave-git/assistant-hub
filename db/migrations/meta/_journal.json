@@ -302,6 +302,13 @@
       "when": 1785155698012,
       "tag": "0042_next_iron_monger",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1785319988764,
+      "tag": "0043_fat_shiver_man",
+      "breakpoints": true
     }
   ]
 }

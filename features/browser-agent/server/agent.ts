@@ -53,7 +53,21 @@ function buildAgentSystemPrompt(isOwner: boolean, requiredLanguage: string | nul
     `site's domain unless they clearly serve the goal.\n` +
     `- Take the fewest steps needed. Do not loop or repeat the same action.\n` +
     (isOwner
-      ? ""
+      ? // The download rules are stated here as well as in the tool descriptions,
+        // because the failure they address is a *decision* the agent makes before
+        // it ever looks at a tool: on 2026-07-28 a run asked to download a track
+        // reported back that the site has no download button and the owner should
+        // use yt-dlp themselves, having never called a download tool at all.
+        `- You CAN download files, and you are expected to. If the goal asks for a file, ` +
+        `song, track, video or document, the run is not done until you have called a ` +
+        `download tool. Never finish by telling the user how to download it themselves, ` +
+        `naming a program for them to run, or pointing them at another site — either ` +
+        `download it, or say exactly which tool you called and how it failed.\n` +
+        `- On a video or music site (YouTube, YouTube Music, SoundCloud, Vimeo, TikTok, ` +
+        `Bandcamp, a podcast page …), download with browser_download_media and the page ` +
+        `URL — use mode "audio" for a song/track/podcast and "video" for a video. Those ` +
+        `pages never expose a media file URL, so do not read the source or the network ` +
+        `looking for one, and do not conclude the download is impossible.\n`
       : `- Downloads are disabled for this run (only the owner can download files) — never promise a file.\n`) +
     `- When you have achieved the goal (or determined it cannot be done), STOP calling tools ` +
     `and reply with a clear, concise report of what you found or did. ` +

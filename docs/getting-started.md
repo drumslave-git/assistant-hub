@@ -10,7 +10,8 @@ port 3200 that you must claim with a password before anyone else does.
 | --- | --- |
 | Node.js ≥ 24 | Enforced by `package.json` `engines`; the runtime targets Node 24 |
 | Postgres with `pgvector` | Semantic recall over history summaries and user memories stores `vector(1024)` columns |
-| `ffmpeg` on `PATH` | Video/GIF frame sampling for vision, and audio transcoding for voice messages |
+| `ffmpeg` on `PATH` | Video/GIF frame sampling for vision, audio transcoding for voice messages, and HLS/DASH muxing for the browser agent |
+| `yt-dlp` on `PATH` | The browser agent's `browser_download_media` tool (YouTube, YouTube Music, SoundCloud, …). Optional — without it that one tool reports it is not installed |
 | Chromium (via Playwright) | The read-link tool and the browser agent drive a headless browser |
 | Docker | Only for `npm run test:integration` (Testcontainers) and for the Compose stack |
 | A Telegram bot token | From [@BotFather](https://t.me/BotFather); entered in the dashboard, not in env |

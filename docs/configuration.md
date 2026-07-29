@@ -96,6 +96,7 @@ from a PATCH leaves the stored value alone; sending `null` clears it.
 | `timezone` | IANA name | `UTC`. Governs every rendered timestamp, scheduled-task wall-clock times, daily-job run time, and analytics period boundaries |
 | `dailyJobsRunTime` | `HH:MM` | `04:00`. The local time in `timezone` that **all** daily jobs run at |
 | `browserDownloadMaxMb` | int 1–50 | `20`. Largest browser-agent download also attached to the chat; 50 is Telegram's bot upload ceiling |
+| `browserDownloadLimitGb` | int 1–100 | `10`. Hard ceiling on a single browser-agent download, for every download tool. A disk guard — it never lowers the quality the agent fetches |
 
 `ownerUsername` is stored denormalized from the chosen known user, for display
 only.

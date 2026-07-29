@@ -182,6 +182,100 @@ a runtime exists.
   off by prompt text alone in the merge, plus the gate keeping known people out.
   Watch `/memory` → General knowledge for two outsiders collapsing into one.
 
+## Media downloads — yt-dlp (`done` pending live verification, 2026-07-29)
+
+*What happened.* Trace `11d1809d…`: the owner sent a YouTube Music link and the words
+"download track". The run ended with a paragraph identifying the track and the advice
+to *"use standard desktop tools like `yt-dlp`"* — no file. Two independent defects:
+
+1. **No capability.** The two download tools take a whole-file URL and an HLS/DASH
+   manifest URL. A media site's player has neither: it derives ciphered, per-session,
+   per-format stream URLs in its own JavaScript. Reading the page source or the
+   network requests finds nothing downloadable, so there was no path to the file.
+2. **The goal was watered down before the agent ever saw it.** The user's message was
+   "«link» download track". The chat model composed the `browse_web` goal as
+   *"…identify the track and find a way to download it **or provide direct info about
+   what it is**"* — an alternative the user never offered. The sub-agent took it. Also
+   observed, from the model's own reasoning at seq 7: it concluded from prior
+   knowledge that YouTube "doesn't have a direct button" and stopped, without calling
+   `browser_get_network` or any download tool. Whether that inspection would have
+   found anything usable is not established — the ciphered-URL claim above is why the
+   new tool exists, not something that run tested.
+
+*Decisions (operator, 2026-07-29).* A **new `browser_download_media` tool** taking the
+page URL (not a fallback inside the existing tools); an explicit **`mode: audio |
+video`**, always best available audio and best available video with **no quality
+ceiling**; **`apk add yt-dlp`** in the Dockerfile with no `YTDLP_PATH` escape hatch;
+**no cookies** from the run's browser session in v1.
+
+*Landed.* New pure `features/browser-agent/ytdlp.ts` (argv, progress lines, error
+text) + `server/media-download.ts` (spawn, scratch dir inside `DOWNLOADS_DIR` so the
+final rename never crosses a filesystem, `YtDlpMissingError` mirroring
+`FfmpegMissingError`, SSRF on the page URL). `server/tools.ts`: the new tool, its
+dispatch case behind the same owner gate, and `formatBytes`-duplication removed in
+favour of a shared `formatTransferLine` in `files.ts` (which also gained
+`mimeForFilename`, since yt-dlp hands back a file with no `Content-Type`). Prompt
+work for defect 2: the agent system prompt now states that a goal asking for a file is
+not done until a download tool was called and forbids ending a run by telling the user
+to download it themselves, and `browse_web`'s description forbids adding a weaker
+alternative to the user's request. Dockerfile, `docs/features/browser-agent.md`,
+getting-started, deployment, troubleshooting, security, overview, llm-and-mcp updated.
+
+*Follow-on: the download size cap became a setting (operator, 2026-07-29).* Asked why
+`MAX_DISK_BYTES` (2 GB, files) and `MAX_STREAM_BYTES` (4 GB, streams) both existed. The
+two *mechanisms* differ legitimately — the file downloader aborts and deletes the
+partial, ffmpeg's `-fs` truncates and keeps a playable one — but nothing in the code,
+the commits or the docs justified the two different *values*, and the 4 GB one was
+never documented. Adding yt-dlp would have made it a third arbitrary number. Both
+constants are gone, replaced by **`settings.browser_download_limit_gb`** (1–100,
+default 10), read once per run by the runner and passed into all three downloaders as
+`maxBytes` — so those modules keep no settings dependency. yt-dlp's `--max-filesize` is
+a third enforcement style again: it refuses *before* downloading, from the declared
+size. Migration `0043_fat_shiver_man.sql` (`ADD COLUMN … DEFAULT 10 NOT NULL`) —
+**applied to the dev DB**; still to apply wherever else the app runs.
+
+*Verified.* `npm run lint`, `npm run typecheck`, `npm test` (778), `npm run build` and
+`npm run test:integration` (319 passed / 32 skipped — the live-LLM-gated ones) all
+clean; the integration suite ran for the first time this session, the container runtime
+the 2026-07-28 entry below lacked now being available. New unit tests:
+`ytdlp.test.ts` (16), `server/media-download.test.ts` (10, against a **stub** `yt-dlp`
+on `PATH` — real spawn, no network), `server/tools.test.ts` (7, owner gate + mode
+default + error surfacing), plus `files.test.ts` additions.
+
+The new setting was also exercised on the running dev instance: both Core fields render,
+saving 25 patched only `browser_download_limit_gb` (attach-limit untouched) and survived
+a reload, `PATCH /api/settings` returned 422 for 500 and for 0, and the value was
+restored to 10. No console errors.
+
+*Live verification (2026-07-29, operator installed yt-dlp 2026.03.17).*
+- **Real binary:** `BROWSER_LIVE=1 … primitives-live -t browser_download_media` passed
+  in 1.9 s — `Big Buck Bunny.m4a`, 28 237 KB, named from the media's own title, mime
+  `audio/mp4`, on-disk size matching.
+- **Real agent run, defect 1 closed:** a dashboard run given the incident's own words
+  (`«the YouTube Music link» download track`) called `browser_download_media` with
+  `mode: "audio"` as its **first and only** tool call — no navigate, no source read, no
+  network hunt — and produced `VIRUS (Fytch Remix).opus` (2 866 338 B) in ~5 s, one
+  step, status `done`, honest one-line report. The original trace took 5 LLM rounds and
+  61 s to deliver no file. gemma4:12b, the same model.
+
+*Unrelated fix found while verifying.* `npm run lint` failed with `EACCES` on
+`data/pg`: `eslint.config.mjs`'s `globalIgnores` replaces eslint-config-next's
+defaults and never listed `/data`, so the moment anyone follows the documented Compose
+default (`PG_DATA_DIR=./data/pg`, root-owned 0700) the whole lint run dies. Added
+`data/**` and `downloads/**` — both already in `.gitignore`, neither ever source.
+
+*Remaining risks / next steps.*
+- **Defect 2 (the watered-down `browse_web` goal) is still unverified.** A dashboard
+  run hands the goal straight to the agent, bypassing the chat model that invented the
+  "or provide direct info" escape hatch. Only a Telegram request exercises it: send the
+  original message and check the trace for a goal with no "or …" branch.
+- The image still needs rebuilding before the deployment has yt-dlp; only this dev
+  machine has it.
+- The distro yt-dlp is frozen per Alpine release while these sites change often; if
+  every media page starts failing, the fix is a rebuild against a newer base image.
+- No cookies means age-gated, sign-in-walled and region-locked pages fail with
+  yt-dlp's own error. That was the accepted v1 scope — revisit if it bites.
+
 ## Other open items
 
 - **Ukrainian idiomatic joke requests never trigger tools on gemma4:12b

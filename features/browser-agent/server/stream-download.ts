@@ -36,6 +36,12 @@ export interface StreamProgress {
 }
 
 export interface StreamDownloadOptions {
+  /**
+   * Hard ceiling in bytes (`settings.browser_download_limit_gb`), shared with the
+   * other download tools. ffmpeg's `-fs` stops at it and leaves a valid, playable
+   * partial, so a long video is truncated rather than lost.
+   */
+  maxBytes: number;
   title?: string | null;
   /** Called (throttled by ffmpeg's own cadence) as the mux progresses. */
   onProgress?: (progress: StreamProgress) => void;
@@ -43,8 +49,6 @@ export interface StreamDownloadOptions {
 
 /** ffmpeg read/write timeout (µs) so a stalled segment can't hang forever. */
 const STREAM_RW_TIMEOUT_US = 30_000_000;
-/** Absolute cap on the muxed output (leaves a valid, playable partial for long videos). */
-const MAX_STREAM_BYTES = 4 * 1024 * 1024 * 1024;
 
 /** Fetch an HLS master and resolve it to the best-quality ffmpeg input(s). */
 async function resolveHlsInputs(url: URL): Promise<{ inputUrls: string[]; maps: string[] }> {
@@ -68,7 +72,7 @@ async function resolveHlsInputs(url: URL): Promise<{ inputUrls: string[]; maps: 
  */
 export async function downloadStreamToDisk(
   rawUrl: string,
-  options: StreamDownloadOptions = {},
+  options: StreamDownloadOptions,
 ): Promise<DiskDownload> {
   const url = await assertPublicUrl(rawUrl);
   await fs.mkdir(DOWNLOADS_DIR, { recursive: true });
@@ -105,7 +109,7 @@ export async function downloadStreamToDisk(
     "copy",
     ...bsf,
     "-fs",
-    String(MAX_STREAM_BYTES),
+    String(options.maxBytes),
     filePath,
   ];
 

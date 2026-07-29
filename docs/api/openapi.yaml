@@ -1929,6 +1929,7 @@ components:
           timezone,
           dailyJobsRunTime,
           browserDownloadMaxMb,
+          browserDownloadLimitGb,
           updatedAt,
         ]
       properties:
@@ -1962,6 +1963,7 @@ components:
         timezone: { type: string, description: Operator IANA timezone. }
         dailyJobsRunTime: { $ref: "#/components/schemas/TimeOfDay" }
         browserDownloadMaxMb: { type: integer }
+        browserDownloadLimitGb: { type: integer }
         updatedAt: { type: [string, "null"], format: date-time }
 
     SettingsUpdate:
@@ -2000,6 +2002,11 @@ components:
           minimum: 1
           maximum: 50
           description: Bounded by Telegram's bot upload ceiling.
+        browserDownloadLimitGb:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Hard ceiling on a single browser-agent download, for every download tool.
 
     ModelCountProbe:
       type: object

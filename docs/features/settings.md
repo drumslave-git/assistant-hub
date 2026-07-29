@@ -43,7 +43,7 @@ that persists every changed field regardless of which tab is active:
 
 | Tab | Holds |
 | --- | --- |
-| **Core** | LLM connection + model, Telegram token, owner, maintenance mode, timezone, daily run time, browser download cap — without which the bot cannot run |
+| **Core** | LLM connection + model, Telegram token, owner, maintenance mode, timezone, daily run time, the two browser download caps (chat-attach MB, disk-limit GB) — without which the bot cannot run |
 | **Embeddings** | The endpoint powering semantic recall over history summaries and memory search |
 | **Images** | The endpoint powering image generation |
 | **Speech** | The endpoint powering voice replies |

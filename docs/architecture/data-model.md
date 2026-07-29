@@ -65,6 +65,7 @@ reads and writes the one row.
 | `timezone` | text, default `UTC` | IANA name; the operator timezone |
 | `daily_jobs_run_time` | text, default `04:00` | Local `HH:MM` all daily jobs run at |
 | `browser_download_max_mb` | integer, default `20` | Cap for attaching a browser-agent download to the chat |
+| `browser_download_limit_gb` | integer, default `10` | Hard ceiling on a single browser-agent download, shared by all three download tools |
 | `updated_at` | timestamptz | Last write |
 
 ### `personalities`

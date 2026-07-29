@@ -55,6 +55,11 @@ const BROWSE_WEB_DESCRIPTION =
   "not ask you to verify (a definition, a historical date, arithmetic) — that is not a web task. " +
   "Write the goal as a clear, self-contained instruction, and INCLUDE ALL links, site names, and " +
   "search terms the user gave — the agent starts from nothing but this text. " +
+  "Pass on what the user actually asked for, and do NOT soften it or add an easier alternative: " +
+  "if they said to download something, the goal is to download it — never write 'or describe it', " +
+  "'or find information about it', 'or explain how to get it'. The agent takes any alternative you " +
+  "offer as permission to stop early, so a request for a file comes back as a paragraph about the " +
+  "file. State plainly that the file must be downloaded, and say whether they want audio or video. " +
   "The agent replies to the chat itself, so just tell the user you're on it; do not invent results.";
 
 /** Register the browser-agent MCP tool on the shared server. */
@@ -70,7 +75,7 @@ export function registerBrowserAgentMcpTools(server: McpServer): void {
           .min(4)
           .max(4000)
           .describe(
-            "A clear, self-contained description of what to find or do on the web. Include ALL links the user gave.",
+            "A clear, self-contained description of what to find or do on the web. Include ALL links the user gave. Keep the user's request intact — never add a weaker alternative such as 'or tell me about it', which lets the agent stop before doing the work.",
           ),
       },
       outputSchema: {

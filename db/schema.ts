@@ -195,6 +195,17 @@ export const settings = pgTable(
      * Bounded 1–50 (Telegram's bot upload ceiling). MVP-parity default: 20.
      */
     browserDownloadMaxMb: integer("browser_download_max_mb").notNull().default(20),
+    /**
+     * Hard ceiling (in GB) on a single browser-agent download, whatever the tool:
+     * a plain file, a muxed HLS/DASH stream, or a yt-dlp media extraction. Purely
+     * a disk guard — it never chooses a lower quality.
+     *
+     * One number for all three (user decision, 2026-07-29). The code previously
+     * carried two unrelated constants, 2 GB for files and 4 GB for streams, with
+     * no recorded reason for the difference; a third tool made that a third
+     * arbitrary value, so it became a setting instead. Bounded 1–100, default 10.
+     */
+    browserDownloadLimitGb: integer("browser_download_limit_gb").notNull().default(10),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("settings_singleton", sql`${t.id} = 'singleton'`)],

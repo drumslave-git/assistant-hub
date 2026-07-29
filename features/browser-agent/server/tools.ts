@@ -6,10 +6,12 @@ import type { ChatCompletionFunctionTool } from "openai/resources/chat/completio
 
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
 
-import { formatBytes } from "../files";
+import { formatBytes, formatTransferLine } from "../files";
 import { formatSnapshot, type PageSnapshot } from "../snapshot";
+import type { MediaMode } from "../ytdlp";
 import type { BrowserDownloadRecord } from "../types";
 import { downloadToDisk, type DiskDownload } from "./download";
+import { downloadMediaToDisk, YtDlpMissingError } from "./media-download";
 import { runBrowserSearch } from "./search";
 import { downloadStreamToDisk, FfmpegMissingError } from "./stream-download";
 import type { BrowserAgentSession, NetworkEntry } from "./session";
@@ -19,9 +21,14 @@ import type { BrowserAgentSession, NetworkEntry } from "./session";
  * tools — the model composes primitives instead of the code encoding any one
  * task): search, navigate, back, click, type, scroll, read page, read raw source,
  * inspect network requests, screenshot, wait, download a direct file, download an
- * HLS/DASH stream. Finding "the video" is the model's job — it reads the page or
- * the network, picks the URL, and calls the matching download tool — not a
- * media-sniffing heuristic baked in here.
+ * HLS/DASH stream, download a media page. Finding "the video" is the model's job —
+ * it reads the page or the network, picks the URL, and calls the matching download
+ * tool — not a media-sniffing heuristic baked in here.
+ *
+ * Three download tools rather than one because the three cases have genuinely
+ * different inputs: a whole-file URL, a manifest URL, and — for a site whose player
+ * derives ciphered per-session stream URLs in its own JavaScript — the page URL
+ * itself, handed to yt-dlp.
  *
  * These are plain OpenAI tool definitions for the agent's own tool loop — they
  * are NOT MCP tools and are never offered to the main chat model; only the
@@ -42,6 +49,11 @@ export interface AgentToolContext {
   isOwner: boolean;
   /** Largest file (MB) that is also attached to the chat. */
   downloadMaxMb: number;
+  /**
+   * Hard ceiling in bytes on any single download, whichever tool runs
+   * (`settings.browser_download_limit_gb`). A disk guard, never a quality choice.
+   */
+  downloadLimitBytes: number;
   /** Every completed download, for the run row + end-of-run recap. */
   downloads: BrowserDownloadRecord[];
   /** Called before each action starts, with a short label + the current URL. */
@@ -168,7 +180,7 @@ export const BROWSER_AGENT_TOOLS: ChatCompletionFunctionTool[] = [
   ),
   fn(
     "browser_get_network",
-    "List the network requests the current page has made (URL, method, resource type, status, content-type). This is how you find the REAL file or stream URL that a player or the page loaded — e.g. an .mp4/.m3u8/.mpd a video player fetched, or a file a button pointed at — which is often NOT visible in the page text or links. Interact with the page first (play/scroll/click) so it loads what you want, then read the network here, pick the right URL, and download it with the matching download tool: a direct file (.mp4/.pdf/…) versus a streaming manifest (.m3u8/.mpd).",
+    "List the network requests the current page has made (URL, method, resource type, status, content-type). This is how you find the REAL file or stream URL that a player or the page loaded — e.g. an .mp4/.m3u8/.mpd a video player fetched, or a file a button pointed at — which is often NOT visible in the page text or links. Interact with the page first (play/scroll/click) so it loads what you want, then read the network here, pick the right URL, and download it with the matching download tool: a direct file (.mp4/.pdf/…) versus a streaming manifest (.m3u8/.mpd). Do NOT use this to hunt for a media URL on a video/music site (YouTube, YouTube Music, SoundCloud, Vimeo, TikTok, …) — those players build ciphered one-off URLs that will not work outside the page. Use browser_download_media with the page URL for those.",
     {
       type: "object",
       properties: {
@@ -198,7 +210,7 @@ export const BROWSER_AGENT_TOOLS: ChatCompletionFunctionTool[] = [
   ),
   fn(
     "browser_download_file",
-    "Download a DIRECT file URL — one URL that returns the whole file (.mp4, .pdf, .zip, .jpg …) — to the server's downloads folder (owner-started runs only). If the file URL is not an obvious link, find it first by inspecting the page source or the page's network requests. For a streaming video served as an HLS/DASH manifest (.m3u8/.mpd), use the streaming download tool instead — this one only fetches a single whole-file URL. The file is named automatically from the page title — do NOT pass a filename. Small files are also attached to the chat; large ones are reported by name.",
+    "Download a DIRECT file URL — one URL that returns the whole file (.mp4, .pdf, .zip, .jpg …) — to the server's downloads folder (owner-started runs only). If the file URL is not an obvious link, find it first by inspecting the page source or the page's network requests. For a streaming video served as an HLS/DASH manifest (.m3u8/.mpd), use browser_download_stream instead; for a video/music site page (YouTube, YouTube Music, SoundCloud, Vimeo, TikTok …), use browser_download_media — this one only fetches a single whole-file URL. The file is named automatically from the page title — do NOT pass a filename. Small files are also attached to the chat; large ones are reported by name.",
     {
       type: "object",
       properties: {
@@ -209,11 +221,31 @@ export const BROWSER_AGENT_TOOLS: ChatCompletionFunctionTool[] = [
   ),
   fn(
     "browser_download_stream",
-    "Download a STREAMING video/audio from its HLS/DASH manifest URL (an .m3u8 or .mpd) — the format most in-browser video players use, where the media is split into many segments with no single file to GET. It assembles the segments into one MP4 at the best available quality. Find the manifest URL first by inspecting the page source or the page's network requests (look for .m3u8/.mpd). Owner-started runs only. Small results are attached to the chat; large ones are reported by name.",
+    "Download a STREAMING video/audio from its HLS/DASH manifest URL (an .m3u8 or .mpd) — the format most in-browser video players use, where the media is split into many segments with no single file to GET. It assembles the segments into one MP4 at the best available quality. Find the manifest URL first by inspecting the page source or the page's network requests (look for .m3u8/.mpd). If the page is on a video/music site (YouTube, YouTube Music, SoundCloud, Vimeo, TikTok …) there is no manifest to find — use browser_download_media instead. Owner-started runs only. Small results are attached to the chat; large ones are reported by name.",
     {
       type: "object",
       properties: {
         url: { type: "string", description: "Public http(s) URL of the .m3u8/.mpd manifest" },
+      },
+      required: ["url"],
+    },
+  ),
+  fn(
+    "browser_download_media",
+    "Download the video or the audio of a MEDIA PAGE — YouTube, YouTube Music, SoundCloud, Vimeo, TikTok, Twitter/X, Instagram, Bandcamp, Twitch, a podcast page, a news video page, and ~1800 other sites. Pass the PAGE url the human would open (the one with the watch/video/track id), NOT a media file url — this tool extracts the media itself. This is the ONLY tool that works on those sites: their players build ciphered, one-off stream urls in their own JavaScript, so there is no file to GET and no .m3u8 to find — do not waste steps reading the page source or the network requests looking for one, and never report back that the site 'has no download button' or that the user should download it themselves. Use it whenever the goal is to download/save/get a song, track, video, clip, episode or podcast from such a page. Owner-started runs only. The file is named from the media's own title — do NOT pass a filename. Small results are attached to the chat; large ones are reported by name.",
+    {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "Public http(s) URL of the media PAGE (e.g. https://www.youtube.com/watch?v=…)",
+        },
+        mode: {
+          type: "string",
+          enum: ["audio", "video"],
+          description:
+            "\"audio\" for a song, track, music, a podcast or anything the user wants to listen to (best available audio, much smaller); \"video\" for a video or clip (best available video + audio). Default \"video\".",
+        },
       },
       required: ["url"],
     },
@@ -370,13 +402,9 @@ async function dispatchTool(
       await ctx.onAction(`download file ${url}`, ctx.session.currentUrl());
       const meta = await ctx.session.pageMeta();
       const result = await downloadToDisk(url, {
+        maxBytes: ctx.downloadLimitBytes,
         title: meta.title,
-        onProgress: (p) =>
-          ctx.onProgress?.(
-            p.totalBytes
-              ? `Downloading ${formatBytes(p.receivedBytes)} / ${formatBytes(p.totalBytes)} (${formatBytes(p.bytesPerSec)}/s)`
-              : `Downloading ${formatBytes(p.receivedBytes)} (${formatBytes(p.bytesPerSec)}/s)`,
-          ),
+        onProgress: (p) => ctx.onProgress?.(formatTransferLine(p)),
       });
       return finishDownload(ctx, result, meta.url ?? url);
     }
@@ -387,6 +415,7 @@ async function dispatchTool(
       const meta = await ctx.session.pageMeta();
       try {
         const result = await downloadStreamToDisk(url, {
+          maxBytes: ctx.downloadLimitBytes,
           title: meta.title,
           onProgress: (p) =>
             ctx.onProgress?.(`Assembling stream — ${formatBytes(p.outputBytes)} written, ${p.time} muxed`),
@@ -396,6 +425,28 @@ async function dispatchTool(
         // ffmpeg missing is an operator-fixable environment fact — say so plainly
         // rather than as a generic tool failure the agent might paper over.
         if (err instanceof FfmpegMissingError) return errorResult(err.message);
+        throw err;
+      }
+    }
+    case "browser_download_media": {
+      if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
+      const url = str(args, "url");
+      const mode: MediaMode = str(args, "mode") === "audio" ? "audio" : "video";
+      await ctx.onAction(`download ${mode} ${url}`, ctx.session.currentUrl());
+      try {
+        // No page title is read here: yt-dlp names the file from the media's own
+        // metadata, which is better than the page title the other tools use, and
+        // the agent may call this without ever navigating to the page.
+        const result = await downloadMediaToDisk(url, {
+          mode,
+          maxBytes: ctx.downloadLimitBytes,
+          onProgress: (p) => ctx.onProgress?.(formatTransferLine(p)),
+        });
+        return finishDownload(ctx, result, url);
+      } catch (err) {
+        // yt-dlp missing is an operator-fixable environment fact, like ffmpeg —
+        // say so plainly rather than as a generic tool failure.
+        if (err instanceof YtDlpMissingError) return errorResult(err.message);
         throw err;
       }
     }

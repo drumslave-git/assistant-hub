@@ -77,6 +77,7 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     timezone: record?.timezone ?? "UTC",
     dailyJobsRunTime: record?.dailyJobsRunTime ?? DEFAULT_DAILY_JOBS_RUN_TIME,
     browserDownloadMaxMb: record?.browserDownloadMaxMb ?? DEFAULT_BROWSER_DOWNLOAD_MAX_MB,
+    browserDownloadLimitGb: record?.browserDownloadLimitGb ?? DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB,
     updatedAt: record?.updatedAt ?? null,
   };
 }
@@ -359,6 +360,20 @@ export async function getBrowserDownloadMaxMb(db: DrizzleDb = getDb()): Promise<
   return (await getSettingsRecord(db))?.browserDownloadMaxMb ?? DEFAULT_BROWSER_DOWNLOAD_MAX_MB;
 }
 
+/** Default hard ceiling on a single browser-agent download (user decision, 2026-07-29). */
+export const DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB = 10;
+
+/**
+ * Server-only: the hard ceiling **in bytes** on a single browser-agent download,
+ * for every download tool — a plain file, a muxed stream, a yt-dlp extraction.
+ * Purely a disk guard; it never picks a lower quality. Read at call time so a
+ * change applies without a restart.
+ */
+export async function getBrowserDownloadLimitBytes(db: DrizzleDb = getDb()): Promise<number> {
+  const gb = (await getSettingsRecord(db))?.browserDownloadLimitGb ?? DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB;
+  return gb * 1024 * 1024 * 1024;
+}
+
 /**
  * Server-only: the active personality's id, or null when none is chosen. Used by
  * the personalities feature to resolve the persona composed into replies.
@@ -441,6 +456,9 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   }
   if (input.browserDownloadMaxMb !== undefined) {
     patch.browserDownloadMaxMb = input.browserDownloadMaxMb;
+  }
+  if (input.browserDownloadLimitGb !== undefined) {
+    patch.browserDownloadLimitGb = input.browserDownloadLimitGb;
   }
   return patch;
 }
@@ -803,6 +821,7 @@ const EMPTY_RECORD: SettingsRecord = {
   timezone: "UTC",
   dailyJobsRunTime: DEFAULT_DAILY_JOBS_RUN_TIME,
   browserDownloadMaxMb: DEFAULT_BROWSER_DOWNLOAD_MAX_MB,
+  browserDownloadLimitGb: DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB,
   operatorPasswordHash: null,
   sessionSecret: null,
   updatedAt: null,

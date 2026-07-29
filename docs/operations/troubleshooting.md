@@ -158,6 +158,15 @@ image built the `apk add` layer.
 Note that a Playwright/Chromium failure is confined to the run that needs it: the
 package is imported lazily precisely so it cannot crash server startup.
 
+## A media download fails
+
+| Symptom | Cause / fix |
+| --- | --- |
+| "needs yt-dlp, which is not installed on the server" | `yt-dlp` is not on `PATH`. The Docker image installs it from apk; locally, install it. Only `browser_download_media` needs it — the rest of the run works |
+| One page fails with yt-dlp's own `ERROR:` line | That is the site's answer: private video, sign-in wall, region block, or an unsupported site. Nothing to fix here |
+| **Every** media page fails to extract | The distro yt-dlp is frozen per Alpine release while these sites change often. Rebuild the image against a newer base |
+| A merged video needs a container change | Expected: `mp4` is a preference, and yt-dlp falls back to one that can hold the chosen codecs |
+
 ## A URL is rejected as unsafe
 
 The SSRF guard refused it. It rejects non-http(s) schemes, embedded credentials,

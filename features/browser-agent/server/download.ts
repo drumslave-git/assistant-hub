@@ -80,8 +80,6 @@ export interface DiskDownload {
 
 const MAX_REDIRECTS = 5;
 const HEADER_TIMEOUT_MS = 60_000;
-/** Safety cap so a runaway response can't fill the disk. */
-const MAX_DISK_BYTES = 2 * 1024 * 1024 * 1024;
 
 /** Browser-like headers: plenty of file hosts refuse a bare fetch. Shared with the stream downloader. */
 export const DOWNLOAD_HEADERS = (url: URL): Record<string, string> => ({
@@ -169,6 +167,12 @@ export interface DownloadProgress {
 const PROGRESS_INTERVAL_MS = 700;
 
 export interface DownloadOptions {
+  /**
+   * Hard ceiling in bytes (`settings.browser_download_limit_gb`). One number for
+   * every download tool; passed in rather than read here so this module stays a
+   * generic primitive with no settings dependency.
+   */
+  maxBytes: number;
   /** Page title used to name the file. */
   title?: string | null;
   /** Called (throttled) while the body streams to disk. */
@@ -180,10 +184,14 @@ export interface DownloadOptions {
  * Streams to disk (a large file never sits in memory) with the size cap; a
  * failed/oversized transfer removes the partial file and throws. Reports live
  * byte progress via `options.onProgress`.
+ *
+ * Over the cap this aborts and deletes the partial — unlike the stream and media
+ * tools, which can leave a usable truncated file. An arbitrary HTTP body cut in
+ * half is not a smaller version of itself.
  */
 export async function downloadToDisk(
   rawUrl: string,
-  options: DownloadOptions = {},
+  options: DownloadOptions,
 ): Promise<DiskDownload> {
   const { response, finalUrl } = await resolveFinalResponse(rawUrl);
   if (!response.ok) {
@@ -210,8 +218,8 @@ export async function downloadToDisk(
   const counter = new Transform({
     transform(chunk: Buffer, _enc, cb) {
       written += chunk.length;
-      if (written > MAX_DISK_BYTES) {
-        cb(new Error(`Download exceeds the ${Math.round(MAX_DISK_BYTES / 1024 / 1024)} MB cap`));
+      if (written > options.maxBytes) {
+        cb(new Error(`Download exceeds the ${Math.round(options.maxBytes / 1024 ** 3)} GB cap`));
         return;
       }
       if (onProgress) {

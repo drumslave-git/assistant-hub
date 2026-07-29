@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { buildDownloadFilename, extForUrl, formatBytes, primaryTitle, safeFilename } from "./files";
+import {
+  buildDownloadFilename,
+  extForUrl,
+  formatBytes,
+  formatTransferLine,
+  mimeForFilename,
+  primaryTitle,
+  safeFilename,
+} from "./files";
 
 /**
  * Filenames come from untrusted page titles and URLs, so these assertions cover
@@ -58,6 +66,34 @@ describe("formatBytes", () => {
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
     expect(formatBytes(120 * 1024 * 1024)).toBe("120 MB");
     expect(formatBytes(Math.round(1.35 * 1024 * 1024 * 1024))).toBe("1.35 GB");
+  });
+});
+
+describe("formatTransferLine", () => {
+  it("shows the total when the source declared one", () => {
+    expect(
+      formatTransferLine({ receivedBytes: 1048576, totalBytes: 4194304, bytesPerSec: 524288 }),
+    ).toBe("Downloading 1.0 MB / 4.0 MB (512 KB/s)");
+  });
+
+  it("omits the total when it is unknown", () => {
+    expect(formatTransferLine({ receivedBytes: 2048, totalBytes: 0, bytesPerSec: 1024 })).toBe(
+      "Downloading 2 KB (1 KB/s)",
+    );
+  });
+});
+
+describe("mimeForFilename", () => {
+  it("types the containers yt-dlp produces", () => {
+    expect(mimeForFilename("VIRUS (Fytch Remix).m4a")).toBe("audio/mp4");
+    expect(mimeForFilename("clip.mp4")).toBe("video/mp4");
+    expect(mimeForFilename("talk.opus")).toBe("audio/opus");
+    expect(mimeForFilename("show.mkv")).toBe("video/x-matroska");
+  });
+
+  it("falls back to a generic binary for anything else", () => {
+    expect(mimeForFilename("notes")).toBe("application/octet-stream");
+    expect(mimeForFilename("archive.rar")).toBe("application/octet-stream");
   });
 });
 
