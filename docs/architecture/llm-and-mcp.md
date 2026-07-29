@@ -84,7 +84,7 @@ rounds and a final answer — three kinds of work with completely different cost
 profiles, previously averaged into one number that moved with the mix rather than
 with any actual request.
 
-The kinds: `addressing-check`, `reply-tool-turn`, `reply-final`,
+The kinds: `addressing-check`, `chat-rule-match`, `reply-tool-turn`, `reply-final`,
 `vision-describe`, `voice-transcribe`, `history-summarize`, `memory-extract`,
 `memory-consolidate`, `insight-hour`, `insight-rollup`, `browser-agent-turn`,
 `browser-agent-report`, `scheduled-task-fire`, `self-improve-analyze`,
@@ -122,7 +122,7 @@ BotMcpRegistry ── in-memory transport pair ── McpServer
 
 | Module | Role |
 | --- | --- |
-| `server/mcp/runtime.ts` | Process-wide registry singleton. Registers every feature's tools once and connects the client/server pair once. **New tool-owning features add their registrar here** |
+| `server/mcp/runtime.ts` | Process-wide registry singleton, built from the `REGISTRARS` table. Registers every feature's tools once and connects the client/server pair once. **New tool-owning features add their registrar to that table** |
 | `server/mcp/registry.ts` | The registrar contract: a feature contributes its tools to the shared server |
 | `server/mcp/in-process-transport.ts` | A linked pair wiring an MCP `Client` to a local `McpServer` in the same process. Messages are delivered on a microtask so `send` never re-enters the caller synchronously |
 | `server/mcp/openai-tools.ts` | Pure conversions between MCP wire shapes and OpenAI tool shapes |
@@ -179,7 +179,7 @@ future tool gets its own scope with no per-tool wiring.
 
 ## The tool catalog
 
-17 tools across 8 owning features.
+25 tools across 8 owning features.
 
 ### History — `mcp-tools-history`
 
@@ -207,6 +207,19 @@ remember that" without calling the tool is a false promise, when to save
 proactively, which scope a fact about a person belongs in (`user` for someone this
 chat knows, `general` for anyone else), and that facts must be self-contained and
 one per call.
+
+### Chat rules — `mcp-tools-chat-rules`
+
+Standing instructions for the current chat — see
+[chat-rules.md](../features/chat-rules.md). Writes are gated in the service
+(self-serve in a DM, owner-only in a group); global rules are read-only here.
+
+| Tool | Input | Purpose |
+| --- | --- | --- |
+| `rules_list` | — | This chat's rules with their ids, plus the global ones |
+| `rules_create` | `text`, `trigger` | Save a standing rule for this chat |
+| `rules_update` | `id`, `text?`, `trigger?`, `enabled?` | Reword, retrigger, or pause/resume a rule |
+| `rules_delete` | `id` | Remove a rule for good |
 
 ### Scheduled tasks — `mcp-tools-scheduled-tasks`
 
@@ -273,9 +286,26 @@ definitions for the *agent's own* loop. They are **not** MCP tools and are never
 2. Read the chat and speaker from the tool context — never from model input.
 3. Make the boundary resolve rather than throw, and format the result text with a
    pure, unit-tested `format.ts`.
-4. Register it in `server/mcp/runtime.ts` with its owning feature string.
+4. Add it to the `REGISTRARS` table in `server/mcp/runtime.ts` with its owning
+   feature string and its `*_TOOL_NAMES`.
 5. Add `mcp-tools-<owner>` to `lib/features.ts` — the id must equal
    `mcp-tools-${owner}` exactly, or the tool's Debug scope will be empty.
 6. Add a `tool-selection.integration.test.ts` verifying a real model actually
    picks the tool for the phrasings it should (see
    [Testing](../development/testing.md)).
+
+The declared `*_TOOL_NAMES` are load-bearing beyond grouping: the registry is a
+`globalThis` singleton that **survives dev hot reload by design**, so a server
+started before your registrar existed would otherwise keep serving the old tool
+list forever. `loadMcpRegistry` compares the cached registry's registered names
+against the table and rebuilds on any difference, so a new tool appears without a
+restart. The names must therefore match what the registrar actually registers —
+if they drift, the registry rebuilds on every single call. That is pinned in
+`server/mcp/runtime.test.ts`.
+
+The stale-registry symptom is worth recognising, because it does not look like a
+registry problem from either end: the model is never offered the tool, so it
+answers in prose and *promises* to do the thing (the base prompt's honesty rules
+cannot save it — there was no tool to call), and `/tools` shows the same stale
+list, which reads as a dashboard page nobody updated. Both are one object built
+too early.

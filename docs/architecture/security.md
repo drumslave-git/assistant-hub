@@ -151,8 +151,14 @@ the model was told:
   visible in the conversation, and that reference is resolved against the actual
   participants of the current chat.
 - Scheduled-task mutations are author-scoped.
-- The browser agent's download tools are gated to owner-started runs, resolved at
-  enqueue time — not at call time, and not from anything the model says.
+- The browser agent's download tools are gated to owner-authorized runs, resolved
+  at enqueue time — not at call time, and not from anything the model says. The
+  authority is the sender, except on a turn a standing chat rule drove, where it
+  is the **rule's author**: a rule is its author's standing order, so an owner's
+  "download any media link posted here" works on everyone's links (user decision,
+  2026-07-29). It lends permissions only — provenance stays the real sender — and
+  a rule written by an unprivileged user lends nothing. See
+  [chat-rules.md](../features/chat-rules.md#whose-rights-a-rule-driven-action-carries).
 - Generated image bytes never travel through the model.
 
 There is a deliberate **non**-mechanism too: no transliteration tables, no

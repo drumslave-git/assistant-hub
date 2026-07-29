@@ -1181,3 +1181,143 @@ describe("voice turns", () => {
     expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/maintenance/i);
   });
 });
+
+/**
+ * Standing `always` rules — the one path by which the bot answers a message
+ * nobody addressed to it. The matcher itself (prompt + citation check) is unit
+ * tested in `features/chat-rules/server/matcher.test.ts`; what matters here is
+ * that the service only consults it when the addressing check has already said
+ * no, that a match produces a real reply carrying the directive, and that no
+ * match leaves the message ignored.
+ */
+describe("handleIncomingMessage — standing chat rules", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function groupChatter(text: string) {
+    const m = makeMessage({ message_id: 7, chat: { id: 5, type: "group" }, text });
+    return incoming({ message: m, chatType: "group", text });
+  }
+
+  const matched = (directive: string | null = "RULE DIRECTIVE") =>
+    vi.fn().mockResolvedValue({ directive, ruleIds: ["r1"] });
+
+  it("replies to an un-addressed message when a rule matched, injecting the directive last", async () => {
+    const applyChatRules = matched();
+    const d = deps({ applyChatRules });
+
+    const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(applyChatRules).toHaveBeenCalledOnce();
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // Last system message before the turn being answered: maximum recency.
+    expect(messages.at(-2)).toEqual({ role: "system", content: "RULE DIRECTIVE" });
+    expect(messages.at(-1).role).toBe("user");
+  });
+
+  it("tells the model the sender did not address it", async () => {
+    const d = deps({ applyChatRules: matched() });
+    await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const hint = messages.find(
+      (m: { role: string; content: unknown }) =>
+        m.role === "system" && typeof m.content === "string" && m.content.includes("did not address you"),
+    );
+    expect(hint).toBeDefined();
+  });
+
+  it("stays silent when no rule matched", async () => {
+    const applyChatRules = vi.fn().mockResolvedValue(null);
+    const d = deps({ applyChatRules });
+
+    const out = await handleIncomingMessage(groupChatter("just chatter"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
+    expect(applyChatRules).toHaveBeenCalledOnce();
+    expect(d.generateReply).not.toHaveBeenCalled();
+  });
+
+  it("stays silent when the matcher fails — a broken call is never an invitation", async () => {
+    const applyChatRules = vi.fn().mockRejectedValue(new Error("provider down"));
+    const d = deps({ applyChatRules });
+
+    const out = await handleIncomingMessage(groupChatter("just chatter"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
+    expect(d.generateReply).not.toHaveBeenCalled();
+  });
+
+  it("does not consult the matcher in maintenance mode", async () => {
+    const applyChatRules = matched();
+    const d = deps({
+      applyChatRules,
+      policy: { ownerUserId: "1", maintenanceModeEnabled: true },
+    });
+
+    const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
+    expect(applyChatRules).not.toHaveBeenCalled();
+  });
+
+  it("still applies the rules on an addressed turn — that is where the authority is bound", async () => {
+    const applyChatRules = matched();
+    const d = deps({ applyChatRules });
+
+    const out = await handleIncomingMessage(incoming({ text: "hello" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(applyChatRules).toHaveBeenCalledWith(expect.anything(), { addressed: true });
+    // No directive on an addressed turn: the person asked, and the rules are
+    // already in the system prompt.
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages.at(-2).content).not.toBe("RULE DIRECTIVE");
+  });
+
+  it("applies the rules exactly once on a turn a rule opened", async () => {
+    const applyChatRules = matched();
+    const d = deps({ applyChatRules });
+
+    await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    expect(applyChatRules).toHaveBeenCalledOnce();
+    expect(applyChatRules).toHaveBeenCalledWith(expect.anything(), { addressed: false });
+  });
+
+  it("stays silent when the only matched rules cannot open a turn (no directive)", async () => {
+    // An `on-reply` rule matched: it lends its author's rights on a turn the bot
+    // was addressed in, but it can never start one.
+    const applyChatRules = vi.fn().mockResolvedValue({ ruleIds: ["r1"], directive: null });
+    const d = deps({ applyChatRules });
+
+    const out = await handleIncomingMessage(groupChatter("just chatter"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
+    expect(d.generateReply).not.toHaveBeenCalled();
+  });
+
+  it("does not fail the reply when applying the rules throws on an addressed turn", async () => {
+    const applyChatRules = vi.fn().mockRejectedValue(new Error("provider down"));
+    const d = deps({ applyChatRules });
+
+    const out = await handleIncomingMessage(incoming({ text: "hello" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+  });
+
+  it("composes the rules block into the system prompt and records that it applied", async () => {
+    const d = deps({ chatRules: "Standing rules for this chat:\n1. Answer briefly." });
+
+    await handleIncomingMessage(incoming({ text: "hello" }), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages[0].content).toContain("1. Answer briefly.");
+    const step = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "system prompt composed");
+    expect(step.data.chatRulesApplied).toBe(true);
+  });
+});

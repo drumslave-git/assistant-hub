@@ -8,6 +8,8 @@ import { getUserLanguage } from "@/features/known-users/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import { getBotPolicy, getLlmRuntime, getTimezone } from "@/features/settings/server/service";
+import { buildChatRulesBlock } from "@/features/chat-rules/format";
+import { getActiveRulesForChat } from "@/features/chat-rules/server/service";
 import { getActiveSpecialistInstructions } from "@/features/specialists/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
@@ -120,9 +122,16 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
     const specialistInstructions = await getActiveSpecialistInstructions(task.chatId, db).catch(
       () => null,
     );
+    // The chat's standing rules, resolved per task for the same reason. Only the
+    // reply-shaping set applies: an `always` rule reacts to somebody's message,
+    // and a fire is nobody's message.
+    const chatRules = await getActiveRulesForChat(task.chatId, db)
+      .then((rules) => buildChatRulesBlock(rules.reply))
+      .catch(() => null);
     const result = await fireScheduledTask(task, {
       personalityPrompt: deps.personalityPrompt,
       specialistInstructions,
+      chatRules,
       requiredLanguage: resolveRequiredLanguage(storedLanguage),
       complete: deps.complete,
       send: (text) => deps.send(task.chatId, text, { threadId: task.threadId }),

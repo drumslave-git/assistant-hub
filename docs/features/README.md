@@ -14,6 +14,7 @@ Feature ids are the ones in `lib/features.ts` — the same strings that appear a
 | Bot messaging | `bot-messaging` | Overview (bot control) | [bot-messaging.md](bot-messaging.md) |
 | Personalities | `personalities` | `/personalities` | [personalities.md](personalities.md) |
 | Specialists | `specialists`, `mcp-tools-specialists` | `/specialists` | [specialists.md](specialists.md) |
+| Chat rules | `chat-rules`, `mcp-tools-chat-rules` | `/rules` | [chat-rules.md](chat-rules.md) |
 | History | `history`, `history-summaries` | `/history` | [history.md](history.md) |
 | Memory | `memory`, `memory-extraction` | `/memory` | [memory.md](memory.md) |
 | Vision | `vision`, `vision-backfill` | `/vision` | [vision.md](vision.md) |
@@ -42,6 +43,7 @@ message. In prompt order:
 | Personality | Personalities | When one is active |
 | Specialist role | Specialists | When one is active in this chat |
 | Self-correction guidelines | Self-improvement | When any version exists |
+| Standing chat rules | Chat rules | When the chat (or the global set) has any |
 | Chat context (roster, group notes) | Users and groups | When there is anything to inject |
 | Long-term memory | Memory | When the bot knows anything about the people here |
 | Sender preferences | Self-improvement | When the sender has a version |

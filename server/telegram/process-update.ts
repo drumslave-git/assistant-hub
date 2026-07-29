@@ -11,6 +11,17 @@ import type { BotPolicy } from "@/features/settings/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import { getActiveSpecialistInstructions } from "@/features/specialists/server/service";
 import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/exclusions-repository";
+import {
+  buildChatRulesBlock,
+  buildRuleTriggerDirective,
+  resolveRuleAuthority,
+} from "@/features/chat-rules/format";
+import {
+  buildRuleMatchMessages,
+  parseRuleMatchVerdict,
+} from "@/features/chat-rules/server/matcher";
+import type { ChatRule } from "@/features/chat-rules/server/schema";
+import { getActiveRulesForChat } from "@/features/chat-rules/server/service";
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import {
   handleIncomingMessage,
@@ -62,6 +73,7 @@ import { ApiError } from "@/lib/api-error";
 import { resolveRequiredLanguage } from "@/lib/language";
 import {
   chatCompletion,
+  llmUsageOf,
   servedModelOf,
   type ChatContentPart,
   type ChatMessage,
@@ -143,6 +155,14 @@ interface BuildDepsInput {
   personalityPrompt: string | null;
   specialistInstructions: string | null;
   selfCorrection: string | null;
+  /** The chat's standing rules, already composed into a prompt block (or null). */
+  chatRules: string | null;
+  /**
+   * The chat's enabled rules: `reply` is every one of them (they all shape a
+   * reply and may lend their author's rights), `always` the subset that may also
+   * open a turn nobody addressed. Both empty → the rule matcher is not wired.
+   */
+  rules: { reply: ChatRule[]; always: ChatRule[] };
   timeContext: string | null;
   requiredLanguage: string | null;
   /**
@@ -188,6 +208,8 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     personalityPrompt,
     specialistInstructions,
     selfCorrection,
+    chatRules,
+    rules: { reply: replyRules, always: alwaysRules },
     timeContext,
     requiredLanguage,
     messageText,
@@ -206,12 +228,34 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
   const botLabel = `You (@${bot.username})`;
   const threadId = message.message_thread_id;
 
+  /**
+   * Whose rights this turn's tool calls carry, set by `applyChatRules` when a
+   * standing rule matched and read when the tool context is bound below. Scoped
+   * to this one message's collaborators — not module state — and the service
+   * awaits the match before generating, so it is settled before any tool runs.
+   */
+  let ruleAuthorityUserId: string | null = null;
+  /** A matched `always` rule can open a turn nobody addressed the bot in. */
+  const canOpenTurn = alwaysRules.length > 0;
+  /**
+   * A matched rule can lend rights only if its author had rights to lend, and
+   * only to somebody who does not already have them — so the owner's own
+   * messages never pay for a match they cannot benefit from.
+   */
+  const canElevate =
+    policy.ownerUserId != null &&
+    senderId !== policy.ownerUserId &&
+    replyRules.some(
+      (rule) => rule.source === "dashboard" || rule.createdByUserId === policy.ownerUserId,
+    );
+
   return {
     bot,
     policy,
     personalityPrompt,
     specialistInstructions,
     selfCorrection,
+    chatRules,
     timeContext,
     requiredLanguage,
     trace,
@@ -363,7 +407,18 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         // task tool records who created a task and delivers into the right thread.
         // `collectImage` gives the image tool somewhere to put its bytes: they are
         // delivered after the reply, never through the model or the trace.
-        return runWithToolContext({ chatId, userId: senderId, threadId, collectImage }, () =>
+        return runWithToolContext(
+          {
+            chatId,
+            userId: senderId,
+            // Permissions only, and only when a standing rule drove this turn:
+            // the rule's author lends the rights, the sender keeps the identity
+            // (`userId` above still decides who authored a memory or a task).
+            authorityUserId: ruleAuthorityUserId,
+            threadId,
+            collectImage,
+          },
+          () =>
           chatCompletionWithTools(conn, {
             model: runtime.model,
             messages,
@@ -407,6 +462,82 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     // analyzer stops answering to someone else's name. Read only when the
     // analyzer actually runs (the service calls this lazily).
     loadAddressExclusions: () => listAddressingExclusionTerms().catch(() => []),
+    // Standing rules: which of them does this message trigger? The answer opens
+    // a turn nobody addressed (a matched `always` rule) and decides whose rights
+    // the turn's tool calls carry (`ruleAuthorityUserId` above). Wired only when
+    // one of those could come of it, so ordinary traffic pays nothing. Like the
+    // analyzer, a plain completion: one classification of one message, no tools,
+    // no history.
+    applyChatRules:
+      canOpenTurn || canElevate
+        ? async (replyTrace, { addressed }) => {
+            // Nothing to be gained on this branch: an addressed turn where no
+            // rule could lend rights, or an unaddressed one where none could open
+            // the turn. Skipped before the call, so it costs nothing.
+            if (addressed ? !canElevate : !canOpenTurn) return null;
+            // The matcher judges the message's words; a message with none (a bare
+            // photo or sticker) has nothing for a rule to quote, so it is left
+            // alone without spending a call.
+            const text = messageText.trim();
+            if (!text) return null;
+            const runtime = await getLlmRuntime();
+            if (!runtime) return null;
+
+            // Every enabled rule is offered, not only the `always` ones: an
+            // `on-reply` rule cannot open a turn but still lends its author's
+            // rights to what it asks for on a turn the bot was addressed in.
+            const offered = addressed ? replyRules : alwaysRules;
+            const rules = offered.map((rule) => ({ id: rule.id, text: rule.text }));
+            const messages = buildRuleMatchMessages({
+              rules,
+              text,
+              chatType: message.chat.type,
+            });
+            await replyTrace.event({
+              type: "llm_request",
+              message: "chat rule match request",
+              data: { messages },
+            });
+            const result = await chatCompletion(
+              { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey },
+              { model: runtime.model, messages },
+            );
+            await replyTrace.event({
+              type: "llm_response",
+              message: "chat rule match response",
+              data: result.responseBody ?? { content: result.content },
+              usage: { ...llmUsageOf(result), callKind: "chat-rule-match" },
+            });
+
+            const verdict = parseRuleMatchVerdict(result.content, { rules, text });
+            const matched = offered.filter((rule) => verdict.matchedIds.includes(rule.id));
+            // A rule is its author's standing order: the actions it calls for run
+            // with the author's rights, not the sender's. Bound here, read by the
+            // tool context when the generator runs (both inside this closure's
+            // scope, and the service awaits this before generating).
+            const authority = resolveRuleAuthority(matched, policy.ownerUserId ?? null);
+            ruleAuthorityUserId = authority;
+            await replyTrace.event({
+              type: "step",
+              level: matched.length > 0 ? "success" : "info",
+              message: "chat rule match",
+              data: {
+                offered: rules,
+                matchedIds: verdict.matchedIds,
+                reason: verdict.reason,
+                // Whose rights the turn now carries — null when the sender's own.
+                authorityUserId: authority,
+              },
+            });
+            if (matched.length === 0) return null;
+            // Only an `always` rule may open a turn nobody addressed.
+            const opening = matched.filter((rule) => rule.trigger === "always");
+            return {
+              ruleIds: verdict.matchedIds,
+              directive: opening.length > 0 ? buildRuleTriggerDirective(opening) : null,
+            };
+          }
+        : undefined,
     async sendReply(text: string) {
       return transport.sendReply(text, { replyToMessageId: currentMessageId });
     },
@@ -689,13 +820,24 @@ export async function processUpdate(
   // DM setting for a private chat (a private chat's id equals the user id). Falls
   // back to the default when unset — the bot is always given a language directive.
   const isGroup = chat.type !== "private";
-  const [policy, personalityPrompt, specialistInstructions, selfCorrection, timezone, storedLanguage] = await Promise.all([
+  const [
+    policy,
+    personalityPrompt,
+    specialistInstructions,
+    selfCorrection,
+    rules,
+    timezone,
+    storedLanguage,
+  ] = await Promise.all([
     getBotPolicy(),
     getActivePersonalityPrompt(),
     // The chat's active specialist role — stacked onto the persona, never
     // replacing it. Best-effort: an unreadable activation degrades to no role.
     getActiveSpecialistInstructions(chatId).catch(() => null),
     getLatestSelfCorrectionPrompt().catch(() => null),
+    // The chat's standing rules (its own + the global ones). Best-effort: an
+    // unreadable set degrades to no rules rather than failing the turn.
+    getActiveRulesForChat(chatId).catch(() => ({ reply: [], always: [] })),
     getTimezone().catch(() => "UTC"),
     (isGroup ? getGroupLanguage(chatId) : getUserLanguage(chatId)).catch(() => null),
   ]);
@@ -720,6 +862,8 @@ export async function processUpdate(
       personalityPrompt,
       specialistInstructions,
       selfCorrection,
+      chatRules: buildChatRulesBlock(rules.reply),
+      rules,
       timeContext,
       requiredLanguage,
       messageText: effectiveText,

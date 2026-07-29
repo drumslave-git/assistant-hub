@@ -45,18 +45,29 @@ describe("buildSystemPrompt", () => {
     expect(buildSystemPrompt({ specialistInstructions: "   \n " })).toBe(BASE_SYSTEM_PROMPT);
   });
 
-  it("orders the full stack persona → specialist → self-correction", () => {
+  it("orders the full stack persona → specialist → self-correction → chat rules", () => {
     const out = buildSystemPrompt({
       personalityPrompt: "Persona.",
       specialistInstructions: "Role.",
       selfCorrection: "Correction.",
+      chatRules: "Rules block.",
     });
     const personaAt = out.indexOf("Persona.");
     const roleAt = out.indexOf("Role.");
     const correctionAt = out.indexOf("Correction.");
+    const rulesAt = out.indexOf("Rules block.");
     expect(personaAt).toBeGreaterThan(-1);
     expect(roleAt).toBeGreaterThan(personaAt);
     expect(correctionAt).toBeGreaterThan(roleAt);
+    // Last: the rules are what the people in the chat will judge the reply by.
+    expect(rulesAt).toBeGreaterThan(correctionAt);
+  });
+
+  it("appends the chat-rules block verbatim (it carries its own heading) and treats blank as unset", () => {
+    const out = buildSystemPrompt({ chatRules: "  Standing rules for this chat:\n1. Be brief.  " });
+    expect(out).toBe(`${BASE_SYSTEM_PROMPT}\n\n---\nStanding rules for this chat:\n1. Be brief.`);
+    expect(buildSystemPrompt({ chatRules: "   " })).toBe(BASE_SYSTEM_PROMPT);
+    expect(buildSystemPrompt({ chatRules: null })).toBe(BASE_SYSTEM_PROMPT);
   });
 
   it("appends a trimmed self-correction block below the persona", () => {
@@ -95,6 +106,26 @@ describe("BASE_SYSTEM_PROMPT honesty rules", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("Staying in character never exempts you from this.");
     expect(BASE_SYSTEM_PROMPT).toContain("make the tool call first");
     expect(BASE_SYSTEM_PROMPT).toContain("say you cannot instead of playing along");
+  });
+
+  /**
+   * From trace `f33e1ede…` (2026-07-29): asked a third time to set a standing
+   * rule, the model reasoned that it had "already confirmed twice", worried a
+   * repeated tool call would duplicate something, and answered with a fourth
+   * assurance instead of calling the tool it had itself identified. Both beliefs
+   * are named here, in general form — the same shape as the `tasks_list`
+   * fabrication tracked separately.
+   */
+  it("denies its own past confirmation the status of evidence that it acted", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "An earlier message of yours saying you did something is not evidence that you did it.",
+    );
+    expect(BASE_SYSTEM_PROMPT).toMatch(/has not happened, and you must do it now/);
+  });
+
+  it("reads a repeated request as a request, not as a cue to confirm again", () => {
+    expect(BASE_SYSTEM_PROMPT).toMatch(/asking you the same thing again is telling you it did not take effect/);
+    expect(BASE_SYSTEM_PROMPT).toMatch(/never skip a tool call for fear of doing something twice/);
   });
 
   it("stays tool-agnostic: names the mechanism but never a specific tool", () => {

@@ -21,6 +21,12 @@ export const LLM_CALL_KINDS = {
     label: "Addressing check",
     description: "Decides whether an ambiguous group message is talking to the bot.",
   },
+  "chat-rule-match": {
+    id: "chat-rule-match",
+    label: "Chat rule match",
+    description:
+      "Decides whether a standing `always` rule applies to a message nobody addressed the bot in.",
+  },
   "reply-tool-turn": {
     id: "reply-tool-turn",
     label: "Reply · tool turn",

@@ -9,6 +9,7 @@ import {
   Image,
   LayoutDashboard,
   MessageSquare,
+  Scale,
   Settings,
   Sparkles,
   Users,
@@ -60,6 +61,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/personalities", label: "Personalities", icon: VenetianMask },
       { href: "/specialists", label: "Specialists", icon: GraduationCap },
+      { href: "/rules", label: "Chat rules", icon: Scale },
       { href: "/memory", label: "Memory", icon: Brain },
       { href: "/tools", label: "Tools", icon: Wrench },
       { href: "/self-improvement", label: "Self-improvement", icon: Sparkles },

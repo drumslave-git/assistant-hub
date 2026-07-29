@@ -54,6 +54,12 @@ export interface FireDeps {
    */
   specialistInstructions?: string | null;
   /**
+   * The firing chat's standing rules as a composed prompt block, stacked in like
+   * the live reply path: a rule about how the bot speaks here governs what it
+   * sends unprompted just as much as what it answers. Null/absent → no block.
+   */
+  chatRules?: string | null;
+  /**
    * The reply language required for this task's chat (operator-configured, or the
    * default). Injected as a strict directive before the task directive so the
    * fired message is in the chat's language. Null/absent → no directive.
@@ -154,6 +160,7 @@ export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Pr
         content: buildSystemPrompt({
           personalityPrompt: deps.personalityPrompt,
           specialistInstructions: deps.specialistInstructions,
+          chatRules: deps.chatRules,
         }),
       },
       ...(languageInstruction
@@ -167,6 +174,7 @@ export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Pr
       data: {
         messages: sanitizeMessagesForTrace(messages),
         specialistApplied: Boolean(deps.specialistInstructions?.trim()),
+        chatRulesApplied: Boolean(deps.chatRules?.trim()),
       },
     });
 

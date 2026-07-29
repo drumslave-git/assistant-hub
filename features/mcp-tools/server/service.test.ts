@@ -7,6 +7,7 @@ import {
   HISTORY_SEARCH_TOOL,
 } from "@/features/history/server/mcp-tools";
 import { BROWSE_WEB_TOOL } from "@/features/browser-agent/server/mcp-tools";
+import { CHAT_RULES_TOOL_NAMES } from "@/features/chat-rules/server/mcp-tools";
 import { IMAGE_GENERATE_TOOL } from "@/features/image-gen/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
 import { MEMORY_TOOL_NAMES } from "@/features/memory/server/mcp-tools";
@@ -28,6 +29,7 @@ const ALL_TOOLS = [
   UPDATE_USER_ALIASES_TOOL,
   ...SCHEDULED_TASKS_TOOL_NAMES,
   ...SPECIALISTS_TOOL_NAMES,
+  ...CHAT_RULES_TOOL_NAMES,
   ...MEMORY_TOOL_NAMES,
   IMAGE_GENERATE_TOOL,
   BROWSE_WEB_TOOL,
@@ -43,6 +45,7 @@ describe("getToolsView", () => {
     expect(featureOf(SCHEDULED_TASKS_TOOL_NAMES[0])).toBe("scheduled-tasks");
     expect(featureOf(MEMORY_TOOL_NAMES[0])).toBe("memory");
     expect(featureOf(SPECIALISTS_TOOL_NAMES[0])).toBe("specialists");
+    expect(featureOf(CHAT_RULES_TOOL_NAMES[0])).toBe("chat-rules");
     // The owning feature is what gives the tool its `mcp-tools-image-gen` Debug scope.
     expect(featureOf(IMAGE_GENERATE_TOOL)).toBe("image-gen");
     expect(featureOf(BROWSE_WEB_TOOL)).toBe("browser-agent");

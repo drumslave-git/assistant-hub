@@ -74,6 +74,8 @@ Honesty:
 - An action only counts when you actually carry it out this turn and it succeeds. Never claim you looked something up, checked, read, saved, recorded, scheduled, or remembered something unless you truly did it in this turn, and never fabricate a result.
 - The only way you actually do anything beyond writing text is by calling one of the provided tools in this same turn. A reply saying you did or will do something is not the action: without the corresponding tool call, nothing happened, and the claim is a lie.
 - Staying in character never exempts you from this. When a request implies a real action — even phrased as a joke, in the third person, or as part of a running bit — make the tool call first, then answer in your own voice. If no tool can do it, say you cannot instead of playing along as if you did.
+- An earlier message of yours saying you did something is not evidence that you did it. A "got it, I'll do that" in the transcript may be exactly the empty claim these rules forbid, so never let it stand in for the action: if the action has not been carried out by a tool call whose result you can see, it has not happened, and you must do it now rather than repeat the assurance. When you need to know the real state, read it with the tool that reads it in this turn.
+- Someone asking you the same thing again is telling you it did not take effect. Treat a repeated request as a request, never as a reminder to confirm harder — carry it out, and never skip a tool call for fear of doing something twice. Doing it twice is the smaller mistake, and a tool that would be harmed by a repeat says so itself.
 - If you did not or could not do something, say so plainly instead of pretending you did.
 
 Grounding:
@@ -150,6 +152,14 @@ export interface SystemPromptOptions {
    * trimming) means no correction block.
    */
   selfCorrection?: string | null;
+  /**
+   * The chat's standing rules, already composed into a block by
+   * {@link import("@/features/chat-rules/format").buildChatRulesBlock}. Appended
+   * last, at maximum recency: unlike the layers above it these are explicit
+   * instructions the people in the chat gave the bot about its own behavior, and
+   * they are what a reply is judged against. Null/empty means no rules block.
+   */
+  chatRules?: string | null;
 }
 
 /** Whether a non-empty personality prompt is present (after trimming). */
@@ -161,13 +171,15 @@ export function hasPersonality(personalityPrompt?: string | null): boolean {
  * Compose the system prompt for a reply: the fixed base prompt, plus the
  * operator's personality instructions when configured, plus the chat's active
  * specialist role when one is active, plus the latest self-correction
- * guidelines learned from user feedback. The stack never replaces a layer —
- * a specialist adds to the persona, it does not suppress it.
+ * guidelines learned from user feedback, plus the chat's standing rules. The
+ * stack never replaces a layer — a specialist adds to the persona, it does not
+ * suppress it.
  */
 export function buildSystemPrompt(options: SystemPromptOptions = {}): string {
   const persona = options.personalityPrompt?.trim();
   const specialist = options.specialistInstructions?.trim();
   const correction = options.selfCorrection?.trim();
+  const rules = options.chatRules?.trim();
   let prompt = BASE_SYSTEM_PROMPT;
   if (persona) prompt += `\n\n---\nAdditional instructions:\n${persona}`;
   if (specialist) {
@@ -176,6 +188,9 @@ export function buildSystemPrompt(options: SystemPromptOptions = {}): string {
   if (correction) {
     prompt += `\n\n---\nSelf-correction guidelines (learned from user feedback on your replies):\n${correction}`;
   }
+  // The rules block carries its own heading (it is composed by the chat-rules
+  // feature, which owns how a rule is phrased to the model).
+  if (rules) prompt += `\n\n---\n${rules}`;
   return prompt;
 }
 
@@ -188,6 +203,10 @@ const ADDRESS_PHRASES: Record<string, string> = {
   // The analyzer only ever fires on a name reference, so it reads the same to the
   // model — how we worked out that the name was there is our business, not its.
   analyzer: "called you by name",
+  // A rule-opened turn is the one case where the sender did NOT address the bot;
+  // saying so keeps the model from answering as if it had been spoken to. What
+  // it should do instead comes from the rule directive.
+  "chat-rule": "did not address you at all — a standing rule of this chat matched their message",
 };
 
 export interface AddressingHintOptions {

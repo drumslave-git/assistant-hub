@@ -74,6 +74,15 @@ export class BotMcpRegistry {
     return this.connectPromise;
   }
 
+  /**
+   * The tool names registered on this instance, as registrars declared them.
+   * Read without connecting or awaiting anything, so the runtime can tell a
+   * cached registry apart from the code that is loaded now.
+   */
+  get registeredToolNames(): string[] {
+    return [...this.toolFeatures.keys()];
+  }
+
   /** Every registered tool with metadata (name/description + owning feature). */
   async listTools(): Promise<RegisteredTool[]> {
     const client = await this.ensureConnected();

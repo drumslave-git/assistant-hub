@@ -92,7 +92,7 @@ unique visualization need.
 
 ## Feature Priority
 
-The v1 rewrite is complete: priorities 1–15 below are done. Priorities 5 and 6
+The v1 rewrite is complete: priorities 1–16 below are done. Priorities 5 and 6
 were later superseded (user decision, 2026-07-26): the `search_web` and
 `read_web_page` MCP tools were removed and `browse_web` is the only web tool.
 Remaining work is tracked in `docs/TODO.md`.
@@ -114,6 +114,7 @@ Priority order:
 13. Browser agent feature
 14. Voice messages (added by the user, 2026-07-23)
 15. Specialists feature (added by the user, 2026-07-27)
+16. Chat rules feature (added by the user, 2026-07-29)
 
 The Mood feature (the bot's own mood state injected into replies) is
 **deprecated and dropped** by the user (2026-07-16). Do not implement it, and do

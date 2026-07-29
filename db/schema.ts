@@ -1318,3 +1318,50 @@ export const specialistEntries = pgTable(
 
 export type SpecialistEntryRow = typeof specialistEntries.$inferSelect;
 export type SpecialistEntryInsert = typeof specialistEntries.$inferInsert;
+
+/**
+ * Standing chat rules: free-text instructions the bot must follow in a chat,
+ * authored from the chat itself (the MCP toolkit) or on the dashboard. A rule is
+ * scoped to one chat, or global when `chat_id` is null — global rules are
+ * dashboard-only to author (user decision, 2026-07-29) and apply everywhere on
+ * top of a chat's own rules.
+ *
+ * `trigger` is what makes a rule more than extra prompt text:
+ *  - `on-reply` — the rule shapes replies the bot was already going to make.
+ *  - `always`  — the rule may also act on a message that never addressed the
+ *    bot. A chat holding at least one enabled `always` rule pays one extra
+ *    classification call per unaddressed message (see
+ *    `features/chat-rules/matcher.ts`); a chat with none pays nothing.
+ *
+ * The text is the model's contract, not code: rules are enforced through the
+ * prompt and the existing toolset, never by bespoke per-rule handling.
+ */
+export const chatRules = pgTable(
+  "chat_rules",
+  {
+    id: text("id").primaryKey(),
+    /** Telegram chat id as a string, or null for a global rule. */
+    chatId: text("chat_id"),
+    /** The rule itself, in the author's own words. */
+    text: text("text").notNull(),
+    /** `on-reply` | `always` — see the table note. */
+    trigger: text("trigger").notNull().default("on-reply"),
+    /** Disabled rules stay authored but are never composed into a prompt. */
+    enabled: boolean("enabled").notNull().default(true),
+    /** Numeric Telegram user id of the author, or null (dashboard). */
+    createdByUserId: text("created_by_user_id"),
+    /** `chat` | `dashboard` — where the rule was authored, as provenance. */
+    source: text("source").notNull().default("dashboard"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Every reply reads one chat's enabled rules plus the global ones.
+    index("chat_rules_chat_idx").on(t.chatId, t.enabled),
+    check("chat_rules_trigger_check", sql`${t.trigger} in ('on-reply', 'always')`),
+    check("chat_rules_source_check", sql`${t.source} in ('chat', 'dashboard')`),
+  ],
+);
+
+export type ChatRuleRow = typeof chatRules.$inferSelect;
+export type ChatRuleInsert = typeof chatRules.$inferInsert;

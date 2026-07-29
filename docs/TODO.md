@@ -113,8 +113,9 @@ stacking + fire-path composition/tool-context tests added to existing suites.
 skipped — the live-LLM-gated ones), `build` all green. Remaining risks: the
 dashboard page was verified only by build + tests (operator auth blocks an
 agent from logging in — check `/specialists` renders after the next dev-server
-restart, which is also when the new MCP tools appear, registry being
-boot-bound); gemma4:12b tool-selection quality over the new toolkit is
+restart; the "new MCP tools only appear after a restart" caveat recorded here is
+no longer true, see the chat-rules entry — the registry now rebuilds itself when
+the tool set changes); gemma4:12b tool-selection quality over the new toolkit is
 unmeasured — if the model ignores `specialist_*` tools live, tune the seed
 instructions/tool descriptions like the tasks tools were.
 
@@ -328,6 +329,175 @@ Verified: `npm run lint`, `typecheck`, `test` (780), `build`, `test:integration`
 contents across. A deployment that set any of the five variables to a non-default
 path must move that data under `./data` before the next `up`.
 
+## Priority 16 — Chat rules (`done` pending live verification, 2026-07-29)
+
+Standing instructions the bot follows in a chat, set from the chat itself or on
+`/rules`, composed into every reply's system prompt and carried out with the
+existing toolset. Documented in `docs/features/chat-rules.md`.
+
+*Decisions (operator, 2026-07-29), all three taken as recommended.*
+- **Opt-in `always` rules.** A rule is `on-reply` (shapes turns the bot already
+  answers) or `always` (may act on a group message nobody addressed). An `always`
+  rule costs **one classification call per unaddressed message**, and only in a
+  chat that has one — the alternatives considered were on-reply-only (cheapest,
+  but the operator's own media-download example would never fire in a group) and
+  checking every message unconditionally.
+- **Per-chat + global scope.** A rule belongs to one chat, or is global
+  (`chat_id is null`) and applies everywhere on top of that chat's own. Global
+  rules are dashboard-only to author; a chat sees them and cannot change them.
+- **Specialists permission precedent.** From chat: self-serve in a private chat,
+  owner-only in a group, enforced in the service, denial returned (not thrown) so
+  the model relays it.
+
+*Chosen within the guardrails (values were unspecified):* 32 rules per scope,
+1 000-char rule text, duplicate text refused per scope, scope not editable
+(delete + recreate), rules block appended **last** in the system prompt.
+
+*Files.* `db/schema.ts` + migration `0044_lean_puck.sql` (**applied to the dev
+DB**), `features/chat-rules/*` (schema / format / matcher / repository / service /
+mcp-tools / ui), `app/api/chat-rules/**`, `app/(dashboard)/rules/page.tsx`,
+`lib/features.ts` (`chat-rules` + `mcp-tools-chat-rules`), `lib/realtime.ts`
+(`rules` topic), `components/layout/nav-config.ts`, `server/mcp/runtime.ts`,
+`features/analytics/llm-call-kind.ts` (`chat-rule-match`),
+`features/bot-messaging/server/{prompt,service,addressing}.ts`,
+`server/telegram/process-update.ts`, `server/mcp/context.ts`
+(`authorityUserId`), `features/browser-agent/server/mcp-tools.ts`,
+`features/scheduled-tasks/server/{fire,scheduler}.ts`, docs (feature page,
+features README, `llm-and-mcp.md`, `data-model.md`, AGENTS.md).
+
+*Verified.* `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` and
+`npm run test:integration` all clean — see the proof line in the handoff below.
+New tests: `chat-rules/format.test.ts` (16, incl. `resolveRuleAuthority`),
+`matcher.test.ts` (11), `chat-rules/.../mcp-tools.test.ts` (11),
+`chat-rules.integration.test.ts` (15), a new
+`features/browser-agent/server/mcp-tools.test.ts` (5 — the download gate reads
+the turn's authority and provenance stays the sender), plus the standing-rules
+block in `features/bot-messaging/server/service.test.ts` and the prompt-order
+case in `prompt.test.ts`.
+
+The dashboard was also exercised on the running dev instance: creating a global
+`always` rule, pausing and resuming it, switching scope to a DM (where it appears
+under "Also in force here — 1 global rule"), and deleting it; all three mutations
+showed up on `/debug?feature=chat-rules` with their input summaries, and both new
+ids appear in the Debug feature filter. No console errors. The test rule was
+deleted again, so the dev DB holds no rules.
+
+*Remaining risks / next steps.*
+- **Stale MCP registry — fixed, and it was the first live failure** (trace
+  `7a3c354e…`, 2026-07-29). The owner said *"new rule - whenever you see a message
+  with link to social network media … download it and send to the chat"* and the
+  bot replied *"Understood, I'll make sure to…"* without calling anything. The
+  request's tool list in that trace holds 21 tools and no `rules_*`: the running
+  dev server's registry was built before `registerChatRulesMcpTools` existed, and
+  `loadMcpRegistry` cached it on a `globalThis` symbol that survives hot reload by
+  design. `/tools` rendered the same 21 and so looked like a page that had never
+  been updated — it is fully automatic, and was showing the truth about a stale
+  object. Fixed in `server/mcp/runtime.ts`: the registrars are a table whose
+  declared `*_TOOL_NAMES` can be read without building, and a cached registry
+  whose tool set differs from the loaded code is discarded and rebuilt (also when
+  the cached *instance* predates the class — that happened on the very reload that
+  added the check). Verified on the running server: `/tools` went from 21 to 25
+  tools, all four `rules_*` present, no restart. Pinned in
+  `server/mcp/runtime.test.ts` (4), including the reuse case — a registrar whose
+  declared names drift from what it registers would rebuild the MCP server on
+  every reply turn.
+
+- **The model would not call `rules_create` even once offered — addressed, still
+  unverified** (trace `f33e1ede…`, 2026-07-29). With all four `rules_*` tools in
+  the request, the third identical *"new rule - whenever you see a message with
+  link to social network media …"* still produced only prose. The reasoning block
+  is explicit: it worked out that it *should* call `rules_create`, then argued
+  itself out of it across 1 761 completion tokens on two beliefs — *"I already
+  confirmed twice"* (its own #962/#964 read as evidence the rule was stored) and
+  *"calling `rules_create` again for the exact same text might result in duplicate
+  rules"*. It also wrote *"I can't see the internal database"* while holding
+  `rules_list`. Note the transcript is now self-poisoning: three empty
+  confirmations sit in the 24-hour window.
+
+  Fixes (prompt/tool side, per the standing "we never solve model problems by
+  code" rule — the one code change makes the tool safe to repeat rather than
+  gating anything): chat-side create is **idempotent** (`RuleWriteResult.exists`
+  → plain success, stored rule untouched; the dashboard still 409s), the text is
+  normalized in the service so an untrimmed repeat cannot slip past the duplicate
+  check, `RULES_CREATE_DESCRIPTION` now states that its own agreement is not a
+  saved rule, that a repeat is safe, that a repeated instruction means it was not
+  believed, and that `rules_list` is the only evidence — and the general form went
+  into `BASE_SYSTEM_PROMPT`'s Honesty block (a past confirmation is not evidence of
+  having acted; a repeated request is a request; never skip a call for fear of
+  doing it twice), which also covers the `tasks_list` fabrication tracked below.
+
+  **Verified against the real model**, unlike the earlier rounds of this
+  tool-avoidance family: new
+  `features/chat-rules/server/tool-selection.integration.test.ts` drives live
+  gemma4:12b through the production prompt + real tool schemas (6 cases — rule
+  saved, `always` trigger chosen for "whenever you see a message …", `rules_list`
+  on "what rules do you have", list→delete on "forget the rule", and a plain
+  "from now on answer in one sentence" going to `rules_create` rather than
+  `memory_save`/`tasks_create`). The load-bearing case replays the incident's
+  **poisoned transcript** — the bot's own two empty confirmations as `priorTurns`
+  — and the model now calls `rules_create` anyway. 3 consecutive full runs, 18/18.
+  Canned `rules_*` results added to `test/tool-selection.ts`.
+
+  **The end-to-end path is verified too** (2026-07-29, after the operator fixed the
+  `data/pg` permissions): new
+  `features/chat-rules/server/live-flow.integration.test.ts` drives synthetic
+  updates through the whole real `processUpdate` pipeline against live gemma4:12b,
+  in two fresh synthetic chats it cleans up afterwards. Three cases, 3 consecutive
+  runs, 9/9:
+  - a group holding one dashboard-authored `always` rule, where a **non-owner**
+    member posts a TikTok link **without addressing the bot** → the turn opens, and
+    the enqueued `browser_agent_runs` row has `is_owner = true` (the rule author's
+    rights) with `created_by_user_id` still the poster (provenance untouched) and
+    the link in the goal;
+  - a synthetic user's DM, where "new rule: from now on always answer me in one
+    short sentence" is stored through a real `rules_create` call (`source: chat`),
+    traced under `mcp-tools-chat-rules`;
+  - ordinary chatter in that same rule-bearing group → still silent
+    (`ignored / not_addressed`), so the matcher is not a "reply to everything" switch.
+
+  No owner-sent turn in that test **on purpose**: the owner is a real person in the
+  real database and `rememberUser` would overwrite their stored profile with
+  synthetic names. The chat-side create is covered in the DM instead, and the
+  authority half only needs the matched rule to be dashboard-authored.
+
+  A real Telegram round trip is still the one thing untested by machine — the
+  delivered file in a real chat. Everything up to `browse_web` being called with
+  owner rights is now proven.
+
+- **The bot side is still not verified live** — the first attempt never reached
+  the feature at all, the second never called the tool. The run that matters: in a group, have the owner say *"new rule: when someone posts
+  a video link, download it and send it here"*, confirm `rules_create` was called
+  (not just claimed — this is exactly the gemma4:12b bluffing pattern tracked in
+  the two items below), then have someone post a link **without** addressing the
+  bot and check the `chat rule match` step on that message's reply trace.
+- **A rule carries its author's rights** (operator decision, 2026-07-29 — *"rule
+  creator beats message source"*, reversing the first cut, where the owner-gated
+  download made the example rule owner-only in practice). `resolveRuleAuthority`
+  elevates a turn to the owner when a **matched** rule was written by the owner or
+  in the dashboard; the runtime binds it as `authorityUserId` on the MCP tool
+  context and `browse_web` reads it for the download gate. Permissions only —
+  `userId` is untouched, so memory/task/run provenance stays the real sender — and
+  a rule an ordinary user wrote in their own DM elevates nothing.
+
+  Consequence, and the reason the matcher now runs on **addressed** turns too:
+  the answer has to be the same whether or not the person named the bot, so a
+  chat with an owner-authored rule pays one classification per addressed message
+  from a non-owner as well. It is skipped when it could change nothing (sender is
+  the owner, or no rule an elevated author wrote). An `on-reply` rule can lend
+  rights even though it can never open a turn.
+
+  Residual risk: a non-owner can put text in front of an elevated turn. They
+  cannot *request* an elevated action — only say something a rule matches, with
+  the model then told to do what that rule requires and nothing else — but a 12B
+  model steered by a crafted message is the exposure the owner accepted here.
+  Worth re-reading the `browse_web` goal on the first live rule-driven downloads.
+- **The matcher reads text only.** A rule triggered by a bare photo or sticker
+  cannot match an unaddressed message; it still works as `on-reply`.
+- **Cost on a busy group** is one extra call per unaddressed message once any
+  `always` rule exists. Watch Model performance → `chat-rule-match` after the
+  first such rule is set; if it is heavy, the lever is making the rule
+  `on-reply`.
+
 ## Other open items
 
 - **Ukrainian idiomatic joke requests never trigger tools on gemma4:12b
@@ -464,6 +634,16 @@ path must move that data under `./data` before the next `up`.
   conversation — a bot-invented term can therefore re-enter through a summary
   with no author attached. Decide whether summaries should mark, or exclude,
   bot-sourced content.
+
+- **`npm run build` dies on `data/pg` whenever the bundled Postgres recreates it
+  (`done` for now — one host-side fix, may recur).** Turbopack walks the project
+  tree and `data/pg` is created `drwx------` owned by the container's postgres uid,
+  so the build ends in `Permission denied (os error 13) … reading dir "…/data/pg"`
+  with a `TurbopackInternalError` — nothing to do with the code (`eslint.config.mjs`
+  already ignores `data/**` for the same reason; Turbopack has no equivalent).
+  The operator ran the chmod on 2026-07-29 and the build is green again. If a fresh
+  Postgres volume brings it back, `sudo chmod -R g+rX data/pg` is the fix; decide
+  then whether it is worth a documented pre-build step.
 
 - **Traces bind-mount permissions (`blocked` on an operator decision;** from
   the 2026-07-22 prod data-loss incident**)** — Docker auto-creates

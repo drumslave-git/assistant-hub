@@ -14,6 +14,19 @@ export interface McpToolContext {
   chatId: string;
   /** The sender's numeric Telegram user id, when known (absent for tests). */
   userId?: string | null;
+  /**
+   * The identity whose **permissions** this turn's tool calls carry, when it is
+   * not the sender's. Set when a standing chat rule drove the turn: a rule is
+   * its author's standing order, so an action the rule calls for runs with the
+   * author's rights rather than those of whoever happened to send the message
+   * that triggered it (user decision, 2026-07-29 — "rule creator beats message
+   * source"). Absent → the sender's own rights, the ordinary case.
+   *
+   * Permissions **only**. Provenance — who wrote a memory, who created a task,
+   * who authored an entry — always stays {@link userId}: elevating the sender's
+   * identity would file another person's data under the owner.
+   */
+  authorityUserId?: string | null;
   /** The forum-topic thread the turn is in, when any (so a task delivers there). */
   threadId?: number | null;
   /**

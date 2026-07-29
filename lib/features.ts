@@ -101,6 +101,13 @@ export const FEATURES = {
     relatedIdsKey: "specialists",
     path: "/specialists",
   },
+  "chat-rules": {
+    id: "chat-rules",
+    label: "Chat rules",
+    realtimeTopic: "rules",
+    relatedIdsKey: "chat_rules",
+    path: "/rules",
+  },
   settings: {
     id: "settings",
     label: "Settings",
@@ -204,6 +211,11 @@ export const FEATURES = {
   "mcp-tools-specialists": {
     id: "mcp-tools-specialists",
     label: "Specialist tools",
+    path: "/tools",
+  },
+  "mcp-tools-chat-rules": {
+    id: "mcp-tools-chat-rules",
+    label: "Chat rule tools",
     path: "/tools",
   },
 } as const satisfies Record<string, FeatureDescriptor>;

@@ -260,6 +260,37 @@ export interface BotMessagingDeps {
    */
   selfCorrection?: string | null;
   /**
+   * The chat's standing rules, composed into a prompt block by the chat-rules
+   * feature and appended last in the system prompt. Null/absent → the chat has
+   * no rules.
+   */
+  chatRules?: string | null;
+  /**
+   * Apply this chat's standing rules to the current message: work out which of
+   * them it triggers, which settles two things.
+   *
+   * 1. **Whether to answer at all.** A matched `always` rule opens a turn nobody
+   *    addressed the bot in — the one path by which the bot acts on a message
+   *    nobody sent to it. That is what the returned `directive` is for; it is
+   *    null when nothing matched that may open a turn.
+   * 2. **Whose rights the turn carries.** The runtime binds the matched rules'
+   *    author as the tool authority for this turn (a rule is its author's
+   *    standing order), which is why this runs on an *addressed* turn too, where
+   *    its return value is unused: an owner's rule must work the same whether or
+   *    not the person who triggered it happened to name the bot.
+   *
+   * Wired by the runtime only when one of those could actually come of it, so
+   * ordinary traffic in a chat with no rules — or none that could elevate
+   * anything — costs nothing. Takes the reply trace so the classification call
+   * is recorded in this same turn. Best-effort: a failure resolves to null, the
+   * message stays ignored and no rights are lent — acting on a failed call is
+   * worse than missing a rule.
+   */
+  applyChatRules?: (
+    trace: TraceRecorder,
+    context: { addressed: boolean },
+  ) => Promise<{ ruleIds: string[]; directive: string | null } | null>;
+  /**
    * A system-message line giving the model the current date/time (see
    * {@link import("./prompt").buildTimeContext}), injected right before the
    * current message so it can resolve relative/named times ("in 5 minutes",
@@ -470,9 +501,29 @@ export async function handleIncomingMessage(
     trace = await openTrace();
     decision = await runAddressAnalyzer(incoming, deps, trace);
   }
+  // Nobody addressed the bot — but this chat may hold a standing rule that tells
+  // it to act on such a message anyway ("any time someone posts X, do Y"). The
+  // dep is wired only when such a rule exists, so this costs nothing in a chat
+  // without one. Maintenance mode turns it off for the same reason it turns the
+  // analyzer off: it means no LLM work beyond what the cheap checks addressed.
+  let ruleDirective: string | null = null;
+  if (!decision.addressed && deps.applyChatRules && !deps.policy.maintenanceModeEnabled) {
+    const matched = await deps
+      .applyChatRules(await openTrace(), { addressed: false })
+      .catch(() => null);
+    if (matched?.directive) {
+      ruleDirective = matched.directive;
+      decision = {
+        addressed: true,
+        source: "chat-rule",
+        reason: `standing chat rule matched (${matched.ruleIds.length})`,
+      };
+    }
+  }
+
   if (!decision.addressed) {
-    // Only the analyzer path has a trace open here; chatter the cheap checks
-    // rejected leaves nothing behind.
+    // Only the analyzer and rule-matching paths have a trace open here; chatter
+    // the cheap checks rejected leaves nothing behind.
     if (trace) {
       await trace.event({
         type: "step",
@@ -565,6 +616,7 @@ export async function handleIncomingMessage(
         personalityPrompt: deps.personalityPrompt,
         specialistInstructions: deps.specialistInstructions,
         selfCorrection: deps.selfCorrection,
+        chatRules: deps.chatRules,
       });
       await trace.event({
         type: "step",
@@ -573,6 +625,7 @@ export async function handleIncomingMessage(
           personalityApplied: hasPersonality(deps.personalityPrompt),
           specialistApplied: Boolean(deps.specialistInstructions?.trim()),
           selfCorrectionApplied: Boolean(deps.selfCorrection?.trim()),
+          chatRulesApplied: Boolean(deps.chatRules?.trim()),
           systemPrompt,
         },
       });
@@ -611,6 +664,15 @@ export async function handleIncomingMessage(
           // attach to the current user message below. Takes the reply trace so
           // the recognize pass (describe + store) records into this same flow.
           deps.loadVision?.(trace) ?? null,
+          // 3c. Standing rules on a turn that was *addressed* (a rule-opened turn
+          // already ran this above, and is skipped here). Its result is
+          // deliberately not destructured: what it produces is a side effect in
+          // the runtime — binding the matched rules' author as this turn's tool
+          // authority — and that must be in place before any tool runs, which is
+          // what awaiting it here guarantees.
+          decision.source === "chat-rule"
+            ? null
+            : (deps.applyChatRules?.(trace, { addressed: true }).catch(() => null) ?? null),
         ]);
 
       if (chatContext) {
@@ -702,6 +764,18 @@ export async function handleIncomingMessage(
         });
       }
 
+      // A turn nobody addressed, opened by a standing rule: the directive naming
+      // the matched rules goes in last, after the language directive, so the
+      // model acts on the rule instead of joining a conversation it was not part
+      // of. Absent on every ordinary (addressed) turn.
+      if (ruleDirective) {
+        await trace.event({
+          type: "step",
+          message: "opened by a standing chat rule",
+          data: { reason: decision.reason, directive: ruleDirective },
+        });
+      }
+
       const composeMessages = (historyMessages: ChatMessage[]): ChatMessage[] => [
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
@@ -715,6 +789,7 @@ export async function handleIncomingMessage(
         ...(languageInstruction
           ? [{ role: "system" as const, content: languageInstruction }]
           : []),
+        ...(ruleDirective ? [{ role: "system" as const, content: ruleDirective }] : []),
         { role: "user", content: userContent },
       ];
       // 4. LLM request + tool calls. The generator reports the exact request body

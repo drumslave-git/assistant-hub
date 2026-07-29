@@ -93,8 +93,13 @@ export function registerBrowserAgentMcpTools(server: McpServer): void {
     async ({ goal }) => {
       const ctx = getToolContext();
       // Owner status gates the download tool for the whole run; resolve it now.
+      // It is resolved from the turn's *authority* — the sender normally, but
+      // the author of the standing chat rule when a rule drove this turn, so an
+      // owner's "download any media link posted here" rule works for everyone's
+      // links. Provenance below stays the real sender either way.
       const policy = await getBotPolicy().catch(() => null);
-      const isOwner = Boolean(policy?.ownerUserId && ctx.userId === policy.ownerUserId);
+      const authorityUserId = ctx.authorityUserId ?? ctx.userId;
+      const isOwner = Boolean(policy?.ownerUserId && authorityUserId === policy.ownerUserId);
 
       const run = await enqueueBrowserRun({
         goal,

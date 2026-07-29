@@ -35,7 +35,14 @@ export type AddressSource =
   /** The display name, spelled exactly as configured. */
   | "name"
   /** The display name in another alphabet or an inflected form (LLM verdict). */
-  | "analyzer";
+  | "analyzer"
+  /**
+   * Nobody addressed the bot: the turn was opened by a standing `always` chat
+   * rule that matched the message (see `features/chat-rules/server/matcher.ts`).
+   * Never produced by the checks in this module — the caller sets it after the
+   * addressing verdict has already come back negative.
+   */
+  | "chat-rule";
 
 export interface AddressResult {
   addressed: boolean;

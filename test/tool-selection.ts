@@ -112,6 +112,35 @@ const DEFAULT_CANNED: Record<string, McpToolCallResult> = {
     text: "Task task_demo_1 cancelled.",
     structuredContent: { ok: true, id: "task_demo_1" },
   },
+  // One existing rule, so an amend/remove flow has an id to act on.
+  rules_list: {
+    text: "rule_demo_1 [On reply]: Answer briefly.",
+    structuredContent: {
+      ok: true,
+      count: 1,
+      rules: [
+        {
+          id: "rule_demo_1",
+          text: "Answer briefly.",
+          trigger: "on-reply",
+          enabled: true,
+          scope: "this_chat",
+        },
+      ],
+    },
+  },
+  rules_create: {
+    text: "Rule saved for this chat (Always): download social network media links.",
+    structuredContent: { ok: true, rule: { id: "rule_demo_2" } },
+  },
+  rules_update: {
+    text: "Rule updated (On reply, active): Answer briefly.",
+    structuredContent: { ok: true, rule: { id: "rule_demo_1" } },
+  },
+  rules_delete: {
+    text: "Rule rule_demo_1 deleted — it no longer applies here.",
+    structuredContent: { ok: true, id: "rule_demo_1" },
+  },
 };
 
 /** One recorded tool call the model chose to make. */
