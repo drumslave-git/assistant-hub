@@ -17,8 +17,16 @@ export interface BrowserDownloadRecord {
   sourceUrl: string;
   filename: string;
   sizeBytes: number;
-  /** True when the file was small enough to also attach to the chat. */
-  inline: boolean;
+  /**
+   * True when the file itself reached the chat — in which case the server copy was
+   * removed. False means it is still in the downloads folder, for one of three
+   * reasons: too large to attach, delivery failed, or a dashboard-started run with
+   * no chat to send to.
+   *
+   * Runs recorded before 2026-07-29 carry the older `inline` flag instead and so
+   * read as false here — correct for them, since back then every file was kept.
+   */
+  deliveredToChat: boolean;
 }
 
 /**

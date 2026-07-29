@@ -83,7 +83,9 @@ describe.skipIf(!BROWSER_LIVE)("browser primitives (real network)", () => {
       const result = await downloadMediaToDisk(TEST_MEDIA_PAGE, { mode: "audio", maxBytes: LIMIT_BYTES });
       try {
         expect(result.sizeBytes).toBeGreaterThan(50_000);
-        expect(result.mime).toMatch(/^audio\//);
+        // mp3, so the chat can actually play what comes back.
+        expect(result.filename).toMatch(/\.mp3$/);
+        expect(result.mime).toBe("audio/mpeg");
         const onDisk = await fs.stat(result.filePath);
         expect(onDisk.size).toBe(result.sizeBytes);
         console.info(`\n[media] ${result.filename} — ${Math.round(result.sizeBytes / 1024)} KB\n`);

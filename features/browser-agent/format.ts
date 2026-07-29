@@ -12,9 +12,13 @@ function formatMb(bytes: number): string {
   return `${Math.round(mb)} MB`;
 }
 
-/** One download as a chat line: filename · size · source (no raw file URL). */
+/**
+ * One download as a chat line: filename · size (never a raw file URL). Says where
+ * to find it only when the file itself did not reach the chat — if the user has the
+ * attachment, pointing at a server folder they cannot browse is noise.
+ */
 export function formatDownloadLine(record: BrowserDownloadRecord): string {
-  const suffix = record.inline ? "" : " — in the downloads folder";
+  const suffix = record.deliveredToChat ? "" : " — in the downloads folder";
   return `📎 ${record.filename} (${formatMb(record.sizeBytes)})${suffix}`;
 }
 

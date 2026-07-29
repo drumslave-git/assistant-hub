@@ -250,10 +250,33 @@ Mirrors the MVP:
 - Each downloaded file is posted to the chat **the moment it lands**, silently, as an
   intermediate progress message — provided it is within
   `settings.browser_download_max_mb` (1–50; 50 is Telegram's bot upload ceiling).
-  Larger files stay in the downloads folder and the tool result says so. That folder
-  (`DOWNLOADS_DIR` — `/app/data/downloads` under Compose, bind-mounted to the host;
-  `./downloads` locally) is the **only** copy of such a file, which is why it is a
-  mounted directory rather than a container path.
+  Larger files stay in the downloads folder and the tool result says so.
+- **The server copy is kept only when the chat did not get the file** (user decision,
+  2026-07-29). A file the user already holds does not also need to sit on the server
+  filling the disk, so a successful send is followed by an unlink. Three things leave
+  a file behind, and the `deliveredToChat` flag on the run's download record is the
+  single answer to which happened:
+
+  | Outcome | `deliveredToChat` | On disk |
+  | --- | --- | --- |
+  | Sent to the chat as a document | `true` | removed |
+  | Over `browser_download_max_mb` — announced by name only | `false` | kept |
+  | Send failed | `false` | kept |
+  | Dashboard-started run (no chat exists) | `false` | kept |
+
+  A failed unlink is logged and changes nothing else: the chat has the file, so the
+  record stays truthful and only disk hygiene suffers. The tool result wording follows
+  the same split, so the model never offers the user a folder path for a file it
+  already sent. That folder (`DOWNLOADS_DIR` — `/app/data/downloads` under Compose,
+  bind-mounted to the host; `./downloads` locally) is now, more strictly than before,
+  the **only** copy of whatever is in it — which is why it is a mounted directory
+  rather than a container path.
+
+  The flag replaced an older `inline` one, which recorded whether a file was *small
+  enough* to attach — a different question, and one that made a dashboard run's
+  downloads read as "attached to chat" when nothing had been sent anywhere. Runs
+  recorded before the change have no `deliveredToChat` and normalize to `false`,
+  which is accurate for them: back then every download stayed on disk.
 - The agent's final report is delivered at the end and mirrored into history.
 - A **dashboard-started run has no `chatId`** and delivers nothing; its report is
   stored on the run row and read on the page.
@@ -299,12 +322,15 @@ source or the network requests finds nothing downloadable — which is exactly h
 2026-07-28 YouTube Music run ended with the agent telling the owner to run yt-dlp
 themselves (user decision, 2026-07-29: add the tool).
 
-- **`mode`** — `audio` takes the best audio-only rendition and extracts it in its
-  native container (m4a/opus); **no transcode to mp3**, because re-encoding a lossy
-  source only loses more. `video` takes best video + best audio and merges, mp4
-  preferred, falling back to a container that can hold the chosen codecs. Default
-  `video`. There is **no quality ceiling** on either (user decision, 2026-07-29) —
-  only the 4 GB disk guard below.
+- **`mode`** — `audio` takes the best audio-only rendition and transcodes it to
+  **mp3** at yt-dlp's highest VBR setting (`--audio-quality 0`). Keeping the native
+  container would avoid a lossy-to-lossy re-encode, and that is what shipped first —
+  but YouTube's best audio is usually opus, and **Telegram will not play an `.opus`
+  document**, so the first real run produced a file nobody could listen to (user
+  decision, 2026-07-29: mp3). An unplayable file's quality does not matter.
+  `video` takes best video + best audio and merges, mp4 preferred, falling back to a
+  container that can hold the chosen codecs. Default `video`. There is **no quality
+  ceiling** on either (user decision, 2026-07-29) — only the disk guard below.
 - **Naming** comes from the media's own title, not the page title the other tools
   use: `VIRUS (Fytch Remix).m4a`, not `VIRUS (Fytch Remix) - YouTube.mp4`.
 - **`--no-playlist`** matters: a YouTube Music watch URL usually carries a playlist

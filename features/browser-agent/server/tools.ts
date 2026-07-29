@@ -1,6 +1,6 @@
 import "server-only";
 
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 
 import type { ChatCompletionFunctionTool } from "openai/resources/chat/completions";
 
@@ -79,9 +79,10 @@ export interface AgentToolContext {
   /**
    * Report ONE finished download to the chat immediately — a small file as an
    * attachment, a large one as a text line — so the user sees every file arrive
-   * instead of a batch at the end of the run.
+   * instead of a batch at the end of the run. Resolves whether the **file itself**
+   * reached the chat; when it did, the server copy is removed.
    */
-  onDownload: (record: BrowserDownloadRecord, file: CollectedFile | null) => Promise<void>;
+  onDownload: (record: BrowserDownloadRecord, file: CollectedFile | null) => Promise<boolean>;
 }
 
 function fn(
@@ -464,10 +465,16 @@ function summarizeResult(result: McpToolCallResult): string {
 }
 
 /**
- * Shared post-download delivery: record the file, decide inline vs link by the
- * chat attach limit, hand it to the run's delivery sink, and return the model's
- * result text. Both download tools (file and stream) end here. The filename comes
- * from the page it was fetched on, never from the model (which is inconsistent).
+ * Shared post-download delivery: decide attachable-vs-link by the chat attach
+ * limit, hand the file to the run's delivery sink, then keep the server copy
+ * **only when it did not reach the chat**. Every download tool ends here. The
+ * filename comes from the page or the media it was fetched from, never from the
+ * model (which is inconsistent).
+ *
+ * The downloads folder is a fallback, not an archive (user decision, 2026-07-29):
+ * a file the user already has in the chat does not also need to sit on the server
+ * filling the disk. What stays is what nobody received — too large to attach, a
+ * delivery that failed, or a dashboard-started run with no chat at all.
  */
 async function finishDownload(
   ctx: AgentToolContext,
@@ -475,23 +482,39 @@ async function finishDownload(
   sourceUrl: string,
 ): Promise<McpToolCallResult> {
   const mb = Math.round(result.sizeBytes / 1024 / 1024);
-  const inline = result.sizeBytes <= ctx.downloadMaxMb * 1024 * 1024;
+  const attachable = result.sizeBytes <= ctx.downloadMaxMb * 1024 * 1024;
   const record: BrowserDownloadRecord = {
     sourceUrl,
     filename: result.filename,
     sizeBytes: result.sizeBytes,
-    inline,
+    deliveredToChat: false,
   };
+  // Registered before delivery: the file is on disk either way, and a delivery
+  // that blows up must not leave it unrecorded.
   ctx.downloads.push(record);
-  const file: CollectedFile | null = inline
+  const file: CollectedFile | null = attachable
     ? { buffer: await readFile(result.filePath), filename: result.filename, mime: result.mime }
     : null;
-  await ctx.onDownload(record, file);
+  record.deliveredToChat = await ctx.onDownload(record, file);
+
+  if (record.deliveredToChat) {
+    // A failed unlink leaves a stray file, not a wrong answer — the chat still has
+    // it, so the record stays truthful and only the disk hygiene is off.
+    await rm(result.filePath, { force: true }).catch((err: unknown) => {
+      console.error(
+        `browser-agent: delivered "${result.filename}" but could not remove the server copy:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+    return {
+      text: `Sent "${result.filename}" (${mb} MB) to the chat. The user has the file — do NOT mention a server folder or a file path.`,
+    };
+  }
   return {
     text:
       `Saved to the downloads folder as "${result.filename}" (${mb} MB).` +
-      (inline
-        ? " Attaching it to the chat now."
+      (attachable
+        ? " It could not be delivered to the chat, so the server copy is what remains."
         : " It is too large to attach here — tell the user the filename and that it is in the downloads folder. Do NOT paste a URL."),
   };
 }

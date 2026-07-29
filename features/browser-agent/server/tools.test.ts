@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -11,10 +11,11 @@ import { downloadMediaToDisk, YtDlpMissingError } from "./media-download";
 import { BROWSER_AGENT_TOOLS, makeBrowserToolDispatcher, type AgentToolContext } from "./tools";
 
 /**
- * The media download tool's dispatch decisions — the parts that are code rather
- * than model judgement: the owner gate, the audio/video default, and reporting a
- * missing yt-dlp as an environment fact instead of a generic failure. yt-dlp
- * itself is mocked; the binary's own contract is covered in `../ytdlp.test.ts`.
+ * The download tools' dispatch decisions — the parts that are code rather than
+ * model judgement: the owner gate, the audio/video default, reporting a missing
+ * yt-dlp as an environment fact instead of a generic failure, and the rule that the
+ * server copy survives only when the chat did not get the file. yt-dlp itself is
+ * mocked; the binary's own contract is covered in `../ytdlp.test.ts`.
  */
 
 vi.mock("./media-download", async (importOriginal) => ({
@@ -25,10 +26,16 @@ vi.mock("./media-download", async (importOriginal) => ({
 const mockedDownload = vi.mocked(downloadMediaToDisk);
 
 let dir: string;
+let filePath: string;
 let downloads: BrowserDownloadRecord[];
 let delivered: BrowserDownloadRecord[];
 
-function makeContext(isOwner: boolean): AgentToolContext {
+/**
+ * `reachedChat` stands in for what the runner reports back: true when Telegram
+ * accepted the document, false for a dashboard run, an over-limit file, or a failed
+ * send.
+ */
+function makeContext(isOwner: boolean, reachedChat = true): AgentToolContext {
   downloads = [];
   delivered = [];
   return {
@@ -45,6 +52,7 @@ function makeContext(isOwner: boolean): AgentToolContext {
     onScreenshot: async () => 0,
     onDownload: async (record) => {
       delivered.push(record);
+      return reachedChat;
     },
   };
 }
@@ -54,12 +62,12 @@ const call = (ctx: AgentToolContext, args: Record<string, unknown>): Promise<Mcp
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), "media-tool-"));
-  const filePath = path.join(dir, "VIRUS (Fytch Remix).m4a");
+  filePath = path.join(dir, "VIRUS (Fytch Remix).mp3");
   writeFileSync(filePath, "audio");
   mockedDownload.mockResolvedValue({
     filePath,
-    filename: "VIRUS (Fytch Remix).m4a",
-    mime: "audio/mp4",
+    filename: "VIRUS (Fytch Remix).mp3",
+    mime: "audio/mpeg",
     sizeBytes: 5,
   });
 });
@@ -84,10 +92,33 @@ describe("browser_download_media", () => {
       expect.objectContaining({ mode: "audio" }),
     );
     expect(result.isError).toBeFalsy();
-    expect(result.text).toContain("VIRUS (Fytch Remix).m4a");
+    expect(result.text).toContain("VIRUS (Fytch Remix).mp3");
     // The file lands in the chat immediately, and on the run row.
-    expect(delivered.map((d) => d.filename)).toEqual(["VIRUS (Fytch Remix).m4a"]);
+    expect(delivered.map((d) => d.filename)).toEqual(["VIRUS (Fytch Remix).mp3"]);
     expect(downloads).toHaveLength(1);
+  });
+
+  it("removes the server copy once the chat has the file", async () => {
+    const ctx = makeContext(true, true);
+
+    const result = await call(ctx, { url: "https://x.com/watch?v=1", mode: "audio" });
+
+    expect(existsSync(filePath)).toBe(false);
+    expect(downloads[0].deliveredToChat).toBe(true);
+    // The model must not offer the user a path to a file that is no longer there.
+    expect(result.text).toContain("Sent");
+    expect(result.text).not.toContain("downloads folder");
+  });
+
+  it("keeps the server copy when the file never reached the chat", async () => {
+    // A dashboard-started run has no chat, and a failed send looks the same here.
+    const ctx = makeContext(true, false);
+
+    const result = await call(ctx, { url: "https://x.com/watch?v=1", mode: "audio" });
+
+    expect(existsSync(filePath)).toBe(true);
+    expect(downloads[0].deliveredToChat).toBe(false);
+    expect(result.text).toContain("downloads folder");
   });
 
   it("defaults to video, and treats an unknown mode as video", async () => {

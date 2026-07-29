@@ -158,6 +158,38 @@ image built the `apk add` layer.
 Note that a Playwright/Chromium failure is confined to the run that needs it: the
 package is imported lazily precisely so it cannot crash server startup.
 
+## `npm run build` or `npm run lint` dies with EACCES on `data/pg`
+
+Only bites **local dev that runs the bundled Postgres**, and only the local build —
+the Docker image builds before any `./data` exists, and a deployment's bind mount is
+outside the source tree.
+
+`PG_DATA_DIR` defaults to `./data/pg`, so Compose creates a `0700` directory owned by
+the container's postgres user *inside the project*. Any directory under the project
+root that the build user cannot read is fatal: several server modules do `fs` calls on
+env-derived paths (`TRACES_DIR`, `DOWNLOADS_DIR`), which makes Turbopack walk those
+directories while building the module graph, and one unreadable entry fails the whole
+build. ESLint hit the same wall until `data/**` was added to its ignore list
+(2026-07-29); Turbopack has no equivalent escape hatch —
+`outputFileTracingExcludes` runs later and does not help.
+
+**Fix: give the data directory group access**, which Postgres supports natively
+(`u=rwx,g=rx` is a valid mode for it, alongside `0700`). It stays exactly where it is:
+
+```bash
+sudo chgrp -R "$(id -gn)" data/pg && sudo chmod -R g+rX data/pg
+```
+
+That yields `0750` directories and `0640` files — the layout `initdb
+--allow-group-access` produces. Postgres reads the mode at startup, so a running
+server keeps going and picks the setting up on its next restart.
+
+Do **not** try `chmod o+rx`: Postgres refuses to start if the data directory has any
+world permission bits.
+
+Moving the directory out of the project (an absolute `PG_DATA_DIR` in `.env`) also
+works, but is a bigger change for the same result.
+
 ## A media download fails
 
 | Symptom | Cause / fix |

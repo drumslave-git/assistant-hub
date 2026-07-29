@@ -28,11 +28,14 @@ describe("buildYtDlpArgs", () => {
     expect(args("audio")).toContain("--no-playlist");
   });
 
-  it("selects best audio and extracts it, for audio mode", () => {
+  it("selects best audio and transcodes it to mp3, for audio mode", () => {
     expect(valueAfter(args("audio"), "-f")).toBe("bestaudio/best");
     expect(args("audio")).toContain("-x");
-    // No transcode is forced: re-encoding a lossy source only loses more.
-    expect(args("audio")).not.toContain("--audio-format");
+    // mp3 rather than the native container: Telegram will not play an .opus
+    // document, which is what YouTube's best audio usually is.
+    expect(valueAfter(args("audio"), "--audio-format")).toBe("mp3");
+    // yt-dlp's best VBR setting, to give back what the re-encode costs.
+    expect(valueAfter(args("audio"), "--audio-quality")).toBe("0");
   });
 
   it("selects best video plus best audio and merges, for video mode", () => {

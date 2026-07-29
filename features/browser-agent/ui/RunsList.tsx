@@ -195,7 +195,7 @@ function RunDetail({ run }: { run: BrowserAgentRun }) {
                 <span>{file.filename}</span>
                 <span className="text-muted">
                   · {formatBytes(file.sizeBytes)} ·{" "}
-                  {file.inline ? "attached to chat" : "downloads folder"}
+                  {file.deliveredToChat ? "sent to chat" : "downloads folder"}
                 </span>
               </li>
             ))}

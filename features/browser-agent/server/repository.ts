@@ -46,7 +46,15 @@ function mapRow(row: BrowserAgentRunRow): BrowserAgentRun {
     report: row.report,
     error: row.error,
     steps: row.steps,
-    downloads: row.downloads ?? [],
+    // The stored shape is looser than the client type: pre-2026-07-29 rows carry
+    // `inline` and no `deliveredToChat`, which normalizes to false — accurate, since
+    // every download of that era was kept on disk.
+    downloads: (row.downloads ?? []).map((d) => ({
+      sourceUrl: d.sourceUrl,
+      filename: d.filename,
+      sizeBytes: d.sizeBytes,
+      deliveredToChat: d.deliveredToChat === true,
+    })),
     traceId: row.traceId,
     createdAt: row.createdAt.toISOString(),
     startedAt: row.startedAt?.toISOString() ?? null,

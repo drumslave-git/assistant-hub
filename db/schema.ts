@@ -1080,8 +1080,15 @@ interface BrowserAgentDownloadJson {
   sourceUrl: string;
   filename: string;
   sizeBytes: number;
-  /** True when the file was small enough to also attach to the chat. */
-  inline: boolean;
+  /**
+   * True when the file itself reached the chat, in which case the server copy was
+   * removed. Rows written before 2026-07-29 carry `inline` (small enough to attach)
+   * instead — a different question, and absent here it reads as false, which is
+   * right for them: back then every download stayed on disk.
+   */
+  deliveredToChat?: boolean;
+  /** @deprecated Pre-2026-07-29 rows only; superseded by {@link deliveredToChat}. */
+  inline?: boolean;
 }
 
 /**

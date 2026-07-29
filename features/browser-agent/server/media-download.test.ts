@@ -68,7 +68,7 @@ beforeEach(() => {
   originalPath = process.env.PATH;
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
   process.env.STUB_ARGV_OUT = argvFile;
-  process.env.STUB_FILES = "VIRUS (Fytch Remix).m4a=5000";
+  process.env.STUB_FILES = "VIRUS (Fytch Remix).mp3=5000";
 });
 
 afterEach(() => {
@@ -88,12 +88,12 @@ describe("downloadMediaToDisk", () => {
 
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
-    expect(result.filename).toBe("VIRUS (Fytch Remix).m4a");
-    expect(result.mime).toBe("audio/mp4");
+    expect(result.filename).toBe("VIRUS (Fytch Remix).mp3");
+    expect(result.mime).toBe("audio/mpeg");
     expect(result.sizeBytes).toBe(5000);
     expect(result.filePath).toBe(path.join(path.resolve(downloadsDir), result.filename));
     // The scratch directory is gone; only the finished file remains.
-    expect(readdirSync(downloadsDir)).toEqual(["VIRUS (Fytch Remix).m4a"]);
+    expect(readdirSync(downloadsDir)).toEqual(["VIRUS (Fytch Remix).mp3"]);
   });
 
   it("passes the mode through to yt-dlp's format selection", async () => {
@@ -119,31 +119,31 @@ describe("downloadMediaToDisk", () => {
   });
 
   it("sanitizes a name that is unsafe on disk", async () => {
-    process.env.STUB_FILES = "Live: Set?.m4a=100";
+    process.env.STUB_FILES = "Live: Set?.mp3=100";
     const { downloadMediaToDisk } = await loadDownloader();
 
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
-    expect(result.filename).toBe("Live Set.m4a");
+    expect(result.filename).toBe("Live Set.mp3");
   });
 
   it("does not collide with a file already in the downloads folder", async () => {
-    writeFileSync(path.join(downloadsDir, "VIRUS (Fytch Remix).m4a"), "old");
+    writeFileSync(path.join(downloadsDir, "VIRUS (Fytch Remix).mp3"), "old");
     const { downloadMediaToDisk } = await loadDownloader();
 
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
-    expect(result.filename).toBe("VIRUS (Fytch Remix) (1).m4a");
+    expect(result.filename).toBe("VIRUS (Fytch Remix) (1).mp3");
   });
 
   it("keeps the media, not yt-dlp's leftovers", async () => {
     // A merge can leave a `.part` behind, and it can be bigger than the result.
-    process.env.STUB_FILES = "song.m4a=2000|song.f140.m4a.part=9000|song.ytdl=50";
+    process.env.STUB_FILES = "song.mp3=2000|song.f140.m4a.part=9000|song.ytdl=50";
     const { downloadMediaToDisk } = await loadDownloader();
 
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
-    expect(result.filename).toBe("song.m4a");
+    expect(result.filename).toBe("song.mp3");
     expect(result.sizeBytes).toBe(2000);
   });
 

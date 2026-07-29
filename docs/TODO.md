@@ -234,9 +234,12 @@ a third enforcement style again: it refuses *before* downloading, from the decla
 size. Migration `0043_fat_shiver_man.sql` (`ADD COLUMN … DEFAULT 10 NOT NULL`) —
 **applied to the dev DB**; still to apply wherever else the app runs.
 
-*Verified.* `npm run lint`, `npm run typecheck`, `npm test` (778), `npm run build` and
+*Verified.* `npm run lint`, `npm run typecheck`, `npm test` and
 `npm run test:integration` (319 passed / 32 skipped — the live-LLM-gated ones) all
-clean; the integration suite ran for the first time this session, the container runtime
+clean. `npm run build` passed until the bundled Postgres was started with the default
+`PG_DATA_DIR=./data/pg`; since then it fails with EACCES on that directory, which is
+an environment problem (see troubleshooting: give the data dir group access) and
+reproduces identically with every change here stashed; the integration suite ran for the first time this session, the container runtime
 the 2026-07-28 entry below lacked now being available. New unit tests:
 `ytdlp.test.ts` (16), `server/media-download.test.ts` (10, against a **stub** `yt-dlp`
 on `PATH` — real spawn, no network), `server/tools.test.ts` (7, owner gate + mode
@@ -264,13 +267,30 @@ defaults and never listed `/data`, so the moment anyone follows the documented C
 default (`PG_DATA_DIR=./data/pg`, root-owned 0700) the whole lint run dies. Added
 `data/**` and `downloads/**` — both already in `.gitignore`, neither ever source.
 
+- **Defect 2 closed too.** A subsequent Telegram-originated run composed the goal as
+  "Download the audio track from this YouTube Music link: «url»" — the user's request
+  intact, no "or …" branch. Both halves of the incident are now fixed in practice.
+- **Audio is mp3, not the native container** (operator, 2026-07-29, reversing the
+  original choice). That first live run returned `VIRUS (Fytch Remix).opus`, which
+  Telegram will not play. Avoiding a lossy-to-lossy re-encode was the wrong thing to
+  optimize for when the result is unplayable; `--audio-format mp3 --audio-quality 0`
+  now, trading some quality for a file every client handles.
+
+- **Downloads are no longer archived on the server** (operator, 2026-07-29): a file is
+  kept locally *only* if it did not reach the chat. `onDownload` now resolves whether
+  Telegram actually took the document, and `finishDownload` unlinks on success. The
+  record's `inline` flag (was the file small enough to attach?) became
+  `deliveredToChat` (did the chat get it?) — the old flag also made a dashboard run's
+  downloads read as "attached to chat" when there was no chat at all. Old rows lack the
+  field and normalize to `false`, correct for them.
+
 *Remaining risks / next steps.*
-- **Defect 2 (the watered-down `browse_web` goal) is still unverified.** A dashboard
-  run hands the goal straight to the agent, bypassing the chat model that invented the
-  "or provide direct info" escape hatch. Only a Telegram request exercises it: send the
-  original message and check the trace for a goal with no "or …" branch.
 - The image still needs rebuilding before the deployment has yt-dlp; only this dev
   machine has it.
+- The delete-on-delivery path was verified by unit test and by a dashboard run (which
+  always keeps the file, having no chat). **The delivered-and-removed branch has not
+  been exercised against real Telegram** — send a small track through the bot and check
+  the file is in the chat and gone from `downloads/`.
 - The distro yt-dlp is frozen per Alpine release while these sites change often; if
   every media page starts failing, the fix is a rebuild against a newer base image.
 - No cookies means age-gated, sign-in-walled and region-locked pages fail with

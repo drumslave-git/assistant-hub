@@ -2498,14 +2498,18 @@ components:
           type: array
           items:
             type: object
-            required: [sourceUrl, filename, sizeBytes, inline]
+            required: [sourceUrl, filename, sizeBytes, deliveredToChat]
             properties:
               sourceUrl: { type: string }
               filename: { type: string }
               sizeBytes: { type: integer }
-              inline:
+              deliveredToChat:
                 type: boolean
-                description: True when the file was small enough to also attach to the chat.
+                description: >-
+                  True when the file itself reached the chat, in which case the server
+                  copy was removed. False means it is still in the downloads folder:
+                  too large to attach, delivery failed, or a dashboard-started run with
+                  no chat. Runs recorded before 2026-07-29 always read false.
         traceId: { type: [string, "null"] }
         createdAt: { type: string, format: date-time }
         startedAt: { type: [string, "null"], format: date-time }

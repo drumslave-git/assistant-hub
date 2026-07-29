@@ -75,31 +75,45 @@ async function deliverText(
   return messageId;
 }
 
-/** Post one finished download to the chat as it lands (silent progress message). */
+/**
+ * Post one finished download to the chat as it lands (silent progress message).
+ * Resolves whether the **file itself** reached the chat, which is what decides
+ * whether the caller keeps the server copy. Three ways that is false: a
+ * dashboard-started run has no chat, a file over the attach limit is announced by
+ * name only, and a send can fail — in all three the downloads folder is the one
+ * remaining copy, so it must not be deleted.
+ */
 async function deliverDownload(
   run: BrowserAgentRun,
   record: BrowserDownloadRecord,
   file: CollectedFile | null,
-): Promise<void> {
-  if (!run.chatId) return;
+): Promise<boolean> {
+  if (!run.chatId) return false;
   try {
     if (file) {
       await sendChatDocument(
         run.chatId,
         { buffer: file.buffer, filename: file.filename },
-        { threadId: run.threadId, caption: formatDownloadLine(record) },
+        {
+          threadId: run.threadId,
+          // This caption rides along with the file, so it describes a delivered
+          // one and never points at a server folder the user cannot browse.
+          caption: formatDownloadLine({ ...record, deliveredToChat: true }),
+        },
       );
-    } else {
-      await sendChatMessage(run.chatId, formatDownloadLine(record), {
-        threadId: run.threadId,
-        silent: true,
-      });
+      return true;
     }
+    await sendChatMessage(run.chatId, formatDownloadLine(record), {
+      threadId: run.threadId,
+      silent: true,
+    });
+    return false;
   } catch (err) {
     console.error(
       `browser-agent: failed to deliver a download for run ${run.id}:`,
       err instanceof Error ? err.message : String(err),
     );
+    return false;
   }
 }
 
@@ -191,13 +205,21 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
         return seq;
       },
       onDownload: async (record, file) => {
+        const deliveredToChat = await deliverDownload(run, record, file);
+        // Traced after the attempt, so the event records what actually happened —
+        // and therefore whether the server copy survives.
         await trace.event({
           type: "db",
           message: "download",
-          data: { filename: record.filename, sizeBytes: record.sizeBytes, sourceUrl: record.sourceUrl },
+          data: {
+            filename: record.filename,
+            sizeBytes: record.sizeBytes,
+            sourceUrl: record.sourceUrl,
+            deliveredToChat,
+          },
         });
-        await deliverDownload(run, record, file);
         publishEvent(FEATURE.realtimeTopic);
+        return deliveredToChat;
       },
     };
 

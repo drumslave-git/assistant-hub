@@ -93,7 +93,9 @@ describe("browser-agent queue", () => {
     await settleBrowserAgentRun(ctx.db, run.id, {
       status: "done",
       report: "Found it.",
-      downloads: [{ sourceUrl: "https://x/a", filename: "v.mp4", sizeBytes: 2048, inline: false }],
+      downloads: [
+        { sourceUrl: "https://x/a", filename: "v.mp4", sizeBytes: 2048, deliveredToChat: false },
+      ],
     });
 
     const settled = await getBrowserAgentRun(ctx.db, run.id);
