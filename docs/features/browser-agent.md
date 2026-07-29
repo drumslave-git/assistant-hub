@@ -267,8 +267,8 @@ Mirrors the MVP:
   A failed unlink is logged and changes nothing else: the chat has the file, so the
   record stays truthful and only disk hygiene suffers. The tool result wording follows
   the same split, so the model never offers the user a folder path for a file it
-  already sent. That folder (`DOWNLOADS_DIR` — `/app/data/downloads` under Compose,
-  bind-mounted to the host; `./downloads` locally) is now, more strictly than before,
+  already sent. That folder (`data/downloads`, bind-mounted to the host under
+  Compose) is now, more strictly than before,
   the **only** copy of whatever is in it — which is why it is a mounted directory
   rather than a container path.
 

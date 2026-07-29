@@ -12,20 +12,15 @@ services:
       # Built from the bundled db service; override DATABASE_URL to use an
       # external database.
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@db:5432/${POSTGRES_DB:-bot}}
-      # Directory the file-backed trace/debug store writes monthly logs into,
-      # bind-mounted below (configurable host path via TRACES_DATA_DIR).
-      TRACES_DIR: /app/data/traces
-      # Directory browser-agent downloads stream into, bind-mounted below
-      # (configurable host path via DOWNLOADS_DATA_DIR). A file too large to
-      # attach to the chat only exists here, so it must outlive the container.
-      DOWNLOADS_DIR: /app/data/downloads
       TZ: ${TZ:-UTC}
     volumes:
-      # Bind-mounted host directory so trace/debug logs persist across restarts.
-      - "${TRACES_DATA_DIR:-./data/traces}:/app/data/traces"
-      # Bind-mounted host directory so downloaded files persist across restarts
-      # and are reachable from the host.
-      - "${DOWNLOADS_DATA_DIR:-./data/downloads}:/app/data/downloads"
+      # Bind-mounted so trace/debug logs persist across restarts. The app writes
+      # to ./data/traces relative to its working directory, which is /app.
+      - "./data/traces:/app/data/traces"
+      # Same for downloaded files, which are also reachable from the host: a file
+      # too large to attach to the chat exists only here, so it must outlive the
+      # container.
+      - "./data/downloads:/app/data/downloads"
     healthcheck:
       # 127.0.0.1 (not localhost): the standalone server binds IPv4 0.0.0.0, and
       # localhost can resolve to IPv6 ::1, which would refuse the connection.
@@ -49,8 +44,8 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      # Bind-mounted host directory for persistence (configurable via PG_DATA_DIR).
-      - "${PG_DATA_DIR:-./data/pg}:/var/lib/postgresql/data"
+      # Bind-mounted host directory for persistence.
+      - "./data/pg:/var/lib/postgresql/data"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-bot}"]
       interval: 5s

@@ -6,10 +6,11 @@ import path from "node:path";
 
 import { selectBestHlsInputs } from "../hls";
 import { buildDownloadFilename } from "../files";
+import { downloadsDir } from "@/server/paths";
+
 import {
   assertPublicUrl,
   DOWNLOAD_HEADERS,
-  DOWNLOADS_DIR,
   uniqueFilename,
   type DiskDownload,
 } from "./download";
@@ -75,12 +76,12 @@ export async function downloadStreamToDisk(
   options: StreamDownloadOptions,
 ): Promise<DiskDownload> {
   const url = await assertPublicUrl(rawUrl);
-  await fs.mkdir(DOWNLOADS_DIR, { recursive: true });
+  await fs.mkdir(downloadsDir(), { recursive: true });
 
   // The mux always yields an MP4 regardless of the .m3u8/.mpd source extension.
   const base = buildDownloadFilename(options.title, url.toString(), "video/mp4");
   const filename = await uniqueFilename(`${base.replace(/\.[a-z0-9]{1,5}$/i, "")}.mp4`);
-  const filePath = path.join(DOWNLOADS_DIR, filename);
+  const filePath = path.join(downloadsDir(), filename);
 
   const headerArg =
     Object.entries(DOWNLOAD_HEADERS(url))

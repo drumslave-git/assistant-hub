@@ -2,20 +2,23 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { __setDataDirsForTests } from "@/server/paths";
+
+import { getDownloadStorageHealth } from "./download";
 
 /**
- * The download write-path probe. `DOWNLOADS_DIR` is resolved once at module load,
- * so each case points the env at a fresh path and re-imports the module.
+ * The download write-path probe. The real downloads directory is fixed at
+ * `data/downloads`, so each case redirects it to a throwaway path through the
+ * test-only override rather than re-importing the module.
  */
 
 let dir: string;
 
-async function loadProbe(downloadsDir: string) {
-  process.env.DOWNLOADS_DIR = downloadsDir;
-  vi.resetModules();
-  const mod = await import("./download");
-  return mod.getDownloadStorageHealth;
+function loadProbe(downloads: string): typeof getDownloadStorageHealth {
+  __setDataDirsForTests({ downloads });
+  return getDownloadStorageHealth;
 }
 
 beforeEach(() => {
@@ -23,13 +26,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.DOWNLOADS_DIR;
+  __setDataDirsForTests(null);
   rmSync(dir, { recursive: true, force: true });
 });
 
 describe("getDownloadStorageHealth", () => {
   it("reports the directory when the write path works", async () => {
-    const getDownloadStorageHealth = await loadProbe(dir);
+    const getDownloadStorageHealth = loadProbe(dir);
 
     const health = await getDownloadStorageHealth();
 
@@ -39,7 +42,7 @@ describe("getDownloadStorageHealth", () => {
 
   it("creates the directory when it does not exist yet", async () => {
     const nested = path.join(dir, "not", "created", "yet");
-    const getDownloadStorageHealth = await loadProbe(nested);
+    const getDownloadStorageHealth = loadProbe(nested);
 
     const health = await getDownloadStorageHealth();
 
@@ -48,7 +51,7 @@ describe("getDownloadStorageHealth", () => {
   });
 
   it("leaves no probe file behind", async () => {
-    const getDownloadStorageHealth = await loadProbe(dir);
+    const getDownloadStorageHealth = loadProbe(dir);
 
     await getDownloadStorageHealth();
     await getDownloadStorageHealth();
@@ -63,7 +66,7 @@ describe("getDownloadStorageHealth", () => {
     // POSIX and Windows alike, unlike chmod which is largely a no-op on Windows.
     const blocker = path.join(dir, "blocker");
     writeFileSync(blocker, "not a directory");
-    const getDownloadStorageHealth = await loadProbe(path.join(blocker, "downloads"));
+    const getDownloadStorageHealth = loadProbe(path.join(blocker, "downloads"));
 
     const health = await getDownloadStorageHealth();
 

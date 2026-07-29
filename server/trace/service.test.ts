@@ -12,7 +12,7 @@ import { startTrace, type StartTraceInput } from "./recorder";
 
 /**
  * Shared Debug service over the file-backed store. Docker-free: the store writes
- * to a throwaway `TRACES_DIR`, cleared before every test.
+ * to a throwaway trace directory, cleared before every test.
  */
 
 const baseInput: StartTraceInput = {

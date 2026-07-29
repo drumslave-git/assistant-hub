@@ -164,10 +164,10 @@ Only bites **local dev that runs the bundled Postgres**, and only the local buil
 the Docker image builds before any `./data` exists, and a deployment's bind mount is
 outside the source tree.
 
-`PG_DATA_DIR` defaults to `./data/pg`, so Compose creates a `0700` directory owned by
-the container's postgres user *inside the project*. Any directory under the project
+Compose bind-mounts `./data/pg`, so it creates a `0700` directory owned by the
+container's postgres user *inside the project*. Any directory under the project
 root that the build user cannot read is fatal: several server modules do `fs` calls on
-env-derived paths (`TRACES_DIR`, `DOWNLOADS_DIR`), which makes Turbopack walk those
+paths under `data/`, which makes Turbopack walk those
 directories while building the module graph, and one unreadable entry fails the whole
 build. ESLint hit the same wall until `data/**` was added to its ignore list
 (2026-07-29); Turbopack has no equivalent escape hatch —
@@ -187,8 +187,8 @@ server keeps going and picks the setting up on its next restart.
 Do **not** try `chmod o+rx`: Postgres refuses to start if the data directory has any
 world permission bits.
 
-Moving the directory out of the project (an absolute `PG_DATA_DIR` in `.env`) also
-works, but is a bigger change for the same result.
+Moving the directory out of the project also works, but the path is no longer
+configurable, so it would mean editing `docker-compose.yml`.
 
 ## A media download fails
 
@@ -219,7 +219,6 @@ RAM and vanish on the next restart.
 | --- | --- |
 | The bind-mounted host directory is not writable by the container's non-root `app` user | `chown` it to that user on the host side |
 | Disk full | Free space, or prune old trace months from `/debug` |
-| `TRACES_DIR` points somewhere that does not exist | Fix it and restart |
 
 `pendingCount` in the health body and on Overview tells you how many traces are
 currently at risk. **Do not restart** the container to "fix" it — that is what drops
@@ -237,7 +236,7 @@ also carries a line, because the runner probes the path at startup.
 | Cause | Fix |
 | --- | --- |
 | The bind-mounted host directory is not writable by the container's non-root `app` user | `chown` it to that user on the host side |
-| `DOWNLOADS_DIR` points at a path whose parent is a file, or is otherwise unusable | Fix the path. The `detail` field carries the OS error (`ENOTDIR`, `EACCES`, …) |
+| `data/downloads` cannot be created — a parent is a file, or the directory is unwritable | Fix it on disk. The `detail` field carries the OS error (`ENOTDIR`, `EACCES`, …) |
 | Disk full | Free space |
 
 Browsing, reading pages and reporting all keep working — only saving a file fails.

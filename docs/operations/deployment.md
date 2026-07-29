@@ -28,9 +28,9 @@ back up the data with ordinary tools:
 
 | Host path (default) | Container path | Holds |
 | --- | --- | --- |
-| `${PG_DATA_DIR:-./data/pg}` | `/var/lib/postgresql/data` | The database |
-| `${TRACES_DATA_DIR:-./data/traces}` | `/app/data/traces` | Monthly trace NDJSON logs |
-| `${DOWNLOADS_DATA_DIR:-./data/downloads}` | `/app/data/downloads` | Browser-agent downloads |
+| `./data/pg` | `/var/lib/postgresql/data` | The database |
+| `./data/traces` | `/app/data/traces` | Monthly trace NDJSON logs |
+| `./data/downloads` | `/app/data/downloads` | Browser-agent downloads |
 
 All three are mounted, and all three hold the only copy of what they contain. The
 downloads mount matters for a non-obvious reason: a file the browser agent fetched that
@@ -46,7 +46,7 @@ and downloads fail per-run, reported on the run row.
 
 Compose has working defaults; a `.env` is optional. `DATABASE_URL` is composed from
 the `POSTGRES_*` variables and points at the bundled `db`. Override it to use an
-external database. `TRACES_DIR` is set to `/app/data/traces`, and `TZ` defaults to
+external database. `TZ` defaults to
 `UTC` — note that the *operator* timezone used for rendering and scheduling is a
 database setting, not this.
 
@@ -165,7 +165,7 @@ Two things need care:
 
 - [ ] Claim `/setup` and set the operator password before exposing the port.
 - [ ] `DATABASE_URL` points where you intend (or you are using the bundled `db`).
-- [ ] `TRACES_DATA_DIR` and `DOWNLOADS_DATA_DIR` are on a disk with room and are
+- [ ] `./data/traces` and `./data/downloads` are on a disk with room and are
       writable by the container user. Overview's **Trace storage** and **Downloads**
       cards probe this for real — check them rather than assuming.
 - [ ] Do not publish `POSTGRES_PORT` beyond localhost.

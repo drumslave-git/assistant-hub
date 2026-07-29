@@ -71,7 +71,7 @@ to enumerate them.
 
 ### `test/setup-trace-store.ts`
 
-Points `TRACES_DIR` at a fresh temp directory and resets the trace-store singleton
+Points the trace directory at a fresh temp path (`__setDataDirsForTests`) and resets the trace-store singleton
 before every test. Traces live in files rather than the database, so truncating tables
 would not isolate them.
 

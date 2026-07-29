@@ -78,10 +78,11 @@ COPY docker/migrate/migrate.mjs ./migrate/migrate.mjs
 COPY --from=builder /app/db/migrations ./migrate/db/migrations
 RUN cd migrate && npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 
-# Trace/debug logs (TRACES_DIR) and browser-agent downloads (DOWNLOADS_DIR) are
-# written here at runtime. Create both up front so the default path / a named volume
-# is writable by the non-root app user; a host bind mount must be made writable by
-# that user on the host side.
+# Trace/debug logs and browser-agent downloads are written here at runtime. The app
+# resolves both relative to its working directory, so they land in /app/data/traces
+# and /app/data/downloads — not configurable. Created up front so they are writable
+# by the non-root app user; a host bind mount must be made writable by that user on
+# the host side.
 RUN mkdir -p /app/data/traces /app/data/downloads
 
 # Run as non-root.

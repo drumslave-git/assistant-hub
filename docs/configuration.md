@@ -25,7 +25,6 @@ rather than crash-looping.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | — | Postgres (with pgvector) connection string. Required for anything that touches persistence, which is nearly everything. |
-| `TRACES_DIR` | `<cwd>/data/traces` | Directory the file-backed trace store appends monthly NDJSON logs to. A filesystem mount, not product config. |
 | `TZ` | `UTC` | Process timezone. The *operator* timezone used for rendering and scheduling is the DB setting, not this. |
 | `NODE_ENV` | — | `development` \| `production` \| `test`. |
 
@@ -34,7 +33,6 @@ has no `_FILE` variant:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DOWNLOADS_DIR` | `<cwd>/downloads` | Where the browser agent streams downloaded files. Deploy-time plumbing, like `TRACES_DIR`. Under Compose it is set to `/app/data/downloads` and bind-mounted, because a file too large to attach to the chat exists **only** here. |
 
 ### Compose-only variables
 
@@ -47,9 +45,6 @@ Read by `docker-compose.yml`, not by application code:
 | `POSTGRES_PASSWORD` | `bot` | Bundled Postgres password |
 | `POSTGRES_DB` | `bot` | Bundled Postgres database |
 | `POSTGRES_PORT` | `5432` | Host port published for Postgres |
-| `PG_DATA_DIR` | `./data/pg` | Host directory Postgres persists into (bind mount) |
-| `TRACES_DATA_DIR` | `./data/traces` | Host directory mapped to the container's `/app/data/traces` |
-| `DOWNLOADS_DATA_DIR` | `./data/downloads` | Host directory mapped to the container's `/app/data/downloads` |
 
 Under Compose, `DATABASE_URL` is built from the `POSTGRES_*` variables and points
 at the bundled `db` service. Set `DATABASE_URL` explicitly to use an external
@@ -191,5 +186,4 @@ Nothing in this app reports "configured" from the presence of a variable.
 | --- | --- |
 | Any runtime setting | Settings page, or `PATCH /api/settings`. Effective immediately |
 | Database location | `DATABASE_URL`, then restart |
-| Trace directory | `TRACES_DIR`, then restart |
 | Operator password | Settings → Security (requires the current password; signs out every other session). Forgotten password: clear `operator_password_hash` and `session_secret` in the database, then run `/setup` again. See [Security](architecture/security.md) |

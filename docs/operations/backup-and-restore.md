@@ -8,8 +8,8 @@ calling it done loses the trace archive.
 | State | Location | Backed up by | Loss impact |
 | --- | --- | --- | --- |
 | Everything relational — conversation mirror, summaries, memory, feedback, tasks, settings, personalities, browser runs, media bytes while pending | Postgres | `pg_dump` | Total: the bot forgets everything and loses its configuration |
-| Trace archive — **complete** LLM request/response bodies and every system prompt | `TRACES_DIR/traces-YYYY-MM.ndjson` | Nothing automatic | Analytics token/model history and all debug history for past months |
-| Browser-agent downloads | `DOWNLOADS_DIR` — `./data/downloads` under Compose, `./downloads` locally | Nothing automatic (but it **is** a mounted host directory, so it survives container replacement) | Files the agent fetched. A file too large to attach to the chat exists only here |
+| Trace archive — **complete** LLM request/response bodies and every system prompt | `data/traces/traces-YYYY-MM.ndjson` | Nothing automatic | Analytics token/model history and all debug history for past months |
+| Browser-agent downloads | `data/downloads` | Nothing automatic (but it **is** a mounted host directory, so it survives container replacement) | Files the agent fetched. A file too large to attach to the chat exists only here |
 | Running (unsettled) traces | RAM | — | Dropped on any crash. By design |
 | Settled-but-unflushed traces | RAM, ≤60s | — | Graceful shutdown flushes first |
 | Live job progress, browser live state | RAM | — | Transient by design |
@@ -55,7 +55,7 @@ pending migrations before serving.
 
 ### Reset
 
-The Compose `db` service persists into a host directory (`PG_DATA_DIR`, default
+The Compose `db` service persists into a host directory (`./data/pg`, not
 `./data/pg`). To wipe the database, stop the stack and delete that directory. The next
 start creates a fresh one and the app migrates it.
 
@@ -89,7 +89,7 @@ Configuration lives in the `settings` row, so a database dump captures it — in
 every API key and the bot token in plaintext. Which is another reason to protect the
 dump.
 
-What is *not* in the dump: `DATABASE_URL`, `TRACES_DIR`, `TZ` and the Compose
+What is *not* in the dump: `DATABASE_URL`, `TZ` and the Compose
 variables. Keep your `.env` (or your secret files) under the same backup regime, and
 remember `<NAME>_FILE` Docker-secret variants exist if you would rather they never
 appear in a compose file at all.
@@ -115,7 +115,7 @@ tar czf "/backups/traces-$(date +%F).tar.gz" -C /srv/llm-tg-bot/data traces
 
 1. Bring up a fresh stack (`docker compose up -d`). Do **not** visit `/setup` yet.
 2. Restore the database dump.
-3. Unpack the trace archive into `TRACES_DATA_DIR`, ensuring the container user can
+3. Unpack the trace archive into `./data/traces`, ensuring the container user can
    write it.
 4. Restart the app so it picks up the restored trace directory and re-warms the
    current month.

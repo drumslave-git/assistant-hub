@@ -23,7 +23,7 @@ import { startTrace, type StartTraceInput } from "./recorder";
 
 /**
  * File-backed trace store + recorder. Docker-free: traces live in memory while
- * mutable and settle to monthly NDJSON logs under a throwaway `TRACES_DIR`.
+ * mutable and settle to monthly NDJSON logs under a throwaway directory.
  */
 
 const baseInput: StartTraceInput = {
@@ -177,7 +177,7 @@ describe("memory-while-mutable + flush", () => {
     await flushTracesNow();
 
     // Simulate a process restart: drop the in-memory store; the month file (under
-    // the same TRACES_DIR) is all that remains, so a read must warm-load from disk.
+    // the same directory) is all that remains, so a read must warm-load from disk.
     __resetTraceStoreForTests();
 
     const stored = await getTrace(trace.id);

@@ -12,7 +12,9 @@ import {
   type MediaMode,
   type MediaProgress,
 } from "../ytdlp";
-import { assertPublicUrl, DOWNLOADS_DIR, uniqueFilename, type DiskDownload } from "./download";
+import { downloadsDir } from "@/server/paths";
+
+import { assertPublicUrl, uniqueFilename, type DiskDownload } from "./download";
 
 /**
  * Media-page download primitive (`browser_download_media`): hand a **page** URL —
@@ -62,15 +64,15 @@ export async function downloadMediaToDisk(
   options: MediaDownloadOptions,
 ): Promise<DiskDownload> {
   const url = await assertPublicUrl(rawUrl);
-  await fs.mkdir(DOWNLOADS_DIR, { recursive: true });
+  await fs.mkdir(downloadsDir(), { recursive: true });
 
   // yt-dlp writes into a scratch directory so the pre-merge streams and `.part`
   // files never appear in the folder the operator browses, and so the finished
-  // file can be *renamed* into place. The scratch dir lives inside DOWNLOADS_DIR
+  // file can be *renamed* into place. The scratch dir lives inside the downloads dir
   // (not the system temp dir) because that rename must not cross a filesystem —
   // under Compose the downloads folder is a bind mount, and a cross-device rename
   // fails.
-  const workDir = await fs.mkdtemp(path.join(DOWNLOADS_DIR, ".media-"));
+  const workDir = await fs.mkdtemp(path.join(downloadsDir(), ".media-"));
 
   try {
     const args = buildYtDlpArgs({
@@ -94,7 +96,7 @@ export async function downloadMediaToDisk(
     }
 
     const filename = await uniqueFilename(safeFilename(produced.name));
-    const filePath = path.join(DOWNLOADS_DIR, filename);
+    const filePath = path.join(downloadsDir(), filename);
     await fs.rename(path.join(workDir, produced.name), filePath);
 
     return { filePath, filename, mime: mimeForFilename(filename), sizeBytes: produced.size };

@@ -296,6 +296,38 @@ default (`PG_DATA_DIR=./data/pg`, root-owned 0700) the whole lint run dies. Adde
 - No cookies means age-gated, sign-in-walled and region-locked pages fail with
   yt-dlp's own error. That was the accepted v1 scope — revisit if it bites.
 
+## On-disk paths are fixed, not configurable (`done`, 2026-07-29)
+
+Operator decision: drop every path env var and put all local state under `./data`.
+Removed — `TRACES_DIR` and `DOWNLOADS_DIR` (app), `PG_DATA_DIR`, `TRACES_DATA_DIR`
+and `DOWNLOADS_DATA_DIR` (Compose). The layout is now `data/pg`, `data/traces`,
+`data/downloads`, resolved from `process.cwd()`, which is the package root locally
+and `/app` in the image — the same literals the Dockerfile creates and Compose
+mounts. Every deployment already used the defaults; the only thing the variables
+bought was a local/container divergence (`./downloads` vs `/app/data/downloads`) and
+longer docs.
+
+New `server/paths.ts` owns `tracesDir()` / `downloadsDir()`. The env vars were
+load-bearing for **test isolation**, not for operators, so they are replaced by an
+explicit `__setDataDirsForTests()` door in the same module — matching the existing
+`__resetTraceStoreForTests` convention. `download.test.ts` and
+`media-download.test.ts` no longer need `vi.resetModules()`, since the path is read
+per call rather than frozen at import.
+
+Files: `server/paths.ts` (new), `server/env.ts` (schema shrinks to `DATABASE_URL`,
+`TZ`, `NODE_ENV`), `server/trace/store.ts`,
+`features/browser-agent/server/{download,media-download,stream-download}.ts`,
+`test/{setup-trace-store,trace-store}.ts`, both download test files,
+`docker-compose.yml`, `.env.example`, `Dockerfile`, and eleven docs.
+
+Verified: `npm run lint`, `typecheck`, `test` (780), `build`, `test:integration`
+(319 passed / 32 skipped) all clean.
+
+**Migration note for anyone with an existing checkout:** local downloads move from
+`./downloads` to `./data/downloads`. Nothing reads the old path any more, so move its
+contents across. A deployment that set any of the five variables to a non-default
+path must move that data under `./data` before the next `up`.
+
 ## Other open items
 
 - **Ukrainian idiomatic joke requests never trigger tools on gemma4:12b

@@ -3,7 +3,7 @@ import "server-only";
 import { appendFile, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
-import { getEnv } from "@/server/env";
+import { tracesDir } from "@/server/paths";
 import type { Trace, TraceEvent, TraceStatus, TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 
@@ -93,11 +93,6 @@ export interface TraceFlushError {
   at: string;
 }
 
-/** Traces directory: `TRACES_DIR` (bootstrap plumbing) or a dev default under gitignored `data/`. */
-function resolveDir(): string {
-  return getEnv().TRACES_DIR ?? path.join(process.cwd(), "data", "traces");
-}
-
 function store(): TraceStore {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: TraceStore };
   if (!g[STORE_KEY]) {
@@ -109,7 +104,7 @@ function store(): TraceStore {
       fullMonths: [],
       sortedFlushed: null,
       correlations: new Map(),
-      dir: resolveDir(),
+      dir: tracesDir(),
       flushTimer: null,
       flushing: false,
       lastFlushError: null,
@@ -559,7 +554,7 @@ export async function stopTraceStore(): Promise<void> {
   await flushTracesNow();
 }
 
-/** Test-only: clear the singleton so a fresh temp `TRACES_DIR` takes effect. */
+/** Test-only: clear the singleton so a fresh {@link tracesDir} override takes effect. */
 export function __resetTraceStoreForTests(): void {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: TraceStore };
   const existing = g[STORE_KEY];

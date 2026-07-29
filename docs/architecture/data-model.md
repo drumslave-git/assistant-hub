@@ -6,7 +6,7 @@ Postgres, accessed through [Drizzle ORM](https://orm.drizzle.team).
 
 Two things are deliberately **not** in the database:
 
-- **Traces.** They live in append-only monthly NDJSON files under `TRACES_DIR`.
+- **Traces.** They live in append-only monthly NDJSON files under `data/traces`.
   See [Observability](observability.md).
 - **Ids.** Generated in application code (`crypto.randomUUID()`), so the shared
   schema needs no id-generating extension.

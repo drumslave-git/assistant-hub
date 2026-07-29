@@ -9,6 +9,8 @@ import { pipeline } from "node:stream/promises";
 import { isSafePublicUrl, normalizeUrl } from "@/features/link-fetch/url-safety";
 import { hostResolvesPublic } from "@/features/link-fetch/server/resolve-safety";
 
+import { downloadsDir } from "@/server/paths";
+
 import { buildDownloadFilename } from "../files";
 
 /**
@@ -21,17 +23,6 @@ import { buildDownloadFilename } from "../files";
  * matching tool.
  */
 
-/**
- * Downloads folder. `DOWNLOADS_DIR` env is a deploy-time bootstrap override (like
- * `DATABASE_URL`/`TRACES_DIR`), not runtime config; it defaults to `./downloads`
- * for local dev.
- *
- * Under `docker compose` it is set to `/app/data/downloads` and bind-mounted to the
- * host, because this directory is the only copy of a downloaded file that was too
- * large to attach to the chat — an unmounted container path would lose it on the
- * next image replacement.
- */
-export const DOWNLOADS_DIR = path.resolve(process.env.DOWNLOADS_DIR ?? "downloads");
 
 /** Operator-facing health of the download write path — see {@link getDownloadStorageHealth}. */
 export interface DownloadStorageHealth {
@@ -58,11 +49,11 @@ export interface DownloadStorageHealth {
  * request.
  */
 export async function getDownloadStorageHealth(): Promise<DownloadStorageHealth> {
-  const probe = path.join(DOWNLOADS_DIR, `.write-probe-${process.pid}`);
+  const probe = path.join(downloadsDir(), `.write-probe-${process.pid}`);
   try {
-    await fs.mkdir(DOWNLOADS_DIR, { recursive: true });
+    await fs.mkdir(downloadsDir(), { recursive: true });
     await fs.writeFile(probe, "");
-    return { ok: true, detail: DOWNLOADS_DIR };
+    return { ok: true, detail: downloadsDir() };
   } catch (err) {
     return { ok: false, detail: err instanceof Error ? err.message : String(err) };
   } finally {
@@ -144,7 +135,7 @@ export async function uniqueFilename(filename: string): Promise<string> {
   let n = 1;
   for (;;) {
     try {
-      await fs.access(path.join(DOWNLOADS_DIR, candidate));
+      await fs.access(path.join(downloadsDir(), candidate));
       candidate = `${stem} (${n})${ext}`;
       n += 1;
     } catch {
@@ -205,11 +196,11 @@ export async function downloadToDisk(
     .trim();
   const totalBytes = Number(response.headers.get("content-length")) || 0;
 
-  await fs.mkdir(DOWNLOADS_DIR, { recursive: true });
+  await fs.mkdir(downloadsDir(), { recursive: true });
   const filename = await uniqueFilename(
     buildDownloadFilename(options.title, finalUrl.toString(), mime),
   );
-  const filePath = path.join(DOWNLOADS_DIR, filename);
+  const filePath = path.join(downloadsDir(), filename);
 
   const { onProgress } = options;
   let written = 0;

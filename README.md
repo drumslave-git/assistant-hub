@@ -41,7 +41,7 @@ docker compose up -d --build
 applies pending migrations (`drizzle-kit migrate`) before serving, so it never
 runs against an unmigrated database. `DATABASE_URL` is built from the `POSTGRES_*`
 vars and points at the bundled `db` service; override it to use an external
-database. Postgres persists into a bind-mounted host directory (`PG_DATA_DIR`,
+database. Postgres persists into a bind-mounted host directory (`./data/pg`,
 default `./data/pg`). Stop with `docker compose down`; to reset the database,
 delete that directory.
 
@@ -108,7 +108,7 @@ docker compose exec -T db pg_dump -U bot -d bot > backup.sql
 docker compose exec -T db psql -U bot -d bot < backup.sql
 ```
 
-The trace files under `data/traces/` (`TRACES_DIR`) are **not** in the database:
+The trace files under `data/traces/` are **not** in the database:
 they are append-only monthly NDJSON logs holding complete LLM request/response
 bodies — effectively a full chat-log archive. Back up and protect that directory
 with the same care as the database dump, and do not share it casually.

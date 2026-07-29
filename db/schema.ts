@@ -35,7 +35,7 @@ import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
  *
  * Ids are generated in application code (`crypto.randomUUID()`), so no
  * database extensions are required. Traces are **not** stored here at all — they
- * live in the file-backed store under `server/trace` (`TRACES_DIR`), and the
+ * live in the file-backed store under `server/trace` (`data/traces`), and the
  * Analytics dashboard aggregates those files directly. An earlier design mirrored
  * compact per-trace facts into Postgres for the dashboard to query; that was a
  * second source of truth for the same events, and a lossy one, so it is gone.

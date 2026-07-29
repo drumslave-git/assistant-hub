@@ -2,9 +2,12 @@ import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { __setDataDirsForTests } from "@/server/paths";
 
 import type { MediaProgress } from "../ytdlp";
+import { downloadMediaToDisk, YtDlpMissingError } from "./media-download";
 
 /**
  * The media downloader's plumbing around the yt-dlp binary, proved against a
@@ -14,8 +17,9 @@ import type { MediaProgress } from "../ytdlp";
  * network and no real yt-dlp — the binary's own contract is covered by
  * `../ytdlp.test.ts`, and a real end-to-end download by the live suite.
  *
- * `DOWNLOADS_DIR` is read once at module load, so each case re-imports the module
- * with the env pointed at a fresh directory (as `download.test.ts` does).
+ * The real downloads directory is fixed at `data/downloads`, so each case
+ * redirects it to a throwaway path through the test-only override (as
+ * `download.test.ts` does).
  */
 
 /**
@@ -50,10 +54,9 @@ let binDir: string;
 let argvFile: string;
 let originalPath: string | undefined;
 
-async function loadDownloader() {
-  process.env.DOWNLOADS_DIR = downloadsDir;
-  vi.resetModules();
-  return import("./media-download");
+function loadDownloader(): { downloadMediaToDisk: typeof downloadMediaToDisk; YtDlpMissingError: typeof YtDlpMissingError } {
+  __setDataDirsForTests({ downloads: downloadsDir });
+  return { downloadMediaToDisk, YtDlpMissingError };
 }
 
 beforeEach(() => {
@@ -73,7 +76,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env.PATH = originalPath;
-  delete process.env.DOWNLOADS_DIR;
+  __setDataDirsForTests(null);
   delete process.env.STUB_ARGV_OUT;
   delete process.env.STUB_FILES;
   delete process.env.STUB_FAIL;
@@ -84,7 +87,7 @@ afterEach(() => {
 
 describe("downloadMediaToDisk", () => {
   it("keeps the file yt-dlp produced, named from the media's own title", async () => {
-    const { downloadMediaToDisk } = await loadDownloader();
+    const { downloadMediaToDisk } = loadDownloader();
 
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
@@ -97,7 +100,7 @@ describe("downloadMediaToDisk", () => {
   });
 
   it("passes the mode through to yt-dlp's format selection", async () => {
-    const { downloadMediaToDisk } = await loadDownloader();
+    const { downloadMediaToDisk } = loadDownloader();
 
     await downloadMediaToDisk(PAGE_URL, { mode: "video", maxBytes: TEN_GB });
 
@@ -107,7 +110,7 @@ describe("downloadMediaToDisk", () => {
   });
 
   it("reports progress as yt-dlp prints it", async () => {
-    const { downloadMediaToDisk } = await loadDownloader();
+    const { downloadMediaToDisk } = loadDownloader();
     const seen: MediaProgress[] = [];
 
     await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB, onProgress: (p) => seen.push(p) });
@@ -120,7 +123,7 @@ describe("downloadMediaToDisk", () => {
 
   it("sanitizes a name that is unsafe on disk", async () => {
     process.env.STUB_FILES = "Live: Set?.mp3=100";
-    const { downloadMediaToDisk } = await loadDownloader();
+    const { downloadMediaToDisk } = loadDownloader();
 
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
@@ -129,7 +132,7 @@ describe("downloadMediaToDisk", () => {
 
   it("does not collide with a file already in the downloads folder", async () => {
     writeFileSync(path.join(downloadsDir, "VIRUS (Fytch Remix).mp3"), "old");
-    const { downloadMediaToDisk } = await loadDownloader();
+    const { downloadMediaToDisk } = loadDownloader();
 
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
@@ -139,7 +142,7 @@ describe("downloadMediaToDisk", () => {
   it("keeps the media, not yt-dlp's leftovers", async () => {
     // A merge can leave a `.part` behind, and it can be bigger than the result.
     process.env.STUB_FILES = "song.mp3=2000|song.f140.m4a.part=9000|song.ytdl=50";
-    const { downloadMediaToDisk } = await loadDownloader();
+    const { downloadMediaToDisk } = loadDownloader();
 
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
@@ -149,7 +152,7 @@ describe("downloadMediaToDisk", () => {
 
   it("surfaces yt-dlp's own reason when it produces nothing", async () => {
     process.env.STUB_FAIL = "1";
-    const { downloadMediaToDisk } = await loadDownloader();
+    const { downloadMediaToDisk } = loadDownloader();
 
     await expect(downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB })).rejects.toThrow(
       /Video unavailable/,
@@ -160,7 +163,7 @@ describe("downloadMediaToDisk", () => {
 
   it("keeps a file yt-dlp wrote before exiting non-zero on a post-processing complaint", async () => {
     process.env.STUB_EXIT = "1";
-    const { downloadMediaToDisk } = await loadDownloader();
+    const { downloadMediaToDisk } = loadDownloader();
 
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
@@ -169,7 +172,7 @@ describe("downloadMediaToDisk", () => {
 
   it("says so plainly when yt-dlp is not installed", async () => {
     process.env.PATH = "/nonexistent";
-    const { downloadMediaToDisk, YtDlpMissingError } = await loadDownloader();
+    const { downloadMediaToDisk, YtDlpMissingError } = loadDownloader();
 
     await expect(downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB })).rejects.toBeInstanceOf(
       YtDlpMissingError,
@@ -177,7 +180,7 @@ describe("downloadMediaToDisk", () => {
   });
 
   it("blocks a private-network URL before spawning anything", async () => {
-    const { downloadMediaToDisk } = await loadDownloader();
+    const { downloadMediaToDisk } = loadDownloader();
 
     await expect(downloadMediaToDisk("http://127.0.0.1/watch", { mode: "audio", maxBytes: TEN_GB })).rejects.toThrow(
       /safety/i,

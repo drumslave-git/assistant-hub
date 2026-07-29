@@ -114,7 +114,7 @@ Two stores hold the genuinely sensitive material, and they need different care:
 | Store | Contents | Notes |
 | --- | --- | --- |
 | Postgres | The full conversation mirror, memories, feedback, media bytes while pending | Covered by `pg_dump`. See [Backup and restore](../operations/backup-and-restore.md) |
-| `TRACES_DIR/traces-YYYY-MM.ndjson` | **Complete** LLM request and response bodies — effectively a full chat-log archive plus every system prompt | **Not** in the database. Not backed up by anything automatically. Protect it like the database dump and do not share it casually |
+| `data/traces/traces-YYYY-MM.ndjson` | **Complete** LLM request and response bodies — effectively a full chat-log archive plus every system prompt | **Not** in the database. Not backed up by anything automatically. Protect it like the database dump and do not share it casually |
 
 A trace bundle download is the same material in a single file. It is the right
 artifact for a bug report and the wrong thing to paste into a public issue.
@@ -211,7 +211,7 @@ register a page route *ahead* of the SSRF guard and `continue()` requests past i
   marked `Secure`, so it will be sent over plain HTTP.
 - Do not publish the Postgres port (`POSTGRES_PORT`) beyond localhost in
   production; the Compose default publishes it for convenience.
-- Back up `TRACES_DIR` with the same care as the database, and restrict its
+- Back up `data/traces` with the same care as the database, and restrict its
   filesystem permissions.
 - Prune old trace months you no longer need. Nothing does it for you.
 - Keep the LLM endpoint on a network you control. Every conversation, memory

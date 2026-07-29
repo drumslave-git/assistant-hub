@@ -162,7 +162,7 @@ unwritable trace directory surfaces on the dashboard instead of crashing boot.
 | State | Where | Notes |
 | --- | --- | --- |
 | Everything relational | Postgres | See [Data model](data-model.md) |
-| Traces (full LLM request/response bodies) | `TRACES_DIR/traces-YYYY-MM.ndjson` | Append-only; the only copy. See [Observability](observability.md) |
+| Traces (full LLM request/response bodies) | `data/traces/traces-YYYY-MM.ndjson` | Append-only; the only copy. See [Observability](observability.md) |
 | Browser-run screenshots, media bytes | Postgres (`bytea`) | Never in trace JSON |
 | Browser-agent downloads | `downloads/` on disk | Delivered to the chat as they land |
 | Live job progress, browser live state | RAM (`globalThis`) | Transient by design |

@@ -52,12 +52,6 @@ const optionalString = z
 const envSchema = z.object({
   // Persistence
   DATABASE_URL: optionalString,
-  /**
-   * Directory the file-backed trace/debug store writes monthly NDJSON logs into.
-   * Bootstrap plumbing (a filesystem mount, like `PG_DATA_DIR`), not runtime
-   * product config. Defaults to `<cwd>/data/traces` when unset.
-   */
-  TRACES_DIR: optionalString,
 
   // Runtime
   TZ: optionalString,
