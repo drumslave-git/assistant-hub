@@ -1,6 +1,6 @@
 {
   "name": "llm-tg-bot-nextjs",
-  "version": "1.13.4",
+  "version": "1.14.0",
   "private": true,
   "engines": {
     "node": ">=24.0.0"
