@@ -10,7 +10,9 @@ import { ApiError } from "@/lib/api-error";
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
 import {
   CHAT_COMPLETION_TIMEOUT_MS,
+  CONTEXT_EXHAUSTED_MESSAGE,
   createOpenAiClient,
+  finishReasonOf,
   servedModelOf,
   toLlmError,
   type ChatCompletionResult,
@@ -89,6 +91,17 @@ export interface RunToolLoopParams {
    * as-is (empty content, `loopDetected`).
    */
   completeFinal?: CompleteRound;
+  /**
+   * Rewrites what each round *sends* without touching what the loop *keeps*.
+   * Called with a copy of the accumulated conversation before every model round
+   * (including the forced final); the returned array is what goes to the
+   * provider. This is how a caller whose tool results go stale (the browser
+   * agent's page snapshots, superseded by every action) keeps the prompt from
+   * growing until it overflows the context window. The rewrite must keep the
+   * conversation valid — tool messages keep their role and `tool_call_id`, only
+   * content may be replaced. Unset = the full conversation is sent as-is.
+   */
+  compact?: (conversation: ChatCompletionMessageParam[]) => ChatCompletionMessageParam[];
 }
 
 export interface ToolLoopResult {
@@ -192,6 +205,12 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
   let rounds = 0;
   let lastRaw: unknown = null;
 
+  // What a round sends: the compacted view when the caller provided one, the
+  // accumulated conversation itself otherwise. Compaction runs on a copy each
+  // round so the kept history stays complete and the rewrite stays stateless.
+  const sendable = (): ChatCompletionMessageParam[] =>
+    params.compact ? params.compact([...conversation]) : conversation;
+
   // The stall guard or round cap stopped the loop: the model is stuck or out of
   // budget. With a completeFinal, ask once more — tools withheld — for an answer
   // from what it already has; the result stays flagged so callers can tell a
@@ -200,7 +219,7 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
     if (!params.completeFinal) {
       return { content: "", usage, latencyMs, rounds, responseBody: lastRaw, loopDetected: true };
     }
-    const round = await params.completeFinal(conversation);
+    const round = await params.completeFinal(sendable());
     rounds += 1;
     latencyMs += round.latencyMs;
     addUsage(usage, round.usage);
@@ -220,7 +239,7 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
       return forceFinal();
     }
 
-    const round = await params.complete(conversation);
+    const round = await params.complete(sendable());
     rounds += 1;
     latencyMs += round.latencyMs;
     addUsage(usage, round.usage);
@@ -333,6 +352,8 @@ export async function chatCompletionWithTools(
     onRequest?: (requestBody: unknown) => void | Promise<void>;
     /** Reports each model round's own tokens/latency — see {@link RunToolLoopParams.onRound}. */
     onRound?: (round: ToolLoopRound, report: RoundReport) => void | Promise<void>;
+    /** Per-round conversation rewrite — see {@link RunToolLoopParams.compact}. */
+    compact?: (conversation: ChatCompletionMessageParam[]) => ChatCompletionMessageParam[];
     maxRounds?: number;
     timeoutMs?: number;
   },
@@ -380,16 +401,22 @@ export async function chatCompletionWithTools(
     callTool: input.callTool,
     onToolCall: input.onToolCall,
     onRound: input.onRound,
+    compact: input.compact,
     maxRounds: input.maxRounds ?? DEFAULT_MAX_ROUNDS,
   });
 
   // A stall that still produced a forced final answer is a degraded success —
-  // only an empty answer is a failure.
+  // only an empty answer is a failure. An empty round the provider cut off at
+  // the context window (`finish_reason: "length"` — the model spent the whole
+  // budget before emitting content or a tool call) is named as such regardless
+  // of how the loop ended: "send less" is the fix, not "retry the provider".
   if (!result.content) {
     throw ApiError.serviceUnavailable(
-      result.loopDetected
-        ? "LLM tool loop stalled without producing a reply"
-        : "LLM returned an empty response",
+      finishReasonOf(result.responseBody) === "length"
+        ? CONTEXT_EXHAUSTED_MESSAGE
+        : result.loopDetected
+          ? "LLM tool loop stalled without producing a reply"
+          : "LLM returned an empty response",
     );
   }
 

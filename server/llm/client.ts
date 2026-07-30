@@ -308,6 +308,25 @@ export function servedModelOf(responseBody: unknown): string | undefined {
   return typeof reported === "string" && reported.trim() ? reported : undefined;
 }
 
+/** The completion's `finish_reason`, when the provider reported one. */
+export function finishReasonOf(responseBody: unknown): string | undefined {
+  const reason = (responseBody as { choices?: { finish_reason?: unknown }[] } | null | undefined)
+    ?.choices?.[0]?.finish_reason;
+  return typeof reason === "string" && reason ? reason : undefined;
+}
+
+/**
+ * The error for a response cut off by the context window (`finish_reason:
+ * "length"` with nothing usable produced). Distinct from "LLM returned an empty
+ * response" because the operator's fix is opposite: sending less (or raising the
+ * server's context length), not investigating the provider. Worded to satisfy
+ * {@link isContextOverflowError}, so callers that already shrink-and-retry on a
+ * provider-rejected oversized prompt recover from mid-generation exhaustion the
+ * same way.
+ */
+export const CONTEXT_EXHAUSTED_MESSAGE =
+  "LLM context window exceeded: generation was cut off (finish_reason \"length\") before a reply was produced";
+
 /**
  * List distinct model ids from an OpenAI-compatible endpoint, sorted. Doubles as
  * the connection health probe: success proves the endpoint is reachable and the
@@ -360,7 +379,11 @@ export async function chatCompletion(
     const latencyMs = Date.now() - start;
     const content = completion.choices[0]?.message?.content?.trim() ?? "";
     if (!content) {
-      throw ApiError.serviceUnavailable("LLM returned an empty response");
+      throw ApiError.serviceUnavailable(
+        finishReasonOf(completion) === "length"
+          ? CONTEXT_EXHAUSTED_MESSAGE
+          : "LLM returned an empty response",
+      );
     }
     return {
       content,

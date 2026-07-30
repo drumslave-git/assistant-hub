@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+
 import type { LlmConnection, ChatMessage } from "@/server/llm/client";
 import {
   chatCompletionWithTools,
@@ -36,6 +38,88 @@ export function sanitizeAgentReport(text: string): string {
 
 export interface AgentRunResult {
   report: string;
+}
+
+/**
+ * Browser tools whose result is a page-state snapshot (URL + page text +
+ * interactive elements). Refs are re-assigned on every action, so every snapshot
+ * but the latest is unusable by the agent's own rules — carrying them verbatim
+ * is what let a run's prompt grow monotonically until it overflowed the context
+ * window (2026-07-30 trace: 32k window spent, run died with the download URL
+ * already found).
+ */
+const PAGE_STATE_TOOLS = new Set([
+  "browser_navigate",
+  "browser_back",
+  "browser_click",
+  "browser_type",
+  "browser_scroll",
+  "browser_read",
+  "browser_wait",
+]);
+
+/** Raw-source chunks kept verbatim; a URL hunt reads adjacent chunks together. */
+const SOURCE_CHUNKS_KEPT = 2;
+
+const STALE_PAGE_STATE_STUB =
+  "[superseded page state removed — its refs are stale; the latest page state is the current one. Call browser_read if you need the page again.]";
+const STALE_SOURCE_STUB =
+  "[superseded page-source chunk removed — call browser_source again if you still need it.]";
+const STALE_SCREENSHOT_STUB =
+  "[superseded screenshot removed — call browser_screenshot again if you need a current one.]";
+
+/**
+ * The per-round conversation rewrite for a browsing run: every page-state
+ * snapshot but the latest, every raw-source chunk but the latest
+ * {@link SOURCE_CHUNKS_KEPT}, and every tool-produced screenshot turn but the
+ * latest are replaced with a one-line stub telling the model how to re-fetch.
+ * Search results, network listings, and download outcomes are kept — they are
+ * small and carry durable URLs the model acts on rounds later. Applied to what
+ * each round sends, never to the kept history (see `RunToolLoopParams.compact`).
+ */
+export function compactAgentConversation(
+  conversation: ChatCompletionMessageParam[],
+): ChatCompletionMessageParam[] {
+  // tool_call_id → tool name, from the assistant turns that requested the calls.
+  const toolNameById = new Map<string, string>();
+  for (const message of conversation) {
+    if (message.role !== "assistant" || !message.tool_calls) continue;
+    for (const call of message.tool_calls) {
+      if (call.type === "function") toolNameById.set(call.id, call.function.name);
+    }
+  }
+
+  const nameAt = (message: ChatCompletionMessageParam): string | undefined =>
+    message.role === "tool" ? toolNameById.get(message.tool_call_id) : undefined;
+  const isImageTurn = (message: ChatCompletionMessageParam): boolean =>
+    message.role === "user" &&
+    Array.isArray(message.content) &&
+    message.content.some((part) => part.type === "image_url");
+
+  let lastPageState = -1;
+  const sourceChunks: number[] = [];
+  let lastImageTurn = -1;
+  conversation.forEach((message, index) => {
+    const name = nameAt(message);
+    if (name && PAGE_STATE_TOOLS.has(name)) lastPageState = index;
+    if (name === "browser_source") sourceChunks.push(index);
+    if (isImageTurn(message)) lastImageTurn = index;
+  });
+  const keptSourceChunks = new Set(sourceChunks.slice(-SOURCE_CHUNKS_KEPT));
+
+  return conversation.map((message, index) => {
+    const name = nameAt(message);
+    if (name && PAGE_STATE_TOOLS.has(name) && index !== lastPageState) {
+      return { ...message, content: STALE_PAGE_STATE_STUB };
+    }
+    if (name === "browser_source" && !keptSourceChunks.has(index)) {
+      return { ...message, content: STALE_SOURCE_STUB };
+    }
+    if (isImageTurn(message) && index !== lastImageTurn) {
+      return { role: "user", content: STALE_SCREENSHOT_STUB };
+    }
+    return message;
+  });
 }
 
 function buildAgentSystemPrompt(isOwner: boolean, requiredLanguage: string | null): string {
@@ -112,6 +196,7 @@ export async function runBrowserAgent(params: RunAgentParams): Promise<AgentRunR
     onRequest: params.onRequest,
     onToolCall: params.onToolCall,
     onRound: params.onRound,
+    compact: compactAgentConversation,
     // Unbounded by decision — the stall guard is the only stop.
     maxRounds: Number.POSITIVE_INFINITY,
   });

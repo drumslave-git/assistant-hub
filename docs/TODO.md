@@ -28,6 +28,41 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Browser-agent context-window exhaustion (`done`, 2026-07-30)
+
+Root cause of trace `622483e0…` (browser-agent run failed with
+`service_unavailable: LLM returned an empty response`): the run's prompt grew
+monotonically (every stale page snapshot and 20k-char `browser_source` chunk
+carried verbatim forever) until it filled the Ollama server's 32,768-token
+window; the final round was cut off (`finish_reason: "length"`) before emitting
+content or a tool call, and the loop reported that as a plain empty response —
+with the download URL already found. Server side, the window was raised the
+same day (`OLLAMA_CONTEXT_LENGTH`, verified loaded at 256,000 via `/api/ps`;
+the model's native max is 262,144, and Ollama's OpenAI-compatible API has no
+per-request way to set context size). App-side fixes:
+
+- **Conversation compaction** — `RunToolLoopParams.compact` rewrites what each
+  round *sends* (copy per round; kept history stays complete), wired for the
+  browser agent as `compactAgentConversation`: every page-state snapshot but
+  the latest, every `browser_source` chunk but the latest two, and every
+  screenshot vision turn but the latest become one-line "superseded — re-fetch
+  with X" stubs. Search results, network listings and download outcomes stay
+  verbatim (small, durable URLs acted on rounds later).
+- **Truncation detection** — `finishReasonOf` + `CONTEXT_EXHAUSTED_MESSAGE` in
+  `server/llm/client.ts`; both completion paths now throw "LLM context window
+  exceeded …" instead of "LLM returned an empty response" when an empty
+  completion has `finish_reason: "length"`. The message deliberately matches
+  `isContextOverflowError`, so bot-messaging's window-shrink retry and
+  history's batch-shrink retry recover from mid-generation exhaustion too.
+
+Proof: files `server/llm/client.ts`, `server/llm/tool-loop.ts`,
+`features/browser-agent/server/agent.ts` (+ tests `agent.test.ts` new,
+`tool-loop.test.ts`, `client.test.ts`); lint/typecheck/build clean, unit suite
+84 files / 849 tests passed (2026-07-30). Remaining risks: compaction is
+always-on (a goal needing two page texts side-by-side must re-read — accepted;
+the system prompt already declares old refs stale); a *truncated but non-empty*
+final report still ships as-is rather than erroring.
+
 ## Voice/vision trace + describe-race overhaul (`done`, 2026-07-27)
 
 Root cause of the "transcription succeeded but the bot said it couldn't hear"

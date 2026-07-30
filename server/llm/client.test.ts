@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { imagePart } from "@/test/__mocks__/vision";
 import {
+  CONTEXT_EXHAUSTED_MESSAGE,
   isContextOverflowError,
   sanitizeMessagesForTrace,
   toOpenAiBaseUrl,
@@ -83,6 +84,9 @@ describe("isContextOverflowError", () => {
     "400 context_length_exceeded",
     "context overflow detected",
     "prompt is too large for the context window",
+    // Our own guard for a response Ollama cut off mid-generation — the contract
+    // that lets shrink-and-retry callers recover from it must not drift.
+    CONTEXT_EXHAUSTED_MESSAGE,
   ])("matches: %s", (message) => {
     expect(isContextOverflowError(new Error(message))).toBe(true);
     expect(isContextOverflowError(message)).toBe(true);
@@ -161,6 +165,18 @@ describe("chatCompletion", () => {
     await expect(
       chatCompletion(conn, { model: "m", messages: [{ role: "user", content: "hi" }] }),
     ).rejects.toMatchObject({ code: "service_unavailable" });
+  });
+
+  it("names the context window when the empty response was cut off by it", async () => {
+    const { chatCompletion } = await import("./client");
+    createMock.mockResolvedValue({
+      model: "m",
+      choices: [{ message: { content: "" }, finish_reason: "length" }],
+    });
+
+    await expect(
+      chatCompletion(conn, { model: "m", messages: [{ role: "user", content: "hi" }] }),
+    ).rejects.toMatchObject({ code: "service_unavailable", message: CONTEXT_EXHAUSTED_MESSAGE });
   });
 
   /**

@@ -247,6 +247,60 @@ describe("runToolLoop", () => {
     expect(reports.at(-1)).toBe(true);
   });
 
+  it("sends the compacted view each round while accumulating the full history", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(calls([toolCall("c1", "page", { p: 1 })]))
+      .mockResolvedValueOnce(calls([toolCall("c2", "page", { p: 2 })]))
+      .mockResolvedValueOnce(answer("done"));
+    const callTool = vi.fn().mockResolvedValue(okResult("BIG PAGE STATE"));
+    const compact = vi
+      .fn()
+      .mockImplementation((conversation: { role: string; content: unknown }[]) =>
+        conversation.map((m) => (m.role === "tool" ? { ...m, content: "[stub]" } : m)),
+      );
+
+    const result = await runToolLoop({
+      seed: [{ role: "user", content: "go" }],
+      complete,
+      callTool,
+      compact,
+    });
+
+    expect(result.content).toBe("done");
+    // The provider saw the rewritten view…
+    const thirdConversation = complete.mock.calls[2][0] as { role: string; content: string }[];
+    expect(thirdConversation.filter((m) => m.role === "tool").map((m) => m.content)).toEqual([
+      "[stub]",
+      "[stub]",
+    ]);
+    // …while compact was handed the intact history each round (1, +2, +2 messages),
+    // with the real tool results still in place.
+    expect(compact.mock.calls.map((c) => (c[0] as unknown[]).length)).toEqual([1, 3, 5]);
+    const lastSeen = compact.mock.calls[2][0] as { role: string; content: string }[];
+    expect(lastSeen.filter((m) => m.role === "tool").map((m) => m.content)).toEqual([
+      "BIG PAGE STATE",
+      "BIG PAGE STATE",
+    ]);
+  });
+
+  it("compacts the forced final round's conversation too", async () => {
+    const complete = vi.fn().mockResolvedValue(calls([toolCall("c1", "spin", { n: 1 })]));
+    const completeFinal = vi.fn().mockResolvedValue(answer("best effort"));
+    const callTool = vi.fn().mockResolvedValue(okResult("huge"));
+    const compact = vi
+      .fn()
+      .mockImplementation((conversation: { role: string; content: unknown }[]) =>
+        conversation.map((m) => (m.role === "tool" ? { ...m, content: "[stub]" } : m)),
+      );
+
+    await runToolLoop({ seed: [], complete, completeFinal, callTool, compact });
+
+    const finalConversation = completeFinal.mock.calls[0][0] as { role: string; content: string }[];
+    expect(finalConversation.some((m) => m.content === "[stub]")).toBe(true);
+    expect(finalConversation.some((m) => m.content === "huge")).toBe(false);
+  });
+
   it("forces the final answer when maxRounds is exhausted", async () => {
     let n = 0;
     const complete = vi.fn().mockImplementation(async () => calls([toolCall(`c${n}`, "t", { n: n++ })]));
@@ -360,5 +414,59 @@ describe("chatCompletionWithTools — result identity", () => {
     expect(result.content).toBe("from what I have");
     const finalBody = createMock.mock.calls.at(-1)?.[0] as { tools?: unknown };
     expect(finalBody.tools).toBeUndefined();
+  });
+});
+
+/**
+ * The failure this distinguishes (trace 622483e0, 2026-07-30): a run whose prompt
+ * filled the whole context window got an empty round back (`finish_reason:
+ * "length"` — the model was cut off before emitting content or a tool call) and
+ * reported it as "LLM returned an empty response", pointing the operator at the
+ * provider instead of at the prompt size.
+ */
+describe("chatCompletionWithTools — empty responses", () => {
+  const conn = { baseUrl: "http://localhost:11434", apiKey: null };
+
+  afterEach(() => createMock.mockReset());
+
+  it("names the context window when the empty round was cut off by it", async () => {
+    const { chatCompletionWithTools } = await import("./tool-loop");
+    const { CONTEXT_EXHAUSTED_MESSAGE, isContextOverflowError } = await import("./client");
+    createMock.mockResolvedValue({
+      model: "m",
+      choices: [{ message: { role: "assistant", content: "" }, finish_reason: "length" }],
+      usage: { prompt_tokens: 31845, completion_tokens: 923, total_tokens: 32768 },
+    });
+
+    const err: unknown = await chatCompletionWithTools(conn, {
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+      callTool: async () => okResult(""),
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toMatchObject({ code: "service_unavailable", message: CONTEXT_EXHAUSTED_MESSAGE });
+    // The wording is load-bearing: shrink-and-retry callers key on this predicate.
+    expect(isContextOverflowError(err)).toBe(true);
+  });
+
+  it("still reports a plain empty response when nothing was truncated", async () => {
+    const { chatCompletionWithTools } = await import("./tool-loop");
+    createMock.mockResolvedValue({
+      model: "m",
+      choices: [{ message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+    });
+
+    await expect(
+      chatCompletionWithTools(conn, {
+        model: "m",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+        callTool: async () => okResult(""),
+      }),
+    ).rejects.toMatchObject({ code: "service_unavailable", message: "LLM returned an empty response" });
   });
 });
