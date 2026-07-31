@@ -9,10 +9,13 @@ import { z } from "zod";
  */
 
 export const MAX_INSTRUCTION_LENGTH = 2000;
+export const MAX_CONTEXT_LENGTH = 4000;
 
 /** Telegram chat id as a string (negative for groups/supergroups). */
 const chatId = z.string().trim().regex(/^-?\d+$/, "Invalid chat id");
 const instruction = z.string().trim().min(2, "instruction is required").max(MAX_INSTRUCTION_LENGTH);
+/** Saved background for the fire; empty/null mean "none". */
+const context = z.string().trim().max(MAX_CONTEXT_LENGTH).nullable();
 const scheduleKind = z.enum(["once", "daily", "weekly"]);
 const timeOfDay = z.string().trim().min(1);
 const weekdays = z.array(z.number().int().min(0).max(6));
@@ -24,6 +27,7 @@ export const createScheduledTaskSchema = z.object({
   chatId,
   threadId: z.number().int().nullable().optional(),
   instruction,
+  context: context.optional(),
   scheduleKind,
   timeOfDay,
   weekdays: weekdays.optional().default([]),
@@ -37,6 +41,7 @@ export type CreateScheduledTask = z.infer<typeof createScheduledTaskSchema>;
 export const updateScheduledTaskSchema = z
   .object({
     instruction,
+    context,
     scheduleKind,
     timeOfDay,
     weekdays,

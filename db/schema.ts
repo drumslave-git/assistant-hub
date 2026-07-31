@@ -590,6 +590,13 @@ export const scheduledTasks = pgTable(
     createdByUserId: text("created_by_user_id"),
     /** The self-contained directive the fire generates a message from. */
     instruction: text("instruction").notNull(),
+    /**
+     * Background gathered when the task was created — what the referenced
+     * person/event/joke/topic actually is, written for a reader with no chat
+     * transcript. Null on tasks whose instruction needs none (or created
+     * before the field existed). The fire gets it alongside the instruction.
+     */
+    context: text("context"),
     /** `once` | `daily` | `weekly`. */
     scheduleKind: text("schedule_kind").notNull(),
     /** Local time of day as `HH:MM` (24-hour) in `timezone`. */

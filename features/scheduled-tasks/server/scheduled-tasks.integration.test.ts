@@ -72,6 +72,18 @@ describe("createScheduledTaskService", () => {
     expect(new Date(task.nextRunAt!).getUTCHours()).toBe(0);
   });
 
+  it("persists the gathered context, storing blank as null", async () => {
+    const withContext = await createScheduledTaskService(
+      { ...base, context: "  Mom asked about the visit on Sunday.  " },
+      trigger,
+      ctx.db,
+    );
+    expect(withContext.context).toBe("Mom asked about the visit on Sunday.");
+
+    const without = await createScheduledTaskService({ ...base, context: "   " }, trigger, ctx.db);
+    expect(without.context).toBeNull();
+  });
+
   it("records the author (createdByUserId) on the task", async () => {
     const task = await createScheduledTaskService(
       { ...base, createdByUserId: "100" },
@@ -115,6 +127,27 @@ describe("editScheduledTaskService", () => {
     expect(reenabled.enabled).toBe(true);
     expect(reenabled.timeOfDay).toBe("10:30");
     expect(new Date(reenabled.nextRunAt!).getUTCHours()).toBe(10);
+  });
+
+  it("replaces, keeps, and clears the saved context", async () => {
+    const task = await createScheduledTaskService(
+      { ...base, context: "original background" },
+      trigger,
+      ctx.db,
+    );
+    const replaced = await editScheduledTaskService(
+      task.id,
+      { context: "newer background" },
+      trigger,
+      ctx.db,
+    );
+    expect(replaced.context).toBe("newer background");
+
+    const untouched = await editScheduledTaskService(task.id, { timeOfDay: "10:00" }, trigger, ctx.db);
+    expect(untouched.context).toBe("newer background");
+
+    const cleared = await editScheduledTaskService(task.id, { context: null }, trigger, ctx.db);
+    expect(cleared.context).toBeNull();
   });
 
   it("rejects an unknown id", async () => {

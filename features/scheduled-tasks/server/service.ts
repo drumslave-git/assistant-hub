@@ -20,7 +20,7 @@ import {
   searchScheduledTasks,
   updateScheduledTask,
 } from "./repository";
-import { MAX_INSTRUCTION_LENGTH } from "./schema";
+import { MAX_CONTEXT_LENGTH, MAX_INSTRUCTION_LENGTH } from "./schema";
 
 /**
  * Scheduled-tasks domain service — the boundary Route Handlers, the dashboard,
@@ -37,6 +37,8 @@ export interface CreateScheduledTaskInput {
   threadId?: number | null;
   createdByUserId?: string | null;
   instruction: string;
+  /** Saved background for the fire; empty/absent stores null. */
+  context?: string | null;
   scheduleKind: ScheduleKind;
   timeOfDay: string;
   weekdays?: number[] | null;
@@ -47,6 +49,8 @@ export interface CreateScheduledTaskInput {
 /** Partial update input. */
 export interface UpdateScheduledTaskInput {
   instruction?: string;
+  /** New saved background; empty string or null clears it, absent leaves it. */
+  context?: string | null;
   scheduleKind?: ScheduleKind;
   timeOfDay?: string;
   weekdays?: number[] | null;
@@ -73,6 +77,16 @@ function normalizeOrThrow(input: {
   } catch (err) {
     throw ApiError.badRequest(err instanceof Error ? err.message : "Invalid schedule");
   }
+}
+
+/** Trim + bound the saved context; empty becomes null ("no context"). */
+function validateContext(raw: string | null | undefined): string | null {
+  const context = raw?.trim() ?? "";
+  if (!context) return null;
+  if (context.length > MAX_CONTEXT_LENGTH) {
+    throw ApiError.badRequest(`context must be at most ${MAX_CONTEXT_LENGTH} characters`);
+  }
+  return context;
 }
 
 function validateInstruction(raw: string): string {
@@ -116,12 +130,13 @@ export async function createScheduledTaskService(
     { feature: FEATURE.id, action: "create", trigger, inputSummary: input.instruction },
     async (trace) => {
       const instruction = validateInstruction(input.instruction);
+      const context = validateContext(input.context);
       const schedule = normalizeOrThrow(input);
       const timezone = await getTimezone(db);
       await trace.event({
         type: "input",
         message: "create scheduled task",
-        data: { chatId: input.chatId, instruction, ...schedule, timezone },
+        data: { chatId: input.chatId, instruction, context, ...schedule, timezone },
       });
 
       const nextRunAt = computeNextRun(schedule, new Date(), timezone);
@@ -134,6 +149,7 @@ export async function createScheduledTaskService(
         threadId: input.threadId ?? null,
         createdByUserId: input.createdByUserId ?? null,
         instruction,
+        context,
         scheduleKind: schedule.scheduleKind,
         timeOfDay: schedule.timeOfDay,
         weekdays: schedule.weekdays,
@@ -182,9 +198,11 @@ export async function editScheduledTaskService(
       }
       const instruction =
         patch.instruction !== undefined ? validateInstruction(patch.instruction) : current.instruction;
+      const context = patch.context !== undefined ? validateContext(patch.context) : current.context;
 
       const record = await updateScheduledTask(db, id, {
         instruction,
+        context,
         scheduleKind: schedule.scheduleKind,
         timeOfDay: schedule.timeOfDay,
         weekdays: schedule.weekdays,

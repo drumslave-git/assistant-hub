@@ -34,6 +34,12 @@ export interface ScheduledTask {
   threadId: number | null;
   createdByUserId: string | null;
   instruction: string;
+  /**
+   * Background gathered at creation time — what the instruction's references
+   * (person, event, joke, topic) actually are, self-contained for a reader with
+   * no chat transcript. Null when the instruction needs none.
+   */
+  context: string | null;
   scheduleKind: ScheduleKind;
   timeOfDay: string;
   weekdays: number[] | null;

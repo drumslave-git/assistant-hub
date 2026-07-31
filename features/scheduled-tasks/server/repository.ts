@@ -23,6 +23,7 @@ export interface InsertScheduledTask {
   threadId: number | null;
   createdByUserId: string | null;
   instruction: string;
+  context: string | null;
   scheduleKind: ScheduleKind;
   timeOfDay: string;
   weekdays: number[] | null;
@@ -34,6 +35,7 @@ export interface InsertScheduledTask {
 /** Columns an update may set. */
 export interface UpdateScheduledTask {
   instruction?: string;
+  context?: string | null;
   scheduleKind?: ScheduleKind;
   timeOfDay?: string;
   weekdays?: number[] | null;
@@ -50,6 +52,7 @@ function mapRow(row: ScheduledTaskRow): ScheduledTask {
     threadId: row.threadId,
     createdByUserId: row.createdByUserId,
     instruction: row.instruction,
+    context: row.context,
     scheduleKind: row.scheduleKind as ScheduleKind,
     timeOfDay: row.timeOfDay,
     weekdays: row.weekdays ?? null,
@@ -115,6 +118,7 @@ export async function insertScheduledTask(
       threadId: values.threadId,
       createdByUserId: values.createdByUserId,
       instruction: values.instruction,
+      context: values.context,
       scheduleKind: values.scheduleKind,
       timeOfDay: values.timeOfDay,
       weekdays: values.weekdays,

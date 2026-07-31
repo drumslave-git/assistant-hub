@@ -19,6 +19,7 @@ export const POST = defineRoute(async ({ request }) => {
       threadId: input.threadId ?? null,
       createdByUserId: null,
       instruction: input.instruction,
+      context: input.context ?? null,
       scheduleKind: input.scheduleKind,
       timeOfDay: input.timeOfDay,
       weekdays: input.weekdays,

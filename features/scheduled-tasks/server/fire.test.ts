@@ -24,6 +24,7 @@ function task(over: Partial<ScheduledTask> = {}): ScheduledTask {
     threadId: null,
     createdByUserId: "100",
     instruction: "remind me to call mom",
+    context: null,
     scheduleKind: "daily",
     timeOfDay: "09:00",
     weekdays: null,
@@ -63,13 +64,29 @@ function deps(over: Partial<FireDeps> = {}): FireDeps {
 
 describe("buildTaskDirectiveMessage", () => {
   it("includes the directive and no variation block when there are no prior deliveries", () => {
-    const msg = buildTaskDirectiveMessage("water the plants", []);
+    const msg = buildTaskDirectiveMessage("water the plants", null, []);
     expect(msg).toContain("Directive: water the plants");
     expect(msg).not.toContain("delivered this recurring task before");
   });
 
+  it("includes the saved context block when the task carries one", () => {
+    const msg = buildTaskDirectiveMessage(
+      "remind Kyrylo about topic X",
+      "Topic X is the deployment checklist discussed on Monday.",
+      [],
+    );
+    expect(msg).toContain("Saved context");
+    expect(msg).toContain("Topic X is the deployment checklist discussed on Monday.");
+    expect(msg).toContain("Ground the message in the saved context");
+  });
+
+  it("omits the saved context block when the task has none", () => {
+    const msg = buildTaskDirectiveMessage("water the plants", null, []);
+    expect(msg).not.toContain("Saved context");
+  });
+
   it("adds a variation block listing recent deliveries newest-first", () => {
-    const msg = buildTaskDirectiveMessage("call mom", ["yesterday's line", "older line"]);
+    const msg = buildTaskDirectiveMessage("call mom", null, ["yesterday's line", "older line"]);
     expect(msg).toContain("delivered this recurring task before");
     expect(msg).toContain("1. yesterday's line");
     expect(msg).toContain("2. older line");
@@ -77,14 +94,14 @@ describe("buildTaskDirectiveMessage", () => {
   });
 
   it("tells the fire it has no transcript and must look up an unresolved reference", () => {
-    const msg = buildTaskDirectiveMessage("remind Kyrylo who Muradyan is", []);
+    const msg = buildTaskDirectiveMessage("remind Kyrylo who Muradyan is", null, []);
     expect(msg).toContain("You have no chat transcript here");
     expect(msg).toContain("search this chat's history for it first");
-    expect(msg).toContain("The reminder must carry the substance, not point at it.");
+    expect(msg).toContain("the reminder must carry the substance, not point at it");
   });
 
   it("forbids inventing details or parroting the directive when the lookup finds nothing", () => {
-    const msg = buildTaskDirectiveMessage("water the plants", []);
+    const msg = buildTaskDirectiveMessage("water the plants", null, []);
     expect(msg).toContain("do not invent them");
     expect(msg).toContain("do not just repeat the directive back as if it were the message");
   });
@@ -112,6 +129,17 @@ describe("fireScheduledTask", () => {
       content: "Hey, don't forget to call your mom!",
     });
     expect(recorder.succeed).toHaveBeenCalled();
+  });
+
+  it("feeds the task's saved context into the directive message", async () => {
+    const d = deps();
+    await fireScheduledTask(
+      task({ instruction: "remind Kyrylo about topic X", context: "Topic X is the launch plan." }),
+      d,
+    );
+    const messages = (d.complete as ReturnType<typeof vi.fn>).mock.calls[0][0] as ChatMessage[];
+    expect(messages[1].content).toContain("remind Kyrylo about topic X");
+    expect(messages[1].content).toContain("Topic X is the launch plan.");
   });
 
   it("stacks the chat's specialist instructions into the system prompt", async () => {

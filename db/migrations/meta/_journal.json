@@ -316,6 +316,13 @@
       "when": 1785349008732,
       "tag": "0044_lean_puck",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1785489324893,
+      "tag": "0045_first_metal_master",
+      "breakpoints": true
     }
   ]
 }

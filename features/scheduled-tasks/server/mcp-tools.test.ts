@@ -15,6 +15,7 @@ function task(over: Partial<ScheduledTask> = {}): ScheduledTask {
     threadId: null,
     createdByUserId: "100",
     instruction: "call mom",
+    context: null,
     scheduleKind: "daily",
     timeOfDay: "09:00",
     weekdays: null,
@@ -65,17 +66,17 @@ describe("checkOwnership", () => {
 });
 
 describe("TASKS_CREATE_DESCRIPTION", () => {
-  it("warns that a fire sees only the instruction, with no chat context", () => {
+  it("warns that a fire sees only the stored texts, with no chat context", () => {
     expect(TASKS_CREATE_DESCRIPTION).toContain(
-      "when the task fires you will have ONLY the 'instruction' text: no chat transcript",
+      "when the task fires you will have ONLY the stored 'instruction' and 'context' texts: no chat transcript",
     );
   });
 
-  it("requires resolving a chat-specific reference from history before creating", () => {
-    expect(TASKS_CREATE_DESCRIPTION).toContain("search the conversation history for it FIRST");
+  it("requires gathering context — from view or history — before creating", () => {
+    expect(TASKS_CREATE_DESCRIPTION).toContain("GATHER CONTEXT BEFORE CREATING");
     expect(TASKS_CREATE_DESCRIPTION).toContain("history_search");
     expect(TASKS_CREATE_DESCRIPTION).toContain("history_get_in_range");
-    expect(TASKS_CREATE_DESCRIPTION).toContain("write what you found INTO the instruction");
+    expect(TASKS_CREATE_DESCRIPTION).toContain("save it in 'context'");
   });
 
   it("says to ask rather than store an empty pointer when the lookup fails", () => {

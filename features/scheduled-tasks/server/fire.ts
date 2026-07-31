@@ -103,19 +103,24 @@ function hasVisibleContent(text: string): boolean {
  * MVP `features/tasks/fire.ts` `buildTaskUserMessage`, trimmed for this project's
  * plain-text (no chat-tag) delivery.
  *
- * A fire carries **no transcript** — the directive is the model's whole world.
- * When the directive points at something instead of stating it ("remind him who
- * X is"), the message that comes out is the pointer, not the reminder (observed
- * in production, 2026-07-28). `tasks_create` now pushes the facts into the
- * instruction at creation time; this block is the second line of defence, telling
- * the fire it may look the reference up in history before writing, and to be
- * honest rather than parrot the directive when it cannot. The fire runs with the
- * full toolset bound to the task's chat, so the lookup is actually available.
+ * A fire carries **no transcript** — the directive plus its saved context are the
+ * model's whole world. When the directive points at something instead of stating
+ * it ("remind him who X is"), the message that comes out is the pointer, not the
+ * reminder (observed in production, 2026-07-28). `tasks_create` now gathers that
+ * background into the task's dedicated `context` at creation time, and this block
+ * hands it to the fire; the history lookup stays as the second line of defence
+ * for anything still unresolved (older tasks have no saved context), with honesty
+ * over parroting when even that fails. The fire runs with the full toolset bound
+ * to the task's chat, so the lookup is actually available.
  */
 export function buildTaskDirectiveMessage(
   instruction: string,
+  context: string | null,
   recentDeliveries: string[],
 ): string {
+  const contextBlock = context?.trim()
+    ? `Saved context (gathered from the chat when this task was created — the background the directive relies on):\n${context.trim()}\n\n`
+    : "";
   const previousBlock =
     recentDeliveries.length > 0
       ? `\n\nYou have delivered this recurring task before. Your most recent messages for it (newest first):\n` +
@@ -125,11 +130,13 @@ export function buildTaskDirectiveMessage(
   return (
     `[SCHEDULED TASK] A standing task set up for this chat is now due. Deliver it now.\n` +
     `Directive: ${instruction}\n\n` +
+    contextBlock +
     `Write ONE short, natural, in-character chat message that *performs* this directive right now. ` +
     `The message IS the reminder/nudge itself, spoken to the people it concerns.\n` +
     `- Do NOT restate the directive as an instruction. Never write "remind X to …" — instead say what you would actually tell them (e.g. directive "remind me to call mom" → "Hey, don't forget to call your mom").\n` +
     `- Address people by name when you know it; if it concerns the person who set it up, address them directly ("you").\n` +
-    `- You have no chat transcript here — the directive above is all you were given. If it names a person, event, joke, or topic without saying what it is, search this chat's history for it first (search for the name, then read the surrounding messages if the matches are thin) and put what you find into the message. The reminder must carry the substance, not point at it.\n` +
+    `- You have no chat transcript here — the directive and saved context above are all you were given. Ground the message in the saved context when there is one; the reminder must carry the substance, not point at it.\n` +
+    `- If the directive names a person, event, joke, or topic that the saved context does not explain, search this chat's history for it first (search for the name, then read the surrounding messages if the matches are thin) and put what you find into the message.\n` +
     `- If the lookup turns up nothing, say plainly what the directive was about and that you cannot recall the details — do not invent them, and do not just repeat the directive back as if it were the message.\n` +
     `- Plain spoken text only. Do not mention that this is scheduled or automated.${previousBlock}\n` +
     `Once you have what you need, output only the message text.`
@@ -166,7 +173,10 @@ export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Pr
       ...(languageInstruction
         ? [{ role: "system" as const, content: languageInstruction }]
         : []),
-      { role: "user", content: buildTaskDirectiveMessage(task.instruction, task.recentDeliveries ?? []) },
+      {
+        role: "user",
+        content: buildTaskDirectiveMessage(task.instruction, task.context, task.recentDeliveries ?? []),
+      },
     ];
     await trace.event({
       type: "llm_request",

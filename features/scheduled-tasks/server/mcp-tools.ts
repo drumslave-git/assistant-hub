@@ -53,6 +53,7 @@ function taskView(task: ScheduledTask) {
   return {
     id: task.id,
     instruction: task.instruction,
+    context: task.context,
     schedule_kind: task.scheduleKind,
     time: task.timeOfDay,
     weekdays: task.weekdays,
@@ -105,9 +106,12 @@ function toolTrigger(chatId: string, userId?: string | null): TraceTrigger {
  * `tasks_create`'s description — exported so the behavioural rules it carries can
  * be pinned by tests. Two of them are load-bearing and were each written against
  * a production failure: third-person/joke phrasings still being schedule requests
- * (2026-07-27), and the instruction having to carry its own facts because a fire
- * gets no transcript (2026-07-28 — a "remind him who X is" task fired as exactly
- * that sentence, since the firing model had never seen X mentioned).
+ * (2026-07-27), and the task having to carry its own facts because a fire gets no
+ * transcript (2026-07-28 — a "remind him who X is" task fired as exactly that
+ * sentence, since the firing model had never seen X mentioned). The dedicated
+ * `context` field is the rework of that second rule (2026-07-31): asking for the
+ * facts to be woven into the instruction still produced one-liners, so gathering
+ * context is now a required input of its own.
  */
 export const TASKS_CREATE_DESCRIPTION =
   "Schedule a task for THIS chat — a reminder/nudge the bot delivers at a set time. Use " +
@@ -118,14 +122,16 @@ export const TASKS_CREATE_DESCRIPTION =
   "a recurring bit or gag is still a schedule request: create the task, then answer in " +
   "character. Resolve any relative/named time against the current " +
   "date/time given in context, then pass a concrete time. " +
-  "IMPORTANT — when the task fires you will have ONLY the 'instruction' text: no chat " +
-  "transcript, no conversation context. So if the request points at a person, event, " +
-  "joke, or topic from this chat rather than spelling it out, search the conversation " +
-  "history for it FIRST (history_search, then history_get_in_range around the matches if " +
-  "the matches alone are thin) and write what you found INTO the instruction. " +
-  "'Remind Kyrylo who X is' is worthless at fire time; 'Remind Kyrylo that X is <who they " +
-  "are and why it came up>' works. If you cannot find it, ask the user what it refers to " +
-  "instead of storing the empty phrasing. " +
+  "IMPORTANT — when the task fires you will have ONLY the stored 'instruction' and " +
+  "'context' texts: no chat transcript, no conversation memory. So GATHER CONTEXT BEFORE " +
+  "CREATING: if the request points at a person, event, joke, or topic from this chat " +
+  "rather than spelling it out, collect what it actually refers to — from the messages " +
+  "you can already see, or by searching the conversation history (history_search, then " +
+  "history_get_in_range around the matches if the matches alone are thin) — and save it " +
+  "in 'context'. 'Remind Kyrylo who X is' with no context is worthless at fire time; the " +
+  "same instruction with context 'X is <who they are and why it came up>' works. If you " +
+  "cannot find what it refers to, ask the user what it refers to instead of storing the " +
+  "empty phrasing. " +
   "Times are in the operator timezone. schedule_kind: once=a single " +
   "run (give 'date' YYYY-MM-DD + 'time'); daily=every day at 'time'; weekly=given " +
   "'weekdays' at 'time'. For a one-off 'in N minutes/hours' or 'tomorrow' reminder use " +
@@ -142,9 +148,17 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
           .string()
           .min(2)
           .describe(
-            "What the task should do — self-contained, carrying the facts it needs. At fire " +
-              "time this text is the only context available, so resolve any reference to this " +
-              "chat's people/events/topics from the history and state it here explicitly.",
+            "What the task should do when it fires — a directive like 'remind Kyrylo about " +
+              "topic X'. Put the background facts it relies on into 'context', not here.",
+          ),
+        context: z
+          .string()
+          .describe(
+            "The gathered background the fire will need: what the instruction's references " +
+              "(people, events, jokes, topics) actually are, written self-contained for a " +
+              "reader with NO chat transcript. Collect it from the visible conversation or " +
+              "history search BEFORE creating the task. Pass '' ONLY when the instruction is " +
+              "fully self-contained (e.g. 'remind me to drink water').",
           ),
         schedule_kind: scheduleKind.describe("once, daily, or weekly"),
         time: z.string().describe("Local time of day as HH:MM (24-hour)"),
@@ -161,7 +175,7 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
         openWorldHint: false,
       },
     },
-    async ({ instruction, schedule_kind, time, weekdays, date }) => {
+    async ({ instruction, context, schedule_kind, time, weekdays, date }) => {
       const ctx = getToolContext();
       try {
         const task = await createScheduledTaskService(
@@ -170,6 +184,7 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
             threadId: ctx.threadId ?? null,
             createdByUserId: ctx.userId ?? null,
             instruction,
+            context,
             scheduleKind: schedule_kind,
             timeOfDay: time,
             weekdays: weekdays ?? [],
@@ -199,9 +214,13 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
         instruction: z
           .string()
           .default("")
+          .describe("New instruction (optional) — a directive; background facts go in 'context'."),
+        context: z
+          .string()
+          .default("")
           .describe(
-            "New instruction (optional) — same rule as on create: self-contained, carrying the " +
-              "facts, since the fire sees no chat context.",
+            "New saved background (optional) — same rule as on create: self-contained for a " +
+              "reader with no chat transcript. Replaces the stored context; '' leaves it unchanged.",
           ),
         schedule_kind: z.enum(["once", "daily", "weekly", ""]).default("").describe("New schedule kind (optional)"),
         time: z.string().default("").describe("New time HH:MM (optional)"),
@@ -219,7 +238,7 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
         openWorldHint: false,
       },
     },
-    async ({ id, instruction, schedule_kind, time, weekdays, date, enabled }) => {
+    async ({ id, instruction, context, schedule_kind, time, weekdays, date, enabled }) => {
       const ctx = getToolContext();
       const denied = checkOwnership(await getTask(id), ctx, id);
       if (denied) return denied;
@@ -228,6 +247,7 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
           id,
           {
             instruction: instruction.trim() ? instruction.trim() : undefined,
+            context: context.trim() ? context.trim() : undefined,
             scheduleKind: schedule_kind ? schedule_kind : undefined,
             timeOfDay: time.trim() ? time.trim() : undefined,
             weekdays: weekdays.length > 0 ? weekdays : undefined,

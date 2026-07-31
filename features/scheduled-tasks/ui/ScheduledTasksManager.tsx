@@ -19,6 +19,7 @@ import {
   ScrollArea,
   Select,
   Switch,
+  Textarea,
 } from "@/components/ui";
 import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
 import { Timestamp } from "@/components/time/Timestamp";
@@ -181,6 +182,7 @@ function CreateForm({ chats }: { chats: ChatOption[] }) {
   const router = useRouter();
   const [chatId, setChatId] = useState(chats[0]?.chatId ?? "");
   const [instruction, setInstruction] = useState("");
+  const [context, setContext] = useState("");
   const [schedule, setSchedule] = useState<ScheduleFields>(EMPTY_SCHEDULE);
   const [state, setState] = useState<"idle" | "saving" | { error: string }>(
     "idle",
@@ -195,6 +197,7 @@ function CreateForm({ chats }: { chats: ChatOption[] }) {
         body: JSON.stringify({
           chatId: chatId.trim(),
           instruction: instruction.trim(),
+          context: context.trim() ? context.trim() : null,
           ...schedulePayload(schedule),
         }),
       });
@@ -203,6 +206,7 @@ function CreateForm({ chats }: { chats: ChatOption[] }) {
         return;
       }
       setInstruction("");
+      setContext("");
       setSchedule(EMPTY_SCHEDULE);
       setState("idle");
       router.refresh();
@@ -268,6 +272,22 @@ function CreateForm({ chats }: { chats: ChatOption[] }) {
             />
           )}
         </Field>
+        <Field
+          id="new-task-context"
+          label="Context (optional)"
+          hint="Background the delivery relies on — the fire sees no chat transcript, only this."
+        >
+          {({ id, describedBy }) => (
+            <Textarea
+              id={id}
+              aria-describedby={describedBy}
+              value={context}
+              onChange={(e) => setContext(e.target.value)}
+              rows={3}
+              placeholder="e.g. topic X is the deployment checklist discussed on Monday"
+            />
+          )}
+        </Field>
         <ScheduleInputs
           value={schedule}
           onChange={setSchedule}
@@ -312,6 +332,7 @@ function TaskCard({
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [instruction, setInstruction] = useState(task.instruction);
+  const [context, setContext] = useState(task.context ?? "");
   const [schedule, setSchedule] = useState<ScheduleFields>({
     scheduleKind: task.scheduleKind,
     timeOfDay: task.timeOfDay,
@@ -323,6 +344,7 @@ function TaskCard({
 
   function resetEdit() {
     setInstruction(task.instruction);
+    setContext(task.context ?? "");
     setSchedule({
       scheduleKind: task.scheduleKind,
       timeOfDay: task.timeOfDay,
@@ -363,6 +385,7 @@ function TaskCard({
       () =>
         patch({
           instruction: instruction.trim(),
+          context: context.trim() ? context.trim() : null,
           ...schedulePayload(schedule),
         }),
       () => setEditing(false),
@@ -392,6 +415,21 @@ function TaskCard({
                 id={id}
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
+              />
+            )}
+          </Field>
+          <Field
+            id={`edit-context-${task.id}`}
+            label="Context (optional)"
+            hint="Background the delivery relies on — the fire sees no chat transcript, only this."
+          >
+            {({ id, describedBy }) => (
+              <Textarea
+                id={id}
+                aria-describedby={describedBy}
+                value={context}
+                onChange={(e) => setContext(e.target.value)}
+                rows={3}
               />
             )}
           </Field>
@@ -486,6 +524,9 @@ function TaskCard({
         </CardAction>
       </CardHeader>
       <CardContent>
+        {task.context ? (
+          <p className="mb-2 whitespace-pre-wrap text-sm text-muted">{task.context}</p>
+        ) : null}
         <p className="text-sm text-muted">
           {task.nextRunAt ? (
             overdue ? (

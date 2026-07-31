@@ -655,16 +655,64 @@ deleted again, so the dev DB holds no rules.
   `npm test` (75 files, 739 passed), `npm run lint`, `npm run typecheck` — all
   clean.
 
+  *Third round: dedicated `context` field* (rework — user direction, 2026-07-31:
+  instead of one-liner instructions the bot has to **gather and save context**
+  when creating a task; asking for the facts to be woven into the instruction
+  text, round 1's approach, still produced one-liners in practice):
+  7. **`scheduled_tasks.context` column** (nullable text; migration
+     `db/migrations/0045_first_metal_master.sql`) threaded through the row
+     mapper, repository insert/update, service create/update (trim + 4000-char
+     bound, blank stores null), and `ScheduledTask`.
+  8. **Tool contract**: `tasks_create` gains a **required** `context` input —
+     the gathered background, written self-contained for a reader with no chat
+     transcript; `''` allowed only for a fully self-contained instruction.
+     `TASKS_CREATE_DESCRIPTION` reworked around "GATHER CONTEXT BEFORE
+     CREATING" (from the visible conversation or `history_search` /
+     `history_get_in_range`), keeping the ask-instead-of-storing-a-pointer and
+     third-person/gag rules. `tasks_update` gains an optional `context`
+     replacement; `tasks_get`/`tasks_list` structured views include it.
+  9. **Fire prompt** (`buildTaskDirectiveMessage`) — a "Saved context" block
+     carries the stored background into the fire; the history lookup stays as
+     fallback for tasks that predate the field.
+  10. **Dashboard** — optional Context textarea on create and edit
+     (`ScheduledTasksManager`), context shown on task cards; dashboard API
+     create/patch accept it (`context: null` clears on patch).
+
+  Files changed (round 3): `db/schema.ts` + migration 0045,
+  `features/scheduled-tasks/{types.ts, server/repository.ts, server/schema.ts,
+  server/service.ts, server/mcp-tools.ts, server/fire.ts,
+  ui/ScheduledTasksManager.tsx}`, `app/api/scheduled-tasks/route.ts`, tests
+  (`fire.test.ts`, `mcp-tools.test.ts`, `scheduled-tasks.integration.test.ts`).
+  Verified: `npm run lint`, `npm run typecheck` clean; `npm test` 84 files /
+  852 passed; `npm run test:integration` 25 files / 338 passed (11 live files
+  skipped); `npm run build` green after the operator re-ran the `data/pg`
+  chmod (the recurrence is tracked below).
+
+  *New evidence for the model half* (trace `e5f96e23…`, 2026-07-31): asked (in
+  Ukrainian) to *update* the Muradyan task with the PS5/donations backstory,
+  gemma4:12b's reasoning correctly narrowed to the scheduled task and literally
+  ended "Let's do that check" (meaning `tasks_list`) — then the generation
+  emitted a plain chat message claiming the context was saved
+  (`finish_reason: stop`, `tool_calls: null`, all 25 tools offered). The
+  decision died crossing from the reasoning channel to generation; no prompt
+  text can bind that. Two levers, both operator decisions: (a) the standing
+  model-replacement question below; (b) injecting the chat's scheduled tasks
+  into the reply-turn system context (like memory/rules) so "the task" resolves
+  without a `tasks_list` round-trip — costs tokens per turn, not implemented.
+
   **Remaining risk / next step (operator):** still unverified live, and still the
   same gemma4:12b tool-avoidance pattern as the `tasks_list` fabrication in the
-  item above — round 1's prompt text was ignored, and round 2 is more prompt
-  text, so the model may ignore it too. Re-run live: ask the bot who "Мурадян" is
-  again; a pass is "I don't know / nobody here ever said". Also re-run the task
-  half (create a reminder that references a chat-only topic; then ask the bot
-  what that topic is). Existing thin task instructions are deliberately **not**
-  migrated — operator fixes those through the bot (decision, 2026-07-28). If the
-  model still refuses to search, this folds into the same model-replacement
-  decision. Known remaining laundering path, not addressed: `history_recall_topics`
+  item above — round 1's prompt text was ignored, and rounds 2–3 add more prompt
+  text plus a required tool field, so the model may ignore them too. Re-run
+  live: ask the bot who "Мурадян" is again; a pass is "I don't know / nobody
+  here ever said". Also re-run the task half (create a reminder that references
+  a chat-only topic — a pass now includes a filled `context` on the created
+  row; then ask the bot what that topic is). Existing thin task instructions
+  are deliberately **not** migrated — operator fixes those through the bot
+  (decision, 2026-07-28); old rows simply have `context = null` and keep the
+  history-lookup fallback. If the model still refuses to search, this folds
+  into the same model-replacement decision. Known remaining laundering path,
+  not addressed: `history_recall_topics`
   serves daily topic summaries, which are written over both sides of the
   conversation — a bot-invented term can therefore re-enter through a summary
   with no author attached. Decide whether summaries should mark, or exclude,
@@ -676,9 +724,11 @@ deleted again, so the dev DB holds no rules.
   so the build ends in `Permission denied (os error 13) … reading dir "…/data/pg"`
   with a `TurbopackInternalError` — nothing to do with the code (`eslint.config.mjs`
   already ignores `data/**` for the same reason; Turbopack has no equivalent).
-  The operator ran the chmod on 2026-07-29 and the build is green again. If a fresh
-  Postgres volume brings it back, `sudo chmod -R g+rX data/pg` is the fix; decide
-  then whether it is worth a documented pre-build step.
+  The operator ran the chmod on 2026-07-29 and the build was green again. It
+  **recurred** on 2026-07-31 (a fresh Postgres volume recreated the dir); the
+  operator re-ran the chmod the same day and the build is green again. Two
+  recurrences now — worth a documented pre-build step (or a Turbopack-side
+  exclusion if one appears).
 
 - **Traces bind-mount permissions (`blocked` on an operator decision;** from
   the 2026-07-22 prod data-loss incident**)** — Docker auto-creates
