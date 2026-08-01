@@ -96,9 +96,16 @@ import type { IncomingUpdate, ReplyTransport } from "./transport";
  * runaway generation, roomy enough that a legitimate think-then-answer never
  * truncates (a truncated verdict reads as "not addressed"). User decision,
  * 2026-08-01: same model for classifications, thinking capped.
+ *
+ * Cap sized against the live endpoint (probe, 2026-08-01): gemma4:12b's
+ * thinking on this exact call shape regularly runs 850–2,300 tokens even at
+ * low effort — a 1,000-token cap truncated 3 of 8 probe calls mid-think
+ * (`finish_reason: "length"`, empty content), which in production is a missed
+ * summons. 3,000 clears every observed answer with room while still stopping a
+ * runaway.
  */
 const CLASSIFIER_REASONING_EFFORT = "low" as const;
-const CLASSIFIER_MAX_TOKENS = 1_000;
+const CLASSIFIER_MAX_TOKENS = 3_000;
 
 /**
  * Hard stop on tokens generated per reply round (thinking included). A guard

@@ -906,12 +906,26 @@ in the touched files; full suite 920 passed with 21 pre-existing yt-dlp
 failures on Windows, also failing on a clean checkout — environment, not
 regression), `npm run build` ✅. Integration suite not run (Testcontainers).
 
+*Endpoint probe (2026-08-01, against the configured Ollama 0.32.5, synthetic
+classifier-shaped calls on gemma4:12b).* `reasoning_effort: "low"` is accepted
+(no error) but only mildly shrinks this model's thinking (~3.6k → ~2.9k chars
+in one pair, ~8.2k → ~3.7k in another); `max_tokens` is honored; 4 concurrent
+calls really do run concurrently (wall ≈ slowest call, not the sum), so
+`OLLAMA_NUM_PARALLEL=4` works. The original 1,000-token classifier cap
+truncated 3 of 8 probe calls mid-think (`finish_reason: "length"`, empty
+content = a missed summons) — raised to 3,000 the same day, sized above every
+observed think-then-answer (max seen: 2,229 tokens).
+
+Probe also showed per-request decode collapsed to ~10–15 tok/s (from ~70 tok/s
+in the pre-parallel production traces): with 4 slots' KV cache reserved, only
+9.7 GB of the 12.2 GB model stays in VRAM (`/api/ps`), the rest on CPU — see
+the operator note below about `OLLAMA_NUM_PARALLEL`/context sizing.
+
 *Remaining risks / live verification checklist (after deploy).*
 
-- `reasoning_effort` on the Ollama OpenAI endpoint: confirm in a Debug trace
-  that an addressing-check response's completion tokens drop (~1,000 → low
-  hundreds) and the verdict JSON still parses. If the provider rejects the
-  param outright, classifications would error — watch the first group message.
+- Classifier cap 3,000: confirm addressing-check traces parse and completion
+  tokens stay well under the cap; if `finish_reason: "length"` shows up on a
+  classification, raise further or drop the cap.
 - A reply cut off at 4,096 generated tokens surfaces as a failed turn
   (`finish_reason: "length"`); none observed near that size, but check error
   traces in the first days.
