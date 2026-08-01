@@ -108,6 +108,9 @@ export function registerBrowserAgentMcpTools(server: McpServer): void {
         createdByUserId: ctx.userId ?? null,
         isOwner,
       });
+      // The turn's reply is now only an acknowledgement of this run — the
+      // pipeline sends it silent and removes it once the run reports.
+      ctx.onBrowserRunEnqueued?.(run.id);
       emitRunEnqueued();
 
       return {

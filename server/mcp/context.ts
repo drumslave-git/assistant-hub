@@ -46,6 +46,14 @@ export interface McpToolContext {
    * "cannot send images here" and say so, rather than generating bytes into a void.
    */
   collectImage?: (base64: string) => void;
+  /**
+   * Notifies the turn that `browse_web` enqueued a background browsing run.
+   * The reply pipeline uses it to treat this turn's reply as a transient
+   * acknowledgement: delivered silently, and deleted once the run posts its own
+   * report (user decision, 2026-08-01). Absent when the turn has no reply to
+   * treat that way (e.g. a scheduled-task fire).
+   */
+  onBrowserRunEnqueued?: (runId: string) => void;
 }
 
 const storage = new AsyncLocalStorage<McpToolContext>();

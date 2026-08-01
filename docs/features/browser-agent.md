@@ -245,12 +245,26 @@ scheduled-tasks poller. A single run executes at a time; the queue **is** the
 
 ### Delivery
 
-Mirrors the MVP:
+One combined message wherever possible (user decision, 2026-08-01 — the earlier
+file-then-recap flow repeated the same filename twice and spammed the chat):
 
-- Each downloaded file is posted to the chat **the moment it lands**, silently, as an
-  intermediate progress message — provided it is within
-  `settings.browser_download_max_mb` (1–50; 50 is Telegram's bot upload ceiling).
-  Larger files stay in the downloads folder and the tool result says so.
+- An attachable download — within `settings.browser_download_max_mb` (1–50; 50 is
+  Telegram's bot upload ceiling) — is **staged**: the runner holds it and delivers
+  it at the end of the run **together with the final report as its caption**, so
+  the chat gets one message carrying both the file and what the agent has to say.
+  Only files over the limit are announced (silently, by name) the moment they land.
+- Files are sent **as the media they are**: an MP4/QuickTime video goes out via
+  `sendVideo` (playable straight in Telegram, streaming enabled), an MP3/M4A via
+  `sendAudio` (music player), anything else as a document. A container Telegram
+  rejects as media falls back to a document send. Captions render like any bot
+  message (HTML with a plain-text fallback).
+- The combined form needs one staged file and a report that fits Telegram's
+  1024-character caption cap. Otherwise each staged file goes out under its own
+  filename line and the report follows as text. The report's recap section lists
+  **only files that did not reach the chat** — a delivered attachment speaks for
+  itself.
+- A run that fails after downloading still delivers its staged files before the
+  failure notice — a downloaded file is never lost to a later error.
 - **The server copy is kept only when the chat did not get the file** (user decision,
   2026-07-29). A file the user already holds does not also need to sit on the server
   filling the disk, so a successful send is followed by an unlink. Three things leave
@@ -259,12 +273,14 @@ Mirrors the MVP:
 
   | Outcome | `deliveredToChat` | On disk |
   | --- | --- | --- |
-  | Sent to the chat as a document | `true` | removed |
+  | Delivered to the chat (with the report, or under its own line) | `true` | removed |
   | Over `browser_download_max_mb` — announced by name only | `false` | kept |
   | Send failed | `false` | kept |
   | Dashboard-started run (no chat exists) | `false` | kept |
 
-  A failed unlink is logged and changes nothing else: the chat has the file, so the
+  A staged file's disk copy survives until the send actually succeeds — a crash or
+  failed send leaves it in the downloads folder, never nowhere. A failed unlink is
+  logged and changes nothing else: the chat has the file, so the
   record stays truthful and only disk hygiene suffers. The tool result wording follows
   the same split, so the model never offers the user a folder path for a file it
   already sent. That folder (`data/downloads`, bind-mounted to the host under
@@ -277,7 +293,15 @@ Mirrors the MVP:
   downloads read as "attached to chat" when nothing had been sent anywhere. Runs
   recorded before the change have no `deliveredToChat` and normalize to `false`,
   which is accurate for them: back then every download stayed on disk.
-- The agent's final report is delivered at the end and mirrored into history.
+- The report-bearing message (combined or text) is mirrored into history.
+- The chat model's own "on it" reply — sent when `browse_web` enqueues the run —
+  is treated as a **transient acknowledgement** (user decision, 2026-08-01): it is
+  delivered silently (no notification ping; the run's report is the notification)
+  and **deleted from the chat once the run settles**, its history-mirror row
+  soft-deleted with it. A run that finishes before the acknowledgement is even
+  delivered deletes it on arrival. The tracking is in-memory (`server/ack.ts`,
+  the same `globalThis` pattern as the enqueue signal); a restart mid-run merely
+  leaves one acknowledgement standing.
 - A **dashboard-started run has no `chatId`** and delivers nothing; its report is
   stored on the run row and read on the page.
 

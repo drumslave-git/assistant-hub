@@ -28,6 +28,67 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Browser-agent chat delivery overhaul (`done` pending live verification, 2026-08-01)
+
+User report (2026-08-01, after the first live rule-driven Instagram download): the
+video arrived as a plain document instead of a playable video, and the flow was
+three messages where one or two would do (the "Завантажую контент" ack, the file,
+then a report repeating the filename). Three changes, all user-requested:
+
+1. **Playable media.** `sendChatDocument` became `sendChatFile`
+   (`server/telegram/bot-manager.ts`): the send method is picked from the mime by
+   the new pure `telegramFileKind` (`lib/telegram.ts`) — `sendVideo` (with
+   `supports_streaming`) for MP4/QuickTime, `sendAudio` for MP3/M4A, `sendDocument`
+   otherwise, with a document fallback when Telegram rejects the media kind
+   (`GrammyError` only — a network error still throws, a blind retry could
+   double-send). Captions render HTML-with-plain-fallback like messages.
+2. **File + report in one message.** Attachable downloads are no longer sent as
+   they land; `onDownload` stages them (`"staged" | "kept"` — new
+   `DownloadOutcome` in `tools.ts`; `CollectedFile` gained `filePath`) and the
+   runner delivers at settle: a single staged file with a caption-sized report
+   goes out as ONE combined message; otherwise files under their own line + the
+   report as text. The recap lists only files that did NOT reach the chat. The
+   disk copy now survives until the send succeeds (previously unlinked at
+   download time on delivery); a failed run still delivers its staged files
+   before the failure notice.
+3. **Silent, self-deleting ack.** `browse_web` reports the enqueued run to the
+   turn via `McpToolContext.onBrowserRunEnqueued`; the reply pipeline then sends
+   the model's "on it" reply with `disable_notification` and registers each
+   delivered chunk in the new in-memory ack store
+   (`features/browser-agent/server/ack.ts`, `globalThis` like `signal.ts`). The
+   runner deletes the ack (new `deleteChatMessage`) after posting the outcome, on
+   success and failure, and soft-deletes its history-mirror row (new
+   `markMessageDeleted` in history service + `markChatMessageDeleted` repository
+   fn — first writer of the existing `deleted_at` column). Race-safe both ways: a
+   run that settles first leaves a marker and the late-arriving ack is deleted on
+   registration (via the new optional `ReplyTransport.deleteMessage`).
+
+Proof: files — `lib/telegram.ts` (+ new `telegram.test.ts`),
+`server/telegram/{bot-manager,transport,process-update}.ts`,
+`server/mcp/context.ts`, `features/browser-agent/server/{tools,runner,mcp-tools}.ts`,
+new `features/browser-agent/server/ack.ts` (+ `ack.test.ts`),
+`features/browser-agent/format.ts` (doc),
+`features/history/server/{repository,service}.ts`,
+`docs/features/browser-agent.md`. Tests: `npm run lint`, `npm run typecheck`,
+`npm test` (86 files / 861), `npm run test:integration` (338 passed / 41
+live-LLM skipped) all clean; `tools.test.ts` reworked to the staged contract,
+`mcp-tools.test.ts` gained the ack-wiring case. `npm run build` could NOT be
+run: the known `data/pg` Turbopack EACCES recurred (third time — tracked below;
+needs the operator chmod), and reproduces with these changes stashed.
+
+Remaining risks / next steps:
+- Live verification: send a social-media video link through the bot again — the
+  ack should arrive without a ping and vanish when the video posts; the video
+  should play inline and carry the report as its caption; `downloads/` should not
+  keep a copy.
+- The report is the caption now, so a >1024-char report degrades to the old
+  two-message form by design.
+- The ack of a run that outlives a server restart is not deleted (in-memory
+  store; accepted — cosmetic).
+- An ERROR_REPLY sent after a turn that enqueued a run goes out silent too (the
+  send closure cannot tell it apart); it is never registered as an ack, so it is
+  not deleted. Accepted.
+
 ## Browser-agent context-window exhaustion (`done`, 2026-07-30)
 
 Root cause of trace `622483e0…` (browser-agent run failed with
@@ -726,7 +787,8 @@ deleted again, so the dev DB holds no rules.
   already ignores `data/**` for the same reason; Turbopack has no equivalent).
   The operator ran the chmod on 2026-07-29 and the build was green again. It
   **recurred** on 2026-07-31 (a fresh Postgres volume recreated the dir); the
-  operator re-ran the chmod the same day and the build is green again. Two
+  operator re-ran the chmod the same day. **Recurred again on 2026-08-01**,
+  blocking the build check for the chat-delivery overhaul above. Three
   recurrences now — worth a documented pre-build step (or a Turbopack-side
   exclusion if one appears).
 

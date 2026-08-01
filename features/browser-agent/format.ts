@@ -23,9 +23,10 @@ export function formatDownloadLine(record: BrowserDownloadRecord): string {
 }
 
 /**
- * The end-of-run message: the agent's report, followed by a recap of every file
- * downloaded this run (each was already posted as it landed). With no downloads
- * the report stands alone.
+ * The end-of-run message body: the agent's report, followed by a recap of the
+ * given downloads. Callers pass only the files that did NOT reach the chat — a
+ * delivered attachment speaks for itself, and repeating it under the report was
+ * noise. With nothing to recap the report stands alone.
  */
 export function formatRunReport(report: string, downloads: BrowserDownloadRecord[]): string {
   const body = report.trim();

@@ -1,8 +1,10 @@
 import "server-only";
 
+import { rm } from "node:fs/promises";
+
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
-import { recordAssistantMessage } from "@/features/history/server/service";
+import { markMessageDeleted, recordAssistantMessage } from "@/features/history/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import {
   getBrowserDownloadLimitBytes,
@@ -18,10 +20,11 @@ import { isGroupChatId } from "@/lib/telegram";
 import { sanitizeMessagesForTrace } from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { publishEvent } from "@/server/realtime/hub";
-import { sendChatDocument, sendChatMessage } from "@/server/telegram/bot-manager";
+import { deleteChatMessage, sendChatFile, sendChatMessage } from "@/server/telegram/bot-manager";
 import { startTrace } from "@/server/trace";
 
 import type { BrowserAgentRun, BrowserDownloadRecord } from "../types";
+import { takeRunAck } from "./ack";
 import { runBrowserAgent } from "./agent";
 import { formatDownloadLine, formatRunReport } from "../format";
 import { getDownloadStorageHealth } from "./download";
@@ -37,7 +40,7 @@ import {
 } from "./repository";
 import { BrowserAgentSession } from "./session";
 import { setRunEnqueuedListener } from "./signal";
-import type { AgentToolContext, CollectedFile } from "./tools";
+import type { AgentToolContext, CollectedFile, DownloadOutcome } from "./tools";
 
 /**
  * The browser-agent runner: an in-process queue pump, the same operating model as
@@ -75,45 +78,122 @@ async function deliverText(
   return messageId;
 }
 
+/** Telegram caps a media caption at 1024 characters. */
+const TELEGRAM_CAPTION_MAX = 1024;
+
+/** One attachable file held until the end of the run, delivered with the report. */
+interface StagedFile {
+  record: BrowserDownloadRecord;
+  file: CollectedFile;
+}
+
 /**
- * Post one finished download to the chat as it lands (silent progress message).
- * Resolves whether the **file itself** reached the chat, which is what decides
- * whether the caller keeps the server copy. Three ways that is false: a
- * dashboard-started run has no chat, a file over the attach limit is announced by
- * name only, and a send can fail — in all three the downloads folder is the one
- * remaining copy, so it must not be deleted.
+ * Send one staged file to the chat, as playable media where the container
+ * allows. On success the record is marked delivered and the server copy removed
+ * — the chat is now the file's home. Resolves the delivered message id, or null
+ * when the send failed (the file then stays in the downloads folder and the
+ * recap points there).
  */
-async function deliverDownload(
+async function sendStagedFile(
   run: BrowserAgentRun,
-  record: BrowserDownloadRecord,
-  file: CollectedFile | null,
-): Promise<boolean> {
-  if (!run.chatId) return false;
+  staged: StagedFile,
+  caption: string,
+): Promise<number | null> {
+  if (!run.chatId) return null;
   try {
-    if (file) {
-      await sendChatDocument(
-        run.chatId,
-        { buffer: file.buffer, filename: file.filename },
-        {
-          threadId: run.threadId,
-          // This caption rides along with the file, so it describes a delivered
-          // one and never points at a server folder the user cannot browse.
-          caption: formatDownloadLine({ ...record, deliveredToChat: true }),
-        },
+    const { messageId } = await sendChatFile(
+      run.chatId,
+      { buffer: staged.file.buffer, filename: staged.file.filename, mime: staged.file.mime },
+      { threadId: run.threadId, caption },
+    );
+    staged.record.deliveredToChat = true;
+    // A failed unlink leaves a stray file, not a wrong answer — the chat still
+    // has it, so the record stays truthful and only the disk hygiene is off.
+    await rm(staged.file.filePath, { force: true }).catch((err: unknown) => {
+      console.error(
+        `browser-agent: delivered "${staged.file.filename}" but could not remove the server copy:`,
+        err instanceof Error ? err.message : String(err),
       );
-      return true;
-    }
-    await sendChatMessage(run.chatId, formatDownloadLine(record), {
-      threadId: run.threadId,
-      silent: true,
     });
-    return false;
+    return messageId;
   } catch (err) {
     console.error(
-      `browser-agent: failed to deliver a download for run ${run.id}:`,
+      `browser-agent: failed to deliver "${staged.file.filename}" for run ${run.id}:`,
       err instanceof Error ? err.message : String(err),
     );
-    return false;
+    return null;
+  }
+}
+
+/**
+ * Deliver the end of a run as ONE message wherever possible: a single staged
+ * file rides with the report as its caption; with several files (or a report
+ * over the caption cap) each file goes out under its own line and the report
+ * follows. The recap only lists files that did NOT reach the chat — a delivered
+ * attachment speaks for itself. Resolves what was sent as the report-bearing
+ * message (for history + trace), or null when nothing could be delivered.
+ */
+async function deliverRunOutcome(
+  run: BrowserAgentRun,
+  report: string,
+  staged: StagedFile[],
+  downloads: BrowserDownloadRecord[],
+): Promise<{ content: string; messageId: number; hasMedia: boolean } | null> {
+  if (!run.chatId) return null;
+  if (staged.length === 1) {
+    const others = downloads.filter((d) => d !== staged[0].record && !d.deliveredToChat);
+    const caption = formatRunReport(report, others);
+    if (caption.length <= TELEGRAM_CAPTION_MAX) {
+      const messageId = await sendStagedFile(run, staged[0], caption);
+      if (messageId != null) return { content: caption, messageId, hasMedia: true };
+      // Fall through: the file could not be sent, so it is undelivered and the
+      // text recap below names it in the downloads folder.
+    } else {
+      await sendStagedFile(
+        run,
+        staged[0],
+        formatDownloadLine({ ...staged[0].record, deliveredToChat: true }),
+      );
+    }
+  } else {
+    for (const one of staged) {
+      await sendStagedFile(run, one, formatDownloadLine({ ...one.record, deliveredToChat: true }));
+    }
+  }
+  const recap = formatRunReport(report, downloads.filter((d) => !d.deliveredToChat));
+  const messageId = await deliverText(run, recap).catch((err) => {
+    console.error(
+      `browser-agent: failed to deliver the report for run ${run.id}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  });
+  return messageId != null ? { content: recap, messageId, hasMedia: false } : null;
+}
+
+/**
+ * Remove the chat's "on it" acknowledgement now that the run has spoken for
+ * itself (the ack was sent silent and exists only to bridge the wait). Marks the
+ * run settled in the ack store either way, so an acknowledgement that arrives
+ * *after* the run finished is deleted at registration instead of surviving
+ * forever. Best-effort — a message Telegram refuses to delete (older than 48h)
+ * just stays.
+ */
+async function removeRunAck(runId: string): Promise<void> {
+  const ack = takeRunAck(runId);
+  if (!ack) return;
+  for (const messageId of ack.messageIds) {
+    try {
+      await deleteChatMessage(ack.chatId, messageId);
+      // Mirror follows the chat: the row is soft-deleted only once Telegram
+      // actually dropped the message.
+      await markMessageDeleted(ack.chatId, messageId);
+    } catch (err) {
+      console.error(
+        `browser-agent: could not remove the acknowledgement message ${messageId} for run ${runId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 }
 
@@ -136,6 +216,8 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
 
   const session = new BrowserAgentSession();
   const downloads: BrowserDownloadRecord[] = [];
+  /** Attachable files held for the end-of-run combined message (file + report). */
+  const staged: StagedFile[] = [];
   let screenshotSeq = 0;
 
   try {
@@ -205,9 +287,25 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
         return seq;
       },
       onDownload: async (record, file) => {
-        const deliveredToChat = await deliverDownload(run, record, file);
-        // Traced after the attempt, so the event records what actually happened —
-        // and therefore whether the server copy survives.
+        let outcome: DownloadOutcome = "kept";
+        if (run.chatId && file) {
+          // Held for the end of the run: the file goes out together with the
+          // report as one combined message instead of two.
+          staged.push({ record, file });
+          outcome = "staged";
+        } else if (run.chatId) {
+          // Too large to attach — announce it by name as it lands (silent);
+          // the recap points at the downloads folder.
+          await sendChatMessage(run.chatId, formatDownloadLine(record), {
+            threadId: run.threadId,
+            silent: true,
+          }).catch((err: unknown) => {
+            console.error(
+              `browser-agent: failed to announce a download for run ${run.id}:`,
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+        }
         await trace.event({
           type: "db",
           message: "download",
@@ -215,11 +313,11 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
             filename: record.filename,
             sizeBytes: record.sizeBytes,
             sourceUrl: record.sourceUrl,
-            deliveredToChat,
+            staged: outcome === "staged",
           },
         });
         publishEvent(FEATURE.realtimeTopic);
-        return deliveredToChat;
+        return outcome;
       },
     };
 
@@ -257,29 +355,26 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
 
     const report = result.report || "I browsed but couldn't find anything useful.";
 
-    // Deliver the final report and mirror it into history (best-effort).
+    // Deliver the outcome — file(s) + report, combined where possible — and
+    // mirror the report-bearing message into history (best-effort).
     if (run.chatId) {
-      const recap = formatRunReport(report, downloads);
-      const messageId = await deliverText(run, recap).catch((err) => {
-        console.error(
-          `browser-agent: failed to deliver the report for run ${run.id}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-        return null;
-      });
-      if (messageId != null) {
+      const delivered = await deliverRunOutcome(run, report, staged, downloads);
+      if (delivered != null) {
         await recordAssistantMessage({
           chatId: run.chatId,
-          telegramMessageId: messageId,
-          content: recap,
+          telegramMessageId: delivered.messageId,
+          content: delivered.content,
+          hasMedia: delivered.hasMedia,
         }).catch(() => undefined);
         await trace.event({
           type: "output",
           level: "success",
-          message: "send report",
-          data: { content: recap, messageId },
+          message: delivered.hasMedia ? "send report with file" : "send report",
+          data: { content: delivered.content, messageId: delivered.messageId },
         });
       }
+      // The run has spoken for itself — the silent "on it" ack can go.
+      await removeRunAck(run.id);
     }
 
     await settleBrowserAgentRun(db, run.id, {
@@ -293,6 +388,13 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // A file the run did download must still reach the chat, failure or not —
+    // delivered before the settle so the persisted records say what happened.
+    if (run.chatId) {
+      for (const one of staged) {
+        await sendStagedFile(run, one, formatDownloadLine({ ...one.record, deliveredToChat: true }));
+      }
+    }
     await settleBrowserAgentRun(db, run.id, {
       status: "failed",
       error: message,
@@ -301,6 +403,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
     // Tell the chat the run failed, so a user is never left waiting on a promise.
     if (run.chatId) {
       await deliverText(run, "I hit a problem while browsing and had to stop.").catch(() => undefined);
+      await removeRunAck(run.id);
     }
     await trace.fail(err);
   } finally {

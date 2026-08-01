@@ -26,6 +26,7 @@ import {
   getChatMessagesForDay,
   getChatMessagesSince,
   listChatSummaries,
+  markChatMessageDeleted,
   markMessageProcessed,
   updateChatMessageContent,
   type ChatMessageRecord,
@@ -155,6 +156,23 @@ export async function recordAssistantMessage(
     replyToMessageId: parsed.data.replyToMessageId ?? null,
     sentAt: parsed.data.sentAt,
   });
+  if (record) publishEvent(FEATURE.realtimeTopic);
+  return record;
+}
+
+/**
+ * Soft-delete a mirrored message the bot removed from the live chat (e.g. a
+ * browsing-run acknowledgement), keeping the mirror 1:1 with what the chat
+ * shows. Untraced like the capture path — the deletion is already recorded on
+ * the flow that performed it. Returns the updated record, or null when the
+ * message was never mirrored.
+ */
+export async function markMessageDeleted(
+  chatId: string,
+  telegramMessageId: number,
+  db: DrizzleDb = getDb(),
+): Promise<ChatMessageRecord | null> {
+  const record = await markChatMessageDeleted(db, chatId, telegramMessageId);
   if (record) publishEvent(FEATURE.realtimeTopic);
   return record;
 }

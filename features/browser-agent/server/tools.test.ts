@@ -31,11 +31,11 @@ let downloads: BrowserDownloadRecord[];
 let delivered: BrowserDownloadRecord[];
 
 /**
- * `reachedChat` stands in for what the runner reports back: true when Telegram
- * accepted the document, false for a dashboard run, an over-limit file, or a failed
- * send.
+ * `outcome` stands in for what the runner reports back: "staged" when the file
+ * will ride to the chat with the final report, "kept" for a dashboard run or an
+ * over-limit file (the downloads folder keeps the copy).
  */
-function makeContext(isOwner: boolean, reachedChat = true): AgentToolContext {
+function makeContext(isOwner: boolean, outcome: "staged" | "kept" = "staged"): AgentToolContext {
   downloads = [];
   delivered = [];
   return {
@@ -52,7 +52,7 @@ function makeContext(isOwner: boolean, reachedChat = true): AgentToolContext {
     onScreenshot: async () => 0,
     onDownload: async (record) => {
       delivered.push(record);
-      return reachedChat;
+      return outcome;
     },
   };
 }
@@ -82,7 +82,7 @@ describe("browser_download_media", () => {
     expect(BROWSER_AGENT_TOOLS.map((t) => t.function.name)).toContain("browser_download_media");
   });
 
-  it("downloads audio when the agent asks for audio, and delivers the file", async () => {
+  it("downloads audio when the agent asks for audio, and hands the file to the run", async () => {
     const ctx = makeContext(true);
 
     const result = await call(ctx, { url: "https://music.youtube.com/watch?v=abc", mode: "audio" });
@@ -93,26 +93,28 @@ describe("browser_download_media", () => {
     );
     expect(result.isError).toBeFalsy();
     expect(result.text).toContain("VIRUS (Fytch Remix).mp3");
-    // The file lands in the chat immediately, and on the run row.
+    // The file is handed to the runner's stager, and lands on the run row.
     expect(delivered.map((d) => d.filename)).toEqual(["VIRUS (Fytch Remix).mp3"]);
     expect(downloads).toHaveLength(1);
   });
 
-  it("removes the server copy once the chat has the file", async () => {
-    const ctx = makeContext(true, true);
+  it("leaves a staged file's server copy to the runner, and says the chat gets it", async () => {
+    const ctx = makeContext(true, "staged");
 
     const result = await call(ctx, { url: "https://x.com/watch?v=1", mode: "audio" });
 
-    expect(existsSync(filePath)).toBe(false);
-    expect(downloads[0].deliveredToChat).toBe(true);
-    // The model must not offer the user a path to a file that is no longer there.
-    expect(result.text).toContain("Sent");
+    // The disk copy survives the handoff — the runner removes it after the
+    // combined file+report message is actually delivered.
+    expect(existsSync(filePath)).toBe(true);
+    expect(downloads[0].deliveredToChat).toBe(false);
+    // The model must not offer the user a server path for a file the chat gets.
+    expect(result.text).toContain("final report");
     expect(result.text).not.toContain("downloads folder");
   });
 
-  it("keeps the server copy when the file never reached the chat", async () => {
-    // A dashboard-started run has no chat, and a failed send looks the same here.
-    const ctx = makeContext(true, false);
+  it("keeps the server copy when the file cannot ride to the chat", async () => {
+    // A dashboard-started run has no chat; an over-limit file looks the same here.
+    const ctx = makeContext(true, "kept");
 
     const result = await call(ctx, { url: "https://x.com/watch?v=1", mode: "audio" });
 

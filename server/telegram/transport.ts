@@ -31,11 +31,22 @@ export interface IncomingUpdate {
 
 /** The outbound sink: deliver replies + typing back to the originating chat. */
 export interface ReplyTransport {
-  /** Deliver a reply, resolving with its delivered message id. */
+  /**
+   * Deliver a reply, resolving with its delivered message id. `silent` sends it
+   * without a notification ping — used for a turn whose reply is only an
+   * acknowledgement of background work (a browsing run) that will report for
+   * itself when done.
+   */
   sendReply(
     text: string,
-    opts: { replyToMessageId: number; threadId?: number },
+    opts: { replyToMessageId: number; threadId?: number; silent?: boolean },
   ): Promise<{ messageId: number }>;
+  /**
+   * Delete one of the bot's own messages. Optional (a capturing test transport
+   * may not implement it); used to remove a browsing-run acknowledgement whose
+   * run had already reported by the time the acknowledgement was delivered.
+   */
+  deleteMessage?(opts: { messageId: number }): Promise<void>;
   /**
    * Deliver a generated image as a photo, resolving with its delivered message id
    * and the Telegram `file_id` of the stored photo.

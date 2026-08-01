@@ -5,6 +5,7 @@ import { Bot, GrammyError, InputFile, type Context } from "grammy";
 
 import { renderTelegramHtml } from "@/features/bot-messaging/telegram-html";
 import { getTelegramBotToken } from "@/features/settings/server/service";
+import { telegramFileKind, type TelegramFileKind } from "@/lib/telegram";
 
 import { processCallbackUpdate } from "./process-callback";
 import { processReactionUpdate } from "./process-reaction";
@@ -100,23 +101,65 @@ export async function sendChatMessage(
 }
 
 /**
- * Send an out-of-band document to a chat (used by the browser-agent runner to
- * deliver a downloaded file). Requires the poller to be running — Telegram's
- * `api` lives on the active bot. Throws when the bot is not running so the caller
- * can record the failure. Resolves the delivered message id.
+ * Send an out-of-band file to a chat (used by the browser-agent runner to
+ * deliver a downloaded file), picking the send method by content type so a video
+ * or track plays straight in Telegram instead of arriving as a bare attachment.
+ * The caption is rendered like any bot message (HTML with a plain-text fallback).
+ * Requires the poller to be running — Telegram's `api` lives on the active bot.
+ * Throws when the bot is not running so the caller can record the failure.
+ * Resolves the delivered message id.
  */
-export async function sendChatDocument(
+export async function sendChatFile(
   chatId: string,
-  file: { buffer: Buffer; filename: string },
+  file: { buffer: Buffer; filename: string; mime?: string },
   opts: { threadId?: number | null; caption?: string } = {},
 ): Promise<{ messageId: number }> {
   const bot = store().bot;
   if (!bot) throw new Error("Telegram bot is not running");
-  const sent = await bot.api.sendDocument(chatId, new InputFile(file.buffer, file.filename), {
-    ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
-    ...(opts.caption ? { caption: opts.caption } : {}),
-  });
-  return { messageId: sent.message_id };
+  const base = opts.threadId != null ? { message_thread_id: opts.threadId } : {};
+  // A fresh InputFile per attempt — grammy consumes the wrapper on send.
+  const media = () => new InputFile(file.buffer, file.filename);
+  const sendAs: Record<
+    TelegramFileKind,
+    (extra: { caption?: string; parse_mode?: "HTML" }) => Promise<{ message_id: number }>
+  > = {
+    video: (extra) =>
+      bot.api.sendVideo(chatId, media(), { ...base, supports_streaming: true, ...extra }),
+    audio: (extra) => bot.api.sendAudio(chatId, media(), { ...base, ...extra }),
+    document: (extra) => bot.api.sendDocument(chatId, media(), { ...base, ...extra }),
+  };
+  const sendWithCaption = async (kind: TelegramFileKind) => {
+    if (!opts.caption) return sendAs[kind]({});
+    try {
+      return await sendAs[kind]({ caption: renderTelegramHtml(opts.caption), parse_mode: "HTML" });
+    } catch (err) {
+      if (!isEntityParseError(err)) throw err;
+      return sendAs[kind]({ caption: opts.caption });
+    }
+  };
+  const kind = telegramFileKind(file.mime);
+  try {
+    const sent = await sendWithCaption(kind);
+    return { messageId: sent.message_id };
+  } catch (err) {
+    // Telegram refused the media *as this kind* (a container its player cannot
+    // take) — the message was not delivered, so a document retry cannot
+    // double-send. Anything non-Grammy (network, chat gone) must surface.
+    if (kind === "document" || !(err instanceof GrammyError)) throw err;
+    const sent = await sendWithCaption("document");
+    return { messageId: sent.message_id };
+  }
+}
+
+/**
+ * Delete a bot message from a chat (used by the browser-agent runner to remove
+ * its own "on it" acknowledgement once the run has reported). Telegram refuses
+ * deletes older than 48h — callers treat a failure as cosmetic.
+ */
+export async function deleteChatMessage(chatId: string, messageId: number): Promise<void> {
+  const bot = store().bot;
+  if (!bot) throw new Error("Telegram bot is not running");
+  await bot.api.deleteMessage(chatId, messageId);
 }
 
 /**
@@ -137,7 +180,10 @@ function errorMessage(err: unknown): string {
 function grammyTransport(ctx: Context): ReplyTransport {
   return {
     async sendReply(text, opts) {
-      const params = { reply_parameters: { message_id: opts.replyToMessageId } };
+      const params = {
+        reply_parameters: { message_id: opts.replyToMessageId },
+        ...(opts.silent ? { disable_notification: true } : {}),
+      };
       try {
         const sent = await ctx.reply(renderTelegramHtml(text), { ...params, parse_mode: "HTML" });
         return { messageId: sent.message_id };
@@ -147,6 +193,9 @@ function grammyTransport(ctx: Context): ReplyTransport {
         const sent = await ctx.reply(text, params);
         return { messageId: sent.message_id };
       }
+    },
+    async deleteMessage(opts) {
+      await ctx.api.deleteMessage(String(ctx.chat!.id), opts.messageId);
     },
     async sendPhoto(image, opts) {
       const sent = await ctx.api.sendPhoto(

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 
 import type { ChatCompletionFunctionTool } from "openai/resources/chat/completions";
 
@@ -35,12 +35,23 @@ import type { BrowserAgentSession, NetworkEntry } from "./session";
  * `browse_web` dispatch tool is (see `mcp-tools.ts`).
  */
 
-/** A file collected during a run, delivered to the chat as it lands. */
+/** A file collected during a run, staged for delivery with the final report. */
 export interface CollectedFile {
   buffer: Buffer;
   filename: string;
   mime: string;
+  /** Where the server copy lives — the stager removes it once the chat has the file. */
+  filePath: string;
 }
+
+/**
+ * What became of one finished download when it was reported via
+ * {@link AgentToolContext.onDownload}: `staged` — the runner holds it and will
+ * deliver it to the chat together with the final report (the server copy is now
+ * the runner's to remove); `kept` — the file stays in the downloads folder (no
+ * chat to send to, or too large to attach).
+ */
+export type DownloadOutcome = "staged" | "kept";
 
 /** Collaborators one run's dispatcher acts through. */
 export interface AgentToolContext {
@@ -77,12 +88,15 @@ export interface AgentToolContext {
    */
   onScreenshot: (shot: { buffer: Buffer; url: string | null; title: string | null }) => Promise<number>;
   /**
-   * Report ONE finished download to the chat immediately — a small file as an
-   * attachment, a large one as a text line — so the user sees every file arrive
-   * instead of a batch at the end of the run. Resolves whether the **file itself**
-   * reached the chat; when it did, the server copy is removed.
+   * Report ONE finished download. An attachable file is *staged*: the runner
+   * holds it and delivers it to the chat together with the final report — one
+   * combined message instead of a file message plus a recap that repeats it. A
+   * file that cannot ride to the chat (too large, or no chat at all) is `kept`
+   * in the downloads folder; an over-limit file is still announced by name as it
+   * lands. When the result is `staged`, the disk copy is the runner's to remove
+   * after delivery.
    */
-  onDownload: (record: BrowserDownloadRecord, file: CollectedFile | null) => Promise<boolean>;
+  onDownload: (record: BrowserDownloadRecord, file: CollectedFile | null) => Promise<DownloadOutcome>;
 }
 
 function fn(
@@ -465,16 +479,17 @@ function summarizeResult(result: McpToolCallResult): string {
 }
 
 /**
- * Shared post-download delivery: decide attachable-vs-link by the chat attach
- * limit, hand the file to the run's delivery sink, then keep the server copy
- * **only when it did not reach the chat**. Every download tool ends here. The
- * filename comes from the page or the media it was fetched from, never from the
- * model (which is inconsistent).
+ * Shared post-download handoff: decide attachable-vs-link by the chat attach
+ * limit, then hand the file to the run's delivery sink, which stages it for the
+ * end-of-run combined message (file + report in one). Every download tool ends
+ * here. The filename comes from the page or the media it was fetched from,
+ * never from the model (which is inconsistent).
  *
  * The downloads folder is a fallback, not an archive (user decision, 2026-07-29):
  * a file the user already has in the chat does not also need to sit on the server
  * filling the disk. What stays is what nobody received — too large to attach, a
- * delivery that failed, or a dashboard-started run with no chat at all.
+ * delivery that failed, or a dashboard-started run with no chat at all; a staged
+ * file's disk copy is removed by the runner once the chat actually has it.
  */
 async function finishDownload(
   ctx: AgentToolContext,
@@ -489,32 +504,30 @@ async function finishDownload(
     sizeBytes: result.sizeBytes,
     deliveredToChat: false,
   };
-  // Registered before delivery: the file is on disk either way, and a delivery
-  // that blows up must not leave it unrecorded.
+  // Registered before staging: the file is on disk either way, and a handoff
+  // that blows up must not leave it unrecorded. `deliveredToChat` stays false
+  // until the runner has actually sent a staged file.
   ctx.downloads.push(record);
   const file: CollectedFile | null = attachable
-    ? { buffer: await readFile(result.filePath), filename: result.filename, mime: result.mime }
+    ? {
+        buffer: await readFile(result.filePath),
+        filename: result.filename,
+        mime: result.mime,
+        filePath: result.filePath,
+      }
     : null;
-  record.deliveredToChat = await ctx.onDownload(record, file);
+  const outcome = await ctx.onDownload(record, file);
 
-  if (record.deliveredToChat) {
-    // A failed unlink leaves a stray file, not a wrong answer — the chat still has
-    // it, so the record stays truthful and only the disk hygiene is off.
-    await rm(result.filePath, { force: true }).catch((err: unknown) => {
-      console.error(
-        `browser-agent: delivered "${result.filename}" but could not remove the server copy:`,
-        err instanceof Error ? err.message : String(err),
-      );
-    });
+  if (outcome === "staged") {
     return {
-      text: `Sent "${result.filename}" (${mb} MB) to the chat. The user has the file — do NOT mention a server folder or a file path.`,
+      text: `Downloaded "${result.filename}" (${mb} MB). It will be delivered to the chat together with your final report — the user gets the file, so do NOT mention a server folder or a file path.`,
     };
   }
   return {
     text:
       `Saved to the downloads folder as "${result.filename}" (${mb} MB).` +
       (attachable
-        ? " It could not be delivered to the chat, so the server copy is what remains."
+        ? " It could not be handed to the chat, so the server copy is what remains."
         : " It is too large to attach here — tell the user the filename and that it is in the downloads folder. Do NOT paste a URL."),
   };
 }

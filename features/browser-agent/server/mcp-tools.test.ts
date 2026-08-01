@@ -92,3 +92,17 @@ describe(`${BROWSE_WEB_TOOL} download rights`, () => {
     });
   });
 });
+
+describe(`${BROWSE_WEB_TOOL} acknowledgement wiring`, () => {
+  it("reports the enqueued run to the turn, so its reply becomes the deletable ack", async () => {
+    const runIds: string[] = [];
+    const run = handler();
+
+    await runWithToolContext(
+      { chatId: "-1001", userId: OWNER, onBrowserRunEnqueued: (id) => runIds.push(id) },
+      () => run({ goal: "Download the video at https://example.com/clip" }),
+    );
+
+    expect(runIds).toEqual(["run-1"]);
+  });
+});

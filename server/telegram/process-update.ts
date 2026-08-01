@@ -30,11 +30,13 @@ import {
   type HandleOutcome,
   type IncomingMessage,
 } from "@/features/bot-messaging/server/service";
+import { registerRunAck } from "@/features/browser-agent/server/ack";
 import {
   applyMessageEdit,
   composeCurrentTurn,
   getConversationWindow,
   markIncomingMessageProcessed,
+  markMessageDeleted,
   recordAssistantMessage,
   recordIncomingMessage,
 } from "@/features/history/server/service";
@@ -178,6 +180,13 @@ interface BuildDepsInput {
   isVoiceTurn: boolean;
   /** Sink the `image_generate` tool fills; delivered after the reply. */
   collectImage: (base64: string) => void;
+  /**
+   * Runs `browse_web` enqueued this turn (filled through the tool context). A
+   * non-empty list turns the reply into a transient acknowledgement of the
+   * background run: sent silent, and registered per delivered message so the
+   * runner deletes it once the run posts its own report.
+   */
+  enqueuedBrowserRuns: string[];
   visionAttachment: {
     imageParts: ChatContentPart[];
     note?: string;
@@ -215,6 +224,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     messageText,
     isVoiceTurn,
     collectImage,
+    enqueuedBrowserRuns,
     visionAttachment,
     trace,
     overrides,
@@ -237,6 +247,27 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
   let ruleAuthorityUserId: string | null = null;
   /** A matched `always` rule can open a turn nobody addressed the bot in. */
   const canOpenTurn = alwaysRules.length > 0;
+
+  /**
+   * Register a delivered reply message as the acknowledgement of this turn's
+   * browsing run(s), for the runner to delete once the run reports. Registered
+   * under the newest run — the queue is FIFO, so with several enqueued that is
+   * the one that settles last and the ack outlives them all. When the run beat
+   * the reply to the finish line the ack is stale on arrival: delete it now
+   * (best-effort — a transport without delete, or a refused delete, just leaves
+   * it standing).
+   */
+  const registerBrowserRunAck = async (messageId: number) => {
+    const runId = enqueuedBrowserRuns[enqueuedBrowserRuns.length - 1];
+    if (!runId) return;
+    if (registerRunAck(runId, chatId, messageId) !== "settled") return;
+    try {
+      await transport.deleteMessage?.({ messageId });
+      await markMessageDeleted(chatId, messageId);
+    } catch {
+      // cosmetic — the acknowledgement simply stays in the chat
+    }
+  };
   /**
    * A matched rule can lend rights only if its author had rights to lend, and
    * only to somebody who does not already have them — so the owner's own
@@ -367,12 +398,19 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     loadSenderPreferences:
       senderId != null ? () => getPreferencesContext(senderId).catch(() => null) : undefined,
     async recordReply(input) {
-      await recordAssistantMessage({
-        chatId,
-        telegramMessageId: input.telegramMessageId,
-        content: input.content,
-        replyToMessageId: input.replyToMessageId,
-      });
+      try {
+        await recordAssistantMessage({
+          chatId,
+          telegramMessageId: input.telegramMessageId,
+          content: input.content,
+          replyToMessageId: input.replyToMessageId,
+        });
+      } finally {
+        // After the mirror write (so a stale-on-arrival ack soft-deletes the
+        // row it just created), but regardless of its success — losing the
+        // registration would leave the ack standing forever.
+        await registerBrowserRunAck(input.telegramMessageId);
+      }
     },
     generateReply:
       overrides?.generateReply ??
@@ -417,6 +455,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             authorityUserId: ruleAuthorityUserId,
             threadId,
             collectImage,
+            onBrowserRunEnqueued: (runId) => enqueuedBrowserRuns.push(runId),
           },
           () =>
           chatCompletionWithTools(conn, {
@@ -539,7 +578,12 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           }
         : undefined,
     async sendReply(text: string) {
-      return transport.sendReply(text, { replyToMessageId: currentMessageId });
+      return transport.sendReply(text, {
+        replyToMessageId: currentMessageId,
+        // A turn that enqueued a browsing run replies only with an "on it"
+        // acknowledgement — no ping; the run's own report is the notification.
+        silent: enqueuedBrowserRuns.length > 0,
+      });
     },
     // Voice-to-voice (user decision): a voice message is answered with a voice
     // bubble when the speech endpoint is configured. Synthesis or delivery
@@ -562,7 +606,10 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
               // fall through to the text delivery below
             }
           }
-          const sent = await transport.sendReply(text, { replyToMessageId: currentMessageId });
+          const sent = await transport.sendReply(text, {
+            replyToMessageId: currentMessageId,
+            silent: enqueuedBrowserRuns.length > 0,
+          });
           return { messageId: sent.messageId, asVoice: false };
         }
       : undefined,
@@ -853,6 +900,9 @@ export async function processUpdate(
   // context's `collectImage`) and are delivered once the reply is out, so the
   // acknowledgement arrives before the picture it acknowledges.
   const generatedImages: string[] = [];
+  // Runs `browse_web` enqueued during this turn — the reply then becomes a
+  // silent, self-deleting acknowledgement (see BuildDepsInput).
+  const enqueuedBrowserRuns: string[] = [];
   const outcome = await handleIncomingMessage(
     incoming,
     buildDeps({
@@ -869,6 +919,7 @@ export async function processUpdate(
       messageText: effectiveText,
       isVoiceTurn: isVoiceMessage,
       collectImage: (base64) => generatedImages.push(base64),
+      enqueuedBrowserRuns,
       visionAttachment,
       trace: replyTrace ?? undefined,
       overrides,

@@ -212,6 +212,29 @@ export async function updateChatMessageContent(
 }
 
 /**
+ * Soft-delete a mirrored message (a message the bot removed from the live chat,
+ * e.g. a browsing-run acknowledgement). Returns the updated record, or null when
+ * no matching row exists. The row survives for the CSV export, flagged.
+ */
+export async function markChatMessageDeleted(
+  db: DrizzleDb,
+  chatId: string,
+  telegramMessageId: number,
+): Promise<ChatMessageRecord | null> {
+  const [row] = await db
+    .update(chatMessages)
+    .set({ deletedAt: new Date() })
+    .where(
+      and(
+        eq(chatMessages.chatId, chatId),
+        eq(chatMessages.telegramMessageId, telegramMessageId),
+      ),
+    )
+    .returning();
+  return row ? mapRow(row) : null;
+}
+
+/**
  * Non-deleted messages in a chat sent on/after `since`, oldest first (insertion
  * order). Optionally excludes one Telegram message id — used to drop the current
  * turn from its own recent-history window.

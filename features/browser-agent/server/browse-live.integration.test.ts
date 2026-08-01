@@ -64,7 +64,7 @@ describe.skipIf(!LLM_LIVE)("browser agent — real browse (live)", () => {
           screenshots.push({ seq });
           return seq;
         },
-        onDownload: async () => false,
+        onDownload: async () => "kept" as const,
       };
 
       try {
