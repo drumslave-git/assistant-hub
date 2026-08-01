@@ -82,6 +82,17 @@ export function checkOwnership(
   return null;
 }
 
+/**
+ * A task as text for the tools, with the saved context spelled out.
+ * {@link summarizeTask} is the shared one-liner (dashboard, fire logs); a model
+ * deciding whether it still has background to gather has to be able to see
+ * whether the task carries any — otherwise "context" is invisible until it
+ * fires blind.
+ */
+function taskText(task: ScheduledTask): string {
+  return `${summarizeTask(task)}\ncontext: ${task.context ?? "(none saved)"}`;
+}
+
 function textResult(text: string, structured?: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text }], structuredContent: structured };
 }
@@ -136,6 +147,29 @@ export const TASKS_CREATE_DESCRIPTION =
   "run (give 'date' YYYY-MM-DD + 'time'); daily=every day at 'time'; weekly=given " +
   "'weekdays' at 'time'. For a one-off 'in N minutes/hours' or 'tomorrow' reminder use " +
   "once with the computed date and HH:MM time.";
+
+/**
+ * `tasks_update`'s description — exported for pinning like the create one, and
+ * carrying the same gather-context rule for the same reason (2026-08-01). The
+ * rule lived only on `tasks_create`, so the one case it most needed to cover
+ * went uncovered: a user handing over the background that a thin existing task
+ * was missing. The model updated the row with no `context` gathered, and the
+ * fire stayed exactly as blind as before.
+ */
+export const TASKS_UPDATE_DESCRIPTION =
+  "Change or enable/disable a task in THIS chat by its id — only tasks the current user " +
+  "created (you cannot change someone else's task). Only the fields you pass are changed. " +
+  "Get the id from tasks_list; tasks_list and tasks_get show each task's saved context. " +
+  "IMPORTANT — the same rule as tasks_create: when the task fires you will have ONLY the " +
+  "stored 'instruction' and 'context' texts, no chat transcript and no conversation memory. " +
+  "So GATHER CONTEXT BEFORE UPDATING whenever the update touches what the task is about — " +
+  "the user telling you what a task's person/event/joke/topic actually is IS such an update, " +
+  "and so is changing the instruction to point at something from this chat. Collect what it " +
+  "refers to from the messages you can already see, or by searching the conversation history " +
+  "(history_search, then history_get_in_range around the matches if the matches alone are " +
+  "thin), and pass it as 'context'. Changing the instruction while leaving context describing " +
+  "the old one is worse than leaving both alone. Updating only the time, schedule or 'enabled' " +
+  "needs no context. Times are in the operator timezone.";
 
 export function registerScheduledTasksMcpTools(server: McpServer): void {
   server.registerTool(
@@ -192,7 +226,7 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
           },
           toolTrigger(ctx.chatId, ctx.userId),
         );
-        return textResult(`Task created: ${summarizeTask(task)}`, { ok: true, task: taskView(task) });
+        return textResult(`Task created: ${taskText(task)}`, { ok: true, task: taskView(task) });
       } catch (err) {
         const mapped = toToolError(err);
         if (mapped) return mapped;
@@ -205,22 +239,25 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
     TASKS_UPDATE_TOOL,
     {
       title: "Update scheduled task",
-      description:
-        "Change or enable/disable a task in THIS chat by its id — only tasks the current user " +
-        "created (you cannot change someone else's task). Only the fields you pass are changed. " +
-        "Get the id from tasks_list.",
+      description: TASKS_UPDATE_DESCRIPTION,
       inputSchema: {
         id: z.string().min(1).describe("Task id to update (from tasks_list)"),
         instruction: z
           .string()
           .default("")
-          .describe("New instruction (optional) — a directive; background facts go in 'context'."),
+          .describe(
+            "New instruction (optional) — a directive; background facts go in 'context'. If it " +
+              "now refers to a person, event, joke or topic from this chat, pass 'context' too.",
+          ),
         context: z
           .string()
           .default("")
           .describe(
-            "New saved background (optional) — same rule as on create: self-contained for a " +
-              "reader with no chat transcript. Replaces the stored context; '' leaves it unchanged.",
+            "New saved background (optional) — the gathered facts the fire will need, written " +
+              "self-contained for a reader with NO chat transcript. Pass it whenever the user " +
+              "supplies background for this task or you change what the instruction refers to; " +
+              "gather it from the visible conversation or history search first. Replaces the " +
+              "stored context entirely; '' leaves it unchanged.",
           ),
         schedule_kind: z.enum(["once", "daily", "weekly", ""]).default("").describe("New schedule kind (optional)"),
         time: z.string().default("").describe("New time HH:MM (optional)"),
@@ -256,7 +293,7 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
           },
           toolTrigger(ctx.chatId, ctx.userId),
         );
-        return textResult(`Task updated: ${summarizeTask(task)}`, { ok: true, task: taskView(task) });
+        return textResult(`Task updated: ${taskText(task)}`, { ok: true, task: taskView(task) });
       } catch (err) {
         const mapped = toToolError(err);
         if (mapped) return mapped;
@@ -308,7 +345,12 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
       const text =
         tasks.length === 0
           ? "(no scheduled tasks in this chat)"
-          : tasks.map((t) => `${t.id}: ${summarizeTask(t)}`).join("\n");
+          : tasks
+              .map(
+                (t) =>
+                  `${t.id}: ${summarizeTask(t)}${t.context ? "" : " [no saved context — a fire sees nothing else]"}`,
+              )
+              .join("\n");
       return textResult(text, { ok: true, count: tasks.length, tasks: tasks.map(taskView) });
     },
   );
@@ -317,7 +359,9 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
     TASKS_GET_TOOL,
     {
       title: "Get scheduled task",
-      description: "Read one task in THIS chat by its id.",
+      description:
+        "Read one task in THIS chat by its id, including the background saved with it. Read it " +
+        "before changing what a task is about, so you can tell whether its context still fits.",
       inputSchema: { id: z.string().min(1).describe("Task id to read (from tasks_list)") },
       annotations: {
         readOnlyHint: true,
@@ -330,7 +374,7 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
       const ctx = getToolContext();
       const task = await getTask(id);
       if (!task || task.chatId !== ctx.chatId) return errorResult(`No task ${id} in this chat.`);
-      return textResult(summarizeTask(task), { ok: true, task: taskView(task) });
+      return textResult(taskText(task), { ok: true, task: taskView(task) });
     },
   );
 }

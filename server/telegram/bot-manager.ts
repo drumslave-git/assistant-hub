@@ -1,7 +1,7 @@
 import "server-only";
 
 import { run, sequentialize, type RunnerHandle } from "@grammyjs/runner";
-import { Bot, GrammyError, InputFile, type Context } from "grammy";
+import { Bot, GrammyError, HttpError, InputFile, type Context } from "grammy";
 
 import { renderTelegramHtml } from "@/features/bot-messaging/telegram-html";
 import { getTelegramBotToken } from "@/features/settings/server/service";
@@ -31,6 +31,10 @@ import type { FeedbackTransport, IncomingUpdate, ReplyTransport } from "./transp
  * grammy adapter that maps a live `Context` onto the transport-agnostic
  * {@link processUpdate} pipeline. All message-handling logic lives in
  * `process-update.ts`, so it runs identically without a bot (see `test/simulate`).
+ *
+ * Losing the network is a normal event, not a crash: the poller is supervised
+ * here (see {@link FETCH_RETRY_WINDOW_MS}) so a connection that comes back finds
+ * the bot reconnecting on its own, and Stop always answers.
  */
 
 export type BotState = "stopped" | "running" | "error";
@@ -51,16 +55,53 @@ interface ManagerStore {
   status: BotStatus;
   /** Guards against overlapping start/stop calls. */
   transitioning: boolean;
+  /** Armed reconnect attempt after a network drop, or null. */
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  /** Whether the poller is *meant* to be up — only then do we reconnect. */
+  desired: boolean;
 }
 
 const STORE_KEY = Symbol.for("llm-tg-bot.telegram.bot-manager");
 
 const STOPPED: BotStatus = { state: "stopped", username: null, since: null, error: null };
 
+/**
+ * How long the runner's own fetch loop may keep retrying a failing `getUpdates`
+ * before it gives up and rejects its task.
+ *
+ * The runner's default is 15 hours of *uncapped doubling* backoff, which is why
+ * a multi-hour outage left the bot dead long after the connection came back: by
+ * then the next attempt had been scheduled hours out. That sleep is also not
+ * interruptible, so it wedged Stop as well (see {@link stopBotInternal}).
+ * Bounded here so a drop surfaces within a window, and this module owns the
+ * reconnecting instead — on a fixed interval that never grows.
+ */
+const FETCH_RETRY_WINDOW_MS = 30_000;
+
+/** Delay between reconnect attempts while the bot is down on a network error. */
+const RECONNECT_DELAY_MS = 15_000;
+
+/** Bound on the Telegram handshake, so a black-holed route can't wedge a start. */
+const INIT_TIMEOUT_MS = 20_000;
+
+/**
+ * How long `stopBot` waits for the poller to unwind before detaching it. The
+ * abort itself is synchronous, so the detached loop can never fetch again — this
+ * only caps how long the caller (and the transition lock) is held.
+ */
+const STOP_DRAIN_TIMEOUT_MS = 3_000;
+
 function store(): ManagerStore {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: ManagerStore };
   if (!g[STORE_KEY]) {
-    g[STORE_KEY] = { bot: null, runner: null, status: { ...STOPPED }, transitioning: false };
+    g[STORE_KEY] = {
+      bot: null,
+      runner: null,
+      status: { ...STOPPED },
+      transitioning: false,
+      reconnectTimer: null,
+      desired: false,
+    };
   }
   return g[STORE_KEY];
 }
@@ -174,6 +215,92 @@ function isEntityParseError(err: unknown): boolean {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** The Telegram handshake outran {@link INIT_TIMEOUT_MS}; treated as a network drop. */
+class HandshakeTimeoutError extends Error {}
+
+/**
+ * `bot.init()` (getMe) with a deadline. Grammy's own client timeout is 500s —
+ * long enough for a stalled connection to hold the transition lock, and the
+ * dashboard request queued behind it, for most of a coffee break. The abandoned
+ * request is left to that timeout to reap; its `Bot` instance is discarded here
+ * either way, and `Promise.race` stays subscribed, so a late rejection cannot
+ * surface unhandled.
+ */
+async function initWithDeadline(bot: Bot): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      bot.init(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new HandshakeTimeoutError(
+                `Telegram did not answer getMe within ${INIT_TIMEOUT_MS / 1000}s`,
+              ),
+            ),
+          INIT_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Whether a failure is worth reconnecting over. `HttpError` is grammy's "the
+ * HTTP call itself failed" — an unreachable network, DNS, a timeout — which is
+ * exactly the case that heals by itself. A `GrammyError` means Telegram answered
+ * and refused (401 revoked token, 409 another poller), and retrying that in a
+ * loop only produces noise, so it settles as a plain error for the operator.
+ */
+function isTransientNetworkError(err: unknown): boolean {
+  return err instanceof HttpError || err instanceof HandshakeTimeoutError;
+}
+
+function cancelReconnect(s: ManagerStore): void {
+  if (!s.reconnectTimer) return;
+  clearTimeout(s.reconnectTimer);
+  s.reconnectTimer = null;
+}
+
+/**
+ * Record a poller failure and, when it is the kind that heals, arm the next
+ * attempt. Logging is edge-triggered: an outage that lasts hours writes one line
+ * on the way down and one on the way back up, not one per attempt.
+ */
+function failAndMaybeReconnect(s: ManagerStore, err: unknown, username: string | null): void {
+  const reconnecting = s.desired && isTransientNetworkError(err);
+  if (s.status.state !== "error") {
+    console.error(
+      `Telegram polling is down: ${errorMessage(err)}${
+        reconnecting ? ` — reconnecting every ${RECONNECT_DELAY_MS / 1000}s` : ""
+      }`,
+    );
+  }
+  s.status = {
+    state: "error",
+    username,
+    since: null,
+    error: reconnecting
+      ? `${errorMessage(err)} — reconnecting automatically`
+      : errorMessage(err),
+  };
+  cancelReconnect(s);
+  if (!reconnecting) return;
+  s.reconnectTimer = setTimeout(() => {
+    s.reconnectTimer = null;
+    // `startBot` re-arms this itself when the attempt fails the same way, so one
+    // timer is in flight at a time however long the outage lasts. A throw (the
+    // database being unreachable too, say) must not end up unhandled — and is
+    // not a network failure, so it settles the loop rather than spinning on it.
+    void startBot().catch((err: unknown) => failAndMaybeReconnect(s, err, null));
+  }, RECONNECT_DELAY_MS);
+  // A pending retry must not be a reason for the process to stay alive.
+  s.reconnectTimer.unref?.();
 }
 
 /** Grammy `Context` as the outbound sink for the pipeline. */
@@ -318,15 +445,20 @@ async function onEditedMessage(ctx: Context): Promise<void> {
  */
 export async function startBot(): Promise<BotStatus> {
   const s = store();
+  // Any caller of `startBot` — operator, autostart, or the reconnect timer —
+  // wants the poller up; that intent is what keeps reconnecting alive.
+  s.desired = true;
+  cancelReconnect(s);
   if (s.transitioning) return { ...s.status };
   s.transitioning = true;
   try {
-    if (s.bot) await stopBotInternal(s);
+    if (s.bot || s.runner) await stopBotInternal(s);
 
     const token = await getTelegramBotToken();
     if (!token) {
       // Not an error — the bot simply isn't configured yet. Kept as `stopped`
       // so the dashboard doesn't show a stale "error" once a token is saved.
+      s.desired = false;
       s.status = { ...STOPPED };
       return { ...s.status };
     }
@@ -348,12 +480,23 @@ export async function startBot(): Promise<BotStatus> {
     });
 
     try {
-      await bot.init(); // getMe — validates the token and populates bot.botInfo
+      // getMe — validates the token and populates bot.botInfo.
+      await initWithDeadline(bot);
     } catch (err) {
-      s.status = { state: "error", username: null, since: null, error: errorMessage(err) };
+      // The handshake fails on exactly the outage the poller would hit, so it
+      // reconnects on the same terms rather than settling as a dead error.
+      failAndMaybeReconnect(s, err, null);
       return { ...s.status };
     }
 
+    if (!s.desired) {
+      // A Stop landed while the handshake was in flight — honour it rather than
+      // bringing up a poller nobody asked for.
+      s.status = { ...STOPPED };
+      return { ...s.status };
+    }
+
+    const recovered = s.status.state === "error";
     s.bot = bot;
     s.status = {
       state: "running",
@@ -361,6 +504,7 @@ export async function startBot(): Promise<BotStatus> {
       since: new Date().toISOString(),
       error: null,
     };
+    if (recovered) console.log(`Telegram bot @${bot.botInfo.username} reconnected`);
 
     // Concurrent long-polling loop via the runner; not awaited (its task
     // resolves only when the bot stops, and rejects on a crash).
@@ -371,13 +515,20 @@ export async function startBot(): Promise<BotStatus> {
         fetch: {
           allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
         },
+        // See FETCH_RETRY_WINDOW_MS: give up on a failing fetch loop quickly and
+        // let the supervisor below reconnect on a flat interval.
+        maxRetryTime: FETCH_RETRY_WINDOW_MS,
       },
     });
     s.runner = runner;
+    const username = bot.botInfo.username;
     void runner.task()?.catch((err) => {
+      // A runner we already stopped or replaced can still reject afterwards
+      // (its detached fetch loop unwinding); only the current one may report.
+      if (s.runner !== runner) return;
       s.bot = null;
       s.runner = null;
-      s.status = { ...s.status, state: "error", error: errorMessage(err) };
+      failAndMaybeReconnect(s, err, username);
     });
 
     return { ...s.status };
@@ -387,23 +538,33 @@ export async function startBot(): Promise<BotStatus> {
 }
 
 async function stopBotInternal(s: ManagerStore): Promise<void> {
-  if (s.runner) {
-    try {
-      // Interrupts the pending getUpdates call and resolves once every
-      // in-flight update's middleware has finished — a clean drain.
-      await s.runner.stop();
-    } catch (err) {
-      console.error("Failed to stop Telegram bot:", errorMessage(err));
-    }
+  cancelReconnect(s);
+  const runner = s.runner;
+  if (runner) {
+    // `stop()` aborts the pending getUpdates synchronously; the promise it hands
+    // back settles only once the fetch loop has unwound, and a loop asleep in a
+    // retry backoff cannot be woken. Detach after a bounded wait rather than hold
+    // the caller — and the transition lock — open for that sleep. Safe: the
+    // aborted loop throws on its next fetch, so no second poller can appear.
+    await Promise.race([
+      Promise.resolve(runner.stop()).catch((err: unknown) => {
+        console.error("Failed to stop Telegram bot:", errorMessage(err));
+      }),
+      new Promise((resolve) => setTimeout(resolve, STOP_DRAIN_TIMEOUT_MS)),
+    ]);
     s.runner = null;
   }
   s.bot = null;
   s.status = { ...STOPPED };
 }
 
-/** Stop the poller. Idempotent. */
+/** Stop the poller, cancelling any pending reconnect. Idempotent. */
 export async function stopBot(): Promise<BotStatus> {
   const s = store();
+  // Withdraw the intent first: a reconnect attempt that is already in flight
+  // sees this and settles as stopped instead of bringing the poller back.
+  s.desired = false;
+  cancelReconnect(s);
   if (s.transitioning) return { ...s.status };
   s.transitioning = true;
   try {

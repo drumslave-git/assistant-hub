@@ -93,6 +93,14 @@ describe("buildTaskDirectiveMessage", () => {
     expect(msg).toContain("DIFFERENT way");
   });
 
+  it("marks the recent deliveries as wording-only, never a source of facts", () => {
+    const msg = buildTaskDirectiveMessage("call mom", "Mom is in Lviv.", ["a made-up detail"]);
+    expect(msg).toContain("WORDING REFERENCE ONLY");
+    expect(msg).toContain("YOUR OWN past messages");
+    expect(msg).toContain("They are NOT a source of facts");
+    expect(msg).toContain("do not repeat it, build on it, or treat it as something that happened");
+  });
+
   it("tells the fire it has no transcript and must look up an unresolved reference", () => {
     const msg = buildTaskDirectiveMessage("remind Kyrylo who Muradyan is", null, []);
     expect(msg).toContain("You have no chat transcript here");

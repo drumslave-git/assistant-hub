@@ -28,6 +28,101 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Poller does not survive an outage; Stop does nothing (`done` pending live verification, 2026-08-01)
+
+User report: after a few hours without an internet connection the bot never came
+back, and Stop on the dashboard did nothing at all. Both are one root cause, in
+`@grammyjs/runner`'s defaults.
+
+*What happened.* The runner's update fetcher retries a failing `getUpdates` with
+**uncapped doubling** backoff (100ms → 200 → … ) for up to **15 hours**. After
+three hours down, the next attempt had been scheduled roughly three hours out, so
+the connection returning changed nothing. That sleep is a bare `setTimeout` the
+abort signal cannot interrupt — and `runner.stop()`'s promise only settles once
+the fetch loop unwinds. `stopBotInternal` awaited it, holding `transitioning`
+true for the whole sleep, so the dashboard POST hung and every later start/stop
+returned the stale status immediately. Hence "nothing happened".
+
+*Fixes* (`server/telegram/bot-manager.ts`):
+- `maxRetryTime: 30_000` on the runner, so a drop surfaces in a window instead of
+  disappearing into a multi-hour sleep.
+- Reconnect supervision owned by the manager: a flat **15s** retry for as long as
+  the failure is a network one (`HttpError`, plus a handshake that outran the new
+  20s deadline), driven by a `desired` flag that Stop withdraws. A `GrammyError`
+  (Telegram answered and refused — revoked token, second poller) settles as a
+  plain error rather than spinning. Status carries `reconnecting automatically`;
+  logging is edge-triggered, one line down and one back up.
+- `stopBotInternal` detaches after a **3s** drain instead of awaiting the sleep.
+  Safe because the abort is synchronous — the detached loop throws on its next
+  fetch. The task-rejection handler now checks runner identity, so a late
+  rejection from a replaced runner cannot clobber a live bot (a pre-existing bug:
+  it would have nulled the *new* bot).
+- `bot.init()` bounded by `initWithDeadline` (grammy's own client timeout is
+  500s — long enough to hold the transition lock and the request behind it).
+- `register-node.ts`: the autostart promise has a `catch`, so a boot with the
+  database unreachable no longer ends in an unhandled rejection.
+
+Proof: files `server/telegram/{bot-manager,register-node}.ts`, new
+`server/telegram/bot-manager.test.ts` (10 — retry window, handshake deadline,
+self-reconnect, keeps retrying while the outage lasts, no spin on a refused
+token, stale-runner rejection ignored, Stop answers while the loop is asleep,
+Stop leaves the manager startable, Stop cancels a pending reconnect), docs
+(`docs/architecture/telegram-pipeline.md` new "Losing the connection" section,
+`docs/operations/troubleshooting.md`). `npm run lint`, `npm run typecheck`,
+`npm test` (87 files / 877) all clean; `npm run build` blocked again by the
+`data/pg` EACCES tracked below (fourth recurrence — needs the operator chmod).
+
+Remaining risks / next steps:
+- **Live verification:** pull the network for a few minutes with the bot running.
+  Expect the status to flip to error + `reconnecting automatically`, one log line,
+  and the bot back within ~15s of the link returning — and Stop to answer at any
+  point during it. Only the mocked lifecycle has been exercised so far.
+- 15s of retries costs nothing while down (each attempt fails at connect), but on
+  a *partial* outage where Telegram answers slowly, attempts overlap the 20s
+  handshake deadline. Accepted: the transition lock serialises them.
+- A drop is still invisible until the runner gives up (up to 30s of its own
+  retrying); no "degraded" state is surfaced during that window.
+
+## Scheduled-task context on update + delivery-history pollution (`done` pending live verification, 2026-08-01)
+
+Two user reports against the round-3 `context` work tracked under "Context-free
+reminders" below.
+
+1. **Context is not gathered when a task is updated via MCP.** The GATHER CONTEXT
+   rule lived only on `tasks_create`, and `tasks_update`'s description said
+   nothing beyond "only the fields you pass are changed" — so the very case the
+   context column exists for (a user handing over the background a thin existing
+   task was missing) went through with nothing gathered. New exported
+   `TASKS_UPDATE_DESCRIPTION` carries the create rule reworded for updates,
+   naming that case explicitly, warning against leaving stale context behind a
+   changed instruction, and exempting a pure schedule/enabled change. The
+   `instruction`/`context` field descriptions were tightened to match. Context is
+   now also *visible* to the model: `tasks_get` and the create/update
+   confirmations print it (new `taskText`), and `tasks_list` flags a task that has
+   none — previously the tool text showed only `summarizeTask`, so the model could
+   not tell whether a task carried any background at all.
+2. **Recent deliveries polluted the fire.** The last five delivered texts are fed
+   back for wording variation, but nothing said so: a hallucination in one fire
+   read as context for the next and compounded. `buildTaskDirectiveMessage`'s
+   block is now labelled `WORDING REFERENCE ONLY`, states they are the bot's own
+   past messages, not a source of facts, may be wrong/stale/invented, and that
+   anything in them not in the directive or saved context must not be repeated or
+   built on. Same source ranking `BASE_SYSTEM_PROMPT`'s Grounding block applies to
+   the bot's own transcript lines.
+
+Proof: files `features/scheduled-tasks/server/{mcp-tools,fire}.ts` (+
+`mcp-tools.test.ts` 5 new pinning cases, `fire.test.ts` 1 new),
+`docs/features/scheduled-tasks.md` (which had never documented `context` at all —
+the Saved context section and the `context` key column are new). `npm run lint`,
+`npm run typecheck`, `npm test` (87 files / 877), `npm run test:integration
+features/scheduled-tasks` (22 passed / 7 live-LLM skipped) all clean.
+
+Remaining risks / next steps: this is prompt text against gemma4:12b, the same
+model that ignored rounds 1–3 of the create-side rule — see the tool-avoidance
+item below. **Live re-test:** give the bot the background for an existing
+context-less task in chat and confirm the `tasks_update` call actually carried a
+`context` (not just a claim that it did), then let the task fire.
+
 ## Browser-agent chat delivery overhaul (`done` pending live verification, 2026-08-01)
 
 User report (2026-08-01, after the first live rule-driven Instagram download): the
@@ -788,9 +883,10 @@ deleted again, so the dev DB holds no rules.
   The operator ran the chmod on 2026-07-29 and the build was green again. It
   **recurred** on 2026-07-31 (a fresh Postgres volume recreated the dir); the
   operator re-ran the chmod the same day. **Recurred again on 2026-08-01**,
-  blocking the build check for the chat-delivery overhaul above. Three
-  recurrences now — worth a documented pre-build step (or a Turbopack-side
-  exclusion if one appears).
+  blocking the build check for the chat-delivery overhaul above, and **still
+  failing later the same day** for the poller-supervision work. Four recurrences
+  now — worth a documented pre-build step (or a Turbopack-side exclusion if one
+  appears).
 
 - **Traces bind-mount permissions (`blocked` on an operator decision;** from
   the 2026-07-22 prod data-loss incident**)** — Docker auto-creates

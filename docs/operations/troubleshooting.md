@@ -22,7 +22,7 @@ because guessing is exactly what the trace archive exists to avoid.
 | --- | --- |
 | Overview → Telegram bot says "Not configured" | Set the bot token in Settings → Core |
 | Says "Stopped" | Click Start on the bot control card |
-| Says "Error" | Read the message. An invalid token, or another process holding the same token's `getUpdates` lock |
+| Says "Error" | Read the message. Ending in `reconnecting automatically` means the network dropped and the manager is retrying every 15s — nothing to do but restore the connection. Otherwise Telegram refused: an invalid token, or another process holding the same token's `getUpdates` lock |
 | Says "Running" but nothing happens | Continue below |
 | Overview → LLM endpoint is red | Fix the connection; use Settings → Test connection for the real error |
 | Overview → Model says none selected | Pick one in Settings → Core |

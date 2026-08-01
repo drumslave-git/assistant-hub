@@ -101,14 +101,23 @@ export function registerNode(): void {
   // configured settles as a failure rather than hanging.
   startBrowserAgentRunner();
 
-  // Fire-and-forget: do not block server startup on the Telegram handshake.
-  void startBot().then((status) => {
-    if (status.state === "running") {
-      console.log(`Telegram bot @${status.username} started (long polling)`);
-    } else {
-      console.warn(
-        `Telegram bot not autostarted: ${status.error ?? "no bot token configured — set one in Settings and Start it"}`,
+  // Fire-and-forget: do not block server startup on the Telegram handshake. A
+  // network failure here is not fatal — the manager reconnects on its own — so
+  // the warning below is the boot-time note, not the last word.
+  void startBot()
+    .then((status) => {
+      if (status.state === "running") {
+        console.log(`Telegram bot @${status.username} started (long polling)`);
+      } else {
+        console.warn(
+          `Telegram bot not autostarted: ${status.error ?? "no bot token configured — set one in Settings and Start it"}`,
+        );
+      }
+    })
+    .catch((err: unknown) => {
+      console.error(
+        "Telegram bot autostart failed:",
+        err instanceof Error ? err.message : String(err),
       );
-    }
-  });
+    });
 }

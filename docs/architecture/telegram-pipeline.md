@@ -35,6 +35,30 @@ same code runs with no bot at all — that is what `test/simulate.ts` uses.
 - On `SIGTERM`/`SIGINT` the poller is stopped (capped at 3s) so a redeploy does
   not collide with the previous process's `getUpdates` lock.
 
+## Losing the connection
+
+Long polling dies whenever the network does, so the manager supervises it
+(rewritten 2026-08-01 after an outage the bot never came back from):
+
+- The runner's own fetch retrying is capped at a **30-second window** instead of
+  its default 15 hours of uncapped doubling backoff. Left at the default, a
+  multi-hour outage scheduled the next attempt hours out, so the bot stayed dead
+  long after the link came back.
+- Once the runner gives up, the manager reconnects **every 15s on a flat
+  interval** for as long as the failure is a network one (grammy's `HttpError`,
+  plus a handshake that outran its 20s deadline). A `GrammyError` — Telegram
+  answered and refused, e.g. a revoked token or a second poller — settles as a
+  plain error instead, since retrying that only makes noise.
+- Status while down is `error`, with `reconnecting automatically` on the message
+  so the dashboard says which kind it is. Logging is edge-triggered: one line
+  going down, one coming back, however long the outage runs.
+- **Stop always answers.** `runner.stop()` aborts synchronously but its promise
+  cannot settle while the fetch loop sleeps in a backoff, so the manager detaches
+  after 3s rather than holding the transition lock open — which is what used to
+  make the dashboard's Stop do nothing at all. The aborted loop throws on its
+  next fetch, so no second poller can appear, and a late rejection from a runner
+  that was already replaced is ignored by identity.
+
 Four update kinds, four handlers:
 
 | Update | Handler | What it does |

@@ -112,6 +112,13 @@ function hasVisibleContent(text: string): boolean {
  * for anything still unresolved (older tasks have no saved context), with honesty
  * over parroting when even that fails. The fire runs with the full toolset bound
  * to the task's chat, so the lookup is actually available.
+ *
+ * The recent deliveries are the one part of this prompt that is bot-authored, and
+ * they are labelled as such (user report, 2026-08-01): one hallucinated fire used
+ * to seed the next, since the invented detail came back as context and compounded
+ * from there. They are quoted for wording variation only — the same source rank
+ * the reply path applies to the bot's own transcript lines
+ * (`BASE_SYSTEM_PROMPT`'s Grounding block).
  */
 export function buildTaskDirectiveMessage(
   instruction: string,
@@ -123,9 +130,11 @@ export function buildTaskDirectiveMessage(
     : "";
   const previousBlock =
     recentDeliveries.length > 0
-      ? `\n\nYou have delivered this recurring task before. Your most recent messages for it (newest first):\n` +
+      ? `\n\nWORDING REFERENCE ONLY — you have delivered this recurring task before. Your most recent messages for it (newest first):\n` +
         recentDeliveries.map((text, i) => `${i + 1}. ${text}`).join("\n") +
-        `\nSay the same thing a DIFFERENT way this time — fresh wording, angle, or phrasing. Do not reuse a sentence from the list above.`
+        `\nThose are YOUR OWN past messages, quoted for exactly one purpose: so you do not repeat yourself. They are NOT a source of facts. ` +
+        `They may be wrong, stale, or invented, and anything in them that is not in the directive or the saved context above is unverified — do not repeat it, build on it, or treat it as something that happened. ` +
+        `Say the same thing a DIFFERENT way this time — fresh wording, angle, or phrasing. Do not reuse a sentence from the list.`
       : "";
   return (
     `[SCHEDULED TASK] A standing task set up for this chat is now due. Deliver it now.\n` +

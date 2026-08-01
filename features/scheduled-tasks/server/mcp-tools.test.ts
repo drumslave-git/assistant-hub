@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ScheduledTask } from "../types";
-import { TASKS_CREATE_DESCRIPTION, checkOwnership } from "./mcp-tools";
+import { TASKS_CREATE_DESCRIPTION, TASKS_UPDATE_DESCRIPTION, checkOwnership } from "./mcp-tools";
 
 /**
  * The author rule for the task MCP tools: a chat participant may edit/cancel only
@@ -87,5 +87,38 @@ describe("TASKS_CREATE_DESCRIPTION", () => {
 
   it("keeps the third-person/joke schedule rule from the earlier fix", () => {
     expect(TASKS_CREATE_DESCRIPTION).toContain("a recurring bit or gag is still a schedule request");
+  });
+});
+
+describe("TASKS_UPDATE_DESCRIPTION", () => {
+  it("carries the same fire-sees-only-the-stored-texts warning as create", () => {
+    expect(TASKS_UPDATE_DESCRIPTION).toContain(
+      "when the task fires you will have ONLY the stored 'instruction' and 'context' texts",
+    );
+  });
+
+  it("requires gathering context — from view or history — before updating", () => {
+    expect(TASKS_UPDATE_DESCRIPTION).toContain("GATHER CONTEXT BEFORE UPDATING");
+    expect(TASKS_UPDATE_DESCRIPTION).toContain("history_search");
+    expect(TASKS_UPDATE_DESCRIPTION).toContain("history_get_in_range");
+    expect(TASKS_UPDATE_DESCRIPTION).toContain("pass it as 'context'");
+  });
+
+  it("names the case it was written for: the user supplying the missing background", () => {
+    expect(TASKS_UPDATE_DESCRIPTION).toContain(
+      "the user telling you what a task's person/event/joke/topic actually is IS such an update",
+    );
+  });
+
+  it("warns against leaving stale context behind a changed instruction", () => {
+    expect(TASKS_UPDATE_DESCRIPTION).toContain(
+      "Changing the instruction while leaving context describing the old one",
+    );
+  });
+
+  it("exempts a pure schedule or enable/disable change", () => {
+    expect(TASKS_UPDATE_DESCRIPTION).toContain(
+      "Updating only the time, schedule or 'enabled' needs no context",
+    );
   });
 });

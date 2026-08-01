@@ -16,7 +16,27 @@ delivers it, mirrors it into history, and records the whole pass as a trace.
 
 That is why `recent_deliveries` exists: the last five delivered texts are kept and
 passed back in, so a daily reminder does not arrive word-for-word identical every
-day.
+day. They are quoted to the fire as a **wording reference only, explicitly not a
+source of facts** — they are the bot's own past output, so one hallucinated fire
+would otherwise seed the next and compound from there (user report, 2026-08-01).
+Same source ranking the reply path applies to the bot's own transcript lines.
+
+## Saved context
+
+A fire sees **no transcript**: the stored `instruction` and `context` texts are its
+whole world. So an instruction that points at something ("remind Kyrylo who X is")
+delivers the pointer, not the reminder — observed in production, 2026-07-28.
+
+`context` (nullable, ≤4000 chars) is the background gathered when the task was set
+up, written self-contained for a reader with no chat transcript. `tasks_create`
+takes it as a **required** input; `tasks_update` takes it as an optional
+replacement, and its description carries the same gather-first rule, since the case
+that most needs it is a user supplying the background a thin existing task was
+missing (2026-08-01). `tasks_list` flags a task that has none, and `tasks_get`
+prints it, so the model can tell what a task is actually carrying.
+
+The fire's history lookup stays as the second line of defence for tasks created
+before the column existed; those are deliberately not backfilled.
 
 ## Schedules
 
@@ -86,7 +106,7 @@ reply pipeline injects — without it the model cannot resolve a relative time a
 ## Data
 
 `scheduled_tasks` — see [Data model](../architecture/data-model.md#scheduled_tasks).
-Key columns: `instruction`, `schedule_kind`, `time_of_day`, `weekdays`, `run_date`,
+Key columns: `instruction`, `context`, `schedule_kind`, `time_of_day`, `weekdays`, `run_date`,
 `enabled`, `attempts`, `recent_deliveries`, `last_run_at`, `next_run_at`,
 `created_by_user_id`.
 
