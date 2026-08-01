@@ -15,10 +15,16 @@ function formatMb(bytes: number): string {
 /**
  * One download as a chat line: filename · size (never a raw file URL). Says where
  * to find it only when the file itself did not reach the chat — if the user has the
- * attachment, pointing at a server folder they cannot browse is noise.
+ * attachment, pointing at a server folder they cannot browse is noise. A discarded
+ * file (restricted run, too large to attach) is named as undeliverable instead: it no
+ * longer exists anywhere, so no folder is mentioned.
  */
 export function formatDownloadLine(record: BrowserDownloadRecord): string {
-  const suffix = record.deliveredToChat ? "" : " — in the downloads folder";
+  const suffix = record.deliveredToChat
+    ? ""
+    : record.discarded
+      ? " — too large to send here"
+      : " — in the downloads folder";
   return `📎 ${record.filename} (${formatMb(record.sizeBytes)})${suffix}`;
 }
 

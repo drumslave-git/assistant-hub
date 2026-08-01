@@ -87,6 +87,15 @@ work. The download tools inside a browsing run are owner-only, resolved once at
 owner's own links and be refused for everybody else's — the opposite of what the
 rule says.
 
+Rule-driven downloads are narrower than the owner's direct ones (user decisions,
+2026-08-01): a run a rule drove in a group chat — the owner's own message
+included — or one whose rights were lent to a non-owner is marked `restricted`.
+Its download tools accept only the triggering message's own links (extracted in
+code, matched by site — see `docs/features/browser-agent.md`), and a downloaded
+file the chat cannot take is discarded and reported as a failed delivery rather
+than kept on the server. This bounds what a crafted message — or an over-eager
+rule match — can actually make the browser do with the owner's rights.
+
 How it is resolved:
 
 - `resolveRuleAuthority` (`format.ts`) reads the **matched** rules. Only the

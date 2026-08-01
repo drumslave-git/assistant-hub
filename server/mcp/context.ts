@@ -27,6 +27,13 @@ export interface McpToolContext {
    * identity would file another person's data under the owner.
    */
   authorityUserId?: string | null;
+  /**
+   * The http(s) URLs of the triggering message, extracted in code. Hard data the
+   * model must not be trusted to re-type: `browse_web` carries them onto the run
+   * verbatim, where they anchor the agent's prompt and bound a restricted run's
+   * downloads. Absent when the turn has no message text (e.g. a task fire).
+   */
+  messageUrls?: string[];
   /** The forum-topic thread the turn is in, when any (so a task delivers there). */
   threadId?: number | null;
   /**

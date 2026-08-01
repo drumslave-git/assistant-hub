@@ -44,7 +44,12 @@ beforeEach(() => {
 });
 
 /** The enqueued run's fields, after invoking the tool in the given context. */
-async function enqueuedFrom(ctx: { userId: string | null; authorityUserId?: string | null }) {
+async function enqueuedFrom(ctx: {
+  userId: string | null;
+  authorityUserId?: string | null;
+  messageUrls?: string[];
+  chatId?: string;
+}) {
   const run = handler();
   await runWithToolContext({ chatId: "-1001", ...ctx }, () =>
     run({ goal: "Download the video at https://example.com/clip" }),
@@ -53,9 +58,10 @@ async function enqueuedFrom(ctx: { userId: string | null; authorityUserId?: stri
 }
 
 describe(`${BROWSE_WEB_TOOL} download rights`, () => {
-  it("grants them to the owner's own request", async () => {
+  it("grants them to the owner's own request, unrestricted", async () => {
     expect(await enqueuedFrom({ userId: OWNER })).toMatchObject({
       isOwner: true,
+      restricted: false,
       createdByUserId: OWNER,
     });
   });
@@ -70,10 +76,37 @@ describe(`${BROWSE_WEB_TOOL} download rights`, () => {
   it("grants them when a rule the owner set drove the turn, whoever sent the message", async () => {
     const enqueued = await enqueuedFrom({ userId: OTHER, authorityUserId: OWNER });
 
-    expect(enqueued).toMatchObject({ isOwner: true });
+    // Borrowed rights restrict the run: downloads are fenced to the triggering
+    // message's own links and must attach to the chat or be discarded.
+    expect(enqueued).toMatchObject({ isOwner: true, restricted: true });
     // Authority is permission, never identity: the run is still recorded as
     // started by the person whose message triggered it.
     expect(enqueued).toMatchObject({ createdByUserId: OTHER });
+  });
+
+  it("restricts the owner's own rule-driven run in a group", async () => {
+    // "It has to be the same for the owner in a group chat" (user decision,
+    // 2026-08-01): a rule-driven download in a group is limited to what
+    // Telegram can send, whoever posted the link — the group's audience cannot
+    // reach the server's disk either way.
+    expect(await enqueuedFrom({ userId: OWNER, authorityUserId: OWNER })).toMatchObject({
+      isOwner: true,
+      restricted: true,
+    });
+  });
+
+  it("leaves the owner's own rule-driven run in their DM unrestricted", async () => {
+    expect(
+      await enqueuedFrom({ userId: OWNER, authorityUserId: OWNER, chatId: OWNER }),
+    ).toMatchObject({ isOwner: true, restricted: false });
+  });
+
+  it("carries the message's code-extracted URLs onto the run verbatim", async () => {
+    const urls = ["https://youtu.be/oh9VTJFPzHo?si=7OBKm0Ft5918u0yd"];
+
+    expect(await enqueuedFrom({ userId: OTHER, authorityUserId: OWNER, messageUrls: urls })).toMatchObject(
+      { sourceUrls: urls },
+    );
   });
 
   it("withholds them when the matched rule's author had none to lend", async () => {

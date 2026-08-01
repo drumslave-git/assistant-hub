@@ -27,6 +27,13 @@ export interface BrowserDownloadRecord {
    * read as false here — correct for them, since back then every file was kept.
    */
   deliveredToChat: boolean;
+  /**
+   * True when the file was deleted instead of kept: a restricted run's
+   * download that was too large to attach. The chat's audience has no access
+   * to the server's downloads folder, so keeping it would strand a file nobody
+   * can reach (user decision, 2026-08-01 — attach or fail).
+   */
+  discarded?: boolean;
 }
 
 /**
@@ -87,8 +94,23 @@ export interface BrowserAgentRun {
   chatId: string | null;
   threadId: number | null;
   createdByUserId: string | null;
-  /** Whether the run was started by the owner (download tool enabled). */
+  /** Whether the run carries owner rights (download tools enabled). */
   isOwner: boolean;
+  /**
+   * True when a standing chat rule drove the run in a group chat (the owner's
+   * own message included), or lent the sender rights they did not hold. A
+   * restricted run's downloads are constrained to `sourceUrls` and must attach
+   * to the chat or be discarded — a group chat's audience cannot reach the
+   * server's downloads folder. The owner's direct requests and their own DM
+   * rules stay unrestricted.
+   */
+  restricted: boolean;
+  /**
+   * The http(s) URLs of the triggering chat message, extracted in code —
+   * verbatim, never re-typed by a model. Empty for a dashboard run or a
+   * message without links.
+   */
+  sourceUrls: string[];
   goal: string;
   status: BrowserRunStatus;
   /** The agent's final report, or null while unfinished/failed. */

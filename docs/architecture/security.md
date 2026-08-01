@@ -191,9 +191,14 @@ per page load to shrink both the window and the cost.
 
 Additional hardening on the browsing paths: each read gets its own short-lived
 browser context (isolated cookies, fixed user-agent), ad/tracker subresources are
-dropped by the shared filter engine, and downloads have two size caps —
-`browserDownloadMaxMb` (≤50, Telegram's bot upload ceiling) for what is attached to
-the chat, and `browserDownloadLimitGb` for what may be written to disk at all.
+dropped by the shared filter engine, and downloads have two size caps — Telegram's
+own 50 MB upload ceiling (`TELEGRAM_MAX_UPLOAD_MB`, fixed) for what is attached to
+the chat, and `browserDownloadLimitGb` for what may be written to disk at all. A
+run a standing chat rule drove in a group chat, or whose download rights the rule
+lent to a non-owner (`restricted`), is additionally fenced: its download tools
+accept only URLs from the triggering message (extracted in code, matched by
+site), and a file the chat cannot take is deleted rather than kept — the chat's
+audience has no access to the server's disk.
 
 The adblock engine is matched inside the fetcher's existing `context.route`
 handler rather than via the library's own `enableBlockingInPage`, which would

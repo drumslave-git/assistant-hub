@@ -243,11 +243,15 @@ Runs are unbounded by design: only the stall guard ends one that stops progressi
 If a run is stuck, that is what to expect it to eventually do — and the forced final
 round will still produce a report from what was gathered.
 
-Two size settings, both under Settings → Core, doing different jobs. Files larger than
-`browserDownloadMaxMb` are kept in the `downloads/` folder rather than attached to the
-chat — they still download. `browserDownloadLimitGb` is the ceiling on what may be
-downloaded **at all**; past it the file tool gives up, the stream tool keeps a
-truncated but playable video, and the media tool refuses before it starts.
+One size setting under Settings → Core: `browserDownloadLimitGb` is the ceiling on
+what may be downloaded **at all**; past it the file tool gives up, the stream tool
+keeps a truncated but playable video, and the media tool refuses before it starts.
+The chat-attach ceiling is fixed at Telegram's 50 MB upload limit. A larger file
+from one of your own direct requests (or your own DM rules) is kept in the
+`downloads/` folder and reported by name; a rule-driven run in a group — your own
+message included — deletes it instead and reports the delivery as failed, without
+a notification ping. A group's audience cannot reach your disk, so keeping the
+file would only strand it.
 
 ## Background jobs (`/jobs`)
 

@@ -33,9 +33,14 @@ let delivered: BrowserDownloadRecord[];
 /**
  * `outcome` stands in for what the runner reports back: "staged" when the file
  * will ride to the chat with the final report, "kept" for a dashboard run or an
- * over-limit file (the downloads folder keeps the copy).
+ * over-limit file (the downloads folder keeps the copy), "discarded" for an
+ * restricted run's over-limit file (deleted — the audience cannot reach the disk).
  */
-function makeContext(isOwner: boolean, outcome: "staged" | "kept" = "staged"): AgentToolContext {
+function makeContext(
+  isOwner: boolean,
+  outcome: "staged" | "kept" | "discarded" = "staged",
+  allowedDownloadUrls: string[] | null = null,
+): AgentToolContext {
   downloads = [];
   delivered = [];
   return {
@@ -44,6 +49,7 @@ function makeContext(isOwner: boolean, outcome: "staged" | "kept" = "staged"): A
       pageMeta: async () => ({ url: "https://music.youtube.com/watch?v=abc", title: "Track - YouTube" }),
     } as unknown as AgentToolContext["session"],
     isOwner,
+    allowedDownloadUrls,
     downloadMaxMb: 50,
     downloadLimitBytes: 10 * 1024 ** 3,
     downloads,
@@ -151,6 +157,43 @@ describe("browser_download_media", () => {
     expect(result.text).toMatch(/only the owner/i);
     expect(mockedDownload).not.toHaveBeenCalled();
     expect(delivered).toHaveLength(0);
+  });
+
+  it("refuses a URL outside a restricted run's scope without touching yt-dlp", async () => {
+    const ctx = makeContext(true, "staged", ["https://x.com/i/status/123"]);
+
+    // The Maroon 5 case: the agent picks an unrelated site when the asked-for
+    // link fails. The fence refuses it in code, whatever the model decided.
+    const result = await call(ctx, { url: "https://www.youtube.com/watch?v=09R8_2nJtjg" });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toMatch(/only download from the link/i);
+    expect(mockedDownload).not.toHaveBeenCalled();
+    expect(delivered).toHaveLength(0);
+  });
+
+  it("allows the same site under another of its names (youtu.be → youtube.com)", async () => {
+    const ctx = makeContext(true, "staged", ["https://youtu.be/oh9VTJFPzHo?si=x"]);
+
+    // The agent legitimately normalizes a share link to the canonical watch URL.
+    const result = await call(ctx, { url: "https://www.youtube.com/watch?v=oh9VTJFPzHo" });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockedDownload).toHaveBeenCalled();
+  });
+
+  it("deletes a discarded file and tells the agent the delivery failed", async () => {
+    const ctx = makeContext(true, "discarded", ["https://music.youtube.com/watch?v=abc"]);
+
+    const result = await call(ctx, { url: "https://music.youtube.com/watch?v=abc", mode: "audio" });
+
+    // Attach or fail: nothing stays on disk, and the record says why.
+    expect(existsSync(filePath)).toBe(false);
+    expect(downloads[0].discarded).toBe(true);
+    expect(downloads[0].deliveredToChat).toBe(false);
+    expect(result.isError).toBe(true);
+    expect(result.text).toMatch(/too large to send/i);
+    expect(result.text).not.toContain("downloads folder");
   });
 
   it("reports a missing yt-dlp as an environment fact", async () => {

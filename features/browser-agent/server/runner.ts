@@ -8,7 +8,6 @@ import { markMessageDeleted, recordAssistantMessage } from "@/features/history/s
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import {
   getBrowserDownloadLimitBytes,
-  getBrowserDownloadMaxMb,
   getBotPolicy,
   getLlmRuntime,
 } from "@/features/settings/server/service";
@@ -16,7 +15,7 @@ import { getGroupLanguage } from "@/features/known-groups/server/service";
 import { getUserLanguage } from "@/features/known-users/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
-import { isGroupChatId } from "@/lib/telegram";
+import { isGroupChatId, TELEGRAM_MAX_UPLOAD_MB } from "@/lib/telegram";
 import { sanitizeMessagesForTrace } from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { publishEvent } from "@/server/realtime/hub";
@@ -161,7 +160,10 @@ async function deliverRunOutcome(
     }
   }
   const recap = formatRunReport(report, downloads.filter((d) => !d.deliveredToChat));
-  const messageId = await deliverText(run, recap).catch((err) => {
+  // A report that only announces an undeliverable file is sent without a ping
+  // (user decision, 2026-08-01) — there is nothing for the user to act on.
+  const silent = downloads.some((d) => d.discarded);
+  const messageId = await deliverText(run, recap, { silent }).catch((err) => {
     console.error(
       `browser-agent: failed to deliver the report for run ${run.id}:`,
       err instanceof Error ? err.message : String(err),
@@ -232,8 +234,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
       return;
     }
 
-    const [downloadMaxMb, downloadLimitBytes, personalityPrompt, storedLanguage] = await Promise.all([
-      getBrowserDownloadMaxMb(),
+    const [downloadLimitBytes, personalityPrompt, storedLanguage] = await Promise.all([
       getBrowserDownloadLimitBytes(),
       getActivePersonalityPrompt().catch(() => null),
       run.chatId
@@ -249,7 +250,11 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
     const toolContext: AgentToolContext = {
       session,
       isOwner: run.isOwner,
-      downloadMaxMb,
+      // A rule lends the owner's rights only for the links that triggered it;
+      // an owner-started (or dashboard) run downloads without a URL fence.
+      allowedDownloadUrls: run.restricted ? run.sourceUrls : null,
+      // Telegram's own upload ceiling — not a tunable (user decision, 2026-08-01).
+      downloadMaxMb: TELEGRAM_MAX_UPLOAD_MB,
       downloadLimitBytes,
       downloads,
       onAction: (action, url) => {
@@ -293,9 +298,15 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
           // report as one combined message instead of two.
           staged.push({ record, file });
           outcome = "staged";
+        } else if (run.chatId && run.restricted) {
+          // Attach or fail (user decision, 2026-08-01): a restricted run's
+          // audience cannot reach the server's disk, so a file the chat cannot
+          // take is deleted by the dispatcher, not archived. No announcement —
+          // the final report carries the failure.
+          outcome = "discarded";
         } else if (run.chatId) {
-          // Too large to attach — announce it by name as it lands (silent);
-          // the recap points at the downloads folder.
+          // Owner's run, too large to attach — announce it by name as it lands
+          // (silent); the recap points at the downloads folder.
           await sendChatMessage(run.chatId, formatDownloadLine(record), {
             threadId: run.threadId,
             silent: true,
@@ -314,6 +325,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
             sizeBytes: record.sizeBytes,
             sourceUrl: record.sourceUrl,
             staged: outcome === "staged",
+            discarded: outcome === "discarded",
           },
         });
         publishEvent(FEATURE.realtimeTopic);
@@ -323,6 +335,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
 
     const result = await runBrowserAgent({
       goal: run.goal,
+      sourceUrls: run.sourceUrls,
       conn: { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey },
       model: runtime.model,
       toolContext,

@@ -60,9 +60,35 @@ description no longer has to argue about when to prefer a plain search — the e
 carve-outs for "a commodity live value" and "a general lookup" are gone, and those
 requests now browse too.
 
-Anyone may start a run. The **download tools inside the run** are gated to
-owner-started runs, resolved at enqueue time — not at call time, and not from
-anything the model says.
+Anyone may start a run. The **download tools inside the run** are gated to runs
+carrying the owner's rights, resolved at enqueue time — not at call time, and not
+from anything the model says. Those rights are either the sender's own or lent by
+a standing chat rule ("rule creator beats message source"). A run is marked
+**`restricted`** when a rule drove it in a group chat — the owner's own message
+included — or when the rule lent the sender rights they did not hold; only the
+owner's direct requests, their own DM rules, and dashboard runs stay
+unrestricted. A restricted run is fenced two ways (user decisions, 2026-08-01,
+after a rule-driven run downloaded an unrelated music video and stranded it on
+the server's disk):
+
+- **URL fence.** The triggering message's URLs are extracted **in code**
+  (`urls.ts`) and stored on the run as `source_urls`; a restricted run's download
+  tools accept only those URLs or same-site ones (subdomains fold to the
+  registrable domain; `youtu.be`/`youtube.com` and `x.com`/`twitter.com` are
+  aliases). Anything else is refused with an instruction to report the failure —
+  substitute downloads are impossible in code, whatever the model decides. The
+  same verbatim list is appended to the agent's goal message, because the goal
+  text is composed by an LLM that has mis-typed a URL before (a flipped digit in
+  a 19-digit tweet id). Deliberate limitation: a direct-file/stream download from
+  a CDN host other than the message's site is also refused on a restricted run —
+  the rule use-case is media pages, where `browser_download_media` takes the page
+  URL itself.
+- **Attach or fail.** A file the chat cannot take (over Telegram's 50 MB bot
+  upload ceiling) is deleted, recorded with `discarded: true`, and reported as a
+  failed delivery — the requester cannot reach the server's downloads folder, so
+  keeping the file would strand it. The run's report is then sent without a
+  notification ping. Owner-started runs keep the old behavior (file stays on
+  disk, announced by name).
 
 ## The agent
 
@@ -81,7 +107,10 @@ is not done until a download tool has been called, and finishing by telling the 
 to download it themselves (or naming a program for them to run) is forbidden — either
 the file, or exactly which tool was called and how it failed. The second rule points
 media-site pages at `browser_download_media` and tells the agent not to go hunting for
-a media URL that does not exist.
+a media URL that does not exist. A third rule (2026-08-01) forbids substitute
+downloads outright: if the named content cannot be downloaded, the run has failed and
+must say so — never fetch "similar" content instead, even when the goal text seems to
+offer that option.
 
 ### The toolset
 
@@ -248,11 +277,13 @@ scheduled-tasks poller. A single run executes at a time; the queue **is** the
 One combined message wherever possible (user decision, 2026-08-01 — the earlier
 file-then-recap flow repeated the same filename twice and spammed the chat):
 
-- An attachable download — within `settings.browser_download_max_mb` (1–50; 50 is
-  Telegram's bot upload ceiling) — is **staged**: the runner holds it and delivers
-  it at the end of the run **together with the final report as its caption**, so
-  the chat gets one message carrying both the file and what the agent has to say.
-  Only files over the limit are announced (silently, by name) the moment they land.
+- An attachable download — within Telegram's fixed 50 MB bot upload ceiling
+  (`TELEGRAM_MAX_UPLOAD_MB`; user decision, 2026-08-01, replacing the old
+  `browser_download_max_mb` setting) — is **staged**: the runner holds it and
+  delivers it at the end of the run **together with the final report as its
+  caption**, so the chat gets one message carrying both the file and what the
+  agent has to say. On an owner-started run, files over the limit are announced
+  (silently, by name) the moment they land.
 - Files are sent **as the media they are**: an MP4/QuickTime video goes out via
   `sendVideo` (playable straight in Telegram, streaming enabled), an MP3/M4A via
   `sendAudio` (music player), anything else as a document. A container Telegram
@@ -274,7 +305,8 @@ file-then-recap flow repeated the same filename twice and spammed the chat):
   | Outcome | `deliveredToChat` | On disk |
   | --- | --- | --- |
   | Delivered to the chat (with the report, or under its own line) | `true` | removed |
-  | Over `browser_download_max_mb` — announced by name only | `false` | kept |
+  | Over 50 MB, owner-started run — announced by name only | `false` | kept |
+  | Over 50 MB, restricted run (rule-driven in a group, or rights lent to a non-owner) — **discarded** (`discarded: true`); the report says the file was too large to deliver and is sent without a ping | `false` | removed |
   | Send failed | `false` | kept |
   | Dashboard-started run (no chat exists) | `false` | kept |
 
@@ -389,7 +421,7 @@ buys nothing. The runner writes it; the run-detail API reads it (same process).
 
 | Table | Notes |
 | --- | --- |
-| `browser_agent_runs` | The queue and the record. `status`, `goal`, `report`, `error`, `steps`, `activity` (jsonb step feed), `downloads` (jsonb), `is_owner`, `trace_id` |
+| `browser_agent_runs` | The queue and the record. `status`, `goal`, `report`, `error`, `steps`, `activity` (jsonb step feed), `downloads` (jsonb), `is_owner`, `restricted`, `source_urls`, `trace_id` |
 | `browser_run_screenshots` | JPEG `bytea` keyed `(run_id, seq)`, served by an auth-gated route — never in trace JSON |
 
 ## Dashboard
@@ -413,9 +445,11 @@ directly, mirroring the conversational tool without needing Telegram.
 | Setting | Effect |
 | --- | --- |
 | `llmBaseUrl` + `model` | Without them a run settles as a failure |
-| `ownerUserId` | Only owner-started runs may download |
-| `browserDownloadMaxMb` | Largest file also attached to the chat (1–50) |
+| `ownerUserId` | Only runs with the owner's rights (their own, or lent by a standing rule) may download |
 | `browserDownloadLimitGb` | Hard ceiling on any single download (1–100, default 10) |
+
+The chat-attach ceiling is fixed at 50 MB — Telegram's bot upload limit
+(`TELEGRAM_MAX_UPLOAD_MB`), not a setting.
 
 Needs a working Chromium, ffmpeg and yt-dlp. Chromium and ffmpeg come from `apk`;
 yt-dlp does not (see below). Locally they must be on `PATH`; without yt-dlp,

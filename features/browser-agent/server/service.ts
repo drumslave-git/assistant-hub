@@ -27,6 +27,10 @@ export interface EnqueueBrowserRunInput {
   threadId?: number | null;
   createdByUserId?: string | null;
   isOwner: boolean;
+  /** Rule-driven group run, or rights lent to a non-owner (default false). */
+  restricted?: boolean;
+  /** Verbatim URLs of the triggering message (default none). */
+  sourceUrls?: string[];
 }
 
 /**
@@ -43,6 +47,8 @@ export async function enqueueBrowserRun(
     threadId: input.threadId ?? null,
     createdByUserId: input.createdByUserId ?? null,
     isOwner: input.isOwner,
+    restricted: input.restricted ?? false,
+    sourceUrls: input.sourceUrls ?? [],
     goal: input.goal.trim(),
   };
   return insertBrowserAgentRun(db, randomUUID(), values);

@@ -52,7 +52,8 @@ describe.skipIf(!LLM_LIVE)("browser agent — real browse (live)", () => {
       const toolContext: AgentToolContext = {
         session,
         isOwner: true,
-        downloadMaxMb: 20,
+        allowedDownloadUrls: null,
+        downloadMaxMb: 50,
         downloadLimitBytes: 10 * 1024 ** 3,
         downloads,
         onAction: (action) => {

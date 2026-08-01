@@ -131,10 +131,18 @@ describe.skipIf(!LIVE)("chat rules end to end against the real configured LLM", 
         `expected a browsing run to be enqueued; replies: ${JSON.stringify(res.replies)}`,
       ).toBeGreaterThan(0);
       expect(runs[0].isOwner).toBe(true);
+      // A rule-driven group run is restricted: downloads are fenced to the
+      // triggering message's own links, and attach-or-fail applies.
+      expect(runs[0].restricted).toBe(true);
       // Provenance is untouched: the run belongs to whoever posted the link.
       expect(runs[0].createdByUserId).toBe(MEMBER_ID);
       // The goal carries the link the rule was triggered by.
       expect(runs[0].goal).toContain("tiktok.com/@someone/video/7300000000000000000");
+      // The link also rides on the run verbatim, extracted in code — the model
+      // re-typing it into the goal is no longer load-bearing.
+      expect(runs[0].sourceUrls).toEqual([
+        "https://www.tiktok.com/@someone/video/7300000000000000000",
+      ]);
     },
     300_000,
   );

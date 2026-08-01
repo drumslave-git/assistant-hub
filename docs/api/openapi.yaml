@@ -1948,7 +1948,6 @@ components:
           maintenanceModeEnabled,
           timezone,
           dailyJobsRunTime,
-          browserDownloadMaxMb,
           browserDownloadLimitGb,
           updatedAt,
         ]
@@ -1982,7 +1981,6 @@ components:
         maintenanceModeEnabled: { type: boolean }
         timezone: { type: string, description: Operator IANA timezone. }
         dailyJobsRunTime: { $ref: "#/components/schemas/TimeOfDay" }
-        browserDownloadMaxMb: { type: integer }
         browserDownloadLimitGb: { type: integer }
         updatedAt: { type: [string, "null"], format: date-time }
 
@@ -2017,11 +2015,6 @@ components:
         maintenanceModeEnabled: { type: boolean }
         timezone: { type: string, minLength: 1, maxLength: 64 }
         dailyJobsRunTime: { $ref: "#/components/schemas/TimeOfDay" }
-        browserDownloadMaxMb:
-          type: integer
-          minimum: 1
-          maximum: 50
-          description: Bounded by Telegram's bot upload ceiling.
         browserDownloadLimitGb:
           type: integer
           minimum: 1
@@ -2503,6 +2496,8 @@ components:
           threadId,
           createdByUserId,
           isOwner,
+          restricted,
+          sourceUrls,
           goal,
           status,
           report,
@@ -2524,6 +2519,19 @@ components:
         isOwner:
           type: boolean
           description: Resolved at enqueue time; gates the download tools inside the run.
+        restricted:
+          type: boolean
+          description: >-
+            A standing chat rule drove the run in a group chat (the owner's own
+            message included), or lent the sender rights they did not hold.
+            Downloads are then fenced to sourceUrls and must attach to the chat
+            or be discarded.
+        sourceUrls:
+          type: array
+          items: { type: string }
+          description: >-
+            The triggering message's http(s) URLs, extracted in code — verbatim,
+            never re-typed by a model. Empty for a dashboard run.
         goal: { type: string }
         status:
           type: string
@@ -2547,6 +2555,11 @@ components:
                   copy was removed. False means it is still in the downloads folder:
                   too large to attach, delivery failed, or a dashboard-started run with
                   no chat. Runs recorded before 2026-07-29 always read false.
+              discarded:
+                type: boolean
+                description: >-
+                  True when the file was deleted instead of kept — a restricted run's
+                  download that was too large to attach (attach or fail).
         traceId: { type: [string, "null"] }
         createdAt: { type: string, format: date-time }
         startedAt: { type: [string, "null"], format: date-time }

@@ -194,7 +194,6 @@ export const settings = pgTable(
      * chat; bigger files stay in the downloads folder and are reported by name.
      * Bounded 1–50 (Telegram's bot upload ceiling). MVP-parity default: 20.
      */
-    browserDownloadMaxMb: integer("browser_download_max_mb").notNull().default(20),
     /**
      * Hard ceiling (in GB) on a single browser-agent download, whatever the tool:
      * a plain file, a muxed HLS/DASH stream, or a yt-dlp media extraction. Purely
@@ -1094,6 +1093,8 @@ interface BrowserAgentDownloadJson {
    * right for them: back then every download stayed on disk.
    */
   deliveredToChat?: boolean;
+  /** True when the file was deleted instead of kept (restricted run, too large to attach). */
+  discarded?: boolean;
   /** @deprecated Pre-2026-07-29 rows only; superseded by {@link deliveredToChat}. */
   inline?: boolean;
 }
@@ -1134,8 +1135,20 @@ export const browserAgentRuns = pgTable(
     threadId: bigint("thread_id", { mode: "number" }),
     /** Numeric Telegram user id of whoever asked for the run, or null (dashboard). */
     createdByUserId: text("created_by_user_id"),
-    /** Whether the run was started by the owner — gates the download tool. */
+    /** Whether the run carries owner rights — gates the download tools. */
     isOwner: boolean("is_owner").notNull().default(false),
+    /**
+     * True when a standing chat rule drove the run in a group chat (whoever
+     * sent the message), or lent the sender rights they did not hold: downloads
+     * are then constrained to `source_urls` and must attach to the chat or be
+     * discarded (user decisions, 2026-08-01).
+     */
+    restricted: boolean("restricted").notNull().default(false),
+    /** Verbatim http(s) URLs of the triggering message, extracted in code. */
+    sourceUrls: jsonb("source_urls")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     /** The self-contained browsing goal the agent works toward. */
     goal: text("goal").notNull(),
     /** `queued` | `running` | `done` | `failed`. */

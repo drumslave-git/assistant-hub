@@ -122,7 +122,12 @@ export function compactAgentConversation(
   });
 }
 
-function buildAgentSystemPrompt(isOwner: boolean, requiredLanguage: string | null): string {
+function buildAgentSystemPrompt(
+  toolContext: AgentToolContext,
+  requiredLanguage: string | null,
+): string {
+  const { isOwner } = toolContext;
+  const urlFenced = toolContext.allowedDownloadUrls !== null;
   return (
     `You are a web-browsing agent working in the background for a chat bot. ` +
     `You are given a goal and a set of browser tools. Accomplish the goal by ` +
@@ -151,7 +156,21 @@ function buildAgentSystemPrompt(isOwner: boolean, requiredLanguage: string | nul
         `Bandcamp, a podcast page …), download with browser_download_media and the page ` +
         `URL — use mode "audio" for a song/track/podcast and "video" for a video. Those ` +
         `pages never expose a media file URL, so do not read the source or the network ` +
-        `looking for one, and do not conclude the download is impossible.\n`
+        `looking for one, and do not conclude the download is impossible.\n` +
+        // Substitution guard (incident, 2026-08-01): a run that could not reach
+        // the asked-for tweet searched up an unrelated music video and delivered
+        // it as "similar". A failed goal must come back as a failure.
+        `- Download ONLY what the goal names. If it cannot be found or the download fails, ` +
+        `the run has FAILED: stop and report exactly what you tried and how it failed. ` +
+        `NEVER download different or "similar" content as a substitute — not even if the ` +
+        `goal seems to offer that option. A substitute file is a wrong result; an honest ` +
+        `failure report is the correct one.\n` +
+        (urlFenced
+          ? `- This run may only download from the user's own link(s), listed under "URLs" ` +
+            `in the goal message. A file too large to send to the chat cannot be delivered ` +
+            `at all — if a download tool reports that, relay it as the outcome and never ` +
+            `mention any server folder.\n`
+          : "")
       : `- Downloads are disabled for this run (only the owner can download files) — never promise a file.\n`) +
     `- When you have achieved the goal (or determined it cannot be done), STOP calling tools ` +
     `and reply with a clear, concise report of what you found or did. ` +
@@ -162,6 +181,12 @@ function buildAgentSystemPrompt(isOwner: boolean, requiredLanguage: string | nul
 
 export interface RunAgentParams {
   goal: string;
+  /**
+   * The triggering message's URLs, extracted in code — appended to the goal
+   * verbatim so the agent works from exact links even when the goal text (which
+   * an LLM composed) mis-typed one. Empty → the goal stands alone.
+   */
+  sourceUrls?: string[];
   /** LLM connection + model (the configured chat model). */
   conn: LlmConnection;
   model: string;
@@ -176,6 +201,23 @@ export interface RunAgentParams {
 }
 
 /**
+ * The user turn: the goal, then — when the triggering message carried links —
+ * those links verbatim. The goal text passed through an LLM, which has mis-typed
+ * a URL before (2026-08-01: one flipped digit in a tweet id sent a run chasing a
+ * nonexistent post); the code-extracted list is the authority.
+ */
+export function buildGoalMessage(goal: string, sourceUrls: string[]): string {
+  if (sourceUrls.length === 0) return `Goal: ${goal}`;
+  const list = sourceUrls.map((url, i) => `${i + 1}. ${url}`).join("\n");
+  return (
+    `Goal: ${goal}\n\n` +
+    `URLs from the user's message, copied verbatim by the system:\n${list}\n` +
+    `These are exact, character for character. If a URL in the goal text above differs, ` +
+    `the goal mis-typed it — use the URLs from this list.`
+  );
+}
+
+/**
  * Run one browsing goal to completion. Throws on provider/config failure (the
  * runner records it and fails the run); a stall degrades to a forced report.
  */
@@ -183,9 +225,9 @@ export async function runBrowserAgent(params: RunAgentParams): Promise<AgentRunR
   const messages: ChatMessage[] = [
     {
       role: "system",
-      content: buildAgentSystemPrompt(params.toolContext.isOwner, params.requiredLanguage),
+      content: buildAgentSystemPrompt(params.toolContext, params.requiredLanguage),
     },
-    { role: "user", content: `Goal: ${params.goal}` },
+    { role: "user", content: buildGoalMessage(params.goal, params.sourceUrls ?? []) },
   ];
 
   const result = await chatCompletionWithTools(params.conn, {

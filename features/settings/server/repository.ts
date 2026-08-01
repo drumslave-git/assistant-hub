@@ -57,8 +57,6 @@ export interface SettingsRecord {
   timezone: string;
   /** Local `HH:MM` (in `timezone`) every daily background job runs at. */
   dailyJobsRunTime: string;
-  /** Largest browser-agent download (MB) also attached to the chat. */
-  browserDownloadMaxMb: number;
   /** Hard ceiling (GB) on any single browser-agent download, for every tool. */
   browserDownloadLimitGb: number;
   /** Operator password (scrypt, self-describing). Secret — never in any view. */
@@ -94,7 +92,6 @@ export interface SettingsPatch {
   maintenanceModeEnabled?: boolean;
   timezone?: string;
   dailyJobsRunTime?: string;
-  browserDownloadMaxMb?: number;
   browserDownloadLimitGb?: number;
   operatorPasswordHash?: string | null;
   sessionSecret?: string | null;
@@ -144,7 +141,6 @@ function mapRow(row: SettingsRow): SettingsRecord {
     maintenanceModeEnabled: row.maintenanceModeEnabled,
     timezone: row.timezone,
     dailyJobsRunTime: row.dailyJobsRunTime,
-    browserDownloadMaxMb: row.browserDownloadMaxMb,
     browserDownloadLimitGb: row.browserDownloadLimitGb,
     operatorPasswordHash: row.operatorPasswordHash,
     sessionSecret: row.sessionSecret,

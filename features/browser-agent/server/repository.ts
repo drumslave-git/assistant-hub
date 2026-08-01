@@ -31,6 +31,8 @@ export interface InsertBrowserAgentRun {
   threadId: number | null;
   createdByUserId: string | null;
   isOwner: boolean;
+  restricted: boolean;
+  sourceUrls: string[];
   goal: string;
 }
 
@@ -41,6 +43,8 @@ function mapRow(row: BrowserAgentRunRow): BrowserAgentRun {
     threadId: row.threadId,
     createdByUserId: row.createdByUserId,
     isOwner: row.isOwner,
+    restricted: row.restricted,
+    sourceUrls: row.sourceUrls ?? [],
     goal: row.goal,
     status: row.status as BrowserRunStatus,
     report: row.report,
@@ -54,6 +58,7 @@ function mapRow(row: BrowserAgentRunRow): BrowserAgentRun {
       filename: d.filename,
       sizeBytes: d.sizeBytes,
       deliveredToChat: d.deliveredToChat === true,
+      ...(d.discarded === true ? { discarded: true } : {}),
     })),
     traceId: row.traceId,
     createdAt: row.createdAt.toISOString(),
@@ -137,6 +142,8 @@ export async function insertBrowserAgentRun(
       threadId: values.threadId,
       createdByUserId: values.createdByUserId,
       isOwner: values.isOwner,
+      restricted: values.restricted,
+      sourceUrls: values.sourceUrls,
       goal: values.goal,
       status: "queued",
     })

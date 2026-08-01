@@ -76,7 +76,6 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
     timezone: record?.timezone ?? "UTC",
     dailyJobsRunTime: record?.dailyJobsRunTime ?? DEFAULT_DAILY_JOBS_RUN_TIME,
-    browserDownloadMaxMb: record?.browserDownloadMaxMb ?? DEFAULT_BROWSER_DOWNLOAD_MAX_MB,
     browserDownloadLimitGb: record?.browserDownloadLimitGb ?? DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB,
     updatedAt: record?.updatedAt ?? null,
   };
@@ -348,18 +347,6 @@ export async function getDailyJobsRunTime(db: DrizzleDb = getDb()): Promise<stri
   return (await getSettingsRecord(db))?.dailyJobsRunTime ?? DEFAULT_DAILY_JOBS_RUN_TIME;
 }
 
-/** MVP-parity default: files up to 20 MB are also attached to the chat. */
-export const DEFAULT_BROWSER_DOWNLOAD_MAX_MB = 20;
-
-/**
- * Server-only: the largest browser-agent download (MB) that is also attached to
- * the chat. Files above this stay in the downloads folder and are reported by
- * name. Read at call time so a change applies without a restart.
- */
-export async function getBrowserDownloadMaxMb(db: DrizzleDb = getDb()): Promise<number> {
-  return (await getSettingsRecord(db))?.browserDownloadMaxMb ?? DEFAULT_BROWSER_DOWNLOAD_MAX_MB;
-}
-
 /** Default hard ceiling on a single browser-agent download (user decision, 2026-07-29). */
 export const DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB = 10;
 
@@ -453,9 +440,6 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   }
   if (input.dailyJobsRunTime !== undefined) {
     patch.dailyJobsRunTime = input.dailyJobsRunTime;
-  }
-  if (input.browserDownloadMaxMb !== undefined) {
-    patch.browserDownloadMaxMb = input.browserDownloadMaxMb;
   }
   if (input.browserDownloadLimitGb !== undefined) {
     patch.browserDownloadLimitGb = input.browserDownloadLimitGb;
@@ -820,7 +804,6 @@ const EMPTY_RECORD: SettingsRecord = {
   maintenanceModeEnabled: false,
   timezone: "UTC",
   dailyJobsRunTime: DEFAULT_DAILY_JOBS_RUN_TIME,
-  browserDownloadMaxMb: DEFAULT_BROWSER_DOWNLOAD_MAX_MB,
   browserDownloadLimitGb: DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB,
   operatorPasswordHash: null,
   sessionSecret: null,

@@ -31,6 +31,7 @@ import {
   type IncomingMessage,
 } from "@/features/bot-messaging/server/service";
 import { registerRunAck } from "@/features/browser-agent/server/ack";
+import { extractMessageUrls } from "@/features/browser-agent/urls";
 import {
   applyMessageEdit,
   composeCurrentTurn,
@@ -453,6 +454,10 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             // the rule's author lends the rights, the sender keeps the identity
             // (`userId` above still decides who authored a memory or a task).
             authorityUserId: ruleAuthorityUserId,
+            // Hard data extracted in code: the model re-typing a URL into a tool
+            // argument has corrupted one before (2026-08-01), so `browse_web`
+            // takes the links from here, never from the goal text.
+            messageUrls: extractMessageUrls(messageText),
             threadId,
             collectImage,
             onBrowserRunEnqueued: (runId) => enqueuedBrowserRuns.push(runId),

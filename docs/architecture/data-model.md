@@ -65,7 +65,6 @@ reads and writes the one row.
 | `maintenance_mode_enabled` | boolean, default `false` | Closes the bot to everyone but the owner and pauses task fires |
 | `timezone` | text, default `UTC` | IANA name; the operator timezone |
 | `daily_jobs_run_time` | text, default `04:00` | Local `HH:MM` all daily jobs run at |
-| `browser_download_max_mb` | integer, default `20` | Cap for attaching a browser-agent download to the chat |
 | `browser_download_limit_gb` | integer, default `10` | Hard ceiling on a single browser-agent download, shared by all three download tools |
 | `updated_at` | timestamptz | Last write |
 
@@ -251,12 +250,14 @@ The run row **is** the queue.
 | `thread_id` | bigint | |
 | `created_by_user_id` | text | |
 | `is_owner` | boolean NOT NULL, default `false` | Resolved at enqueue time; gates the download tools inside the run |
+| `restricted` | boolean NOT NULL, default `false` | A standing rule drove the run in a group (owner included), or lent the sender rights they did not hold: downloads are fenced to `source_urls` and must attach to the chat or be discarded |
+| `source_urls` | jsonb `string[]` NOT NULL, default `[]` | The triggering message's http(s) URLs, extracted in code — never re-typed by a model |
 | `goal` | text NOT NULL | |
 | `status` | text NOT NULL, default `queued` | `check`: `queued` \| `running` \| `done` \| `failed` |
 | `report`, `error` | text | The agent's final report / the failure reason |
 | `steps` | integer NOT NULL, default 0 | Browser actions performed |
 | `activity` | jsonb `BrowserAgentStepJson[]` | The ordered activity feed |
-| `downloads` | jsonb `BrowserAgentDownloadJson[]` | Files fetched, with sizes and whether they were attached |
+| `downloads` | jsonb `BrowserAgentDownloadJson[]` | Files fetched, with sizes, whether they reached the chat, and whether an undeliverable one was discarded |
 | `trace_id` | text | For Debug drill-down |
 | `created_at`, `started_at`, `finished_at` | timestamptz | |
 

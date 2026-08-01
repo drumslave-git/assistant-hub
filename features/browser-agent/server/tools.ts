@@ -1,6 +1,6 @@
 import "server-only";
 
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 
 import type { ChatCompletionFunctionTool } from "openai/resources/chat/completions";
 
@@ -10,6 +10,7 @@ import { formatBytes, formatTransferLine } from "../files";
 import { formatSnapshot, type PageSnapshot } from "../snapshot";
 import type { MediaMode } from "../ytdlp";
 import type { BrowserDownloadRecord } from "../types";
+import { isUrlInDownloadScope } from "../urls";
 import { downloadToDisk, type DiskDownload } from "./download";
 import { downloadMediaToDisk, YtDlpMissingError } from "./media-download";
 import { runBrowserSearch } from "./search";
@@ -49,15 +50,25 @@ export interface CollectedFile {
  * {@link AgentToolContext.onDownload}: `staged` — the runner holds it and will
  * deliver it to the chat together with the final report (the server copy is now
  * the runner's to remove); `kept` — the file stays in the downloads folder (no
- * chat to send to, or too large to attach).
+ * chat to send to, or too large to attach); `discarded` — the file must not be
+ * kept (a restricted run's audience cannot reach the server's disk), so the
+ * dispatcher deletes it and the download counts as failed delivery.
  */
-export type DownloadOutcome = "staged" | "kept";
+export type DownloadOutcome = "staged" | "kept" | "discarded";
 
 /** Collaborators one run's dispatcher acts through. */
 export interface AgentToolContext {
   session: BrowserAgentSession;
-  /** Whether the run was started by the owner — gates browser_download. */
+  /** Whether the run carries owner rights — gates the download tools. */
   isOwner: boolean;
+  /**
+   * URLs a restricted run may download from (the triggering message's links,
+   * extracted in code — matched exactly or by site, see `urls.ts`), or null for
+   * an unrestricted run (the owner's direct request, or a dashboard run). A
+   * rule authorizes downloading only the links that triggered it, so a download
+   * of anything else is refused (user decision, 2026-08-01).
+   */
+  allowedDownloadUrls: string[] | null;
   /** Largest file (MB) that is also attached to the chat. */
   downloadMaxMb: number;
   /**
@@ -412,8 +423,9 @@ async function dispatchTool(
       return snapshotResult(await ctx.session.wait(seconds));
     }
     case "browser_download_file": {
-      if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
       const url = str(args, "url");
+      const denied = downloadDenialFor(ctx, url);
+      if (denied) return errorResult(denied);
       await ctx.onAction(`download file ${url}`, ctx.session.currentUrl());
       const meta = await ctx.session.pageMeta();
       const result = await downloadToDisk(url, {
@@ -424,8 +436,9 @@ async function dispatchTool(
       return finishDownload(ctx, result, meta.url ?? url);
     }
     case "browser_download_stream": {
-      if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
       const url = str(args, "url");
+      const denied = downloadDenialFor(ctx, url);
+      if (denied) return errorResult(denied);
       await ctx.onAction(`download stream ${url}`, ctx.session.currentUrl());
       const meta = await ctx.session.pageMeta();
       try {
@@ -444,8 +457,9 @@ async function dispatchTool(
       }
     }
     case "browser_download_media": {
-      if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
       const url = str(args, "url");
+      const denied = downloadDenialFor(ctx, url);
+      if (denied) return errorResult(denied);
       const mode: MediaMode = str(args, "mode") === "audio" ? "audio" : "video";
       await ctx.onAction(`download ${mode} ${url}`, ctx.session.currentUrl());
       try {
@@ -471,6 +485,24 @@ async function dispatchTool(
 }
 
 const DOWNLOAD_DENIED = "Downloads are disabled for this run (only the owner can download files).";
+
+/**
+ * Why a download of this URL is refused for this run, or null when it may
+ * proceed. Two gates: owner rights for the run at all, and — when the rights
+ * were lent by a standing rule — the URL scope of the message that triggered it.
+ */
+function downloadDenialFor(ctx: AgentToolContext, url: string): string | null {
+  if (!ctx.isOwner) return DOWNLOAD_DENIED;
+  if (ctx.allowedDownloadUrls === null) return null;
+  if (isUrlInDownloadScope(url, ctx.allowedDownloadUrls)) return null;
+  const allowed = ctx.allowedDownloadUrls.join(", ") || "(none)";
+  return (
+    `This run may only download from the link(s) in the user's message: ${allowed}. ` +
+    `"${url}" is not one of them, so it will not be downloaded. Never download substitute or ` +
+    `"similar" content — if the requested content cannot be downloaded from the allowed ` +
+    `link(s), stop and report exactly what failed.`
+  );
+}
 
 /** The first non-empty line of a tool result, bounded — the activity-feed summary. */
 function summarizeResult(result: McpToolCallResult): string {
@@ -521,6 +553,27 @@ async function finishDownload(
   if (outcome === "staged") {
     return {
       text: `Downloaded "${result.filename}" (${mb} MB). It will be delivered to the chat together with your final report — the user gets the file, so do NOT mention a server folder or a file path.`,
+    };
+  }
+  if (outcome === "discarded") {
+    // Attach or fail (user decision, 2026-08-01): this run's requester cannot
+    // reach the server's disk, so a file the chat cannot take is deleted, not
+    // archived. The record stays, marked, so the run row says what happened.
+    record.discarded = true;
+    await rm(result.filePath, { force: true }).catch((err: unknown) => {
+      console.error(
+        `browser-agent: could not remove the oversized download "${result.filename}":`,
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+    return {
+      text:
+        `Downloaded "${result.filename}" (${mb} MB), but it is too large to send to this chat ` +
+        `(limit ${ctx.downloadMaxMb} MB) and there is no other way to deliver it, so it was ` +
+        `discarded. The download FAILED to reach the user: report that the file is too large ` +
+        `to deliver. Do NOT mention any server folder or file path — the user cannot access ` +
+        `the server.`,
+      isError: true,
     };
   }
   return {

@@ -28,6 +28,106 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Restricted rule-driven downloads: stranded files + substitute download (`done` pending production deploy + live verification, 2026-08-01)
+
+Two incidents in the group, same afternoon, both children of the owner's
+"download social-network media links" rule (traces `1747a84c…`/`f458155f…` and
+`dc7df92e…`/`35dc99a4…`):
+
+1. A member asked for a YouTube video; the rule matcher (gemma4:12b) matched the
+   YouTube link to the "x.com, tiktok, instagram" rule, lent the owner's rights,
+   and the 77 MB result exceeded the 20 MB attach cap — so it was "kept" on the
+   server and the chat was told the file is in "your downloads folder", which no
+   chat user can reach.
+2. A bare x.com link opened a rule turn; the chat model composed the goal with a
+   **flipped digit in the 19-digit tweet id** (`…702` → `…102`) *and* appended
+   "(або аналогічний відео/медіа файл)" — the exact softener `browse_web`'s
+   description forbids. The sub-agent, unable to download the (mangled) tweet,
+   searched "popular music videos 2024" and delivered Maroon 5's "Sugar" as a
+   "similar" file, kept on disk, reported as success.
+
+*Decisions (operator, 2026-08-01).*
+
+- **Attach or fail** for **restricted** runs: a download the chat cannot take is
+  deleted, not kept; the run's report says the delivery failed and is sent
+  **silent** (no ping). Restricted (second decision, same day: *"it has to be
+  the same for the owner in a group chat"*) = a standing rule drove the run in
+  a **group** — the owner's own message included — or lent the sender rights
+  they did not hold. The owner's direct requests, their own DM rules, and
+  dashboard runs stay unrestricted (kept on disk as before).
+- **The attach cap is not a setting.** `browser_download_max_mb` removed from
+  settings/dashboard; fixed at Telegram's 50 MB bot upload ceiling
+  (`TELEGRAM_MAX_UPLOAD_MB`, `lib/telegram.ts`).
+- **Hard data does not pass through an LLM.** Message URLs are extracted in code
+  (`features/browser-agent/urls.ts`), bound to the tool context
+  (`McpToolContext.messageUrls`), stored on the run (`source_urls`), appended
+  verbatim to the agent's goal message, and — for a `restricted` run (new
+  column) — the download tools accept **only** those URLs or same-site ones
+  (subdomain folding + `youtu.be`↔`youtube.com`, `x.com`↔`twitter.com`
+  aliases). Rule-driven-ness is detected as `authorityUserId` being bound on
+  the turn: the matcher only binds it when a rule with rights actually
+  matched, and it is skipped on the owner's direct (addressed) requests.
+  Declined alternatives: deterministic domain-matching for rules, dropping
+  elevation entirely.
+- **Prompt hardening**: the agent system prompt forbids substitute/"similar"
+  downloads — a failed target is a failed run, reported honestly.
+- **Local Bot API server** (2 GB uploads) deferred — see Other open items.
+
+*Files.* New — `features/browser-agent/urls.ts` (+ `urls.test.ts`),
+`db/migrations/0046_lonely_ben_parker.sql`. Changed — `lib/telegram.ts`,
+`db/schema.ts`, `server/mcp/context.ts`, `server/telegram/process-update.ts`,
+`features/browser-agent/{types,format}.ts`,
+`features/browser-agent/server/{agent,tools,runner,repository,service,mcp-tools}.ts`
+(+ `tools.test.ts`, `mcp-tools.test.ts`, `browse-live.integration.test.ts`),
+`features/settings/server/{schema,repository,service}.ts` (+ integration test),
+`features/settings/ui/SettingsForm.tsx`,
+`features/chat-rules/server/live-flow.integration.test.ts`, docs
+(`configuration.md`, `architecture/{data-model,security}.md`,
+`features/{browser-agent,chat-rules}.md`, `operations/operator-guide.md`,
+`api/openapi.yaml`).
+
+*Verification.* `npm run lint` clean, `npm run typecheck` clean, `npm test` 90
+files / 930 passed (new: 12 for `urls.ts`, 3 dispatcher cases — URL fence,
+alias, discard; enqueue elevation/sourceUrls pins), `npm run test:integration`
+25 files / 338 passed / 41 live-LLM skipped. `npm run build` **blocked** by the
+known `data/pg` EACCES (fifth recurrence, tracked below; reproduces with the
+changes stashed).
+
+*Deployment finding (2026-08-01).* Asked to "kill the running server and
+migrate", it turned out **the production bot does not run on this machine**: no
+app process or container, no built image, no `data/traces/traces-2026-08.ndjson`
+anywhere on disk, and the local Postgres (`llm-tg-bot-nextjs-db-1`) holds zero
+messages for the incident group, none of today's runs, and no client
+connections — this checkout + DB is the dev environment. Migration 0046 **was
+applied to the dev DB** (`npm run db:migrate`, journal at 0046); the production
+deployment (wherever it lives) still needs: pull this code, rebuild the image,
+run the migration during the restart. The stale memory that production runs
+from this working copy has been corrected.
+
+*Remaining risks / next steps.*
+
+- **Production deploy + migration** are the operator's (or need access details):
+  migration 0046 drops `settings.browser_download_max_mb`, which older builds
+  still select — apply it together with the code, during the restart.
+- **Live re-test** (operator): repeat both incidents — a YouTube link from a
+  non-owner (expect: download refused as out of rule scope, or delivered if it
+  fits 50 MB once the matcher fires; nothing new left in `data/downloads`), and
+  a dead x.com link (expect: honest failure report, silent, no substitute file).
+  Also the owner's own link in the group via the rule: >50 MB must now be
+  discarded + reported silent, not kept.
+- The two stranded incident files (`Maroon 5 - Sugar….mp4`,
+  `Mission… Impossible….mp4`, ~140 MB) are on the production host's
+  `data/downloads` — delete there.
+- Accepted limitation: on a restricted run, a direct-file/stream URL on a CDN
+  host differing from the message's site is refused too; the rule use-case is
+  media pages, where `browser_download_media` takes the page URL itself.
+- The host alias table is deliberately tiny (`youtu.be`, `x.com`); a new
+  share-domain alias (e.g. a future shortener) needs a one-line addition in
+  `urls.ts`.
+- The rule matcher still over-matches ("such as" lists judged by gemma4:12b) —
+  now bounded in blast radius rather than fixed; folds into the standing
+  model-replacement question.
+
 ## Keeping yt-dlp up to date (`done` pending live verification, 2026-08-01)
 
 *Why.* The image installed yt-dlp from `apk`, which is frozen per Alpine release: the
@@ -753,6 +853,16 @@ deleted again, so the dev DB holds no rules.
   `on-reply`.
 
 ## Other open items
+
+- **Local Telegram Bot API server (`todo`; operator-requested, 2026-08-01)** —
+  the standard Bot API caps bot uploads at 50 MB, which is what forces the
+  attach-or-fail path for most videos. Running the official
+  `telegram-bot-api` server locally raises the ceiling to 2 GB, so nearly every
+  browser-agent download could actually reach the chat. Scope when picked up: a
+  new Compose service, grammY pointed at the local endpoint (`apiRoot`), token
+  logout/login migration between cloud and local API, and a decision on where
+  its file store lives. New infrastructure — present the design per the
+  Decision Notes process before building.
 
 - **Ukrainian idiomatic joke requests never trigger tools on gemma4:12b
   (`blocked` on a model decision;** from the 2026-07-27 "lied about scheduling"

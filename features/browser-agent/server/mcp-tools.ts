@@ -4,6 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { getBotPolicy } from "@/features/settings/server/service";
+import { isGroupChatId } from "@/lib/telegram";
 import { getToolContext } from "@/server/mcp/context";
 
 import { enqueueBrowserRun } from "./service";
@@ -54,7 +55,9 @@ const BROWSE_WEB_DESCRIPTION =
   "Do NOT call for casual chat, an opinion, or a stable fact you already know well and the user did " +
   "not ask you to verify (a definition, a historical date, arithmetic) — that is not a web task. " +
   "Write the goal as a clear, self-contained instruction, and INCLUDE ALL links, site names, and " +
-  "search terms the user gave — the agent starts from nothing but this text. " +
+  "search terms the user gave — the agent starts from nothing but this text. Any link you write " +
+  "must be copied character-for-character (the system also hands the agent the user's links " +
+  "verbatim, so a mistyped link in the goal will be caught — but do not rely on that). " +
   "Pass on what the user actually asked for, and do NOT soften it or add an easier alternative: " +
   "if they said to download something, the goal is to download it — never write 'or describe it', " +
   "'or find information about it', 'or explain how to get it'. The agent takes any alternative you " +
@@ -100,6 +103,18 @@ export function registerBrowserAgentMcpTools(server: McpServer): void {
       const policy = await getBotPolicy().catch(() => null);
       const authorityUserId = ctx.authorityUserId ?? ctx.userId;
       const isOwner = Boolean(policy?.ownerUserId && authorityUserId === policy.ownerUserId);
+      const senderIsOwner = Boolean(policy?.ownerUserId && ctx.userId === policy.ownerUserId);
+      // A rule drove this turn: `authorityUserId` is bound only when a standing
+      // rule matched and its author had rights to lend (never on a direct
+      // request, even the owner's own — the matcher is skipped there).
+      const ruleDriven = ctx.authorityUserId != null;
+      // Restricted = downloads are fenced to the message's own links and must
+      // attach to the chat or be discarded (user decisions, 2026-08-01): every
+      // rule-driven run in a group — the owner's own message included, since a
+      // group's audience cannot reach the server's disk — and any run whose
+      // rights were lent to a non-owner. The owner's direct requests and their
+      // own DM rules stay unrestricted.
+      const restricted = isOwner && ruleDriven && (!senderIsOwner || isGroupChatId(ctx.chatId));
 
       const run = await enqueueBrowserRun({
         goal,
@@ -107,6 +122,8 @@ export function registerBrowserAgentMcpTools(server: McpServer): void {
         threadId: ctx.threadId ?? null,
         createdByUserId: ctx.userId ?? null,
         isOwner,
+        restricted,
+        sourceUrls: ctx.messageUrls ?? [],
       });
       // The turn's reply is now only an acknowledgement of this run — the
       // pipeline sends it silent and removes it once the run reports.
