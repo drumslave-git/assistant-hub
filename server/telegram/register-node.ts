@@ -9,6 +9,10 @@ import {
   stopBrowserAgentRunner,
 } from "@/features/browser-agent/server/runner";
 import {
+  startYtDlpUpdater,
+  stopYtDlpUpdater,
+} from "@/features/browser-agent/server/ytdlp-scheduler";
+import {
   startSummaryScheduler,
   stopSummaryScheduler,
 } from "@/features/history/server/summary-scheduler";
@@ -43,6 +47,7 @@ export function registerNode(): void {
     stopMemoryScheduler();
     stopAnalyticsScheduler();
     stopBrowserAgentRunner();
+    stopYtDlpUpdater();
     // Flush any settled traces still buffered in memory before the process exits,
     // so a graceful restart doesn't lose the last window of debug history.
     await stopTraceStore().catch(() => undefined);
@@ -100,6 +105,14 @@ export function registerNode(): void {
   // New runs are picked up immediately via the enqueue signal; a run with no LLM
   // configured settles as a failure rather than hanging.
   startBrowserAgentRunner();
+
+  // Start the daily yt-dlp update check, plus one immediate check when this
+  // container has no self-updated copy yet. yt-dlp tracks sites that change on
+  // purpose, so the build baked into the image goes stale on its own schedule;
+  // without this, every media download starts failing at once and nothing says
+  // why. A machine with no yt-dlp and no upstream build for its platform settles
+  // as a harmless no-op.
+  startYtDlpUpdater();
 
   // Fire-and-forget: do not block server startup on the Telegram handshake. A
   // network failure here is not fatal — the manager reconnects on its own — so

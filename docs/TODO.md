@@ -28,6 +28,69 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Keeping yt-dlp up to date (`done` pending live verification, 2026-08-01)
+
+*Why.* The image installed yt-dlp from `apk`, which is frozen per Alpine release: the
+copy on this machine was `2026.03.17` against upstream's `2026.07.04`, four months and
+many YouTube-side changes behind. The recorded remedy ("rebuild against a newer base
+image") was never reliable — a rebuild only moves to whatever Alpine froze next. And
+the failure is silent: a stale yt-dlp does not warn, it answers *every* media page with
+an extraction error until a user's request fails.
+
+*Decisions (operator, 2026-08-01).* Asked with four options (runtime auto-update job /
+pinned binary rebuilt manually / pip in the Dockerfile / host-side rebuild cadence).
+Chosen: **runtime auto-update job**, with the downloaded binary **ephemeral** — kept in
+`/app/data/bin` inside the container, re-downloaded on boot after a recreate, rather
+than bind-mounted. Rationale for ephemeral: no Compose change and no host directory
+whose ownership must be kept right for the non-root `app` user; the cost is one ~40 MB
+download per redeploy.
+
+*What shipped.* The Dockerfile now installs upstream's self-contained `musllinux`
+build, pinned by version + SHA-256 and arch-selected, instead of `apk add yt-dlp` —
+which also drops python3 from the image. That build is only the floor: a daily job on
+the shared daily-job model checks GitHub's latest release, verifies the asset against
+the release's `SHA2-256SUMS`, **runs it from a temp path**, and only then renames it
+over `data/bin/yt-dlp`. The media downloader resolves its command per download, so an
+update lands without a restart. A container with no managed copy checks once at boot
+instead of waiting for the night.
+
+Failure design: every expected dead end (unsupported platform, already current, GitHub
+unreachable or rate-limiting, no usable asset) settles as a no-op summary; only a
+checksum mismatch or a downloaded binary that will not run raises — and neither can
+replace the working binary, because the rename happens last.
+
+*Files.* New — `features/browser-agent/ytdlp-release.ts` (+test),
+`features/browser-agent/server/ytdlp-binary.ts` (+test),
+`features/browser-agent/server/ytdlp-scheduler.ts`,
+`features/browser-agent/ui/YtDlpJobCard.tsx`, `app/api/browser/ytdlp/run/route.ts`.
+Changed — `Dockerfile`, `server/paths.ts` (`binDir()`),
+`features/browser-agent/server/media-download.ts` (resolver),
+`server/telegram/register-node.ts`, `lib/features.ts` (`ytdlp-updater`),
+`features/jobs/server/registry.ts` (+test), `app/(dashboard)/browser/page.tsx`,
+`features/browser-agent/server/media-download.test.ts`. Docs — `getting-started.md`,
+`architecture/{overview,security,background-jobs}.md`,
+`operations/{deployment,troubleshooting,operator-guide}.md`,
+`features/{README,browser-agent}.md`, `api/{README,endpoints,openapi.yaml}`.
+
+*Verification.* `npm run lint` clean, `npm run typecheck` clean, `npm run test` 89
+files / 915 tests passing (38 new: 20 for the release helpers, 15 for the updater, 1
+for the managed-binary preference, 2 for the job view). `npm run build` **fails**, but
+not because of this change: Turbopack's tree walk hits `data/pg` (owned by the
+container's postgres uid, `drwx------`) and dies with `Permission denied`. Confirmed
+pre-existing by stashing every change and rebuilding — same error, same directory,
+just named against `server/download.ts` instead. Fixed on the operator's side with
+`sudo chmod -R g+rX data/pg`.
+
+*Remaining risks / next steps.*
+- **Not verified live.** The updater has never run against real GitHub: the tests stub
+  `fetch`. First real proof is hitting **Run now** on the yt-dlp updater card and
+  seeing the version badge move off the image's pinned build.
+- The image change needs a rebuild before the deployment has any of this; until then
+  the running container still has the apk `yt-dlp`.
+- Integrity, not provenance: `SHA2-256SUMS.sig` is not checked (no GPG keyring in the
+  image). Recorded in `docs/architecture/security.md`.
+- The boot check re-downloads ~40 MB after every container recreate, by design.
+
 ## Poller does not survive an outage; Stop does nothing (`done` pending live verification, 2026-08-01)
 
 User report: after a few hours without an internet connection the bot never came
@@ -483,8 +546,8 @@ default (`PG_DATA_DIR=./data/pg`, root-owned 0700) the whole lint run dies. Adde
   always keeps the file, having no chat). **The delivered-and-removed branch has not
   been exercised against real Telegram** — send a small track through the bot and check
   the file is in the chat and gone from `downloads/`.
-- The distro yt-dlp is frozen per Alpine release while these sites change often; if
-  every media page starts failing, the fix is a rebuild against a newer base image.
+- ~~The distro yt-dlp is frozen per Alpine release while these sites change often~~ —
+  addressed by the yt-dlp updater entry below (2026-08-01).
 - No cookies means age-gated, sign-in-walled and region-locked pages fail with
   yt-dlp's own error. That was the accepted v1 scope — revisit if it bites.
 

@@ -20,7 +20,7 @@ Feature ids are the ones in `lib/features.ts` — the same strings that appear a
 | Vision | `vision`, `vision-backfill` | `/vision` | [vision.md](vision.md) |
 | Voice | `voice` | `/vision` | [voice.md](voice.md) |
 | Image generation | `mcp-tools-image-gen` | `/tools`, `/vision` | [image-generation.md](image-generation.md) |
-| Browser agent (all web access) | `browser-agent`, `mcp-tools-browser-agent` | `/browser` | [browser-agent.md](browser-agent.md) |
+| Browser agent (all web access) | `browser-agent`, `mcp-tools-browser-agent`, `ytdlp-updater` | `/browser` | [browser-agent.md](browser-agent.md) |
 | Scheduled tasks | `scheduled-tasks`, `mcp-tools-scheduled-tasks` | `/scheduled-tasks` | [scheduled-tasks.md](scheduled-tasks.md) |
 | Self-improvement | `user-feedback`, `self-improvement` | `/self-improvement` | [self-improvement.md](self-improvement.md) |
 | Analytics | `analytics`, `analytics-insights` | `/analytics` | [analytics.md](analytics.md) |

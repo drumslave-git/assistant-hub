@@ -417,13 +417,41 @@ directly, mirroring the conversational tool without needing Telegram.
 | `browserDownloadMaxMb` | Largest file also attached to the chat (1–50) |
 | `browserDownloadLimitGb` | Hard ceiling on any single download (1–100, default 10) |
 
-Needs a working Chromium, ffmpeg and yt-dlp. All three are in the Docker image
-(`apk add`). Locally they must be on `PATH`; without yt-dlp, `browser_download_media`
-reports that it is not installed and the run continues.
+Needs a working Chromium, ffmpeg and yt-dlp. Chromium and ffmpeg come from `apk`;
+yt-dlp does not (see below). Locally they must be on `PATH`; without yt-dlp,
+`browser_download_media` reports that it is not installed and the run continues.
 
-The distro yt-dlp package is frozen per Alpine release while the sites it supports
-change often, so a media download that starts failing across the board usually means
-a rebuild against a newer base image is due.
+## Keeping yt-dlp current
+
+yt-dlp is the one dependency that cannot be pinned at build time and forgotten. It
+extracts from sites that change on purpose, and a build a few months old does not
+degrade — it fails **every** media page at once, silently, until a user's request
+fails. Alpine's package is frozen per release (four months behind upstream when this
+was written), so "rebuild against a newer base image" was never a reliable fix.
+
+So the binary tracks upstream on its own schedule (user decision, 2026-08-01):
+
+| Layer | What it is |
+| --- | --- |
+| Image floor | The Dockerfile pins upstream's self-contained `musllinux` build by version + SHA-256. No python3 in the image at all — it is a PyInstaller bundle |
+| Daily job | `ytdlp-scheduler.ts`, on the shared daily-job model, at the same run time as every other daily job. Checks GitHub's latest release and installs it into `data/bin` when it is newer |
+| Boot check | A container with no self-updated copy yet checks immediately instead of waiting for the night, since `data/bin` is not persisted across container recreation |
+| Resolution | `resolveYtDlpCommand()` prefers `data/bin/yt-dlp` over `PATH`, resolved **per download** so an update lands without a restart |
+
+The update is written to a pid-scoped temp file, hashed against the release's
+`SHA2-256SUMS`, **run once**, and only then renamed over the live path. That order is
+the point: a mismatched checksum or a build that will not start (the wrong libc)
+leaves the working binary exactly where it was. Everything that is merely a dead end
+— an unsupported platform, an already-current binary, GitHub unreachable or
+rate-limiting — settles as a no-op summary rather than a failure, because the
+previous binary keeps working and the next run tries again.
+
+The trust model, and why there is no signature check, is in
+`docs/architecture/security.md`.
+
+The version in use and where it came from (`data/bin` vs `PATH`) are on the job card
+on this feature's page and on the Jobs board, with **Run now** for an immediate
+check. Runs are traced under the `ytdlp-updater` feature.
 
 ## Download storage health
 
@@ -459,9 +487,13 @@ under `mcp-tools-browser-agent`.
 
 Unit: `files.test.ts`, `format.test.ts`, `hls.test.ts`, `snapshot.test.ts`,
 `ytdlp.test.ts` (the yt-dlp argv/progress/error contract, no binary needed),
+`ytdlp-release.test.ts` (asset selection, checksum/version parsing, ordering),
 `server/tools.test.ts` (the media tool's owner gate and mode default),
 `server/media-download.test.ts` (the spawn plumbing, against a **stub** `yt-dlp`
-placed on `PATH` — no network).
+placed on `PATH` — no network),
+`server/ytdlp-binary.test.ts` (the updater, against a stubbed `fetch` and stub
+binaries on disk — including the two cases that must *not* replace a working
+binary: a checksum mismatch and a downloaded build that will not run).
 Integration (live, and marked as such): `server/browse-live.integration.test.ts`,
 `server/browser-agent.integration.test.ts`,
 `server/primitives-live.integration.test.ts`,

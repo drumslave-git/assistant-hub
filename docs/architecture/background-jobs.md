@@ -52,11 +52,11 @@ The due math is pure (`daily-due.ts`) and unit-tested.
 Info shape (`DailyJobInfoBase`): `status`, `nextRunAt`, `runTime`, `timezone`,
 `lastResult`. Each feature extends it with its own backlog fields.
 
-This primitive exists because the four daily schedulers each used to carry a
+This primitive exists because the daily schedulers each used to carry a
 private copy of the same ~100-line shape. A feature now supplies only its
 `runJob` and the extra info fields its card shows.
 
-## The six jobs
+## The seven jobs
 
 | Job | Primitive | Runs | Work | Backlog badge |
 | --- | --- | --- | --- | --- |
@@ -66,14 +66,21 @@ private copy of the same ~100-line shape. A feature now supplies only its
 | **Memory** | Daily | `daily_jobs_run_time` | Two ordered passes: passive extraction, then consolidation | Chat-days to read + notes to fold |
 | **Analytics insights** | Daily | `daily_jobs_run_time` | Score finished chat-hours, roll up the calendar | Chat-hours |
 | **Self-improvement** | Daily | `daily_jobs_run_time` | Distill feedback into new preference and correction versions | — |
+| **yt-dlp updater** | Daily | `daily_jobs_run_time` (plus once at boot) | Install a newer yt-dlp from upstream into `data/bin` | — |
 
-The **browser-agent runner** is a seventh piece of background machinery but not a
+The **browser-agent runner** is an eighth piece of background machinery but not a
 scheduler: it is a queue pump over the `browser_agent_runs` table, woken by an
 enqueue signal rather than a clock. At boot it sweeps any run left `running` by a
 previous process to `failed`.
 
 Every job settles as a **harmless no-op** when there is nothing to do or no LLM is
 configured. None of them throw into the scheduler.
+
+The yt-dlp updater is the odd one out: it needs neither an LLM nor the database,
+and it is the only job that exists to prevent a *silent* failure rather than to
+produce anything. A stale yt-dlp does not warn — it just answers every media page
+with an extraction error. See
+[Browser agent](../features/browser-agent.md#keeping-yt-dlp-current).
 
 ### Why the expensive jobs run at night
 
@@ -96,6 +103,7 @@ Each job owns its own idempotency, and each one is a different mechanism:
 | Analytics insights | A scored hour is **final**. The job never re-reads it because the message count drifted |
 | Self-improvement | An empty backlog is a no-op; incorporated rows carry the version that consumed them |
 | Scheduled tasks | Only tasks whose instant has actually passed fire |
+| yt-dlp updater | A version compare short-circuits before anything is downloaded |
 
 Analytics deserves the emphasis. Earlier versions reconciled stored roll-ups
 against what the job thought they should be, which made the nightly token spend a
@@ -119,6 +127,10 @@ to the connections reading rows.
 A lock miss is a **benign skip**, not a failure — idempotency is the job's own
 concern, so the other process's run covers the work.
 
+The yt-dlp updater takes **no** lock. The locks above coordinate processes sharing
+one database; that job writes a file inside its own container, so a second instance
+would have its own `data/bin` and nothing to contend over.
+
 ## Live progress
 
 `server/jobs/progress.ts` is a pure type module: the schedulers hold a
@@ -132,11 +144,11 @@ the length is not known up front — never a misleading bar.
 ## The Jobs board
 
 `/jobs` is the consolidated view. `features/jobs/server/registry.ts` is the one
-place that knows all six jobs: it calls each feature's `getXJobInfo` getter and
+place that knows all seven jobs: it calls each feature's `getXJobInfo` getter and
 normalizes the two different status shapes (idle vs interval, plus each job's own
 backlog and pause state) into a single `JobView` the board renders uniformly.
 That coupling deliberately mirrors `register-node.ts`, which is likewise the
-single place that *starts* all six.
+single place that *starts* all seven.
 
 Each card shows: an activity badge, next/last run, the last result, the backlog,
 a live progress bar while running, a "Run now" button hitting the owning
@@ -157,7 +169,7 @@ any status or progress change refreshes it with no manual reload.
 | Flavour | Endpoints | Behavior |
 | --- | --- | --- |
 | Awaited | `/api/analytics/insights/run`, `/api/scheduled-tasks/run`, `/api/vision/backfill` | Triggers the run (or forces the next tick) and returns the refreshed job info |
-| Fire-and-forget | `/api/history/summaries/run`, `/api/memory/run`, `/api/self-improvement/run` | Returns the job snapshot **immediately** and progress arrives live over SSE, because a backlog can take many LLM passes |
+| Fire-and-forget | `/api/history/summaries/run`, `/api/memory/run`, `/api/self-improvement/run`, `/api/browser/ytdlp/run` | Returns the job snapshot **immediately** and progress arrives live over SSE, because a backlog can take many LLM passes (or, for yt-dlp, a ~40 MB download) |
 
 Forcing a run does not skip the job's own gating: an unchanged day is still
 skipped, a scored hour is still final, and maintenance mode still pauses task

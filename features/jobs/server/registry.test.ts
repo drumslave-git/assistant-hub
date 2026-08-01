@@ -11,6 +11,7 @@ import {
   summaryJobView,
   taskJobView,
   visionJobView,
+  ytdlpJobView,
 } from "./registry";
 
 function intervalStatus(over: Partial<IntervalJobStatus> = {}): IntervalJobStatus {
@@ -167,10 +168,28 @@ describe("daily job views", () => {
     expect(view.lastResult).toBe("done");
   });
 
+  it("yt-dlp: warns when no binary is installed, but still allows Run now", () => {
+    // "Run now" is exactly what fixes this state, so it must not be disabled by it.
+    const view = ytdlpJobView({ ...dailyBase, installedVersion: null, source: "missing" });
+    expect(view.notice).toContain("No yt-dlp installed");
+    expect(view.runDisabled).toBe(false);
+  });
+
+  it("yt-dlp: an installed binary needs no notice", () => {
+    const view = ytdlpJobView({
+      ...dailyBase,
+      installedVersion: "2026.07.04",
+      source: "managed",
+    });
+    expect(view.notice).toBeNull();
+    expect(view.backlog).toBeNull();
+  });
+
   it("renders errored rows when a getter failed", () => {
     expect(summaryJobView(null).failed).toBe(true);
     expect(memoryJobView(null).failed).toBe(true);
     expect(analyticsJobView(null).failed).toBe(true);
     expect(selfImprovementJobView(null).failed).toBe(true);
+    expect(ytdlpJobView(null).failed).toBe(true);
   });
 });

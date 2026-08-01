@@ -1276,6 +1276,26 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/browser/ytdlp/run:
+    post:
+      tags: [browser-agent]
+      summary: Check for a newer yt-dlp now
+      description: >
+        Fire-and-forget — a check that finds an update downloads ~40 MB from the
+        yt-dlp release, verifies its SHA-256, and installs it into `data/bin`.
+        Also runs daily at the shared daily-jobs run time.
+      responses:
+        "200":
+          description: Job info at the moment of triggering
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/YtDlpJobInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   # ──────────────────────────  analytics  ────────────────────────
   /api/analytics/metrics:
     get:
@@ -2118,6 +2138,23 @@ components:
           properties:
             at: { type: string, format: date-time }
             summary: { type: string }
+
+    YtDlpJobInfo:
+      allOf:
+        - $ref: "#/components/schemas/DailyJobInfoBase"
+        - type: object
+          required: [installedVersion, source]
+          properties:
+            installedVersion:
+              type: [string, "null"]
+              description: Version the media downloader will run right now; null when none is installed.
+              examples: ["2026.07.04"]
+            source:
+              type: string
+              enum: [managed, system, missing]
+              description: >
+                Where that binary comes from — the self-updating copy in `data/bin`,
+                whatever is on PATH (the image's pinned build), or nowhere.
 
     SummaryJobInfo:
       allOf:

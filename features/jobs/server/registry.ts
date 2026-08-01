@@ -2,6 +2,10 @@ import "server-only";
 
 import type { AnalyticsJobInfo } from "@/features/analytics/types";
 import { getAnalyticsJobInfo } from "@/features/analytics/server/scheduler";
+import {
+  getYtDlpJobInfo,
+  type YtDlpJobInfo,
+} from "@/features/browser-agent/server/ytdlp-scheduler";
 import { getSummaryJobInfo, type SummaryJobInfo } from "@/features/history/server/summary-scheduler";
 import { getMemoryJobInfo, type MemoryJobInfo } from "@/features/memory/server/scheduler";
 import {
@@ -21,12 +25,12 @@ import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
 import type { JobView } from "../types";
 
 /**
- * The one place that knows all six background jobs — the reader half of the
+ * The one place that knows all seven background jobs — the reader half of the
  * consolidated `/jobs` dashboard. It calls each feature's existing `getXJobInfo`
  * getter and normalizes the two different scheduler status shapes (idle vs
  * interval, plus each job's own backlog/pause state) into a single {@link JobView}
  * the board renders uniformly. This coupling mirrors `register-node.ts`, which is
- * likewise the single place that starts all six.
+ * likewise the single place that starts all seven.
  *
  * The per-job mappers are pure and exported so the normalization (activity
  * derivation, last-run passthrough, backlog, progress) is unit-testable without
@@ -203,18 +207,49 @@ export function selfImprovementJobView(info: SelfImprovementJobInfo | null): Job
 }
 
 /**
+ * yt-dlp updater — daily; the only job that needs no LLM and no database. Its
+ * notice carries the state an operator has to act on: no yt-dlp installed at all,
+ * which is the difference between "media downloads may be stale" and "media
+ * downloads do not work".
+ */
+export function ytdlpJobView(info: YtDlpJobInfo | null): JobView {
+  if (info == null) return errored("ytdlp-updater", "yt-dlp updater", "/browser");
+  return {
+    id: "ytdlp-updater",
+    title: "yt-dlp updater",
+    description: `Keeps the media downloader's yt-dlp current against upstream releases, daily at ${info.runTime} (${info.timezone}).`,
+    activity: intervalActivity(info.status),
+    href: "/browser",
+    runEndpoint: "/api/browser/ytdlp/run",
+    runDisabled: false,
+    notice:
+      info.source === "missing"
+        ? "No yt-dlp installed — media downloads fail until a check installs one."
+        : null,
+    backlog: null,
+    nextRunAt: info.nextRunAt,
+    lastRunAt: info.lastResult?.at ?? null,
+    lastResult: info.lastResult?.summary ?? null,
+    failed: info.status.lastError != null,
+    progress: info.status.progress,
+  };
+}
+
+/**
  * Every background job's current state, in a stable order. Each getter is guarded
  * so one failing job cannot blank the whole board.
  */
 export async function getAllJobs(): Promise<JobView[]> {
-  const [pendingMedia, tasks, selfImprovement, summary, memory, analytics] = await Promise.all([
-    getPendingMediaCount().catch(() => 0),
-    getTaskSchedulerInfo().catch(() => null),
-    getSelfImprovementJobInfo().catch(() => null),
-    getSummaryJobInfo().catch(() => null),
-    getMemoryJobInfo().catch(() => null),
-    getAnalyticsJobInfo().catch(() => null),
-  ]);
+  const [pendingMedia, tasks, selfImprovement, summary, memory, analytics, ytdlp] =
+    await Promise.all([
+      getPendingMediaCount().catch(() => 0),
+      getTaskSchedulerInfo().catch(() => null),
+      getSelfImprovementJobInfo().catch(() => null),
+      getSummaryJobInfo().catch(() => null),
+      getMemoryJobInfo().catch(() => null),
+      getAnalyticsJobInfo().catch(() => null),
+      getYtDlpJobInfo().catch(() => null),
+    ]);
   const vision = getVisionBackfillStatus();
 
   return [
@@ -224,5 +259,6 @@ export async function getAllJobs(): Promise<JobView[]> {
     memoryJobView(memory),
     analyticsJobView(analytics),
     selfImprovementJobView(selfImprovement),
+    ytdlpJobView(ytdlp),
   ];
 }

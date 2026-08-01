@@ -194,9 +194,11 @@ configurable, so it would mean editing `docker-compose.yml`.
 
 | Symptom | Cause / fix |
 | --- | --- |
-| "needs yt-dlp, which is not installed on the server" | `yt-dlp` is not on `PATH`. The Docker image installs it from apk; locally, install it. Only `browser_download_media` needs it — the rest of the run works |
+| "needs yt-dlp, which is not installed on the server" | No yt-dlp in `data/bin` and none on `PATH`. Hit **Run now** on the yt-dlp updater card (Browser agent page, or the Jobs board) to install one; locally you can also just install yt-dlp yourself. Only `browser_download_media` needs it — the rest of the run works |
 | One page fails with yt-dlp's own `ERROR:` line | That is the site's answer: private video, sign-in wall, region block, or an unsupported site. Nothing to fix here |
-| **Every** media page fails to extract | The distro yt-dlp is frozen per Alpine release while these sites change often. Rebuild the image against a newer base |
+| **Every** media page fails to extract | A stale yt-dlp — these sites change on purpose. Check the version on the updater card and hit **Run now**; if it says "already current", upstream has not shipped a fix yet |
+| The updater card says "could not reach GitHub" | The daily check needs outbound HTTPS to `api.github.com` and `github.com`. The previous binary keeps working and the next nightly run retries; nothing is lost |
+| The updater card is red with "does not run on this machine" | The downloaded build does not match the container's libc or architecture. The **previous binary is untouched** — it is never replaced until the new one has run. Report the platform (`uname -m`, glibc vs musl) |
 | A merged video needs a container change | Expected: `mp4` is a preference, and yt-dlp falls back to one that can hold the chosen codecs |
 
 ## A URL is rejected as unsafe

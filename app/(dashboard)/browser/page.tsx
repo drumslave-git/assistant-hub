@@ -5,8 +5,13 @@ import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { getDownloadStorageHealth } from "@/features/browser-agent/server/download";
 import { getBrowserAgentRuns } from "@/features/browser-agent/server/service";
+import {
+  getYtDlpJobInfo,
+  type YtDlpJobInfo,
+} from "@/features/browser-agent/server/ytdlp-scheduler";
 import { NewRunForm } from "@/features/browser-agent/ui/NewRunForm";
 import { RunsList } from "@/features/browser-agent/ui/RunsList";
+import { YtDlpJobCard } from "@/features/browser-agent/ui/YtDlpJobCard";
 import type { BrowserAgentRun } from "@/features/browser-agent/types";
 import { featureDebugHref } from "@/lib/features";
 
@@ -32,6 +37,11 @@ export default async function BrowserAgentPage() {
   // whose runs it breaks — as well as on Overview, because a run only reports the
   // failure once someone has already asked for a file.
   const downloads = await getDownloadStorageHealth();
+
+  // The media downloader's yt-dlp, which goes stale on upstream's schedule rather
+  // than this app's. Read independently of the runs above: it needs no database,
+  // so it must still be visible on the page that says the database is down.
+  const ytdlp: YtDlpJobInfo | null = await getYtDlpJobInfo().catch(() => null);
 
   return (
     <>
@@ -68,6 +78,8 @@ export default async function BrowserAgentPage() {
           </p>
         </div>
       )}
+
+      {ytdlp ? <YtDlpJobCard initial={ytdlp} /> : null}
 
       {runs ? (
         <div className="space-y-6">

@@ -251,8 +251,8 @@ truncated but playable video, and the media tool refuses before it starts.
 
 ## Background jobs (`/jobs`)
 
-All six background jobs in one place: vision backfill, task poller, history summary,
-memory, analytics insights, self-improvement. Each card shows an activity badge,
+All seven background jobs in one place: vision backfill, task poller, history summary,
+memory, analytics insights, self-improvement, yt-dlp updater. Each card shows an activity badge,
 next/last run, last result, the backlog, a live progress bar while running, "Run now",
 and a link to the owning feature's page.
 
@@ -262,6 +262,11 @@ declines to run is exactly the failure an operator cannot diagnose from a dashbo
 that only ever shows "Enabled".
 
 Note that all daily jobs share one run time (Settings → Core → daily jobs run time).
+
+The **yt-dlp updater** card also carries the version of yt-dlp the media downloader
+will actually run, and whether it came from the app's self-updated copy or the
+system. That badge is worth a glance whenever a media download misbehaves: a stale
+yt-dlp fails every media page at once, and **Run now** is the fix.
 
 ## Settings (`/settings`)
 

@@ -11,6 +11,7 @@ import path from "node:path";
  * | `data/pg` | The bundled Postgres cluster (Compose bind mount; the app never touches it) |
  * | `data/traces` | Monthly trace NDJSON logs |
  * | `data/downloads` | Files the browser agent fetched |
+ * | `data/bin` | Self-updating tool binaries (the current yt-dlp) |
  *
  * These used to be three env vars (`TRACES_DIR`, `DOWNLOADS_DIR`, plus
  * `PG_DATA_DIR`/`TRACES_DATA_DIR`/`DOWNLOADS_DATA_DIR` on the Compose side), each
@@ -26,7 +27,7 @@ import path from "node:path";
  */
 
 /** Test-only overrides. Null in production, always. */
-let overrides: { traces?: string; downloads?: string } = {};
+let overrides: { traces?: string; downloads?: string; bin?: string } = {};
 
 /** Monthly trace NDJSON logs. */
 export function tracesDir(): string {
@@ -42,10 +43,25 @@ export function downloadsDir(): string {
 }
 
 /**
- * Test-only: point one or both directories at throwaway paths, or pass `null` to
+ * Tool binaries the app keeps current itself — today only yt-dlp, which has to
+ * track upstream far more often than the image is rebuilt.
+ *
+ * Deliberately *not* a Compose bind mount (operator decision, 2026-08-01): a
+ * fresh container falls back to the build the image pins and re-downloads on
+ * boot, which costs one download per redeploy and saves a host directory whose
+ * ownership would have to be kept right for the non-root app user.
+ */
+export function binDir(): string {
+  return overrides.bin ?? path.join(process.cwd(), "data", "bin");
+}
+
+/**
+ * Test-only: point one or more directories at throwaway paths, or pass `null` to
  * restore the real ones. Callers that cache a resolved path (the trace store
  * resolves its directory once) must reset themselves afterwards.
  */
-export function __setDataDirsForTests(next: { traces?: string; downloads?: string } | null): void {
+export function __setDataDirsForTests(
+  next: { traces?: string; downloads?: string; bin?: string } | null,
+): void {
   overrides = next ?? {};
 }

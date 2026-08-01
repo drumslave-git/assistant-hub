@@ -163,6 +163,16 @@ export const FEATURES = {
     relatedIdsKey: "browser_agent_runs",
     path: "/browser",
   },
+  // Split from `browser-agent` for the same reason `history-summaries` is split
+  // from `history`: the nightly yt-dlp check is maintenance *of* the browser
+  // agent, not a browsing run, and "did the downloader's binary stay current"
+  // must be filterable without wading through every run.
+  "ytdlp-updater": {
+    id: "ytdlp-updater",
+    label: "yt-dlp updater",
+    realtimeTopic: "browser",
+    path: "/browser",
+  },
   analytics: {
     id: "analytics",
     label: "Analytics",

@@ -212,6 +212,7 @@ row resolved with a `userLabel`.
 | `POST` | `/api/browser` | `{ goal }` (4–4000 chars) | The queued `BrowserAgentRun` — **201** |
 | `GET` | `/api/browser/{id}` | — | `BrowserAgentRunDetail` |
 | `GET` | `/api/browser/{id}/screenshot/{seq}` | — | `image/jpeg`, `Cache-Control: private, max-age=3600` |
+| `POST` | `/api/browser/ytdlp/run` | — | The yt-dlp updater's job info immediately (fire-and-forget) |
 
 A dashboard-started run has `chatId: null` and delivers nothing — its report is read
 on the page. It is treated as the **operator's own**, so `isOwner` is true and the
@@ -325,6 +326,7 @@ GET    /api/browser
 POST   /api/browser
 GET    /api/browser/{id}
 GET    /api/browser/{id}/screenshot/{seq}
+POST   /api/browser/ytdlp/run
 
 GET    /api/analytics/metrics
 GET    /api/analytics/series

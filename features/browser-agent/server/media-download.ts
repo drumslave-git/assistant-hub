@@ -15,6 +15,7 @@ import {
 import { downloadsDir } from "@/server/paths";
 
 import { assertPublicUrl, uniqueFilename, type DiskDownload } from "./download";
+import { resolveYtDlpCommand } from "./ytdlp-binary";
 
 /**
  * Media-page download primitive (`browser_download_media`): hand a **page** URL —
@@ -146,13 +147,19 @@ function lineSplitter(onLine: (line: string) => void): (chunk: unknown) => void 
  * which one yt-dlp writes its status to has moved between versions — this way
  * progress is never lost, and progress lines never end up quoted as the failure
  * reason.
+ *
+ * Which binary runs is resolved per download: the self-updating copy the daily
+ * job maintains when there is one, otherwise `PATH`. Resolving here rather than
+ * at import time means an update that lands mid-uptime is picked up by the very
+ * next download.
  */
 async function runYtDlp(
   args: string[],
   onProgress?: (progress: MediaProgress) => void,
 ): Promise<{ code: number; stderr: string } | "enoent"> {
+  const command = await resolveYtDlpCommand();
   return new Promise((resolve) => {
-    const proc = spawn("yt-dlp", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let tail = "";
 
     const handle = (line: string): void => {

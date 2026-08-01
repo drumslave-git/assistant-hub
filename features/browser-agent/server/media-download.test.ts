@@ -51,17 +51,24 @@ const TEN_GB = 10 * 1024 ** 3;
 
 let downloadsDir: string;
 let binDir: string;
+/** Stands in for `data/bin`; deliberately left empty so PATH resolution is exercised. */
+let managedBinDir: string;
 let argvFile: string;
 let originalPath: string | undefined;
 
 function loadDownloader(): { downloadMediaToDisk: typeof downloadMediaToDisk; YtDlpMissingError: typeof YtDlpMissingError } {
-  __setDataDirsForTests({ downloads: downloadsDir });
+  // `bin` is redirected too, not just `downloads`: the downloader prefers the
+  // self-updated yt-dlp under `data/bin` over PATH, and these cases are about the
+  // PATH one. Left at its real path, a machine that had run the updater would
+  // silently exercise a different binary than the stub below.
+  __setDataDirsForTests({ downloads: downloadsDir, bin: managedBinDir });
   return { downloadMediaToDisk, YtDlpMissingError };
 }
 
 beforeEach(() => {
   downloadsDir = mkdtempSync(path.join(tmpdir(), "media-dl-"));
   binDir = mkdtempSync(path.join(tmpdir(), "media-bin-"));
+  managedBinDir = mkdtempSync(path.join(tmpdir(), "media-managed-"));
   argvFile = path.join(binDir, "argv.json");
 
   const stubPath = path.join(binDir, "yt-dlp");
@@ -83,6 +90,7 @@ afterEach(() => {
   delete process.env.STUB_EXIT;
   rmSync(downloadsDir, { recursive: true, force: true });
   rmSync(binDir, { recursive: true, force: true });
+  rmSync(managedBinDir, { recursive: true, force: true });
 });
 
 describe("downloadMediaToDisk", () => {
@@ -168,6 +176,24 @@ describe("downloadMediaToDisk", () => {
     const result = await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
 
     expect(result.sizeBytes).toBe(5000);
+  });
+
+  it("runs the self-updated yt-dlp in preference to the one on PATH", async () => {
+    // The updater's whole point: a build newer than the image's must be the one
+    // that actually downloads, without a restart.
+    const managed = path.join(managedBinDir, "yt-dlp");
+    writeFileSync(managed, STUB.replace("STUB_ARGV_OUT", "STUB_MANAGED_ARGV_OUT"));
+    chmodSync(managed, 0o755);
+    const managedArgv = path.join(managedBinDir, "argv.json");
+    process.env.STUB_MANAGED_ARGV_OUT = managedArgv;
+    const { downloadMediaToDisk } = loadDownloader();
+
+    await downloadMediaToDisk(PAGE_URL, { mode: "audio", maxBytes: TEN_GB });
+
+    // The managed stub recorded the run; the PATH stub never saw it.
+    expect(readdirSync(managedBinDir)).toContain("argv.json");
+    expect(readdirSync(binDir)).not.toContain("argv.json");
+    delete process.env.STUB_MANAGED_ARGV_OUT;
   });
 
   it("says so plainly when yt-dlp is not installed", async () => {

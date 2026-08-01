@@ -126,7 +126,7 @@ Each background job exposes one. Two flavours:
 | Behavior | Endpoints |
 | --- | --- |
 | Awaited — triggers and returns refreshed job info | `POST /api/analytics/insights/run`, `POST /api/scheduled-tasks/run`, `POST /api/vision/backfill` |
-| Fire-and-forget — returns the snapshot immediately, progress arrives over SSE | `POST /api/history/summaries/run`, `POST /api/memory/run`, `POST /api/self-improvement/run` |
+| Fire-and-forget — returns the snapshot immediately, progress arrives over SSE | `POST /api/history/summaries/run`, `POST /api/memory/run`, `POST /api/self-improvement/run`, `POST /api/browser/ytdlp/run` |
 
 A `GET` on the same path (where one exists) returns the job info without triggering
 anything.

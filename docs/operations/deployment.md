@@ -37,6 +37,12 @@ downloads mount matters for a non-obvious reason: a file the browser agent fetch
 was **too large to attach to the chat** exists nowhere else, so an unmounted container
 path would silently lose it on the next image replacement.
 
+`/app/data/bin` — where the yt-dlp updater keeps the current binary — is deliberately
+**not** mounted (user decision, 2026-08-01). It is a cache, not data: a recreated
+container falls back to the build the image pins and re-downloads a current one on
+boot, which costs ~40 MB per redeploy and saves a host directory whose ownership would
+have to be kept right for the non-root `app` user.
+
 A host bind mount must be writable by the container's non-root `app` user. If it is
 not, trace flushing fails — which surfaces as a global dashboard alert rather than a
 crash, because failing readiness there would drop the traces still buffered in RAM —
@@ -79,7 +85,7 @@ Deliberate choices worth knowing before you change them:
 | Native deps installed **inside** the image | Host `node_modules` must never be copied in — they are built for the wrong platform |
 | `output: "standalone"` | The runner ships only traced runtime deps (`.next/standalone`), not a full `node_modules` |
 | `ffmpeg` from apk | Vision samples video frames with it, voice transcodes both ways, and the browser agent muxes streams with it (user decision: system ffmpeg over a bundled/WASM build) |
-| `yt-dlp` from apk | The browser agent's media downloader; a media site's player has no file URL to fetch (user decision, 2026-07-29). Pulls python3 in, and is frozen per Alpine release — rebuild against a newer base image if downloads start failing |
+| `yt-dlp` from **upstream**, not apk | The browser agent's media downloader; a media site's player has no file URL to fetch (user decision, 2026-07-29). The apk package is frozen per Alpine release while these sites change on purpose, so the image pins upstream's self-contained `musllinux` build (checksum-verified, no python3) and the app's daily updater keeps a newer copy in `/app/data/bin` (user decision, 2026-08-01) |
 | `chromium` + `nss`/`freetype`/`harfbuzz`/fonts from apk | Playwright's own download is a glibc build that will not run on Alpine (musl). `CHROMIUM_EXECUTABLE_PATH` points at the distro browser |
 | `playwright` and `playwright-core` copied **whole** over the traced copies | They are `serverExternalPackages`, so Next's file tracer copies only statically resolvable JS and misses runtime data files like `playwright-core/browsers.json` |
 | `sharp` needs no apk package | It ships its own musl libvips binary via npm |

@@ -199,6 +199,29 @@ The adblock engine is matched inside the fetcher's existing `context.route`
 handler rather than via the library's own `enableBlockingInPage`, which would
 register a page route *ahead* of the SSRF guard and `continue()` requests past it.
 
+## The self-updating yt-dlp
+
+The daily yt-dlp updater downloads an executable and runs it, which is the one
+place this app does that. It is not on an SSRF path — no model, page, or user
+supplies the URL — so the controls are about *what* gets executed:
+
+| Control | Effect |
+| --- | --- |
+| Fixed endpoint | Only `api.github.com`'s yt-dlp "latest release" is queried; no input reaches the URL |
+| Literal prefix check | An asset is downloaded only from `https://github.com/yt-dlp/yt-dlp/releases/download/`, so a surprising API response cannot redirect it elsewhere |
+| SHA-256 verified | Against the `SHA2-256SUMS` published in the same release, before the file is used for anything |
+| Size cap | 150 MB; upstream's builds are ~40 MB |
+| Executed before installed | The binary is run (`--version`) from a temp path and only then renamed over the live one, so a crash or a wrong-libc build can never leave a broken yt-dlp in place |
+| Non-root, no `PATH` change | It is written to `data/bin` as the `app` user and resolved by absolute path; nothing else on the system starts using it |
+
+**Accepted residual gap:** this verifies integrity, not provenance. GitHub also
+publishes `SHA2-256SUMS.sig`, but checking it needs yt-dlp's GPG key in a keyring
+this deployment does not have — so the guarantee is "exactly the file that release
+published", with GitHub and the yt-dlp release trusted. An operator who does not
+want that can leave the job alone: the image's pinned, checksum-verified build
+keeps working, and the updater's failure mode is a stale binary, never a broken
+one.
+
 ## Bot-side access control
 
 | Control | Effect |

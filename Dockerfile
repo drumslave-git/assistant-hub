@@ -33,20 +33,14 @@ ENV HOSTNAME=0.0.0.0
 # - ffmpeg: the vision feature samples video/GIF frames with it
 #   (features/vision/server/frames.ts), voice transcodes both ways with it, and the
 #   browser agent muxes HLS/DASH streams with it.
-# - yt-dlp: the browser agent's browser_download_media tool. A media site's player
-#   derives ciphered per-session stream URLs in its own JavaScript, so there is no
-#   file to GET and no manifest to mux — yt-dlp is the only way to download from
-#   one. It pulls python3 in. Note the distro package is frozen per Alpine release
-#   while these sites change often; if downloads start failing, rebuild against a
-#   newer base image.
 # - chromium (+ nss/freetype/harfbuzz/fonts/ca-certificates): the read-link tool
 #   drives headless Chromium via Playwright. Playwright's own download is a glibc
 #   build that won't run on Alpine (musl), so we install the distro browser and
 #   point the app at it with CHROMIUM_EXECUTABLE_PATH below.
+# yt-dlp is installed separately below — not from apk.
 # sharp ships its own musl libvips binary via npm, so it needs no system package.
 RUN apk add --no-cache \
     ffmpeg \
-    yt-dlp \
     chromium \
     nss \
     freetype \
@@ -54,6 +48,37 @@ RUN apk add --no-cache \
     ca-certificates \
     ttf-freefont \
     font-noto-emoji
+
+# yt-dlp: the browser agent's browser_download_media tool. A media site's player
+# derives ciphered per-session stream URLs in its own JavaScript, so there is no
+# file to GET and no manifest to mux — yt-dlp is the only way to download from one.
+#
+# Upstream's self-contained musllinux build, not the apk package: yt-dlp extracts
+# from sites that change on purpose, and a stale build fails *every* media page at
+# once rather than degrading. Alpine's package is frozen per release and was four
+# months behind upstream when this was written, so a rebuild would not reliably
+# make it current. This binary is only the floor — the app's daily updater keeps a
+# newer copy in /app/data/bin and prefers it (features/browser-agent/server/
+# ytdlp-binary.ts). Pin + checksum so the image itself stays reproducible; bump
+# both together, or just let the updater do it at runtime.
+#
+# PyInstaller bundle, so no python3 in the image at all (the apk package pulled it
+# in). The .zip assets are skipped deliberately — a single file is what makes the
+# runtime swap atomic.
+ARG YTDLP_VERSION=2026.07.04
+ARG YTDLP_SHA256_x86_64=f7439ec2e3ffe69e06ac233f83f0d9687b89105939129bddcbf74e5de0f2b40e
+ARG YTDLP_SHA256_aarch64=9a6a4de88f35dc68c1763945fbb417e092ebd9afc5d66052ac31b68d405a12a7
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64) asset=yt-dlp_musllinux; sha="$YTDLP_SHA256_x86_64" ;; \
+      aarch64) asset=yt-dlp_musllinux_aarch64; sha="$YTDLP_SHA256_aarch64" ;; \
+      *) echo "no upstream yt-dlp build for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    wget -q -O /usr/local/bin/yt-dlp \
+      "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/${asset}"; \
+    echo "${sha}  /usr/local/bin/yt-dlp" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/yt-dlp; \
+    /usr/local/bin/yt-dlp --version
 
 # Launch the distro Chromium instead of Playwright's (absent) bundled browser.
 ENV CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
@@ -78,12 +103,14 @@ COPY docker/migrate/migrate.mjs ./migrate/migrate.mjs
 COPY --from=builder /app/db/migrations ./migrate/db/migrations
 RUN cd migrate && npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 
-# Trace/debug logs and browser-agent downloads are written here at runtime. The app
-# resolves both relative to its working directory, so they land in /app/data/traces
-# and /app/data/downloads — not configurable. Created up front so they are writable
-# by the non-root app user; a host bind mount must be made writable by that user on
-# the host side.
-RUN mkdir -p /app/data/traces /app/data/downloads
+# Trace/debug logs, browser-agent downloads and self-updating tool binaries are
+# written here at runtime. The app resolves all three relative to its working
+# directory, so they land in /app/data/{traces,downloads,bin} — not configurable.
+# Created up front so they are writable by the non-root app user; a host bind mount
+# must be made writable by that user on the host side. `bin` is deliberately not
+# mounted: a recreated container falls back to the pinned binary above and the
+# updater re-fetches on boot.
+RUN mkdir -p /app/data/traces /app/data/downloads /app/data/bin
 
 # Run as non-root.
 RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
