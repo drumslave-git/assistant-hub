@@ -1287,6 +1287,63 @@ describe("handleIncomingMessage — standing chat rules", () => {
     expect(applyChatRules).toHaveBeenCalledWith(expect.anything(), { addressed: false });
   });
 
+  it("runs the rule match concurrently with the addressing analyzer", async () => {
+    // The analyzer's answer is held until the matcher has been consulted, so
+    // this turn only completes when the two classifications run side by side —
+    // the sequential order (analyzer first, matcher after) would deadlock.
+    let releaseAnalyzer!: (reply: { content: string; model: string; latencyMs: number }) => void;
+    const analyzeAddressing = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseAnalyzer = resolve;
+        }),
+    );
+    const applyChatRules = vi.fn().mockImplementation(async () => {
+      // Next macrotask: the service has started the analyzer by then.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      releaseAnalyzer({ content: '{"name_match": "absent"}', model: "m", latencyMs: 1 });
+      return { ruleIds: ["r1"], directive: "RULE DIRECTIVE" };
+    });
+    const d = deps({ analyzeAddressing, applyChatRules });
+
+    const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(applyChatRules).toHaveBeenCalledOnce();
+    expect(applyChatRules).toHaveBeenCalledWith(expect.anything(), { addressed: false });
+  });
+
+  it("settles the concurrent rule match, then re-applies the rules, when the analyzer opens the turn", async () => {
+    // Analyzer says addressed: the already-started unaddressed match is settled
+    // (its directive is moot), and the addressed-turn pass — the one that binds
+    // authority from the full rule set — still runs and has the last word.
+    const analyzeAddressing = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: '{"name_match": "other_alphabet", "matched_text": "Ари"}',
+        model: "m",
+        latencyMs: 1,
+      })
+      .mockResolvedValue({
+        content: '{"base_form": "x", "refers_to": "x", "is_display_name": true}',
+        model: "m",
+        latencyMs: 1,
+      });
+    const applyChatRules = matched();
+    const d = deps({ analyzeAddressing, applyChatRules });
+
+    const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(applyChatRules).toHaveBeenCalledTimes(2);
+    expect(applyChatRules.mock.calls[0][1]).toEqual({ addressed: false });
+    expect(applyChatRules.mock.calls[1][1]).toEqual({ addressed: true });
+    // The rule directive from the unaddressed pass is not injected — the person
+    // addressed the bot themselves.
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages.at(-2).content).not.toBe("RULE DIRECTIVE");
+  });
+
   it("stays silent when the only matched rules cannot open a turn (no directive)", async () => {
     // An `on-reply` rule matched: it lends its author's rights on a turn the bot
     // was addressed in, but it can never start one.

@@ -64,7 +64,7 @@ async function runJob(ctx?: IntervalRunContext): Promise<string> {
   const conn = { baseUrl: llm.baseUrl, apiKey: llm.apiKey };
   const deps = {
     complete: (messages: Parameters<typeof chatCompletion>[1]["messages"]) =>
-      chatCompletion(conn, { model: llm.model, messages }),
+      chatCompletion(conn, { model: llm.model, messages, priority: "background" }),
     timeZone,
     onProgress: ctx?.reportProgress,
   };

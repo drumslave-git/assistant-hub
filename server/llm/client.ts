@@ -8,6 +8,9 @@ import OpenAI, {
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 import { ApiError } from "@/lib/api-error";
+import { withLlmPriority, type LlmPriority } from "./priority";
+
+export type { LlmPriority } from "./priority";
 
 /**
  * Shared client for OpenAI-compatible LLM endpoints. Server-only. The connection
@@ -23,6 +26,14 @@ export interface LlmConnection {
 
 const LIST_MODELS_TIMEOUT_MS = 15_000;
 export const CHAT_COMPLETION_TIMEOUT_MS = 120_000;
+
+/**
+ * Wire timeout for background-priority completions. Background requests only
+ * dispatch when the endpoint is quiet (see `priority.ts`), so this bounds real
+ * processing time — and a summarize/extract batch over a long transcript
+ * legitimately outlives the interactive 120s on a local model.
+ */
+export const BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS = 300_000;
 
 /**
  * A single content part of a multimodal message. Only `user` turns carry image
@@ -362,44 +373,76 @@ export async function chatCompletion(
     model: string;
     messages: ChatMessage[];
     timeoutMs?: number;
+    /**
+     * Dispatch priority on the shared endpoint (see `priority.ts`). Interactive
+     * (the default) goes straight out; background waits for a quiet endpoint
+     * and defaults to the longer {@link BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS}.
+     */
+    priority?: LlmPriority;
+    /**
+     * Hard cap on generated tokens (thinking included, on a thinking model).
+     * A runaway-generation stop, not a length target — an aggressive value cuts
+     * a thinking model off before its answer, which reads as an empty response.
+     */
+    maxTokens?: number;
+    /**
+     * Bound for a thinking model's reasoning. Classification calls pass "low":
+     * their answer is a small JSON verdict, and unbounded thinking was measured
+     * costing more wall time than the verdict itself. Ignored by providers and
+     * models without the knob.
+     */
+    reasoningEffort?: "low" | "medium" | "high";
     /** Reports the exact request body just before it is sent (for trace recording). */
     onRequest?: (requestBody: unknown) => void | Promise<void>;
   },
 ): Promise<ChatCompletionResult> {
+  const priority = input.priority ?? "interactive";
   const requestBody = {
     model: input.model,
     messages: input.messages as ChatCompletionMessageParam[],
+    ...(input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
+    ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
   };
-  const start = Date.now();
+  const timeout =
+    input.timeoutMs ??
+    (priority === "background"
+      ? BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS
+      : CHAT_COMPLETION_TIMEOUT_MS);
   try {
-    await input.onRequest?.(requestBody);
-    const completion = await createOpenAiClient(conn).chat.completions.create(requestBody, {
-      timeout: input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS,
+    // Everything below runs inside the gate so the latency and the HTTP timeout
+    // measure the wire, not the in-app queue; the queue wait shows up in traces
+    // as the gap before the request event.
+    return await withLlmPriority(priority, async () => {
+      const start = Date.now();
+      await input.onRequest?.(requestBody);
+      const completion = await createOpenAiClient(conn).chat.completions.create(requestBody, {
+        timeout,
+      });
+      const latencyMs = Date.now() - start;
+      const content = completion.choices[0]?.message?.content?.trim() ?? "";
+      if (!content) {
+        throw ApiError.serviceUnavailable(
+          finishReasonOf(completion) === "length"
+            ? CONTEXT_EXHAUSTED_MESSAGE
+            : "LLM returned an empty response",
+        );
+      }
+      return {
+        content,
+        model: input.model,
+        servedModel: servedModelOf(completion),
+        usage: completion.usage
+          ? {
+              promptTokens: completion.usage.prompt_tokens,
+              completionTokens: completion.usage.completion_tokens,
+              totalTokens: completion.usage.total_tokens,
+            }
+          : undefined,
+        latencyMs,
+        requestBody,
+        responseBody: completion,
+      };
     });
-    const latencyMs = Date.now() - start;
-    const content = completion.choices[0]?.message?.content?.trim() ?? "";
-    if (!content) {
-      throw ApiError.serviceUnavailable(
-        finishReasonOf(completion) === "length"
-          ? CONTEXT_EXHAUSTED_MESSAGE
-          : "LLM returned an empty response",
-      );
-    }
-    return {
-      content,
-      model: input.model,
-      servedModel: servedModelOf(completion),
-      usage: completion.usage
-        ? {
-            promptTokens: completion.usage.prompt_tokens,
-            completionTokens: completion.usage.completion_tokens,
-            totalTokens: completion.usage.total_tokens,
-          }
-        : undefined,
-      latencyMs,
-      requestBody,
-      responseBody: completion,
-    };
   } catch (err) {
     throw toLlmError(err, conn.baseUrl);
   }

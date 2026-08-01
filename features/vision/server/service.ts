@@ -14,7 +14,7 @@ import {
   getTranscriptionRuntime,
 } from "@/features/settings/server/service";
 import { buildTranscribeMessages, parseTranscript } from "@/features/voice/format";
-import { chatCompletion } from "@/server/llm/client";
+import { chatCompletion, type LlmPriority } from "@/server/llm/client";
 import { transcribeAudio, type TranscriptionResult } from "@/server/llm/transcription";
 import { toWavForTranscription } from "@/server/media/audio";
 
@@ -346,15 +346,19 @@ export interface DescribeDeps {
  * chat runtime for describes (and the `input_audio` transcription fallback),
  * plus the dedicated transcription endpoint when one is configured. Null when
  * the LLM is not configured. Shared by the live message path and the backfill
- * scheduler so the two can never resolve differently.
+ * scheduler so the two can never resolve differently — only the dispatch
+ * priority differs: a describe inside a live turn goes out interactive, the
+ * backfill's passes wait for a quiet endpoint.
  */
-export async function resolveDescribeDeps(): Promise<DescribeDeps | null> {
+export async function resolveDescribeDeps(
+  priority: LlmPriority = "interactive",
+): Promise<DescribeDeps | null> {
   const runtime = await getLlmRuntime().catch(() => null);
   if (!runtime) return null;
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
   const stt = await getTranscriptionRuntime().catch(() => null);
   return {
-    complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }),
+    complete: (messages) => chatCompletion(conn, { model: runtime.model, messages, priority }),
     target: { baseUrl: runtime.baseUrl, model: runtime.model },
     ...(stt
       ? {

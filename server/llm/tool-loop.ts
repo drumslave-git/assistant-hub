@@ -20,6 +20,7 @@ import {
   type ChatUsage,
   type LlmConnection,
 } from "./client";
+import { withLlmPriority, type LlmPriority } from "./priority";
 
 /**
  * Chat completion with tools as ONE conversation. Each round the model either
@@ -356,12 +357,19 @@ export async function chatCompletionWithTools(
     compact?: (conversation: ChatCompletionMessageParam[]) => ChatCompletionMessageParam[];
     maxRounds?: number;
     timeoutMs?: number;
+    /** Dispatch priority for every round on the shared endpoint — see `priority.ts`. */
+    priority?: LlmPriority;
+    /** Hard cap on generated tokens per round — see `chatCompletion`'s `maxTokens`. */
+    maxTokens?: number;
   },
 ): Promise<ChatCompletionResult> {
   const seed = toSeedMessages(input.messages);
-  const requestBody = { model: input.model, messages: seed, tools: input.tools };
+  const maxTokensField =
+    input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {};
+  const requestBody = { model: input.model, messages: seed, tools: input.tools, ...maxTokensField };
   const client = createOpenAiClient(conn);
   const timeout = input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS;
+  const priority = input.priority ?? "interactive";
 
   // Report the initial request body (model + messages + tools) before the first
   // round so the trace records what the model was actually sent, in order — the
@@ -373,22 +381,31 @@ export async function chatCompletionWithTools(
   const completeWith =
     (tools: ChatCompletionTool[] | undefined): CompleteRound =>
     async (conversation) => {
-      const start = Date.now();
       try {
-        const completion = await client.chat.completions.create(
-          { model: input.model, messages: conversation, ...(tools ? { tools } : {}) },
-          { timeout },
-        );
-        const latencyMs = Date.now() - start;
-        const message = completion.choices[0]?.message;
-        return {
-          assistantMessage: (message ?? { role: "assistant", content: "" }) as ChatCompletionMessageParam,
-          toolCalls: message?.tool_calls ?? [],
-          content: message?.content?.trim() ?? "",
-          usage: mapUsage(completion.usage),
-          latencyMs,
-          raw: completion,
-        };
+        // Each round takes the gate on its own, so tool executions between
+        // rounds never hold the endpoint slot.
+        return await withLlmPriority(priority, async () => {
+          const start = Date.now();
+          const completion = await client.chat.completions.create(
+            {
+              model: input.model,
+              messages: conversation,
+              ...(tools ? { tools } : {}),
+              ...maxTokensField,
+            },
+            { timeout },
+          );
+          const latencyMs = Date.now() - start;
+          const message = completion.choices[0]?.message;
+          return {
+            assistantMessage: (message ?? { role: "assistant", content: "" }) as ChatCompletionMessageParam,
+            toolCalls: message?.tool_calls ?? [],
+            content: message?.content?.trim() ?? "",
+            usage: mapUsage(completion.usage),
+            latencyMs,
+            raw: completion,
+          };
+        });
       } catch (err) {
         throw toLlmError(err, conn.baseUrl);
       }

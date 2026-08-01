@@ -33,7 +33,7 @@ function scheduler(): IdleScheduler {
       debounceMs: DEBOUNCE_MS,
       onStatusChange: () => publishEvent(FEATURE.realtimeTopic),
       run: async (ctx) => {
-        const deps = await resolveDescribeDeps().catch(() => null);
+        const deps = await resolveDescribeDeps("background").catch(() => null);
         if (!deps) return { summary: "LLM not configured" };
         const result = await runVisionBackfill(deps, {
           isAborted: ctx.isAborted,

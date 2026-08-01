@@ -47,7 +47,8 @@ async function resolveDeps(): Promise<SummarizeDeps | null> {
   if (!llm) return null;
   const conn = { baseUrl: llm.baseUrl, apiKey: llm.apiKey };
   return {
-    complete: (messages) => chatCompletion(conn, { model: llm.model, messages }),
+    complete: (messages) =>
+      chatCompletion(conn, { model: llm.model, messages, priority: "background" }),
     embed: embedding ? (texts) => embed(embedding, texts) : null,
     timeZone,
   };

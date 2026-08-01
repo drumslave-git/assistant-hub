@@ -88,6 +88,29 @@ import type { TraceRecorder } from "@/server/trace";
 import type { IncomingUpdate, ReplyTransport } from "./transport";
 
 /**
+ * Generation bounds for the per-message classification calls (addressing
+ * analyzer, addressing verifier, chat rule match). Their answer is a small JSON
+ * verdict, but the configured model may be a thinking model — measured on the
+ * live bot, unbounded thinking cost up to ~1,000 tokens (14s) per verdict. The
+ * effort knob keeps the thinking short; the token cap is a hard stop against
+ * runaway generation, roomy enough that a legitimate think-then-answer never
+ * truncates (a truncated verdict reads as "not addressed"). User decision,
+ * 2026-08-01: same model for classifications, thinking capped.
+ */
+const CLASSIFIER_REASONING_EFFORT = "low" as const;
+const CLASSIFIER_MAX_TOKENS = 1_000;
+
+/**
+ * Hard stop on tokens generated per reply round (thinking included). A guard
+ * against runaway generation, not a style guide — the brevity instruction in
+ * the base system prompt is what keeps ordinary replies short. Sized well above
+ * the largest completions observed on the live bot (~3,000 tokens) because a
+ * reply cut off mid-think surfaces as a failed turn, which is worse than a slow
+ * one. User decision, 2026-08-01: cap reply completion length.
+ */
+const REPLY_MAX_TOKENS = 4_096;
+
+/**
  * Transport-agnostic message-processing pipeline. This is the whole runtime
  * between the Telegram edges: remember the sender, mirror the message into
  * history, ingest + recognize any media, compose the reply context, run the
@@ -427,7 +450,12 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         // that needs no tool still costs one inference even when tools are offered.
         const toolset = await getToolset();
         if (!toolset) {
-          const result = await chatCompletion(conn, { model: runtime.model, messages, onRequest });
+          const result = await chatCompletion(conn, {
+            model: runtime.model,
+            messages,
+            maxTokens: REPLY_MAX_TOKENS,
+            onRequest,
+          });
           // Reported as a round too, so the caller records rounds and only rounds —
           // one code path on the trace whether or not tools were in play.
           await onRound?.({
@@ -468,6 +496,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             messages,
             tools: toolset.tools,
             callTool: toolset.callTool,
+            maxTokens: REPLY_MAX_TOKENS,
             onRequest,
             onToolCall: (rec) =>
               onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
@@ -500,7 +529,12 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           );
         }
         const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
-        return chatCompletion(conn, { model: runtime.model, messages });
+        return chatCompletion(conn, {
+          model: runtime.model,
+          messages,
+          maxTokens: CLASSIFIER_MAX_TOKENS,
+          reasoningEffort: CLASSIFIER_REASONING_EFFORT,
+        });
       }),
     // The words the chat has already reported as *not* the bot's name, so the
     // analyzer stops answering to someone else's name. Read only when the
@@ -544,7 +578,12 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             });
             const result = await chatCompletion(
               { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey },
-              { model: runtime.model, messages },
+              {
+                model: runtime.model,
+                messages,
+                maxTokens: CLASSIFIER_MAX_TOKENS,
+                reasoningEffort: CLASSIFIER_REASONING_EFFORT,
+              },
             );
             await replyTrace.event({
               type: "llm_response",

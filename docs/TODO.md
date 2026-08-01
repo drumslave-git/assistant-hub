@@ -852,6 +852,75 @@ deleted again, so the dev DB holds no rules.
   first such rule is set; if it is heavy, the lever is making the rule
   `on-reply`.
 
+## Reply latency: LLM priority gate, thinking caps, parallel classifications (`done` pending production deploy + live verification, 2026-08-01)
+
+Measured on the live bot (Debug traces, 2026-08-01): a successful reply took
+27–70 s, an ignored group message 5–9 s, and the background jobs were dying —
+`history-summaries` and `memory-extraction` failed with "Connection … timed
+out" after exactly 120 s because every feature's requests pile into the single
+LLM endpoint's queue and the wire timeout burns while queued. Breakdown of a
+69 s reply: addressing analyzer 14 s (~1,000 completion tokens — the configured
+model thinks, and the thinking dwarfed its 56-char JSON verdict), verifier
+4.5 s, final answer 50.7 s (~23k prompt tokens).
+
+*Decisions (operator, 2026-08-01).*
+
+- **Replies have the highest priority** on the shared endpoint; background jobs
+  wait. No separate worker/service — an in-process gate on the established
+  `globalThis`-singleton pattern.
+- **Same model for the classification calls** (no small-model routing);
+  **thinking capped** instead (`reasoning_effort: "low"` + a hard
+  1,000-token stop).
+- **Reply completion capped** (4,096-token hard stop + a stronger brevity rule
+  in the base prompt); the ~23k-token reply prompt is **not** shrunk — history
+  stays as is, but the summaries job had to be fixed (see priority gate).
+- Addressing analyzer and chat-rule matcher **run concurrently** (they judge
+  the same message independently). On the rare turn the analyzer opens itself,
+  the already-started unaddressed rule match is settled first and the
+  addressed-turn pass still has the last word on authority.
+
+*How the gate works* (`server/llm/priority.ts`): interactive calls (replies,
+addressing/rule classifications, live vision describes, scheduled-task fires,
+browser-agent rounds) dispatch immediately; background calls (history
+summaries, memory extraction/consolidation, vision backfill, analytics
+insights, self-improvement) wait until no interactive call is in flight and at
+most one background call is on the wire. A background call's HTTP timeout now
+starts at dispatch, not enqueue — that alone removes the 120 s starvation
+deaths — and background calls default to a 300 s wire timeout
+(`BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS`) since a summarize batch legitimately
+outlives 120 s on a local model. No preemption: an interactive call arriving
+mid-background-request queues behind that one request on the provider.
+
+*Files.* New — `server/llm/priority.ts` (+ `priority.test.ts`). Changed —
+`server/llm/client.ts` (`priority`/`maxTokens`/`reasoningEffort` inputs, gate
+wrap, background timeout), `server/llm/tool-loop.ts` (per-round gate +
+`maxTokens`), `server/telegram/process-update.ts` (classifier + reply caps),
+`features/bot-messaging/server/service.ts` (concurrent analyzer/rule match; +
+2 tests in `service.test.ts`), `features/bot-messaging/server/prompt.ts`
+(brevity rules), `features/vision/server/service.ts` +
+`backfill-scheduler.ts` (describe priority by caller), and the background
+schedulers of history/memory/analytics/self-improvement (priority tag).
+
+*Verification.* `npm run lint` ✅, `npm run typecheck` ✅, unit tests ✅ (158
+in the touched files; full suite 920 passed with 21 pre-existing yt-dlp
+failures on Windows, also failing on a clean checkout — environment, not
+regression), `npm run build` ✅. Integration suite not run (Testcontainers).
+
+*Remaining risks / live verification checklist (after deploy).*
+
+- `reasoning_effort` on the Ollama OpenAI endpoint: confirm in a Debug trace
+  that an addressing-check response's completion tokens drop (~1,000 → low
+  hundreds) and the verdict JSON still parses. If the provider rejects the
+  param outright, classifications would error — watch the first group message.
+- A reply cut off at 4,096 generated tokens surfaces as a failed turn
+  (`finish_reason: "length"`); none observed near that size, but check error
+  traces in the first days.
+- `history-summaries` / `memory-extraction`: confirm the nightly runs complete
+  instead of timing out; a single batch still over 300 s on the wire will
+  still fail and should prompt revisiting batch size.
+- Constant interactive traffic starves background jobs by design; if backlogs
+  grow (summaries days behind), consider a fairness valve.
+
 ## Other open items
 
 - **Local Telegram Bot API server (`todo`; operator-requested, 2026-08-01)** —

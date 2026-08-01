@@ -185,7 +185,8 @@ export async function resolveReflectionDeps(db?: DrizzleDb): Promise<ReflectionD
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
   const personalityPrompt = await getActivePersonalityPrompt().catch(() => null);
   return {
-    complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }),
+    complete: (messages) =>
+      chatCompletion(conn, { model: runtime.model, messages, priority: "background" }),
     personalityPrompt,
     model: runtime.model,
     db,

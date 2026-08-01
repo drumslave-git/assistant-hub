@@ -492,6 +492,10 @@ export async function handleIncomingMessage(
   // an undecided message costs an LLM call, and maintenance means no LLM work
   // except turns the deterministic checks already addressed. The undecided
   // message stays silent, exactly like chatter the cheap checks rejected.
+  // Maintenance also turns the standing-rule match off below, for the same
+  // reason.
+  const applyRules = deps.policy.maintenanceModeEnabled ? undefined : deps.applyChatRules;
+  let unaddressedRuleMatch: ReturnType<NonNullable<typeof applyRules>> | null = null;
   if (
     !decision.addressed &&
     decision.needsAnalyzer &&
@@ -499,18 +503,21 @@ export async function handleIncomingMessage(
     !deps.policy.maintenanceModeEnabled
   ) {
     trace = await openTrace();
+    // The standing-rule match judges the same message but shares nothing with
+    // the analyzer, so the two classifications run concurrently — on a serial
+    // local endpoint the turn still pays them one after the other, but nothing
+    // else is stacked on top (both were measured multi-second on the live bot).
+    unaddressedRuleMatch = applyRules?.(trace, { addressed: false }).catch(() => null) ?? null;
     decision = await runAddressAnalyzer(incoming, deps, trace);
   }
   // Nobody addressed the bot — but this chat may hold a standing rule that tells
   // it to act on such a message anyway ("any time someone posts X, do Y"). The
   // dep is wired only when such a rule exists, so this costs nothing in a chat
-  // without one. Maintenance mode turns it off for the same reason it turns the
-  // analyzer off: it means no LLM work beyond what the cheap checks addressed.
+  // without one.
   let ruleDirective: string | null = null;
-  if (!decision.addressed && deps.applyChatRules && !deps.policy.maintenanceModeEnabled) {
-    const matched = await deps
-      .applyChatRules(await openTrace(), { addressed: false })
-      .catch(() => null);
+  if (!decision.addressed && applyRules) {
+    const matched = await (unaddressedRuleMatch ??
+      applyRules(await openTrace(), { addressed: false }).catch(() => null));
     if (matched?.directive) {
       ruleDirective = matched.directive;
       decision = {
@@ -519,6 +526,12 @@ export async function handleIncomingMessage(
         reason: `standing chat rule matched (${matched.ruleIds.length})`,
       };
     }
+  } else if (unaddressedRuleMatch) {
+    // The analyzer said "addressed" while the rule match was still in flight.
+    // Its directive is moot (the turn is open anyway), but it is settled here so
+    // its authority binding cannot land in the middle of the reply — the
+    // addressed-turn match below then has the last word on authority.
+    await unaddressedRuleMatch;
   }
 
   if (!decision.addressed) {
