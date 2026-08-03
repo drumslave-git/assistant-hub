@@ -46,6 +46,45 @@ Notable constraints, each learned the hard way:
   errors are classified by *concept* keywords, with live phrasings pinned in
   tests.
 
+## Deadlines and retries
+
+The SDK client is built with `maxRetries: 0` — retrying is decided here, where the
+difference between *the endpoint had a bad moment* and *this request is wrong* is
+known.
+
+| | Interactive | Background |
+| --- | --- | --- |
+| Wire timeout | 90 s (`CHAT_COMPLETION_TIMEOUT_MS`) | 300 s (`BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS`) |
+| Attempts | 2 (`INTERACTIVE_RETRY_ATTEMPTS`), 3 s apart | 1 |
+
+The interactive deadline is sized from measured traces — replies run 40–70 s on
+the configured local model — not from a round number. It was 120 s, which only
+meant a *hung* request held someone's turn hostage for two minutes: incident
+2026-08-03 (trace `82a8976c…`), where a reply died at exactly 120.005 s while the
+endpoint served the next call 0.2 s later, and nothing retried, so the group got
+"the bot could not generate a reply". A shorter deadline plus one retry recovers
+faster than a longer deadline waits.
+
+`isRetryableLlmError` judges the **raw** SDK error, before `toLlmError` flattens
+a 400 and a dropped connection alike into `service_unavailable`. Retried: a
+connection error or timeout, and a 5xx (or status-less) response. Not retried: a
+4xx, a context overflow (the fix is sending less — see the shrink-and-retry
+ladder in the reply pipeline), and an empty or truncated completion, which is
+what this prompt produces on this model and produces again on a second ask. Empty
+answers are judged *after* the retry wrapper for exactly that reason.
+
+Background calls are not retried at all: they already wait for a quiet endpoint,
+carry a longer deadline, and run again on their own schedule. Replies get no
+second schedule.
+
+In the tool loop the retry sits around a single **round**, so everything the loop
+has gathered — including the results of tools that already ran — is what gets
+re-sent. A retry around the whole call would re-execute side effects; this one
+cannot re-download a video.
+
+Recovery is never silent: `onRetry` reaches the caller, and the reply pipeline
+records it as a `warn` step on the trace.
+
 ## The tool loop
 
 `server/llm/tool-loop.ts`. Chat completion with tools as **one** conversation:

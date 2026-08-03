@@ -5,13 +5,19 @@ import type { Message } from "@grammyjs/types";
 import type { DrizzleDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
-import type { ChatContentPart, ChatMessage, ChatUsage } from "@/server/llm/client";
+import type {
+  ChatContentPart,
+  ChatMessage,
+  ChatUsage,
+  LlmRetryInfo,
+} from "@/server/llm/client";
 import {
   isContextOverflowError,
   llmUsageOf,
   sanitizeRequestBodyForTrace,
 } from "@/server/llm/client";
 import { startTrace, type TraceRecorder } from "@/server/trace";
+import { RULE_ENFORCEMENT_DIRECTIVE } from "@/features/chat-rules/format";
 import { ADDRESSING_CHECK_EVENT } from "../addressing-trace";
 import {
   buildAnalyzerMessages,
@@ -52,6 +58,25 @@ const ERROR_REPLY =
 const MAINTENANCE_REPLY =
   "🛠️ System: the bot is in maintenance mode and is only responding to its owner right now. " +
   "Please try again later.";
+
+/**
+ * Sent in place of a rule-turn answer that claimed an action no tool performed
+ * (see the enforcement in {@link handleIncomingMessage}). Same labeled-system
+ * form as the notices above, for the same reason: it is the infrastructure
+ * reporting a fault, not the persona speaking, so it is exempt from the chat's
+ * language directive and cannot be mistaken for the bot's own voice.
+ */
+const RULE_NOT_APPLIED_REPLY =
+  "⚠️ System: a standing rule for this chat matched this message, but the action it calls for was " +
+  "not carried out. Nothing was downloaded or sent. Please try again, or ask the bot directly.";
+
+/** The correction turn appended to a second attempt at a rule-opened reply. */
+interface EnforcementTurn {
+  /** The empty-handed answer the first attempt produced, shown back to the model. */
+  previousAnswer: string;
+  /** The instruction that follows it — see `RULE_ENFORCEMENT_DIRECTIVE`. */
+  directive: string;
+}
 
 /** Result of a reply generation, as returned by the injected generator. */
 export interface GeneratedReply {
@@ -139,13 +164,16 @@ export interface BotMessagingDeps {
    * exact request body it sends via `onRequest` (recorded verbatim as the full
    * request trace — model, messages, and tools, not just pieces), each executed tool
    * call via `onToolCall`, and each model round via `onRound`, so the service records
-   * all three on the reply trace.
+   * all three on the reply trace. `onRetry` reports a transient provider failure
+   * the completion path recovered from on its own, so a turn the endpoint had to
+   * be asked twice for does not read as a clean one.
    */
   generateReply: (
     messages: ChatMessage[],
     onToolCall?: (call: ReplyToolCall) => void | Promise<void>,
     onRequest?: (requestBody: unknown) => void | Promise<void>,
     onRound?: (round: ReplyRound) => void | Promise<void>,
+    onRetry?: (info: LlmRetryInfo) => void | Promise<void>,
   ) => Promise<GeneratedReply>;
   /**
    * Run one plain completion for the addressing analyzer (real: `chatCompletion`
@@ -789,7 +817,10 @@ export async function handleIncomingMessage(
         });
       }
 
-      const composeMessages = (historyMessages: ChatMessage[]): ChatMessage[] => [
+      const composeMessages = (
+        historyMessages: ChatMessage[],
+        enforcement?: EnforcementTurn,
+      ): ChatMessage[] => [
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
         ...(memory ? [{ role: "system" as const, content: memory.content }] : []),
@@ -804,6 +835,16 @@ export async function handleIncomingMessage(
           : []),
         ...(ruleDirective ? [{ role: "system" as const, content: ruleDirective }] : []),
         { role: "user", content: userContent },
+        // The second pass at a rule turn the model answered without acting: its
+        // own empty-handed answer, then the correction. Shown rather than merely
+        // asserted — the model is being told what it just did, and the Grounding
+        // rules already say its own line is not evidence of anything.
+        ...(enforcement
+          ? [
+              { role: "assistant" as const, content: enforcement.previousAnswer },
+              { role: "system" as const, content: enforcement.directive },
+            ]
+          : []),
       ];
       // 4. LLM request + tool calls. The generator reports the exact request body
       // it sends (via onRequest, before the provider call so the response step's
@@ -813,10 +854,18 @@ export async function handleIncomingMessage(
       // the request is the *whole* body the model saw (model, messages, tools), not
       // hand-picked fields. Inline image bytes are replaced with a compact marker
       // (the real image is on the Vision page); all other content is verbatim.
-      const generate = (historyMessages: ChatMessage[]) =>
+      // Tool calls are counted, not just recorded: a turn a standing rule opened
+      // is answerable only by doing what the rule asks, and the only way anything
+      // is done is a tool call. See the enforcement below the generation.
+      let toolCallCount = 0;
+      const generate = (
+        historyMessages: ChatMessage[],
+        enforcement?: EnforcementTurn,
+      ) =>
         deps.generateReply(
-          composeMessages(historyMessages),
+          composeMessages(historyMessages, enforcement),
           async (call) => {
+            toolCallCount += 1;
             await trace.event({
               type: "external_call",
               level: call.ok ? "info" : "warn",
@@ -844,6 +893,18 @@ export async function handleIncomingMessage(
                 ...llmUsageOf(round),
                 callKind: round.isFinal ? "reply-final" : "reply-tool-turn",
               },
+            });
+          },
+          // A recovered provider failure is still a failure that happened. Left
+          // unrecorded, the trace of a turn that took two attempts is
+          // indistinguishable from one that worked first time, and the endpoint
+          // going flaky stays invisible until it fails outright.
+          async (info) => {
+            await trace.event({
+              type: "step",
+              level: "warn",
+              message: `LLM call failed — retrying (attempt ${info.attempt} of ${info.attempts})`,
+              data: { error: info.error, delayMs: info.delayMs },
             });
           },
         );
@@ -886,6 +947,61 @@ export async function handleIncomingMessage(
               ? await deps.loadHistory({ maxMessages: windowCap })
               : { messages: [], count: 0 };
         }
+      }
+
+      // 4d. Rule-turn enforcement. This turn exists only because a standing rule
+      // matched a message nobody addressed the bot in, so the reply's whole
+      // purpose is the action the rule calls for — and the only way anything is
+      // done is a tool call. Zero of them means the answer cannot be true,
+      // whatever it says.
+      //
+      // The check is mechanical (was a rule directive injected; did `onToolCall`
+      // ever fire), never a reading of the text — code judges facts, the model
+      // judges language. It also cannot misfire on an ordinary turn: only a turn
+      // nobody addressed gets a directive — an addressed one never does, whether
+      // or not an `on-reply` rule matched it — and the guard needs one.
+      if (ruleDirective && toolCallCount === 0) {
+        await trace.event({
+          type: "step",
+          level: "warn",
+          message: "rule turn answered without calling any tool — retrying",
+          data: { reason: decision.reason, answer: reply.content },
+        });
+        reply = await generate(historyWindow.messages, {
+          previousAnswer: reply.content,
+          directive: RULE_ENFORCEMENT_DIRECTIVE,
+        });
+      }
+      // Still nothing. The model's text claims an action that provably did not
+      // happen, so it is not delivered — but the chat is not left in silence
+      // either (user decision, 2026-08-03): the people here posted something a
+      // rule promised to act on, and they are owed the truth about it rather
+      // than a plausible lie or nothing at all. The notice is a labeled system
+      // message like the other two, and is deliberately not mirrored into
+      // history — the bot's own failure notice is not conversation.
+      if (ruleDirective && toolCallCount === 0) {
+        await trace.event({
+          type: "step",
+          level: "error",
+          message: "rule turn called no tool on the retry either — answer suppressed",
+          data: { reason: decision.reason, suppressedAnswer: reply.content },
+        });
+        const sent = await deps.sendReply(RULE_NOT_APPLIED_REPLY);
+        await trace.event({
+          type: "output",
+          level: "warn",
+          message: "send message",
+          data: { content: RULE_NOT_APPLIED_REPLY, messageId: sent.messageId, asVoice: false },
+        });
+        // Failed, not succeeded: a rule the bot did not carry out is exactly the
+        // turn an operator has to be able to find on the Debug page, and a green
+        // trace is how the first one went unnoticed for a day.
+        const failure = new Error(
+          "A standing chat rule matched, but the model produced no tool call in two attempts — " +
+            "the rule was not carried out",
+        );
+        await trace.fail(failure);
+        return { status: "error", message: failure.message };
       }
 
       // A long answer is split at natural boundaries and delivered as several

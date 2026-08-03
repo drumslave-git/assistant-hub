@@ -111,10 +111,23 @@ The `addressing check` event carries `matchedText`, `source`, `reason` and
 `botDisplayName`. `matchedText` is the field the "wasn't talking to you" feedback
 loop reads back — see [Self-improvement](self-improvement.md).
 
+Two kinds of trouble the turn recovered from are recorded as `warn` steps rather
+than swallowed, so a turn that took two goes cannot pass for a clean one:
+`context overflow — retrying with history shrunk to N messages` (the injected
+history outgrew the model's window), and `LLM call failed — retrying (attempt 1
+of 2)` (a transient endpoint failure the completion path retried on its own —
+see [Configuration](../configuration.md)).
+
 ## Outcomes
 
 `ignored` (`from_bot`, `no_content`, `not_addressed`, `maintenance_mode`),
 `replied`, or `error`.
+
+`error` covers a failed reply — and one deliberate refusal to send: a turn a
+standing chat rule opened, where the model produced no tool call in two
+attempts. Its answer claims an action that provably did not happen, so it is
+withheld and the chat is told the rule did not run. See
+[Chat rules](chat-rules.md#a-rule-turn-that-called-no-tool).
 
 ## Tests
 

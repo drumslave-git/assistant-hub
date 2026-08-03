@@ -70,6 +70,38 @@ export function buildRuleTriggerDirective(rules: readonly PromptRule[]): string 
 }
 
 /**
+ * The correction given to a rule-opened turn the model answered with words
+ * alone — the second and last attempt at it.
+ *
+ * The prompt already forbids this in three places (the base prompt's Honesty
+ * block, the standing-rules block, and the trigger directive above), and a 12B
+ * model still occasionally works out the call in its reasoning and then emits
+ * prose instead: one turn in nine, measured over the live rule-driven downloads
+ * (2026-08-03, trace `ec543b22…` — "downloaded the video" with zero tool calls
+ * and an invented author handle). More standing prompt text is not the lever,
+ * so this is not standing text: it is shown only after it has happened, with
+ * the empty answer in front of it, which is the one form of this instruction
+ * the model has not already ignored this turn.
+ *
+ * Deliberately offers the honest way out as an equal option. A model cornered
+ * into calling *something* picks a wrong tool; "say you could not" is a correct
+ * answer here, and the notice the chat gets if this pass also does nothing says
+ * the same thing anyway.
+ */
+export const RULE_ENFORCEMENT_DIRECTIVE =
+  "STOP. The answer you just gave called no tool at all, so nothing was done — you only wrote that " +
+  "it was. That message will not be sent. This turn exists solely because a standing rule matched " +
+  "the message, and a rule that asks for an action is carried out by calling the tool that performs " +
+  "it, in this turn, and in no other way.\n\n" +
+  "Answer once more, and pick one of exactly two things:\n" +
+  "- Call the tool the rule requires now. Do not describe the call, do not say you are about to make " +
+  "it, do not report its result before you have one — make the call.\n" +
+  "- Or, if no tool available to you can do what the rule asks, reply with one short sentence saying " +
+  "plainly that you could not do it and why. That is an honest answer and an acceptable one.\n\n" +
+  "Repeating your previous answer, or any other claim that the action happened, is not among your " +
+  "options.";
+
+/**
  * The identity whose permissions a rule-driven turn carries, or null when no
  * matched rule elevates anything.
  *

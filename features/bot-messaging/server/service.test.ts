@@ -17,6 +17,7 @@ import { openPolicy } from "@/test/__mocks__/policy";
 import { BOT, BOT_USER, makeMessage } from "@/test/__mocks__/telegram";
 import { imagePart } from "@/test/__mocks__/vision";
 import { startTrace } from "@/server/trace";
+import { RULE_ENFORCEMENT_DIRECTIVE } from "@/features/chat-rules/format";
 import { BASE_SYSTEM_PROMPT } from "./prompt";
 import { handleIncomingMessage, type BotMessagingDeps, type IncomingMessage } from "./service";
 
@@ -1203,9 +1204,23 @@ describe("handleIncomingMessage — standing chat rules", () => {
   const matched = (directive: string | null = "RULE DIRECTIVE") =>
     vi.fn().mockResolvedValue({ directive, ruleIds: ["r1"] });
 
+  /**
+   * A generator that actually calls a tool — what a rule-opened turn must do to
+   * be delivered at all (see the enforcement suite below). The default `deps`
+   * generator answers with words only, which on a rule turn is now suppressed.
+   */
+  const actsOnTheRule = () =>
+    vi.fn().mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
+      await onRequest?.({ model: "m", messages });
+      await onToolCall?.({ name: "browse_web", args: {}, result: { text: "queued" }, ok: true });
+      const result = { content: "hi back", model: "m", latencyMs: 5 };
+      await onRound?.({ index: 0, isFinal: true, ...result });
+      return result;
+    });
+
   it("replies to an un-addressed message when a rule matched, injecting the directive last", async () => {
     const applyChatRules = matched();
-    const d = deps({ applyChatRules });
+    const d = deps({ applyChatRules, generateReply: actsOnTheRule() });
 
     const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
@@ -1218,7 +1233,7 @@ describe("handleIncomingMessage — standing chat rules", () => {
   });
 
   it("tells the model the sender did not address it", async () => {
-    const d = deps({ applyChatRules: matched() });
+    const d = deps({ applyChatRules: matched(), generateReply: actsOnTheRule() });
     await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -1279,7 +1294,7 @@ describe("handleIncomingMessage — standing chat rules", () => {
 
   it("applies the rules exactly once on a turn a rule opened", async () => {
     const applyChatRules = matched();
-    const d = deps({ applyChatRules });
+    const d = deps({ applyChatRules, generateReply: actsOnTheRule() });
 
     await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
@@ -1304,7 +1319,7 @@ describe("handleIncomingMessage — standing chat rules", () => {
       releaseAnalyzer({ content: '{"name_match": "absent"}', model: "m", latencyMs: 1 });
       return { ruleIds: ["r1"], directive: "RULE DIRECTIVE" };
     });
-    const d = deps({ analyzeAddressing, applyChatRules });
+    const d = deps({ analyzeAddressing, applyChatRules, generateReply: actsOnTheRule() });
 
     const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
@@ -1376,5 +1391,181 @@ describe("handleIncomingMessage — standing chat rules", () => {
       .map((c) => c[0])
       .find((e) => e.message === "system prompt composed");
     expect(step.data.chatRulesApplied).toBe(true);
+  });
+});
+
+/**
+ * A rule-opened turn that ran no tool.
+ *
+ * The turn exists only because a standing rule demanded an action, and an action
+ * happens only through a tool call — so an answer with zero calls cannot be true
+ * however confident it sounds. Live incident (2026-08-03, trace `ec543b22…`): a
+ * social-media link matched the chat's download rule, the model reasoned its way
+ * to `browse_web`, then emitted "downloaded the video from x.com" with an
+ * invented author handle and no call. The chat believed it.
+ *
+ * The check here is mechanical on purpose — a directive was injected, and
+ * `onToolCall` never fired — so nothing depends on reading the answer.
+ */
+describe("handleIncomingMessage — a rule turn that called no tool", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function groupChatter(text: string) {
+    const m = makeMessage({ message_id: 7, chat: { id: 5, type: "group" }, text });
+    return incoming({ message: m, chatType: "group", text });
+  }
+
+  const matched = () =>
+    vi.fn().mockResolvedValue({ directive: "RULE DIRECTIVE", ruleIds: ["r1"] });
+
+  /** Answers with words only, as the incident did — no tool call, ever. */
+  const allTalk = (content = "downloaded the video") =>
+    vi.fn().mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
+      await onRequest?.({ model: "m", messages });
+      const result = { content, model: "m", latencyMs: 5 };
+      await onRound?.({ index: 0, isFinal: true, ...result });
+      return result;
+    });
+
+  /** Talks first, then acts when told — the recovery the enforcement is for. */
+  const actsOnSecondAsking = () =>
+    vi
+      .fn()
+      .mockImplementationOnce(async (messages, _onToolCall, onRequest, onRound) => {
+        await onRequest?.({ model: "m", messages });
+        const result = { content: "downloaded the video", model: "m", latencyMs: 5 };
+        await onRound?.({ index: 0, isFinal: true, ...result });
+        return result;
+      })
+      .mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
+        await onRequest?.({ model: "m", messages });
+        await onToolCall?.({ name: "browse_web", args: {}, result: { text: "queued" }, ok: true });
+        const result = { content: "on it", model: "m", latencyMs: 5 };
+        await onRound?.({ index: 0, isFinal: true, ...result });
+        return result;
+      });
+
+  it("retries once with the answer and the correction appended", async () => {
+    const d = deps({ applyChatRules: matched(), generateReply: actsOnSecondAsking() });
+
+    await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    const second = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[1][0];
+    // The empty-handed answer, then the correction — shown, not merely asserted.
+    expect(second.at(-2)).toEqual({ role: "assistant", content: "downloaded the video" });
+    expect(second.at(-1).role).toBe("system");
+    expect(second.at(-1).content).toBe(RULE_ENFORCEMENT_DIRECTIVE);
+    // Everything before the correction is the same turn, unchanged.
+    const first = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(second.slice(0, first.length)).toEqual(first);
+  });
+
+  it("delivers the retry's answer when the retry calls the tool", async () => {
+    const d = deps({ applyChatRules: matched(), generateReply: actsOnSecondAsking() });
+
+    const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    expect(out).toEqual({ status: "replied", text: "on it" });
+    expect(d.generateReply).toHaveBeenCalledTimes(2);
+    expect(d.sendReply).toHaveBeenCalledWith("on it");
+    expect(recorder.succeed).toHaveBeenCalled();
+  });
+
+  it("never sends the claim when the retry is also all talk, and says so instead", async () => {
+    const d = deps({ applyChatRules: matched(), generateReply: allTalk() });
+
+    const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    expect(out.status).toBe("error");
+    expect(d.generateReply).toHaveBeenCalledTimes(2);
+    const sent = (d.sendReply as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toContain("downloaded the video");
+    // Not silence: the chat is told the rule did not run (user decision, 2026-08-03).
+    expect(sent[0]).toContain("System:");
+    expect(sent[0]).toContain("not carried out");
+  });
+
+  it("fails the trace so a rule that did not run is findable on Debug", async () => {
+    const d = deps({ applyChatRules: matched(), generateReply: allTalk() });
+
+    await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    expect(recorder.fail).toHaveBeenCalled();
+    expect(recorder.succeed).not.toHaveBeenCalled();
+    const messages = recorder.event.mock.calls.map((c) => c[0].message);
+    expect(messages).toContain("rule turn answered without calling any tool — retrying");
+    expect(messages).toContain("rule turn called no tool on the retry either — answer suppressed");
+  });
+
+  it("does not mirror the suppressed answer or the notice into history", async () => {
+    const d = deps({ applyChatRules: matched(), generateReply: allTalk() });
+
+    await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
+
+    expect(d.recordReply).not.toHaveBeenCalled();
+  });
+
+  it("leaves an ordinary addressed turn alone — no rule, no enforcement", async () => {
+    // The guard keys on the directive, which only a turn nobody addressed gets.
+    // A normal reply that needs no tool is not a lie and must not be touched.
+    const d = deps({ generateReply: allTalk("sure, whatever") });
+
+    const out = await handleIncomingMessage(incoming({ text: "hello" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "sure, whatever" });
+    expect(d.generateReply).toHaveBeenCalledOnce();
+  });
+
+  it("leaves an addressed turn alone even when a rule matched it", async () => {
+    // An `on-reply` match binds authority but sets no directive: the person asked
+    // a question, and answering it in words is a complete answer.
+    const applyChatRules = vi.fn().mockResolvedValue({ ruleIds: ["r1"], directive: null });
+    const d = deps({ applyChatRules, generateReply: allTalk("no idea") });
+
+    const out = await handleIncomingMessage(incoming({ text: "hello" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "no idea" });
+    expect(d.generateReply).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * Transient provider failures the completion path recovered from on its own. The
+ * service does not retry these — it records them, so a turn the endpoint had to
+ * be asked twice for cannot pass for a clean one on the dashboard.
+ */
+describe("handleIncomingMessage — recorded LLM retries", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("records a warn step for a retried LLM call", async () => {
+    const generateReply = vi
+      .fn()
+      .mockImplementation(async (messages, _onToolCall, onRequest, onRound, onRetry) => {
+        await onRequest?.({ model: "m", messages });
+        await onRetry?.({
+          attempt: 1,
+          attempts: 2,
+          error: "Connection to http://llm timed out",
+          delayMs: 3000,
+        });
+        const result = { content: "hi back", model: "m", latencyMs: 5 };
+        await onRound?.({ index: 0, isFinal: true, ...result });
+        return result;
+      });
+    const d = deps({ generateReply });
+
+    const out = await handleIncomingMessage(incoming({ text: "hello" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    const step = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => String(e.message).startsWith("LLM call failed — retrying"));
+    expect(step.level).toBe("warn");
+    expect(step.data.error).toContain("timed out");
   });
 });

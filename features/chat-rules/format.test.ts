@@ -6,6 +6,7 @@ import {
   buildRuleTriggerDirective,
   replyRules,
   resolveRuleAuthority,
+  RULE_ENFORCEMENT_DIRECTIVE,
   triggerLabel,
 } from "./format";
 import type { ChatRule } from "./server/schema";
@@ -70,6 +71,17 @@ describe("buildRuleTriggerDirective", () => {
     expect(directive).toContain("1. Download video links.");
     // The narrowing clause: a rule-opened turn is not an invitation to chat.
     expect(directive).toMatch(/nothing else/i);
+  });
+});
+
+describe("RULE_ENFORCEMENT_DIRECTIVE", () => {
+  it("names the failure, demands the call, and leaves an honest way out", () => {
+    // The escape hatch is load-bearing, not politeness: a model cornered into
+    // calling *something* picks the wrong tool, and "I could not" is a correct
+    // answer to a rule no available tool can carry out.
+    expect(RULE_ENFORCEMENT_DIRECTIVE).toMatch(/called no tool/i);
+    expect(RULE_ENFORCEMENT_DIRECTIVE).toMatch(/will not be sent/i);
+    expect(RULE_ENFORCEMENT_DIRECTIVE).toMatch(/could not do it/i);
   });
 });
 

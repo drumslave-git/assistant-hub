@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { imagePart } from "@/test/__mocks__/vision";
 import {
   CONTEXT_EXHAUSTED_MESSAGE,
+  INTERACTIVE_RETRY_ATTEMPTS,
+  INTERACTIVE_RETRY_DELAY_MS,
   isContextOverflowError,
   sanitizeMessagesForTrace,
   toOpenAiBaseUrl,
@@ -128,9 +130,17 @@ vi.mock("openai", () => {
     chat = { completions: { create: createMock } };
     models = { list: vi.fn() };
   }
-  class APIError extends Error {}
+  class APIError extends Error {
+    status?: number;
+    constructor(message?: string, status?: number) {
+      super(message);
+      this.status = status;
+    }
+  }
   class APIConnectionError extends Error {}
-  class APIConnectionTimeoutError extends Error {}
+  // Mirrors the real SDK's hierarchy — a timeout IS a connection error, which is
+  // what lets one `instanceof` check cover both in `isRetryableLlmError`.
+  class APIConnectionTimeoutError extends APIConnectionError {}
   return { default: OpenAI, APIError, APIConnectionError, APIConnectionTimeoutError };
 });
 
@@ -215,6 +225,148 @@ describe("chatCompletion", () => {
 
     expect(result.model).toBe("gemma4:26B");
     expect(result.servedModel).toBeUndefined();
+  });
+});
+
+/**
+ * Recovery from a transient endpoint failure.
+ *
+ * The incident (2026-08-03, trace `82a8976c…`): one reply request hung until the
+ * wire timeout while the endpoint served the very next call 0.2s later. The SDK
+ * client is built with `maxRetries: 0` and nothing above it retried, so a single
+ * hung connection cost a person their answer.
+ */
+describe("isRetryableLlmError", () => {
+  /**
+   * An `APIError` as the predicate sees one: the SDK's real constructor takes
+   * (status, error, message, headers), and only the prototype and `status` are
+   * what is actually inspected — so build exactly that and skip the ceremony.
+   */
+  async function apiError(message: string, status?: number): Promise<Error> {
+    const { APIError } = await import("openai");
+    return Object.assign(Object.create(APIError.prototype) as Error, { message, status });
+  }
+
+  it("retries the endpoint-fault family", async () => {
+    const { isRetryableLlmError } = await import("./client");
+    const { APIConnectionError, APIConnectionTimeoutError } = await import("openai");
+
+    expect(isRetryableLlmError(new APIConnectionTimeoutError())).toBe(true);
+    expect(isRetryableLlmError(new APIConnectionError({ message: "socket hang up" }))).toBe(true);
+    expect(isRetryableLlmError(await apiError("upstream boom", 502))).toBe(true);
+    // No status at all — the endpoint said nothing usable about why.
+    expect(isRetryableLlmError(await apiError("???"))).toBe(true);
+  });
+
+  it("does not retry what the request itself caused", async () => {
+    const { isRetryableLlmError } = await import("./client");
+
+    // A rejected request is rejected identically every time; retrying one only
+    // spends the deadline twice. 400 matters in particular: `toLlmError` flattens
+    // it to `service_unavailable`, so the raw error is what has to be judged.
+    expect(isRetryableLlmError(await apiError("bad request", 400))).toBe(false);
+    expect(isRetryableLlmError(await apiError("unauthorized", 401))).toBe(false);
+    expect(isRetryableLlmError(await apiError("forbidden", 403))).toBe(false);
+    expect(isRetryableLlmError(new Error("something else"))).toBe(false);
+  });
+
+  it("never retries a context overflow — the fix is sending less", async () => {
+    const { isRetryableLlmError } = await import("./client");
+
+    expect(
+      isRetryableLlmError(
+        await apiError(
+          "request (30000 tokens) exceeds the available context size (8192 tokens)",
+          500,
+        ),
+      ),
+    ).toBe(false);
+    expect(isRetryableLlmError(new Error(CONTEXT_EXHAUSTED_MESSAGE))).toBe(false);
+  });
+});
+
+describe("chatCompletion retries", () => {
+  afterEach(() => {
+    createMock.mockReset();
+    vi.useRealTimers();
+  });
+
+  const conn = { baseUrl: "http://localhost:11434", apiKey: null };
+
+  /**
+   * Drive the pause between attempts without waiting it out for real. The no-op
+   * catch runs before the first await purely to mark the promise handled — the
+   * assertion below still sees the rejection, but Vitest does not flag it as
+   * unhandled while the fake clock is being advanced.
+   */
+  async function settle<T>(promise: Promise<T>): Promise<T> {
+    promise.catch(() => {});
+    await vi.advanceTimersByTimeAsync(INTERACTIVE_RETRY_DELAY_MS);
+    return promise;
+  }
+
+  it("recovers a hung interactive call on the second attempt", async () => {
+    const { chatCompletion } = await import("./client");
+    const { APIConnectionTimeoutError } = await import("openai");
+    createMock
+      .mockRejectedValueOnce(new APIConnectionTimeoutError())
+      .mockResolvedValue({ model: "m", choices: [{ message: { content: "hi" } }] });
+    const onRetry = vi.fn();
+    vi.useFakeTimers();
+
+    const result = await settle(
+      chatCompletion(conn, {
+        model: "m",
+        messages: [{ role: "user", content: "hi" }],
+        onRetry,
+      }),
+    );
+
+    expect(result.content).toBe("hi");
+    expect(createMock).toHaveBeenCalledTimes(2);
+    expect(onRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ attempt: 1, attempts: 2, delayMs: INTERACTIVE_RETRY_DELAY_MS }),
+    );
+  });
+
+  it("gives up after the second failure with the mapped error", async () => {
+    const { chatCompletion } = await import("./client");
+    const { APIConnectionTimeoutError } = await import("openai");
+    createMock.mockRejectedValue(new APIConnectionTimeoutError());
+    vi.useFakeTimers();
+
+    await expect(
+      settle(chatCompletion(conn, { model: "m", messages: [{ role: "user", content: "hi" }] })),
+    ).rejects.toMatchObject({
+      code: "service_unavailable",
+      message: `Connection to ${conn.baseUrl} timed out`,
+    });
+    expect(createMock).toHaveBeenCalledTimes(INTERACTIVE_RETRY_ATTEMPTS);
+  });
+
+  it("does not retry a background call — it has its own schedule", async () => {
+    const { chatCompletion } = await import("./client");
+    const { APIConnectionTimeoutError } = await import("openai");
+    createMock.mockRejectedValue(new APIConnectionTimeoutError());
+
+    await expect(
+      chatCompletion(conn, {
+        model: "m",
+        messages: [{ role: "user", content: "hi" }],
+        priority: "background",
+      }),
+    ).rejects.toMatchObject({ code: "service_unavailable" });
+    expect(createMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry an empty completion — the answer's fault is judged after the wire", async () => {
+    const { chatCompletion } = await import("./client");
+    createMock.mockResolvedValue({ model: "m", choices: [{ message: { content: "  " } }] });
+
+    await expect(
+      chatCompletion(conn, { model: "m", messages: [{ role: "user", content: "hi" }] }),
+    ).rejects.toMatchObject({ code: "service_unavailable" });
+    expect(createMock).toHaveBeenCalledOnce();
   });
 });
 

@@ -322,7 +322,9 @@ vi.mock("openai", () => {
   }
   class APIError extends Error {}
   class APIConnectionError extends Error {}
-  class APIConnectionTimeoutError extends Error {}
+  // A timeout IS a connection error in the real SDK — the hierarchy the retry
+  // predicate relies on.
+  class APIConnectionTimeoutError extends APIConnectionError {}
   return { default: OpenAI, APIError, APIConnectionError, APIConnectionTimeoutError };
 });
 
@@ -468,5 +470,58 @@ describe("chatCompletionWithTools — empty responses", () => {
         callTool: async () => okResult(""),
       }),
     ).rejects.toMatchObject({ code: "service_unavailable", message: "LLM returned an empty response" });
+  });
+});
+
+/**
+ * A transient failure mid-conversation. The retry sits per *round*, and that
+ * placement is the whole point: the loop's accumulated conversation — including
+ * the results of tools that already ran — is what gets re-sent, so recovering
+ * from a hung connection never re-executes a side effect. A retry around the
+ * whole call would re-download the video.
+ */
+describe("chatCompletionWithTools — round retries", () => {
+  const conn = { baseUrl: "http://localhost:11434", apiKey: null };
+
+  afterEach(() => {
+    createMock.mockReset();
+    vi.useRealTimers();
+  });
+
+  it("retries the failed round only, keeping the tool result already gathered", async () => {
+    const { chatCompletionWithTools } = await import("./tool-loop");
+    const { INTERACTIVE_RETRY_DELAY_MS } = await import("./client");
+    const { APIConnectionTimeoutError } = await import("openai");
+    const call = toolCall("c1", "browse_web", { url: "https://example.com/clip" });
+    createMock
+      // Round 1 asks for the download.
+      .mockResolvedValueOnce({
+        model: "m",
+        choices: [{ message: { role: "assistant", content: null, tool_calls: [call] } }],
+      })
+      // Round 2 hangs, then answers on the retry.
+      .mockRejectedValueOnce(new APIConnectionTimeoutError())
+      .mockResolvedValue({
+        model: "m",
+        choices: [{ message: { role: "assistant", content: "sent it" } }],
+      });
+    const callTool = vi.fn().mockResolvedValue(okResult("downloaded"));
+    vi.useFakeTimers();
+
+    const pending = chatCompletionWithTools(conn, {
+      model: "m",
+      messages: [{ role: "user", content: "https://example.com/clip" }],
+      tools: [],
+      callTool,
+    });
+    await vi.advanceTimersByTimeAsync(INTERACTIVE_RETRY_DELAY_MS);
+    const result = await pending;
+
+    expect(result.content).toBe("sent it");
+    // The download ran once, not once per attempt.
+    expect(callTool).toHaveBeenCalledOnce();
+    // And the retried round carried the tool result forward rather than restarting.
+    const retried = createMock.mock.calls[2][0].messages;
+    expect(retried.at(-1)).toMatchObject({ role: "tool", content: "downloaded" });
   });
 });

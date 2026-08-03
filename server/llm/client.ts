@@ -25,7 +25,19 @@ export interface LlmConnection {
 }
 
 const LIST_MODELS_TIMEOUT_MS = 15_000;
-export const CHAT_COMPLETION_TIMEOUT_MS = 120_000;
+/**
+ * Wire timeout for interactive completions.
+ *
+ * Sized from measured production traces rather than a round number: a reply on
+ * the configured local model runs 40–70s, and the slowest successful
+ * rule-driven download turn took 66s, so 90s clears real work with headroom.
+ * It was 120s, which only meant a *hung* request held a person's turn hostage
+ * for two minutes before failing (incident 2026-08-03, trace `82a8976c…`:
+ * the request died at exactly 120.005s while the endpoint answered the next
+ * call 0.2s later). A shorter deadline plus
+ * {@link INTERACTIVE_RETRY_ATTEMPTS} recovers faster than a longer one waits.
+ */
+export const CHAT_COMPLETION_TIMEOUT_MS = 90_000;
 
 /**
  * Wire timeout for background-priority completions. Background requests only
@@ -253,6 +265,97 @@ export function isContextOverflowError(err: unknown): boolean {
   );
 }
 
+/**
+ * True when an LLM failure is worth simply trying again: the request never got a
+ * usable answer for a reason that has nothing to do with what we sent.
+ *
+ * The distinction that matters is fixable-by-retry versus fixable-by-us. A
+ * timeout, a dropped connection, or a 5xx from the endpoint says nothing about
+ * the request — the same bytes may well succeed a second later. A context
+ * overflow, a rejected key, or a malformed request will fail identically every
+ * time, and retrying those only doubles the wait before the same error.
+ *
+ * Named for the incident that motivated it (2026-08-03, trace `82a8976c…`): one
+ * reply request hung until the wire timeout while the endpoint served the next
+ * call 0.2s later, and the group got "the bot could not generate a reply"
+ * because nothing anywhere retried.
+ */
+export function isRetryableLlmError(err: unknown): boolean {
+  if (isContextOverflowError(err)) return false;
+  // Judged on the raw SDK error, before `toLlmError` flattens the interesting
+  // distinctions away: that mapping sends a 400 and a dropped connection alike to
+  // `service_unavailable`, and only one of those is worth a second attempt (a
+  // rejected request is rejected the same way every time).
+  if (err instanceof APIConnectionError) return true; // covers the timeout subclass
+  if (err instanceof APIError) return err.status === undefined || err.status >= 500;
+  // Already mapped by a caller: the endpoint-unavailable family, and nothing
+  // else — `bad_request` (401/403) is a configuration fault, not a bad moment.
+  if (err instanceof ApiError) return err.code === "service_unavailable";
+  return false;
+}
+
+/**
+ * Attempts an interactive completion gets on the wire, the retry included. One
+ * retry: it covers the hung-connection case, and a second failure means the
+ * endpoint is genuinely unwell — at which point a person waiting on a chat reply
+ * is better served by an honest failure than by a third deadline.
+ */
+export const INTERACTIVE_RETRY_ATTEMPTS = 2;
+
+/** Pause before retrying, so a still-busy endpoint is not hit the same instant. */
+export const INTERACTIVE_RETRY_DELAY_MS = 3_000;
+
+/** Reported before a retry is dispatched, so the wait is visible on the trace. */
+export interface LlmRetryInfo {
+  /** 1-based number of the attempt that just failed. */
+  attempt: number;
+  /** Total attempts this call will make. */
+  attempts: number;
+  /** The failure being retried, already mapped by {@link toLlmError}. */
+  error: string;
+  delayMs: number;
+}
+
+/**
+ * Run one provider call with the retry policy applied, mapping failures through
+ * {@link toLlmError} either way.
+ *
+ * Shared by both completion paths so they cannot drift. In the tool loop it
+ * wraps a single *round*, which is what makes a retry safe there: tool results
+ * already gathered stay in the conversation, so a timeout after a download does
+ * not re-run the download.
+ *
+ * Background calls are deliberately not retried — they wait for a quiet endpoint
+ * already, have their own longer deadline, and run again on their own schedule.
+ * Replies do not get another schedule.
+ */
+export async function withLlmRetry<T>(
+  run: () => Promise<T>,
+  options: {
+    baseUrl: string;
+    priority: LlmPriority;
+    onRetry?: (info: LlmRetryInfo) => void | Promise<void>;
+  },
+): Promise<T> {
+  const attempts = options.priority === "interactive" ? INTERACTIVE_RETRY_ATTEMPTS : 1;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await run();
+    } catch (err) {
+      const retryable = isRetryableLlmError(err);
+      const mapped = toLlmError(err, options.baseUrl);
+      if (attempt >= attempts || !retryable) throw mapped;
+      await options.onRetry?.({
+        attempt,
+        attempts,
+        error: mapped.message,
+        delayMs: INTERACTIVE_RETRY_DELAY_MS,
+      });
+      await new Promise((resolve) => setTimeout(resolve, INTERACTIVE_RETRY_DELAY_MS));
+    }
+  }
+}
+
 /** Map provider/network failures to a clean {@link ApiError} without leaking internals. */
 export function toLlmError(err: unknown, baseUrl: string): ApiError {
   if (err instanceof ApiError) return err;
@@ -394,6 +497,12 @@ export async function chatCompletion(
     reasoningEffort?: "low" | "medium" | "high";
     /** Reports the exact request body just before it is sent (for trace recording). */
     onRequest?: (requestBody: unknown) => void | Promise<void>;
+    /**
+     * Reports a retryable failure just before the retry is dispatched, so a
+     * caller with a trace can record that the endpoint had to be asked twice —
+     * a recovered turn must not look like a clean one.
+     */
+    onRetry?: (info: LlmRetryInfo) => void | Promise<void>;
   },
 ): Promise<ChatCompletionResult> {
   const priority = input.priority ?? "interactive";
@@ -408,42 +517,48 @@ export async function chatCompletion(
     (priority === "background"
       ? BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS
       : CHAT_COMPLETION_TIMEOUT_MS);
-  try {
-    // Everything below runs inside the gate so the latency and the HTTP timeout
-    // measure the wire, not the in-app queue; the queue wait shows up in traces
-    // as the gap before the request event.
-    return await withLlmPriority(priority, async () => {
-      const start = Date.now();
-      await input.onRequest?.(requestBody);
-      const completion = await createOpenAiClient(conn).chat.completions.create(requestBody, {
-        timeout,
-      });
-      const latencyMs = Date.now() - start;
-      const content = completion.choices[0]?.message?.content?.trim() ?? "";
-      if (!content) {
-        throw ApiError.serviceUnavailable(
-          finishReasonOf(completion) === "length"
-            ? CONTEXT_EXHAUSTED_MESSAGE
-            : "LLM returned an empty response",
-        );
-      }
-      return {
-        content,
-        model: input.model,
-        servedModel: servedModelOf(completion),
-        usage: completion.usage
-          ? {
-              promptTokens: completion.usage.prompt_tokens,
-              completionTokens: completion.usage.completion_tokens,
-              totalTokens: completion.usage.total_tokens,
-            }
-          : undefined,
-        latencyMs,
-        requestBody,
-        responseBody: completion,
-      };
-    });
-  } catch (err) {
-    throw toLlmError(err, conn.baseUrl);
+  // Only the wire is retried. The gate is inside it, so a retried attempt takes
+  // its slot again from scratch rather than holding one across the pause; the
+  // answer's own faults are judged after, where a retry can never reach them —
+  // an empty or context-exhausted completion is what this prompt produces on this
+  // model, and asking again just spends the time twice for the same result.
+  const { completion, latencyMs } = await withLlmRetry(
+    () =>
+      // Everything below runs inside the gate so the latency and the HTTP timeout
+      // measure the wire, not the in-app queue; the queue wait shows up in traces
+      // as the gap before the request event.
+      withLlmPriority(priority, async () => {
+        const start = Date.now();
+        await input.onRequest?.(requestBody);
+        const created = await createOpenAiClient(conn).chat.completions.create(requestBody, {
+          timeout,
+        });
+        return { completion: created, latencyMs: Date.now() - start };
+      }),
+    { baseUrl: conn.baseUrl, priority, onRetry: input.onRetry },
+  );
+
+  const content = completion.choices[0]?.message?.content?.trim() ?? "";
+  if (!content) {
+    throw ApiError.serviceUnavailable(
+      finishReasonOf(completion) === "length"
+        ? CONTEXT_EXHAUSTED_MESSAGE
+        : "LLM returned an empty response",
+    );
   }
+  return {
+    content,
+    model: input.model,
+    servedModel: servedModelOf(completion),
+    usage: completion.usage
+      ? {
+          promptTokens: completion.usage.prompt_tokens,
+          completionTokens: completion.usage.completion_tokens,
+          totalTokens: completion.usage.total_tokens,
+        }
+      : undefined,
+    latencyMs,
+    requestBody,
+    responseBody: completion,
+  };
 }

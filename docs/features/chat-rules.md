@@ -149,6 +149,48 @@ out: a tool can still refuse — for instance when the matched rule lent no righ
 (see *Whose rights a rule-driven action carries*) and the sender has none of
 their own.
 
+## A rule turn that called no tool
+
+All of the prompt text above can be read, agreed with, and then not acted on. A
+turn nobody addressed exists *only* because a rule demanded an action, and an
+action happens only through a tool call — so an answer with zero tool calls
+cannot be true, whatever it says.
+
+Live incident (2026-08-03, trace `ec543b22…`): a social-media link matched this
+chat's download rule, the reply model's reasoning worked out that it should call
+`browse_web`, and the generation then emitted *"downloaded the video from x.com"*
+— with an invented author handle, `finish_reason: "stop"`, and no tool call at
+all. No browser run existed. Measured over the retained rule-driven downloads,
+8 of 9 turns called the tool and this one did not; it is intermittent, not a
+broken path. It is the same gemma4:12b tool-avoidance family tracked in
+`docs/TODO.md`, and the Honesty block, this feature's rules block, and the
+trigger directive had all already told it not to do exactly this.
+
+So the reply pipeline checks the fact rather than the prose
+(`features/bot-messaging/server/service.ts`, step 4d). The check is mechanical —
+a rule directive was injected, and `onToolCall` never fired — and it can only
+be reached on a rule-opened turn, so an ordinary reply that legitimately needs
+no tool is untouched.
+
+1. **One retry.** The turn is re-sent with the empty-handed answer appended and
+   `RULE_ENFORCEMENT_DIRECTIVE` after it: the answer called no tool, so nothing
+   happened, that message will not be sent, and there are exactly two ways
+   forward — call the tool now, or say in one sentence that it could not be
+   done. The honest way out is offered deliberately: a model cornered into
+   calling *something* picks the wrong tool. This is not standing prompt text;
+   it is shown only after the failure, with the failure in front of it, which is
+   the one form of the instruction the model has not already ignored this turn.
+2. **Then the answer is suppressed.** If the retry also runs no tool, the model's
+   text is never delivered. The chat gets a labeled system notice instead, saying
+   the rule matched but the action was not carried out (user decision,
+   2026-08-03 — the people here are owed the truth, not a plausible lie and not
+   silence). The notice is not mirrored into history: the bot's own failure
+   notice is not conversation, and a claim in the transcript poisons later turns.
+3. **The trace fails.** A rule the bot did not carry out is exactly the turn an
+   operator has to be able to find on `/debug`, and a green trace is how the
+   first one went unnoticed for a day. Both steps are recorded — the retry as a
+   `warn`, the suppression as an `error` carrying the text that was withheld.
+
 ## Tools
 
 | Tool | Input | Purpose |

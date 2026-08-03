@@ -445,7 +445,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     },
     generateReply:
       overrides?.generateReply ??
-      (async (messages: ChatMessage[], onToolCall, onRequest, onRound) => {
+      (async (messages: ChatMessage[], onToolCall, onRequest, onRound, onRetry) => {
         const runtime = await getLlmRuntime();
         if (!runtime) {
           throw ApiError.serviceUnavailable(
@@ -462,6 +462,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             messages,
             maxTokens: REPLY_MAX_TOKENS,
             onRequest,
+            onRetry,
           });
           // Reported as a round too, so the caller records rounds and only rounds —
           // one code path on the trace whether or not tools were in play.
@@ -505,6 +506,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             callTool: toolset.callTool,
             maxTokens: REPLY_MAX_TOKENS,
             onRequest,
+            onRetry,
             onToolCall: (rec) =>
               onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
             onRound: (round, report) =>

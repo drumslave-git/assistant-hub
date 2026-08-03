@@ -28,6 +28,120 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## A rule turn that called no tool + no recovery from a hung LLM call (`done` pending production deploy + live verification, 2026-08-03)
+
+Two user reports from the same afternoon on the live bot, unrelated in cause.
+
+### 1. The bot said it downloaded a video and downloaded nothing
+
+Trace `ec543b22…` (2026-08-03 15:47 Kyiv). A bare `x.com` link matched the
+group's download rule and everything up to the model worked: the matcher cited
+the link verbatim, the addressing check opened the turn on the rule's authority,
+the directive went in last, all 25 tools including `browse_web` were in the
+request. The model then produced **text only** — `finish_reason: "stop"`, no
+`tool_calls` — saying it had downloaded the video, with an invented author
+handle. Its reasoning block reads *"Action: Use `browse_web` to get the content
+of this URL"*, so the call was decided and then not emitted. No
+`browser_agent_runs` row exists; the last run on the box was the previous
+evening.
+
+Frequency, from all 94 retained successful `bot-messaging` traces on the live
+instance: 9 rule-opened turns, **8 called `browse_web`, 1 did not**. Prompt size
+is not the discriminator (a 25 103-token turn succeeded; this 23 058-token one
+failed), and neither is the site (an `x.com` link went through on 08-01). Same
+gemma4:12b tool-avoidance family as the `tasks_list`/`rules_create` items below,
+now landing on the one path that *promises the chat an artifact*.
+
+*Decision (operator, 2026-08-03): retry once, then suppress — "but don't be
+silent about it".* Also asked and answered: **do not** pursue the standing
+model-replacement question yet; fix the guard and record this as evidence.
+
+Note this does not reopen "we never solve model problems by code". Tool
+*selection* is still left to the model — nothing is forced, nothing is gated, and
+the enforcement directive offers "say you could not do it" as an equally correct
+answer. What code now checks is a mechanical fact it is entitled to check: a
+directive was injected and `onToolCall` never fired, so the answer's central
+claim is false. Same shape as the matcher's citation check.
+
+- `RULE_ENFORCEMENT_DIRECTIVE` (`features/chat-rules/format.ts`) — shown only
+  after the failure, with the empty-handed answer appended to the conversation
+  in front of it. Deliberately not standing prompt text: the Honesty block, the
+  rules block and the trigger directive already said this three times and were
+  ignored in this very turn.
+- Enforcement in `features/bot-messaging/server/service.ts` (step 4d): tool calls
+  counted; one retry; if the retry is also empty-handed the answer is **never
+  sent**, a labeled system notice (`RULE_NOT_APPLIED_REPLY`) goes to the chat
+  instead, the notice is not mirrored into history, and the trace **fails** so
+  the turn is findable on `/debug` (a green trace is how the first one went
+  unnoticed for a day).
+- Unreachable on an ordinary turn: only a turn nobody addressed gets a directive.
+
+### 2. A hung LLM call lost the reply, with the endpoint healthy
+
+Trace `82a8976c…` (15:51). The reply request died at exactly **120.005 s** with
+`Connection to … timed out`, and the operator confirmed Ollama was up. The live
+call timeline backs that: the rule match 8 s earlier was fine, and the next
+message's classification answered in 11 s starting **0.2 s after** the timeout.
+No self-inflicted load either — the poller processes messages serially, and the
+only other traces in the window are `vision-backfill` runs finishing in ~20 ms.
+One connection hung; `maxRetries: 0` and nothing above it retried, so the group
+got the error notice.
+
+*Decisions (operator, 2026-08-03): 90 s timeout × 2 attempts; retry all
+interactive calls, not just replies.*
+
+- `CHAT_COMPLETION_TIMEOUT_MS` 120 s → **90 s** (sized from measured traces:
+  replies run 40–70 s, slowest successful rule download 66 s).
+- `withLlmRetry` + `isRetryableLlmError` (`server/llm/client.ts`), used by both
+  completion paths. Judges the **raw** SDK error — `toLlmError` flattens a 400
+  and a dropped connection alike to `service_unavailable`. Retries connection
+  errors/timeouts and 5xx; never a 4xx, a context overflow, or an empty
+  completion (the empty check moved *outside* the retry wrapper for that reason).
+  Background calls keep a single attempt — they wait for a quiet endpoint, have
+  a 300 s deadline, and re-run on their own schedule.
+- The retry sits per **round** in the tool loop, so a hung connection after a
+  download re-asks the model with the tool result in hand rather than
+  re-downloading. Pinned by a test.
+- Visible, not silent: `onRetry` → a `warn` step on the reply trace, so a turn
+  that took two attempts cannot pass for a clean one.
+
+*Proof.* Files — `server/llm/{client,tool-loop}.ts`,
+`features/bot-messaging/server/service.ts`, `features/chat-rules/format.ts`,
+`server/telegram/process-update.ts`; docs
+`features/{chat-rules,bot-messaging}.md`, `architecture/llm-and-mcp.md`. Tests —
+`npm run lint` ✅, `npm run typecheck` ✅, `npm test` 936 passed / 21 failed,
+those 21 being the known Windows yt-dlp environment failures (verified identical
+on a stashed clean tree: same 2 files, same 21). New: 7 service cases (retry
+composition, delivery after a successful retry, suppression + notice, failed
+trace, no history mirror, and both untouched-ordinary-turn cases), 1 retry-step
+case, 4 `isRetryableLlmError` cases, 4 `chatCompletion` retry cases, 1 tool-loop
+round-retry case, 1 directive-pinning case. The openai mock in both LLM test
+files now has `APIConnectionTimeoutError extends APIConnectionError`, matching
+the real SDK hierarchy the predicate relies on. `npm run build` not run (would
+kill the running dev server).
+
+*Remaining risks / live verification checklist (after deploy).*
+
+- Post a social-media link in the rule-bearing group and confirm the video
+  arrives. The case that needs patience is the failure one: it is ~1 turn in 9,
+  so watch `/debug?feature=bot-messaging` for a **red** reply trace carrying
+  `rule turn answered without calling any tool — retrying`. A trace with that
+  step and a green outcome is the retry working, which is the outcome to hope
+  for.
+- Confirm the system notice reads acceptably in the group when it does fire —
+  it is English by design (same rule as the other two notices).
+- Watch for `LLM call failed — retrying` steps. A rash of them means the endpoint
+  is unwell rather than the timeout being wrong; none at all over a week of the
+  90 s deadline means the deadline could go lower still.
+- Unverified assumption: that 90 s never cuts off a legitimately slow turn. If a
+  reply that *would* have completed now fails twice at 90 s, the symptom is two
+  retry steps and an error — raise it back, or raise it only for turns with
+  tools.
+- The enforcement is prompt-plus-suppression, and the retry half is still the
+  same model that ignored three standing instructions. The suppression half is
+  not — it holds regardless of what the model does. Feeds the standing
+  model-replacement question below.
+
 ## Restricted rule-driven downloads: stranded files + substitute download (`done` pending production deploy + live verification, 2026-08-01)
 
 Two incidents in the group, same afternoon, both children of the owner's
