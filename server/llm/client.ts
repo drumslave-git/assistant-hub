@@ -26,18 +26,44 @@ export interface LlmConnection {
 
 const LIST_MODELS_TIMEOUT_MS = 15_000;
 /**
- * Wire timeout for interactive completions.
+ * Default wire timeout for interactive completions — in practice the
+ * *classification* deadline, since the reply path overrides it with its own
+ * (`REPLY_COMPLETION_TIMEOUT_MS`, sized from a much longer tail).
  *
- * Sized from measured production traces rather than a round number: a reply on
- * the configured local model runs 40–70s, and the slowest successful
- * rule-driven download turn took 66s, so 90s clears real work with headroom.
- * It was 120s, which only meant a *hung* request held a person's turn hostage
- * for two minutes before failing (incident 2026-08-03, trace `82a8976c…`:
- * the request died at exactly 120.005s while the endpoint answered the next
- * call 0.2s later). A shorter deadline plus
- * {@link INTERACTIVE_RETRY_ATTEMPTS} recovers faster than a longer one waits.
+ * Sized from measured production traces rather than a round number: the
+ * addressing analyzer and rule matcher run on a ~500-token prompt with a
+ * 3,000-token thinking cap, and over the retained window their median sat at
+ * 15–25s with a 57.7s worst case — so 90s is ~1.5× the slowest ever seen. It
+ * was 120s for everything, which only meant a *hung* request held a person's
+ * turn hostage for two minutes before failing (incident 2026-08-03, trace
+ * `82a8976c…`: the request died at exactly 120.005s while the endpoint answered
+ * the next call 0.2s later). A tight deadline plus
+ * {@link INTERACTIVE_RETRY_ATTEMPTS} recovers from that faster than a long one
+ * waits — but only where the deadline still clears the honest work, which is
+ * why the reply does not share this number.
  */
 export const CHAT_COMPLETION_TIMEOUT_MS = 90_000;
+
+/**
+ * Wire timeout for one **reply** round, passed explicitly by the Telegram
+ * pipeline in place of {@link CHAT_COMPLETION_TIMEOUT_MS}.
+ *
+ * A reply and a classification are not the same call, and one deadline over both
+ * has to be the reply's. Measured over 118 successful reply rounds on the live
+ * bot (2026-08-03): median 18.9s, p95 68.3s, **max 95.8s** — against a 57.7s
+ * worst case for the classifications. The shared 90s therefore sat *under* the
+ * reply tail, which is incident trace `93a963ec…`: both attempts cut at exactly
+ * 90.0s on a round that was working, just slowly.
+ *
+ * {@link INTERACTIVE_RETRY_ATTEMPTS} is what covers a *hung* request, and covers
+ * it well — a turn earlier the same day recovered two hung rounds and delivered
+ * its video. It cannot cover this: a round that genuinely needs 95s needs 95s on
+ * the second attempt too. So with the retry in place the deadline is sized for
+ * the slow case rather than the hung one — ~1.6× the slowest legitimate round on
+ * record — while classifications keep the tighter default and still fail over
+ * fast.
+ */
+export const REPLY_CHAT_COMPLETION_TIMEOUT_MS = 150_000;
 
 /**
  * Wire timeout for background-priority completions. Background requests only
@@ -299,6 +325,13 @@ export function isRetryableLlmError(err: unknown): boolean {
  * retry: it covers the hung-connection case, and a second failure means the
  * endpoint is genuinely unwell — at which point a person waiting on a chat reply
  * is better served by an honest failure than by a third deadline.
+ *
+ * What the retry does *not* cover, and cannot: a request that is merely slower
+ * than its deadline. The second attempt restarts prefill and decode from
+ * nothing, so it needs the same time the first one was denied and fails
+ * identically. That case is the deadline's job — see the note on
+ * `REPLY_COMPLETION_TIMEOUT_MS`, which exists because 90s once sat under the
+ * reply tail and turned a working round into two clean 90s failures.
  */
 export const INTERACTIVE_RETRY_ATTEMPTS = 2;
 

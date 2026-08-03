@@ -52,18 +52,35 @@ The SDK client is built with `maxRetries: 0` — retrying is decided here, where
 difference between *the endpoint had a bad moment* and *this request is wrong* is
 known.
 
-| | Interactive | Background |
-| --- | --- | --- |
-| Wire timeout | 90 s (`CHAT_COMPLETION_TIMEOUT_MS`) | 300 s (`BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS`) |
-| Attempts | 2 (`INTERACTIVE_RETRY_ATTEMPTS`), 3 s apart | 1 |
+| | Classification | Reply round | Background |
+| --- | --- | --- | --- |
+| Wire timeout | 90 s (`CHAT_COMPLETION_TIMEOUT_MS`) | 150 s (`REPLY_CHAT_COMPLETION_TIMEOUT_MS`) | 300 s (`BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS`) |
+| Attempts | 2 (`INTERACTIVE_RETRY_ATTEMPTS`), 3 s apart | 2, 3 s apart | 1 |
+| Slowest observed | 57.7 s | 95.8 s | — |
 
-The interactive deadline is sized from measured traces — replies run 40–70 s on
-the configured local model — not from a round number. It was 120 s, which only
-meant a *hung* request held someone's turn hostage for two minutes: incident
-2026-08-03 (trace `82a8976c…`), where a reply died at exactly 120.005 s while the
-endpoint served the next call 0.2 s later, and nothing retried, so the group got
-"the bot could not generate a reply". A shorter deadline plus one retry recovers
-faster than a longer deadline waits.
+Every deadline is sized from measured traces, not from a round number, and they
+differ because the call shapes do. A classification judges one message against a
+~500-token prompt under a 3,000-token thinking cap; a reply round carries ~20 k
+tokens of history and tools. Measured over 118 successful reply rounds on the
+live bot (2026-08-03): median 18.9 s, p95 68.3 s, max 95.8 s — against a 57.7 s
+worst case for classifications.
+
+Two incidents on 2026-08-03 set these numbers, and they pull in opposite
+directions:
+
+- **A hung request** (trace `82a8976c…`). A reply died at exactly 120.005 s while
+  the endpoint served the next call 0.2 s later. Nothing retried, so the group
+  got "the bot could not generate a reply". This wants a *tight* deadline, so the
+  retry comes quickly.
+- **A slow-but-working round** (trace `93a963ec…`). Both attempts were cut at
+  exactly 90.0 s on a round that was progressing. This wants a *generous* one —
+  the retry cannot help, because a round that needs 95 s needs 95 s on the second
+  attempt too, and restarts prefill and decode from nothing.
+
+The retry covers the first case, so each deadline is sized for the second:
+roughly 1.5× the slowest honest call of that kind. Collapsing the reply and
+classification deadlines back into one number reintroduces `93a963ec…`, and a
+test pins the ordering.
 
 `isRetryableLlmError` judges the **raw** SDK error, before `toLlmError` flattens
 a 400 and a dropped connection alike into `service_unavailable`. Retried: a
@@ -76,6 +93,10 @@ answers are judged *after* the retry wrapper for exactly that reason.
 Background calls are not retried at all: they already wait for a quiet endpoint,
 carry a longer deadline, and run again on their own schedule. Replies get no
 second schedule.
+
+The retry is for a request that never got going, never for one that is merely
+slow — that is what the deadline is for, and confusing the two is what
+`93a963ec…` was.
 
 In the tool loop the retry sits around a single **round**, so everything the loop
 has gathered — including the results of tools that already ran — is what gets

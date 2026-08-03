@@ -133,14 +133,64 @@ kill the running dev server).
 - Watch for `LLM call failed — retrying` steps. A rash of them means the endpoint
   is unwell rather than the timeout being wrong; none at all over a week of the
   90 s deadline means the deadline could go lower still.
-- Unverified assumption: that 90 s never cuts off a legitimately slow turn. If a
-  reply that *would* have completed now fails twice at 90 s, the symptom is two
-  retry steps and an error — raise it back, or raise it only for turns with
-  tools.
+- ~~Unverified assumption: that 90 s never cuts off a legitimately slow turn.~~
+  **It did, within the hour — see the round below.**
 - The enforcement is prompt-plus-suppression, and the retry half is still the
   same model that ignored three standing instructions. The suppression half is
   not — it holds regardless of what the model does. Feeds the standing
   model-replacement question below.
+
+### Round 2 — 90 s was under the reply tail (same day, deployed)
+
+Two live traces from the first hour after deploy settled the deadline question
+the checklist above left open, in both directions.
+
+- **The retry works.** Trace at 14:57: a rule-driven Instagram download whose
+  reply round hung and was cut at 90 s, recovered on the retry (~62 s), called
+  `browse_web`, hung again on the next round, recovered again, and **delivered
+  the video**. Two hung rounds, one delivered file. Under the pre-deploy code
+  that turn fails.
+- **But the deadline was too tight.** Trace `93a963ec…` (15:03): both attempts
+  cut at exactly 90.003 s and 90.008 s on a round that was working, just slowly.
+  The retry cannot help here by construction — a round that needs 95 s needs
+  95 s on the second attempt too, and retrying restarts prefill and decode from
+  nothing.
+
+The 90 s came from the 9 rule-download turns (40–70 s), which was the wrong
+sample. Over all 118 successful reply rounds on the box: median 18.9 s, p75
+38.2 s, p90 54.7 s, p95 68.3 s, **max 95.8 s**, with 2 rounds past 90 s. The
+classifications are a different distribution entirely — ~500-token prompt,
+median 15–25 s per hour across the whole retained window, **max 57.7 s** — and
+that flatness also rules out "the endpoint is degrading": it spikes per call
+(a 17 s classification occasionally taking 57 s), it does not drift.
+
+*Decision (operator, 2026-08-03): 150 s for replies, 90 s for classifications.*
+The two shapes get their own deadline rather than sharing the reply's.
+
+- New `REPLY_CHAT_COMPLETION_TIMEOUT_MS` = 150 s in `server/llm/client.ts`
+  (beside the other two deadlines — the client already owns this vocabulary),
+  passed explicitly by both reply paths in `process-update.ts`. ~1.6× the
+  slowest legitimate round on record.
+- `CHAT_COMPLETION_TIMEOUT_MS` stays 90 s and is now, in practice, the
+  classification deadline — 1.5× their 57.7 s worst case — so a hung
+  classification still fails over fast instead of inheriting a reply-sized wait.
+- The doc comments now state the division of labour explicitly, because getting
+  it wrong is what round 1 did: **the retry is for a request that never got
+  going; the deadline is for one that is merely slow.**
+- Pinned by a test on the ordering and the observed-maximum headroom, so the
+  three deadlines cannot silently collapse back into one.
+
+*Proof.* Files — `server/llm/client.ts`, `server/telegram/process-update.ts`,
+`docs/architecture/llm-and-mcp.md`. `npm run lint` ✅, `npm run typecheck` ✅,
+`server/llm` 71 passed (2 new deadline cases).
+
+*Still open.* 150 s is headroom over the *observed* max, not a proof. If a reply
+fails twice at 150 s, that is a genuinely stuck endpoint rather than a tuning
+problem — check `/api/ps` and the `OLLAMA_NUM_PARALLEL`/VRAM note below before
+raising it again. Worst case a person now waits ~5 min before the error notice.
+Also unaddressed and visible in the same window: `history-summaries` failed
+twice at 418 s and 340 s against its 300 s background deadline, which is the
+batch-size question already flagged under the priority-gate entry.
 
 ## Restricted rule-driven downloads: stranded files + substitute download (`done` pending production deploy + live verification, 2026-08-01)
 

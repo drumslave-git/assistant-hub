@@ -77,6 +77,7 @@ import { resolveRequiredLanguage } from "@/lib/language";
 import {
   chatCompletion,
   llmUsageOf,
+  REPLY_CHAT_COMPLETION_TIMEOUT_MS,
   servedModelOf,
   type ChatContentPart,
   type ChatMessage,
@@ -461,6 +462,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             model: runtime.model,
             messages,
             maxTokens: REPLY_MAX_TOKENS,
+            timeoutMs: REPLY_CHAT_COMPLETION_TIMEOUT_MS,
             onRequest,
             onRetry,
           });
@@ -505,6 +507,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             tools: toolset.tools,
             callTool: toolset.callTool,
             maxTokens: REPLY_MAX_TOKENS,
+            timeoutMs: REPLY_CHAT_COMPLETION_TIMEOUT_MS,
             onRequest,
             onRetry,
             onToolCall: (rec) =>

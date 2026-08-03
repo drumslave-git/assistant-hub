@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { imagePart } from "@/test/__mocks__/vision";
 import {
+  BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS,
+  CHAT_COMPLETION_TIMEOUT_MS,
   CONTEXT_EXHAUSTED_MESSAGE,
   INTERACTIVE_RETRY_ATTEMPTS,
   INTERACTIVE_RETRY_DELAY_MS,
   isContextOverflowError,
+  REPLY_CHAT_COMPLETION_TIMEOUT_MS,
   sanitizeMessagesForTrace,
   toOpenAiBaseUrl,
   type ChatMessage,
@@ -282,6 +285,44 @@ describe("isRetryableLlmError", () => {
       ),
     ).toBe(false);
     expect(isRetryableLlmError(new Error(CONTEXT_EXHAUSTED_MESSAGE))).toBe(false);
+  });
+});
+
+describe("wire deadlines", () => {
+  /**
+   * The three deadlines exist because the three call shapes have genuinely
+   * different latency distributions, measured on the live bot (2026-08-03):
+   * classifications peaked at 57.7s, reply rounds at 95.8s over 118 of them, and
+   * a summarize batch legitimately runs minutes. Collapsing any two of them back
+   * into one is how a working reply round got cut at exactly 90.0s twice —
+   * incident trace `93a963ec…`.
+   */
+  it("gives a reply more room than a classification, and a batch job more still", () => {
+    expect(CHAT_COMPLETION_TIMEOUT_MS).toBeLessThan(REPLY_CHAT_COMPLETION_TIMEOUT_MS);
+    expect(REPLY_CHAT_COMPLETION_TIMEOUT_MS).toBeLessThan(BACKGROUND_CHAT_COMPLETION_TIMEOUT_MS);
+    // Headroom over the slowest of each kind ever recorded, not a round number.
+    expect(CHAT_COMPLETION_TIMEOUT_MS).toBeGreaterThan(57_700);
+    expect(REPLY_CHAT_COMPLETION_TIMEOUT_MS).toBeGreaterThan(95_800);
+  });
+
+  it("applies the caller's deadline to the request", async () => {
+    const { chatCompletion } = await import("./client");
+    createMock.mockResolvedValue({ model: "m", choices: [{ message: { content: "hi" } }] });
+
+    await chatCompletion(
+      { baseUrl: "http://localhost:11434", apiKey: null },
+      {
+        model: "m",
+        messages: [{ role: "user", content: "hi" }],
+        timeoutMs: REPLY_CHAT_COMPLETION_TIMEOUT_MS,
+      },
+    );
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ timeout: REPLY_CHAT_COMPLETION_TIMEOUT_MS }),
+    );
+    createMock.mockReset();
   });
 });
 
