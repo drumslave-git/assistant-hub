@@ -28,6 +28,82 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## The bot said a task was cancelled after `tasks_delete` failed (`done` pending production deploy + live verification, 2026-08-05)
+
+Traces `1f300347…` (reply), `5d33d8c1…` (`tasks_list`), `c757d10a…`
+(`tasks_delete`), all 2026-08-05 12:08 Kyiv. A user asked, in reply to the bot,
+to cancel a task. Round 1 called `tasks_list` and got the four tasks back. Round
+2 called `tasks_delete` with the right task's id **minus one character** — the
+model dropped a `6` out of the last group while copying. The tool answered `No
+task <id> in this chat.`, and the final round answered that it was done. The task
+is still scheduled.
+
+Two independent failures, fixed separately.
+
+### 1. The error told the model nothing it could act on
+
+`checkOwnership` returned the same sentence for a mistyped id, a deleted task and
+another chat's task. The model's own reasoning shows it working the case and
+giving up — *"it was there a millisecond ago… maybe a race condition"* — because
+nothing in the result said the id was malformed, and it had no list to re-copy
+from. The loop had rounds left; it just had nothing to retry with.
+
+- `isTaskId` (ids are `randomUUID()` values) and `unknownTaskText`, both pure and
+  pinned by tests, in `features/scheduled-tasks/server/mcp-tools.ts`. The miss
+  now says which case it is and lists the chat's actual ids to copy from — ids
+  `tasks_list` already showed, so nothing new is exposed.
+- One `guardMutation` used by `tasks_update`/`tasks_delete`, and the same text on
+  `tasks_get`; the chat's ids are loaded **only** on a miss.
+- Matching stays exact. Nothing is resolved by prefix or similarity, least of all
+  for a delete — the fix is to let the model retry correctly, not to guess for it.
+
+### 2. The reply claimed success over a failed tool call
+
+The worse half. The `Honesty` block of the reply prompt forbids exactly this, in
+five sentences, and the model read the failure, spent ~1 400 reasoning tokens
+unable to explain it, and wrote "done" anyway. By the final round those rules are
+thousands of tokens back and the failure is one unremarkable `tool` message.
+
+- `toolFailureNotice` + a **system turn** appended after any round with a failed
+  call (`server/llm/tool-loop.ts`): names the tool and its error, states that
+  nothing was done, and gives the two allowed exits — fix the call and retry, or
+  tell the user it failed. Generic in the loop, so every feature's tools get it.
+- Same shape as the rule-turn enforcement directive below: standing prompt text
+  that was ignored is restated at the moment of the decision, and tool *selection*
+  is still the model's.
+
+### 3. A failed tool call was traced green
+
+`tracedToolCall` settled `success` for an `isError` result, on the reasoning that
+the tool ran. Wrong unit for an operator: the failed `tasks_delete` sat in Debug
+as a green row. It now settles `error` with the tool's own message; the result
+still reaches the model unchanged. Scoped to `mcp-tools-*` traces, so the
+analytics traffic tiles (which count `bot-messaging` only) are untouched.
+
+*Proof.* Files — `server/llm/tool-loop.ts`, `server/mcp/tool-trace.ts`,
+`features/scheduled-tasks/server/mcp-tools.ts` (+ all three test files); docs
+`architecture/llm-and-mcp.md`, `features/scheduled-tasks.md`. Tests —
+`npm run lint` ✅, `npm run typecheck` ✅, `npm test` 950 passed / 21 failed,
+those 21 being the known Windows yt-dlp environment failures (same 2 files, same
+count as the 2026-08-03 entry below, and neither file imports anything touched
+here). New: 3 tool-loop cases (notice content, no notice on success, several
+failures in one notice), 1 tool-trace case reworked to the failed status, 9
+scheduled-tasks cases (`isTaskId`, `unknownTaskText`, ids handed back on a miss).
+`npm run build` not run (would kill the running dev server).
+
+*Remaining risks / live verification checklist (after deploy).*
+
+- Ask the bot in the group to cancel a task and confirm the task actually
+  disappears from `/scheduled-tasks`. The interesting run is a *failed* first
+  attempt: watch `/debug?feature=mcp-tools-scheduled-tasks` for a **red**
+  `tasks_delete`, then check whether the same reply trace shows a second
+  `tasks_delete` with a corrected id (the retry landing) or a reply that admits
+  the failure. Either is the fix working; "done" with no successful delete is not.
+- The notice is English inside a Ukrainian-language turn, like the other
+  enforcement text. If it starts leaking into replies verbatim, reword it.
+- The id list rides in a tool error, so a chat with many tasks makes that message
+  long. Cap it if a chat ever grows past a few dozen tasks.
+
 ## A rule turn that called no tool + no recovery from a hung LLM call (`done` pending production deploy + live verification, 2026-08-03)
 
 Two user reports from the same afternoon on the live bot, unrelated in cause.

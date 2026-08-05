@@ -65,21 +65,72 @@ function taskView(task: ScheduledTask) {
   };
 }
 
+/** Task ids are `randomUUID()` values; anything else never existed. */
+const TASK_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether `id` even has the shape of a task id. */
+export function isTaskId(id: string): boolean {
+  return TASK_ID_PATTERN.test(id.trim());
+}
+
+/**
+ * The message for an id that matched no task in this chat.
+ *
+ * Written against a production failure (2026-08-05): the model copied an id from
+ * `tasks_list` with one character dropped, and the old answer — "No task <id> in
+ * this chat." — was the same sentence for a mistyped id, a deleted task, and
+ * another chat's task. Its reasoning shows it concluded the task had vanished
+ * between the two calls, since nothing in the reply said otherwise. So say which
+ * case this is, and hand back the ids to copy from: the loop still has rounds
+ * left, and the model can only use them if the error tells it what to fix. The
+ * ids are the chat's own, already listed by `tasks_list`.
+ */
+export function unknownTaskText(id: string, knownIds: string[]): string {
+  const shape = isTaskId(id)
+    ? ""
+    : " That is not a valid task id: ids are 36-character UUIDs, so this one was truncated or mistyped when copied.";
+  const known =
+    knownIds.length > 0
+      ? ` Task ids in this chat: ${knownIds.join(", ")}. Copy one exactly, character for character.`
+      : " This chat has no scheduled tasks.";
+  return `No task ${id} in this chat.${shape}${known}`;
+}
+
 /**
  * Whether the current participant may edit/cancel this task: it must belong to
  * this chat and have been created by them. Returns an error result to relay when
- * not, else null. Exported for unit testing the author rule.
+ * not, else null. `knownIds` are this chat's task ids, used only to explain a
+ * miss (see {@link unknownTaskText}). Exported for unit testing the author rule.
  */
 export function checkOwnership(
   task: ScheduledTask | null,
   ctx: { chatId: string; userId?: string | null },
   id: string,
+  knownIds: string[] = [],
 ): ReturnType<typeof errorResult> | null {
-  if (!task || task.chatId !== ctx.chatId) return errorResult(`No task ${id} in this chat.`);
+  if (!task || task.chatId !== ctx.chatId) return errorResult(unknownTaskText(id, knownIds));
   if (!ctx.userId || task.createdByUserId !== ctx.userId) {
     return errorResult(`Task ${id} was created by someone else — you can only change tasks you created.`);
   }
   return null;
+}
+
+/** This chat's task ids, in `tasks_list` order — only loaded to explain a miss. */
+async function chatTaskIds(chatId: string): Promise<string[]> {
+  return (await getScheduledTasks(chatId)).map((task) => task.id);
+}
+
+/**
+ * Resolve the task a mutating tool named, or the error result to relay: the miss
+ * and author rules for `tasks_update`/`tasks_delete` in one place.
+ */
+async function guardMutation(
+  id: string,
+  ctx: { chatId: string; userId?: string | null },
+): Promise<ReturnType<typeof errorResult> | null> {
+  const task = await getTask(id);
+  const found = task != null && task.chatId === ctx.chatId;
+  return checkOwnership(task, ctx, id, found ? [] : await chatTaskIds(ctx.chatId));
 }
 
 /**
@@ -277,7 +328,7 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
     },
     async ({ id, instruction, context, schedule_kind, time, weekdays, date, enabled }) => {
       const ctx = getToolContext();
-      const denied = checkOwnership(await getTask(id), ctx, id);
+      const denied = await guardMutation(id, ctx);
       if (denied) return denied;
       try {
         const task = await editScheduledTaskService(
@@ -319,7 +370,7 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
     },
     async ({ id }) => {
       const ctx = getToolContext();
-      const denied = checkOwnership(await getTask(id), ctx, id);
+      const denied = await guardMutation(id, ctx);
       if (denied) return denied;
       await removeScheduledTaskService(id, toolTrigger(ctx.chatId, ctx.userId));
       return textResult(`Task ${id} cancelled.`, { ok: true, id });
@@ -373,7 +424,9 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
     async ({ id }) => {
       const ctx = getToolContext();
       const task = await getTask(id);
-      if (!task || task.chatId !== ctx.chatId) return errorResult(`No task ${id} in this chat.`);
+      if (!task || task.chatId !== ctx.chatId) {
+        return errorResult(unknownTaskText(id, await chatTaskIds(ctx.chatId)));
+      }
       return textResult(taskText(task), { ok: true, task: taskView(task) });
     },
   );

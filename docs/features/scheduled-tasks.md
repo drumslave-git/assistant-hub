@@ -98,6 +98,16 @@ Per the recorded decision these are **not owner-gated** (unlike the MVP, which
 restricted tasks to the owner). Authorship (`created_by_user_id`) is what limits
 mutation; listing shows everything so the model can see what exists.
 
+### When the id does not match
+
+`tasks_update`, `tasks_delete` and `tasks_get` answer an id that matches nothing in
+this chat with **which case it is**: whether the id is malformed (not a UUID —
+truncated or mistyped while copying) or simply unknown here, plus the chat's actual
+task ids to copy from. The old answer was one sentence for all three cases, and a
+model that dropped a character out of an id it had just listed concluded the task
+had vanished, said "done", and left it scheduled (2026-08-05). Ids are matched
+exactly — nothing is resolved by similarity, least of all for a delete.
+
 `tasks_create`'s description tells the model to resolve any relative or named time
 ("in 5 minutes", "tonight", "tomorrow at 9") against the current date/time given in
 context, then pass a concrete time. That context is the `time context` system line the

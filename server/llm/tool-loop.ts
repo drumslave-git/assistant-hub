@@ -185,6 +185,34 @@ function parseToolArguments(raw: string | undefined): Record<string, unknown> {
   return {};
 }
 
+/**
+ * The system turn appended after a round in which one or more tool calls failed.
+ *
+ * Written against a production failure (2026-08-05): a reply model copied a task
+ * id with one character dropped, `tasks_delete` came back `isError`, and the
+ * reply told the user the task was cancelled while it stayed scheduled. Its own
+ * reasoning shows it read the failure, could not explain it, and answered as if
+ * it had succeeded anyway. The honesty rules in the feature's system prompt
+ * say exactly that this is forbidden; a small local model still did it, because
+ * by the final round those rules are thousands of tokens back and the failure is
+ * one unremarkable `tool` message.
+ *
+ * So the failure is restated as its own instruction, at the point in the
+ * conversation where the model is choosing what to do next, naming both allowed
+ * exits: fix the call and retry (the loop still has rounds left), or tell the
+ * user it failed. Generic on purpose — every tool loop in the app gets it.
+ */
+export function toolFailureNotice(failed: ToolCallRecord[]): string {
+  return [
+    failed.length === 1 ? "The tool call above FAILED:" : "The tool calls above FAILED:",
+    ...failed.map((record) => `- ${record.name}: ${record.result.text}`),
+    "Nothing was done — no data was changed, created, or removed by a failed call. " +
+      "If the error says what was wrong with the call (a wrong or malformed id, a bad " +
+      "argument), fix it and call the tool again now. If you cannot fix it, tell the user " +
+      "plainly that it failed and what failed. Never answer as if a failed call had worked.",
+  ].join("\n");
+}
+
 function addUsage(into: ChatUsage, add?: ChatUsage): void {
   if (!add) return;
   if (add.promptTokens != null) into.promptTokens = (into.promptTokens ?? 0) + add.promptTokens;
@@ -298,6 +326,13 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
     for (let i = 0; i < calls.length; i += 1) {
       await params.onToolCall?.(records[i]);
       conversation.push({ role: "tool", tool_call_id: calls[i].id, content: records[i].result.text });
+    }
+
+    // A failed call is restated as an instruction of its own — see
+    // {@link toolFailureNotice} for why the surrounding prompt is not enough.
+    const failed = records.filter((record) => !record.ok);
+    if (failed.length > 0) {
+      conversation.push({ role: "system", content: toolFailureNotice(failed) });
     }
 
     // A tool that produced images for the model (e.g. a browser screenshot)

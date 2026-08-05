@@ -132,6 +132,20 @@ There is no round cap or wall-clock cap. For the browser agent that is an explic
 recorded decision: only the stall guard ends a run that stops progressing, and the
 forced tools-free final round then salvages a report from what was gathered.
 
+### A failed call is restated as an instruction
+
+When a round's tool call fails — an `isError` result or a thrown error — the loop
+appends a **system turn** naming the tool and its error, stating that nothing was
+done, and giving the model its two exits: fix the call and try again, or tell the
+user plainly that it failed.
+
+This is not redundant with the honesty rules in the reply system prompt. A small
+local model read a failed `tasks_delete`, could not explain it, and answered "done"
+anyway (2026-08-05) — by the final round those rules are thousands of tokens back
+and the failure is one unremarkable `tool` message. Restating it where the model is
+deciding what to do next is what makes it land. Generic in the loop, so every
+feature's tools get it.
+
 ## Call kinds
 
 `features/analytics/llm-call-kind.ts` is the taxonomy of LLM calls the app makes,
@@ -220,6 +234,13 @@ Every MCP tool call is recorded **twice**, on purpose:
 
 Wrapping the single `BotMcpRegistry.callTool` choke point means every current and
 future tool gets its own scope with no per-tool wiring.
+
+A tool that returns an **error result** (`isError`) settles its trace as `error`,
+the same as a tool that threw: the tool ran, but the action the model asked for
+did not happen, and an operator scanning Debug is looking for exactly that. (It
+used to settle `success` on the reasoning that "it ran" — which left a failed
+`tasks_delete` sitting in the list as a green row while the reply told the user
+the task was cancelled.) The result itself still reaches the model unchanged.
 
 ### Tool authoring rules
 

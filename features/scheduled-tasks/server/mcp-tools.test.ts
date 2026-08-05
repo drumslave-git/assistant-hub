@@ -1,12 +1,27 @@
 import { describe, expect, it } from "vitest";
 
 import type { ScheduledTask } from "../types";
-import { TASKS_CREATE_DESCRIPTION, TASKS_UPDATE_DESCRIPTION, checkOwnership } from "./mcp-tools";
+import {
+  TASKS_CREATE_DESCRIPTION,
+  TASKS_UPDATE_DESCRIPTION,
+  checkOwnership,
+  isTaskId,
+  unknownTaskText,
+} from "./mcp-tools";
 
 /**
  * The author rule for the task MCP tools: a chat participant may edit/cancel only
- * tasks they created, and only within their own chat.
+ * tasks they created, and only within their own chat — plus how a mutation that
+ * names an id no task has explains itself.
  */
+
+/**
+ * The id a `tasks_list` result was copied from, and the same id with one
+ * character dropped — the production failure the miss text was written for
+ * (2026-08-05): the model could not tell a mistyped id from a vanished task.
+ */
+const LIVE_ID = "9c4a1f28-77b3-4e5a-b0d6-2f81ac309e47";
+const TRUNCATED_ID = "9c4a1f28-77b3-4e5a-b0d6-2f81ac309e4";
 
 function task(over: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -62,6 +77,55 @@ describe("checkOwnership", () => {
 
   it("denies a missing task", () => {
     expect(checkOwnership(null, { chatId: "555", userId: "100" }, "task-1")?.isError).toBe(true);
+  });
+
+  it("hands the chat's ids back on a miss, so the next round can retry", () => {
+    const denied = checkOwnership(null, { chatId: "555", userId: "100" }, LIVE_ID, [LIVE_ID]);
+    expect(denied?.content[0].text).toContain(LIVE_ID);
+  });
+});
+
+describe("isTaskId", () => {
+  it("accepts a uuid, in either case and with surrounding space", () => {
+    expect(isTaskId(LIVE_ID)).toBe(true);
+    expect(isTaskId(` ${LIVE_ID.toUpperCase()} `)).toBe(true);
+  });
+
+  it("rejects an id that lost a character in the copy", () => {
+    expect(isTaskId(TRUNCATED_ID)).toBe(false);
+  });
+
+  it("rejects other non-ids", () => {
+    expect(isTaskId("")).toBe(false);
+    expect(isTaskId("task-1")).toBe(false);
+    expect(isTaskId(`${LIVE_ID}extra`)).toBe(false);
+  });
+});
+
+describe("unknownTaskText", () => {
+  it("names a malformed id as malformed, not as a task that is gone", () => {
+    const text = unknownTaskText(TRUNCATED_ID, [LIVE_ID]);
+    expect(text).toContain("not a valid task id");
+    expect(text).toContain("truncated or mistyped");
+  });
+
+  it("lists the chat's ids to copy from", () => {
+    const other = "3b7e0d51-6c22-4a90-8f13-5d0e9b74a1c8";
+    const text = unknownTaskText(TRUNCATED_ID, [LIVE_ID, other]);
+    expect(text).toContain(LIVE_ID);
+    expect(text).toContain(other);
+    expect(text).toContain("character for character");
+  });
+
+  it("does not call a well-formed id malformed", () => {
+    const text = unknownTaskText(LIVE_ID, []);
+    expect(text).not.toContain("not a valid task id");
+    expect(text).toContain("This chat has no scheduled tasks.");
+  });
+
+  it("always says the id is not in this chat", () => {
+    expect(unknownTaskText(LIVE_ID, [])).toContain("in this chat");
+    expect(unknownTaskText(TRUNCATED_ID, [LIVE_ID])).toContain("in this chat");
   });
 });
 

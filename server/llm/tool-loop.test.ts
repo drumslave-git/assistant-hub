@@ -147,6 +147,55 @@ describe("runToolLoop", () => {
     expect(recorded[0].ok).toBe(false);
   });
 
+  it("restates a failed call as a system turn naming the tool and its error", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(calls([toolCall("c1", "tasks_delete", { id: "nope" })]))
+      .mockResolvedValueOnce(answer("it failed"));
+    const callTool = vi.fn().mockResolvedValue({ text: "No task nope in this chat.", isError: true });
+
+    await runToolLoop({ seed: [], complete, callTool });
+
+    const secondConversation = complete.mock.calls[1][0] as { role: string; content: string }[];
+    const notice = secondConversation.at(-1)!;
+    expect(notice.role).toBe("system");
+    expect(notice.content).toContain("tasks_delete: No task nope in this chat.");
+    expect(notice.content).toContain("Nothing was done");
+    expect(notice.content).toContain("Never answer as if a failed call had worked.");
+  });
+
+  it("appends no failure notice when every call succeeded", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(calls([toolCall("c1", "t", {})]))
+      .mockResolvedValueOnce(answer("done"));
+    const callTool = vi.fn().mockResolvedValue(okResult("fine"));
+    await runToolLoop({ seed: [], complete, callTool });
+    const secondConversation = complete.mock.calls[1][0] as { role: string }[];
+    expect(secondConversation.some((m) => m.role === "system")).toBe(false);
+  });
+
+  it("lists every failed call of a round in one notice, leaving the successful ones out", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(calls([toolCall("c1", "a", {}), toolCall("c2", "b", {}), toolCall("c3", "c", {})]))
+      .mockResolvedValueOnce(answer("done"));
+    const callTool = vi.fn().mockImplementation(async (name: string) => {
+      if (name === "b") return okResult("b's result");
+      if (name === "c") throw new Error("exploded");
+      return { text: "bad id", isError: true } satisfies McpToolCallResult;
+    });
+
+    await runToolLoop({ seed: [], complete, callTool });
+
+    const secondConversation = complete.mock.calls[1][0] as { role: string; content: string }[];
+    const notice = secondConversation.at(-1)!;
+    expect(notice.content).toContain("- a: bad id");
+    expect(notice.content).toContain("- c: exploded");
+    expect(notice.content).not.toContain("b's result");
+    expect(notice.content).not.toContain("- b:");
+  });
+
   it("runs a round's tool calls concurrently, recording results in call order", async () => {
     const complete = vi
       .fn()

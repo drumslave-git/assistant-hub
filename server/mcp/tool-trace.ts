@@ -22,9 +22,13 @@ export function toolTraceFeature(owningFeature: string): string {
 }
 
 /**
- * Run one tool call wrapped in its own scoped trace. A tool that returns an error
- * *result* (`isError`) still ran, so its trace settles `success` with a warn-level
- * output; only a thrown error fails the trace.
+ * Run one tool call wrapped in its own scoped trace. An error *result*
+ * (`isError`) settles the trace as failed, the same as a thrown error: the tool
+ * ran, but the action the model asked for did not happen. This used to settle
+ * `success` on the reasoning that "it ran" — which is the wrong unit for an
+ * operator, who is scanning Debug for turns that did not do what they claimed.
+ * The `tasks_delete` that failed on a mistyped id (2026-08-05) sat in the list as
+ * a green row while the reply told the user the task was cancelled.
  */
 export async function tracedToolCall(
   owningFeature: string,
@@ -61,7 +65,11 @@ export async function tracedToolCall(
         isError: result.isError ?? false,
       },
     });
-    await trace.succeed({ outputSummary: result.isError ? "error result" : "ok" });
+    if (result.isError) {
+      await trace.fail(new Error(result.text), { outputSummary: "error result" });
+    } else {
+      await trace.succeed({ outputSummary: "ok" });
+    }
     return result;
   } catch (err) {
     await trace.fail(err);

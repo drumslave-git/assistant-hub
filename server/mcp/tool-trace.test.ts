@@ -24,14 +24,18 @@ describe("tracedToolCall", () => {
     expect(traces[0]).toMatchObject({ action: "history_search", status: "success" });
   });
 
-  it("settles success but flags an error result (isError) rather than failing the trace", async () => {
-    await tracedToolCall("memory", "memory_search", { q: "x" }, async () => ({
+  it("fails the trace on an error result (isError), keeping the tool's own message", async () => {
+    const result = await tracedToolCall("memory", "memory_search", { q: "x" }, async () => ({
       text: "nope",
       isError: true,
     }));
+    // The result still reaches the caller — only the trace status changes.
+    expect(result.isError).toBe(true);
+
     const { traces } = await listTraces({ feature: "mcp-tools-memory" });
-    expect(traces[0]).toMatchObject({ action: "memory_search", status: "success" });
+    expect(traces[0]).toMatchObject({ action: "memory_search", status: "error" });
     expect(traces[0].outputSummary).toBe("error result");
+    expect(traces[0].error?.message).toBe("nope");
   });
 
   it("fails the trace and rethrows when the tool throws", async () => {
