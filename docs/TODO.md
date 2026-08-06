@@ -28,6 +28,79 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## The bot said a task was cancelled without calling any tool at all (`done` pending production deploy + live verification, 2026-08-06)
+
+Trace `3db16957…` (reply, 2026-08-06 12:29 Kyiv), and the turn before it. A user
+asked, in reply to the bot, to cancel a scheduled task. The turn made **zero**
+tool calls — `tasks_list`, `tasks_delete`, `rules_list` and `rules_delete` were
+all offered — and answered, in effect, "removed from the record". The user had
+asked for the same thing one turn earlier and got the same lie. The task is
+still scheduled.
+
+The model's own reasoning shows why: it listed `rules_list` as step one of its
+plan four separate times over ~2,900 reasoning tokens, then dropped it —
+*"if I find no rule in `rules_list`, I won't call the tool because there is
+nothing to delete"*. It declined to run a **read** because it had already
+guessed the read would come back empty, and then reported the guess as a result.
+
+This is the third instance of the same class (2026-08-03 rule turn, 2026-08-05
+failed `tasks_delete`, this one). The base prompt's Honesty block already
+forbids it in five rules, including the exact case — *"Someone asking you the
+same thing again is telling you it did not take effect"*. More standing prompt
+text is not the lever.
+
+### Fix — a post-answer honesty gate
+
+`features/bot-messaging/server/action-claim.ts` (new). On a turn that made no
+tool call at all, the drafted reply goes to one classifier call: does it assert
+the assistant did (`performed`) or will do (`promised`) something, or not
+(`none`)? A claim only counts when the model quotes the words carrying it and
+that quote really occurs in the reply — code checks the mechanical fact (a tool
+ran / the quote is real), the model judges the language. On a confirmed claim,
+the answer is shown back with `ACTION_CLAIM_ENFORCEMENT_DIRECTIVE`, whose third
+paragraph names the specific mistake above ("read it with the tool that reads
+it"; a repeated request is evidence the thing is still there). The retry either
+calls a tool (nothing left to check) or is re-gated once; a second confirmed
+claim is suppressed and the chat gets `ACTION_NOT_TAKEN_REPLY` with the trace
+failed — same shape and same reasoning as the rule-turn enforcement.
+
+Fails **open**, unlike the addressing analyzer: an unreadable verdict, an
+unbacked quote, or a provider failure means the reply goes out as written. This
+guard removes lies; it must not become a new way for honest turns to break.
+
+User decision, 2026-08-06: of the fixes offered (inject the chat's active
+scheduled tasks into the system prompt / this gate / a larger reply model), the
+gate alone was chosen.
+
+Files: `features/bot-messaging/server/action-claim.ts` (+ test),
+`features/bot-messaging/server/service.ts` (`checkActionClaim` dep,
+`runActionClaimGate`, step 4e), `server/telegram/process-update.ts` (shared
+`runClassifier` — addressing, its verifier and the gate now cannot drift apart
+on model/effort/token cap), `features/analytics/llm-call-kind.ts`
+(`action-claim-check`; also adds the missing `addressing-verify`, which was
+being mislabeled `reply-final` on the Model-performance page).
+
+Verification: `npm run typecheck` clean, `npm run lint` clean,
+`npx vitest run features/bot-messaging/server` 102 passed. Full `npm run test`:
+974 passed, 21 failed — all 21 in
+`features/browser-agent/server/{ytdlp-binary,media-download}.test.ts` and
+**pre-existing** (confirmed failing identically on a stashed clean tree). Those
+are unrelated to this change and are open work of their own.
+
+Remaining risks:
+
+- Scope. The gate only sees turns with **zero** tool calls. A reply that called
+  `tasks_list` and then lied about what came back is a different failure the
+  mechanical signal cannot see.
+- Cost. One extra classifier call on every tool-less turn, which is most
+  ordinary conversation. Not measured against the live endpoint yet.
+- False positives. A confirmed claim costs a second reply generation. Live
+  behaviour on ordinary chatter is unverified — watch the "reply claimed an
+  action no tool performed — retrying" step on Debug.
+- The underlying trigger is untouched: the model still cannot see which
+  scheduled tasks exist without calling `tasks_list`, while chat rules *are*
+  injected as standing state. Whatever fired at that chat is still firing.
+
 ## The bot said a task was cancelled after `tasks_delete` failed (`done` pending production deploy + live verification, 2026-08-05)
 
 Traces `1f300347…` (reply), `5d33d8c1…` (`tasks_list`), `c757d10a…`

@@ -20,6 +20,14 @@ import { startTrace, type TraceRecorder } from "@/server/trace";
 import { RULE_ENFORCEMENT_DIRECTIVE } from "@/features/chat-rules/format";
 import { ADDRESSING_CHECK_EVENT } from "../addressing-trace";
 import {
+  ACTION_CLAIM_ENFORCEMENT_DIRECTIVE,
+  ACTION_NOT_TAKEN_REPLY,
+  buildActionClaimMessages,
+  parseActionClaimVerdict,
+  type ActionClaimInput,
+  type ActionClaimVerdict,
+} from "./action-claim";
+import {
   buildAnalyzerMessages,
   buildVerifierMessages,
   parseAnalyzerVerdict,
@@ -186,6 +194,14 @@ export interface BotMessagingDeps {
    * behavior).
    */
   analyzeAddressing?: (messages: ChatMessage[]) => Promise<GeneratedReply>;
+  /**
+   * Run one plain completion for the honesty gate — the same classifier shape as
+   * {@link analyzeAddressing}, over the drafted reply instead of the incoming
+   * message (see `action-claim.ts`). Called only for a turn that made no tool
+   * call at all, so a turn that did something pays nothing. Absent → the gate is
+   * skipped entirely and a reply is delivered as written (the pre-gate behavior).
+   */
+  checkActionClaim?: (messages: ChatMessage[]) => Promise<GeneratedReply>;
   /**
    * Load the words the chat has confirmed are *not* the bot's display name (the
    * 👎 "wasn't talking to you" reports). Called only when the analyzer runs, so
@@ -446,6 +462,56 @@ async function runAddressAnalyzer(
       data: { error: err instanceof Error ? err.message : String(err) },
     });
     return { addressed: false, source: "analyzer", reason: "analyzer call failed" };
+  }
+}
+
+/**
+ * The honesty gate over a drafted reply: the turn called no tool, so does the
+ * text nevertheless tell the user something was done? Prompting and parsing live
+ * in `action-claim.ts`; this owns the completion and the trace events.
+ *
+ * Never throws, and abstains on anything it cannot read (see that module's
+ * note). A guard against lies must not become a new way for honest turns to
+ * fail, so a provider failure here means the reply goes out as written — the
+ * state the code was in before this existed.
+ */
+async function runActionClaimGate(
+  input: ActionClaimInput,
+  deps: BotMessagingDeps,
+  trace: TraceRecorder,
+): Promise<ActionClaimVerdict> {
+  const check = deps.checkActionClaim;
+  const abstain = (reason: string): ActionClaimVerdict => ({
+    claimsAction: false,
+    claim: null,
+    quote: null,
+    reason,
+  });
+  if (!check) return abstain("honesty gate not wired");
+
+  const messages = buildActionClaimMessages(input);
+  await trace.event({
+    type: "llm_request",
+    message: "honesty gate request",
+    data: { messages },
+  });
+  try {
+    const result = await check(messages);
+    await trace.event({
+      type: "llm_response",
+      message: "honesty gate response",
+      data: result.responseBody ?? { content: result.content },
+      usage: { ...llmUsageOf(result), callKind: "action-claim-check" },
+    });
+    return parseActionClaimVerdict(result.content, { reply: input.reply });
+  } catch (err) {
+    await trace.event({
+      type: "error",
+      level: "warn",
+      message: "honesty gate failed — reply left as written",
+      data: { error: err instanceof Error ? err.message : String(err) },
+    });
+    return abstain("honesty gate call failed");
   }
 }
 
@@ -1002,6 +1068,90 @@ export async function handleIncomingMessage(
         );
         await trace.fail(failure);
         return { status: "error", message: failure.message };
+      }
+
+      // 4e. Honesty gate. Everything above judges the turn by what it *was*; this
+      // judges the answer by what it *says*. A turn that called no tool did
+      // nothing, so an answer reporting that something was deleted, saved, or
+      // scheduled is false whatever else is right about it — and the model writes
+      // one anyway, several rules of the system prompt notwithstanding (the
+      // measured case is in `action-claim.ts`).
+      //
+      // The split of labour is the same as everywhere else here: code owns the
+      // mechanical fact (no tool ran — `toolCallCount`), the model owns the
+      // question about language (does this text assert an action), and its answer
+      // only counts when it quotes words that really are in the reply. Ordinary
+      // conversation — answers, opinions, jokes, "I can't do that" — claims
+      // nothing and passes untouched.
+      //
+      // Rule turns never reach here: theirs is the stricter mechanical check
+      // above, which has already retried and returned by now.
+      if (toolCallCount === 0) {
+        let claim = await runActionClaimGate(
+          { request: userText, reply: reply.content },
+          deps,
+          trace,
+        );
+        if (claim.claimsAction) {
+          await trace.event({
+            type: "step",
+            level: "warn",
+            message: "reply claimed an action no tool performed — retrying",
+            data: { claim: claim.claim, quote: claim.quote, reason: claim.reason, answer: reply.content },
+          });
+          reply = await generate(historyWindow.messages, {
+            previousAnswer: reply.content,
+            directive: ACTION_CLAIM_ENFORCEMENT_DIRECTIVE,
+          });
+          // The retry that called a tool has nothing left to answer for: the
+          // action happened, and what it says about it is no longer a lie the
+          // mechanical signal can see. Only a second empty-handed answer is
+          // re-checked, and only its *new* text — a model that took the honest
+          // way out ("I could not do that") passes here, which is the point of
+          // offering that exit in the directive.
+          if (toolCallCount === 0) {
+            claim = await runActionClaimGate(
+              { request: userText, reply: reply.content },
+              deps,
+              trace,
+            );
+            // Twice through the gate and still asserting something that provably
+            // did not happen. The chat is not left in silence — the same call the
+            // rule path makes (user decision, 2026-08-03): the people here are
+            // owed the truth rather than a plausible lie. Failed, not succeeded,
+            // so the turn is findable on the Debug page instead of sitting green.
+            if (claim.claimsAction) {
+              await trace.event({
+                type: "step",
+                level: "error",
+                message: "reply claimed the action again on the retry — answer suppressed",
+                data: {
+                  claim: claim.claim,
+                  quote: claim.quote,
+                  reason: claim.reason,
+                  suppressedAnswer: reply.content,
+                },
+              });
+              const sent = await deps.sendReply(ACTION_NOT_TAKEN_REPLY);
+              await trace.event({
+                type: "output",
+                level: "warn",
+                message: "send message",
+                data: {
+                  content: ACTION_NOT_TAKEN_REPLY,
+                  messageId: sent.messageId,
+                  asVoice: false,
+                },
+              });
+              const failure = new Error(
+                "The model claimed an action it never performed in two attempts — the answer was " +
+                  "suppressed and nothing was done",
+              );
+              await trace.fail(failure);
+              return { status: "error", message: failure.message };
+            }
+          }
+        }
       }
 
       // A long answer is split at natural boundaries and delivered as several

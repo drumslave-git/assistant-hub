@@ -21,6 +21,17 @@ export const LLM_CALL_KINDS = {
     label: "Addressing check",
     description: "Decides whether an ambiguous group message is talking to the bot.",
   },
+  "addressing-verify": {
+    id: "addressing-verify",
+    label: "Addressing verify",
+    description: "Second opinion on the word the addressing check took for the bot's name.",
+  },
+  "action-claim-check": {
+    id: "action-claim-check",
+    label: "Honesty gate",
+    description:
+      "Checks whether a reply that called no tool nevertheless claims something was done.",
+  },
   "chat-rule-match": {
     id: "chat-rule-match",
     label: "Chat rule match",

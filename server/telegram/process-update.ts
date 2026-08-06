@@ -109,6 +109,28 @@ const CLASSIFIER_REASONING_EFFORT = "low" as const;
 const CLASSIFIER_MAX_TOKENS = 3_000;
 
 /**
+ * One classification call against the configured model: no tools, no history, no
+ * persona — a single question about a single piece of text, not a conversation.
+ * Shared by every classifier the reply path runs (addressing, its verifier, the
+ * honesty gate) so they cannot drift apart on model, effort, or token cap.
+ */
+async function runClassifier(messages: ChatMessage[]) {
+  const runtime = await getLlmRuntime();
+  if (!runtime) {
+    throw ApiError.serviceUnavailable(
+      "LLM is not configured — set the endpoint and model in Settings",
+    );
+  }
+  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+  return chatCompletion(conn, {
+    model: runtime.model,
+    messages,
+    maxTokens: CLASSIFIER_MAX_TOKENS,
+    reasoningEffort: CLASSIFIER_REASONING_EFFORT,
+  });
+}
+
+/**
  * Hard stop on tokens generated per reply round (thinking included). A guard
  * against runaway generation, not a style guide — the brevity instruction in
  * the base system prompt is what keeps ordinary replies short. Sized well above
@@ -528,26 +550,12 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         );
       }),
     // Settles a group message that named nobody recognizable but might still be
-    // calling the bot by name in another alphabet or an inflected form. A plain
-    // completion — no tools, no history, no persona: it is a single classification
-    // of one message, not a conversation.
-    analyzeAddressing:
-      overrides?.analyzeAddressing ??
-      (async (messages: ChatMessage[]) => {
-        const runtime = await getLlmRuntime();
-        if (!runtime) {
-          throw ApiError.serviceUnavailable(
-            "LLM is not configured — set the endpoint and model in Settings",
-          );
-        }
-        const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
-        return chatCompletion(conn, {
-          model: runtime.model,
-          messages,
-          maxTokens: CLASSIFIER_MAX_TOKENS,
-          reasoningEffort: CLASSIFIER_REASONING_EFFORT,
-        });
-      }),
+    // calling the bot by name in another alphabet or an inflected form.
+    analyzeAddressing: overrides?.analyzeAddressing ?? runClassifier,
+    // Checks a drafted reply that called no tool for a claim that something was
+    // done (`features/bot-messaging/server/action-claim.ts`). Same call shape as
+    // the analyzer above, over the answer instead of the incoming message.
+    checkActionClaim: runClassifier,
     // The words the chat has already reported as *not* the bot's name, so the
     // analyzer stops answering to someone else's name. Read only when the
     // analyzer actually runs (the service calls this lazily).

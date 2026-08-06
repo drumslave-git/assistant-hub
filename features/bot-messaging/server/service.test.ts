@@ -18,6 +18,7 @@ import { BOT, BOT_USER, makeMessage } from "@/test/__mocks__/telegram";
 import { imagePart } from "@/test/__mocks__/vision";
 import { startTrace } from "@/server/trace";
 import { RULE_ENFORCEMENT_DIRECTIVE } from "@/features/chat-rules/format";
+import { ACTION_CLAIM_ENFORCEMENT_DIRECTIVE, ACTION_NOT_TAKEN_REPLY } from "./action-claim";
 import { BASE_SYSTEM_PROMPT } from "./prompt";
 import { handleIncomingMessage, type BotMessagingDeps, type IncomingMessage } from "./service";
 
@@ -1567,5 +1568,245 @@ describe("handleIncomingMessage — recorded LLM retries", () => {
       .find((e) => String(e.message).startsWith("LLM call failed — retrying"));
     expect(step.level).toBe("warn");
     expect(step.data.error).toContain("timed out");
+  });
+});
+
+/**
+ * The honesty gate — the guard over an *addressed* turn's answer.
+ *
+ * The rule-turn check above is mechanical because that turn's whole purpose is
+ * the action. An ordinary turn has no such signal: most zero-tool replies are
+ * perfectly honest conversation, and only the text says which is which. So the
+ * gate runs on every zero-tool turn, asks the model whether the answer asserts
+ * something was done, and retries only when it says yes with a quote that is
+ * really in the reply.
+ *
+ * Live incident (2026-08-06, trace `3db16957…`): asked twice to cancel a
+ * scheduled task, the model planned the lookup in its reasoning, decided the
+ * lookup would find nothing, called nothing, and reported the task removed.
+ */
+describe("handleIncomingMessage — the honesty gate", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** A gate verdict, in the shape the real classifier returns it. */
+  const gate = (claim: string, quote: string | null) =>
+    vi.fn().mockResolvedValue({
+      content: JSON.stringify({ claim, quote }),
+      model: "m",
+      latencyMs: 2,
+    });
+
+  /** Answers with words only — no tool call, ever. */
+  const allTalk = (content: string) =>
+    vi.fn().mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
+      await onRequest?.({ model: "m", messages });
+      const result = { content, model: "m", latencyMs: 5 };
+      await onRound?.({ index: 0, isFinal: true, ...result });
+      return result;
+    });
+
+  /** Talks first, then actually calls the tool when corrected. */
+  const actsOnSecondAsking = (first: string, second: string) =>
+    vi
+      .fn()
+      .mockImplementationOnce(async (messages, _onToolCall, onRequest, onRound) => {
+        await onRequest?.({ model: "m", messages });
+        const result = { content: first, model: "m", latencyMs: 5 };
+        await onRound?.({ index: 0, isFinal: true, ...result });
+        return result;
+      })
+      .mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
+        await onRequest?.({ model: "m", messages });
+        await onToolCall?.({ name: "tasks_delete", args: {}, result: { text: "ok" }, ok: true });
+        const result = { content: second, model: "m", latencyMs: 5 };
+        await onRound?.({ index: 0, isFinal: true, ...result });
+        return result;
+      });
+
+  it("leaves an ordinary reply alone and never asks twice", async () => {
+    const checkActionClaim = gate("none", null);
+    const d = deps({ checkActionClaim });
+
+    const out = await handleIncomingMessage(incoming({ text: "how are you" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(checkActionClaim).toHaveBeenCalledTimes(1);
+    expect(d.generateReply).toHaveBeenCalledTimes(1);
+    expect(d.sendReply).toHaveBeenCalledWith("hi back");
+  });
+
+  it("costs nothing on a turn that actually called a tool", async () => {
+    const checkActionClaim = gate("performed", "deleted it");
+    const generateReply = vi
+      .fn()
+      .mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
+        await onRequest?.({ model: "m", messages });
+        await onToolCall?.({ name: "tasks_delete", args: {}, result: { text: "ok" }, ok: true });
+        const result = { content: "deleted it", model: "m", latencyMs: 5 };
+        await onRound?.({ index: 0, isFinal: true, ...result });
+        return result;
+      });
+    const d = deps({ checkActionClaim, generateReply });
+
+    const out = await handleIncomingMessage(incoming({ text: "cancel the task" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "deleted it" });
+    expect(checkActionClaim).not.toHaveBeenCalled();
+  });
+
+  it("retries with the answer and the correction appended when the answer lies", async () => {
+    const d = deps({
+      checkActionClaim: gate("performed", "task deleted"),
+      generateReply: actsOnSecondAsking("task deleted", "gone"),
+    });
+
+    await handleIncomingMessage(incoming({ text: "cancel the task" }), d);
+
+    const second = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[1][0];
+    expect(second.at(-2)).toEqual({ role: "assistant", content: "task deleted" });
+    expect(second.at(-1).role).toBe("system");
+    expect(second.at(-1).content).toBe(ACTION_CLAIM_ENFORCEMENT_DIRECTIVE);
+    // Everything before the correction is the same turn, unchanged.
+    const first = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(second.slice(0, first.length)).toEqual(first);
+  });
+
+  it("delivers the retry and stops checking once the retry calls the tool", async () => {
+    const checkActionClaim = gate("performed", "task deleted");
+    const d = deps({
+      checkActionClaim,
+      generateReply: actsOnSecondAsking("task deleted", "gone"),
+    });
+
+    const out = await handleIncomingMessage(incoming({ text: "cancel the task" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "gone" });
+    expect(d.sendReply).toHaveBeenCalledWith("gone");
+    // The action happened; there is nothing left for the gate to answer for.
+    expect(checkActionClaim).toHaveBeenCalledTimes(1);
+    expect(recorder.succeed).toHaveBeenCalled();
+  });
+
+  // The exit the directive deliberately offers as an equal option.
+  it("delivers a retry that owned up instead of calling anything", async () => {
+    const checkActionClaim = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: JSON.stringify({ claim: "performed", quote: "task deleted" }),
+        model: "m",
+        latencyMs: 2,
+      })
+      .mockResolvedValue({
+        content: JSON.stringify({ claim: "none", quote: null }),
+        model: "m",
+        latencyMs: 2,
+      });
+    const honest = "I could not — I found no such task";
+    const d = deps({
+      checkActionClaim,
+      generateReply: vi
+        .fn()
+        .mockImplementationOnce(async (messages, _t, onRequest, onRound) => {
+          await onRequest?.({ model: "m", messages });
+          const r = { content: "task deleted", model: "m", latencyMs: 5 };
+          await onRound?.({ index: 0, isFinal: true, ...r });
+          return r;
+        })
+        .mockImplementation(async (messages, _t, onRequest, onRound) => {
+          await onRequest?.({ model: "m", messages });
+          const r = { content: honest, model: "m", latencyMs: 5 };
+          await onRound?.({ index: 0, isFinal: true, ...r });
+          return r;
+        }),
+    });
+
+    const out = await handleIncomingMessage(incoming({ text: "cancel the task" }), d);
+
+    expect(out).toEqual({ status: "replied", text: honest });
+    expect(checkActionClaim).toHaveBeenCalledTimes(2);
+    expect(recorder.succeed).toHaveBeenCalled();
+  });
+
+  it("never sends the claim when the retry lies again, and says so instead", async () => {
+    const d = deps({
+      checkActionClaim: gate("performed", "task deleted"),
+      generateReply: allTalk("task deleted"),
+    });
+
+    const out = await handleIncomingMessage(incoming({ text: "cancel the task" }), d);
+
+    expect(out.status).toBe("error");
+    expect(d.generateReply).toHaveBeenCalledTimes(2);
+    const sent = (d.sendReply as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toContain("task deleted");
+    expect(sent[0]).toBe(ACTION_NOT_TAKEN_REPLY);
+    // Failed, not green: an undelivered answer is exactly the turn an operator
+    // has to be able to find on the Debug page.
+    expect(recorder.fail).toHaveBeenCalled();
+    expect(recorder.succeed).not.toHaveBeenCalled();
+    const messages = recorder.event.mock.calls.map((c) => c[0].message);
+    expect(messages).toContain("reply claimed an action no tool performed — retrying");
+    expect(messages).toContain("reply claimed the action again on the retry — answer suppressed");
+  });
+
+  // Fail open: a guard against lies must not become a new way for turns to break.
+  it("delivers the reply as written when the gate call fails", async () => {
+    const d = deps({
+      checkActionClaim: vi.fn().mockRejectedValue(new Error("endpoint down")),
+      generateReply: allTalk("task deleted"),
+    });
+
+    const out = await handleIncomingMessage(incoming({ text: "cancel the task" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "task deleted" });
+    expect(d.generateReply).toHaveBeenCalledTimes(1);
+    const warn = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "honesty gate failed — reply left as written");
+    expect(warn.level).toBe("warn");
+  });
+
+  it("delivers the reply when the gate quotes words that are not in it", async () => {
+    const d = deps({
+      checkActionClaim: gate("performed", "I have scheduled the reminder"),
+      generateReply: allTalk("task deleted"),
+    });
+
+    const out = await handleIncomingMessage(incoming({ text: "cancel the task" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "task deleted" });
+    expect(d.generateReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the gate call on the reply trace as its own kind", async () => {
+    const d = deps({ checkActionClaim: gate("none", null) });
+
+    await handleIncomingMessage(incoming({ text: "how are you" }), d);
+
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    expect(events.some((e) => e.message === "honesty gate request")).toBe(true);
+    const response = events.find((e) => e.message === "honesty gate response");
+    expect(response.usage.callKind).toBe("action-claim-check");
+  });
+
+  it("stays out of a rule turn, which has its own stricter check", async () => {
+    const checkActionClaim = gate("performed", "downloaded the video");
+    const text = "look https://example.com/clip";
+    const d = deps({
+      checkActionClaim,
+      applyChatRules: vi.fn().mockResolvedValue({ directive: "RULE DIRECTIVE", ruleIds: ["r1"] }),
+      generateReply: allTalk("downloaded the video"),
+    });
+    const m = makeMessage({ message_id: 7, chat: { id: 5, type: "group" }, text });
+
+    const out = await handleIncomingMessage(incoming({ message: m, chatType: "group", text }), d);
+
+    expect(out.status).toBe("error");
+    expect(checkActionClaim).not.toHaveBeenCalled();
+    const sent = (d.sendReply as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(sent[0]).toContain("not carried out");
   });
 });
