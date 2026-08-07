@@ -92,6 +92,13 @@ Design constraints worth preserving:
   from paired replacements) and the transport falls back to a plain-text send if
   Telegram still refuses.
 - Long replies are split at natural boundaries, never truncated.
+- The reply normally lands under the message it answers. The `reply_to_message`
+  tool moves that target to an earlier message when the answer is *about* that
+  message ("here it is", under the photo somebody asked the bot to find). It
+  changes delivery only — the turn still sends exactly one message — and the id is
+  validated against this chat's mirror before it is accepted. Sends pass
+  `allow_sending_without_reply`, so a target that has since been deleted costs the
+  quote, not the answer, and the mirror records where the reply actually landed.
 - A voice reply is synthesized when a speech endpoint is configured
   ([Voice](voice.md)).
 - Generated images are delivered after the text ([Image generation](image-generation.md)).

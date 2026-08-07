@@ -56,11 +56,12 @@ This primitive exists because the daily schedulers each used to carry a
 private copy of the same ~100-line shape. A feature now supplies only its
 `runJob` and the extra info fields its card shows.
 
-## The seven jobs
+## The eight jobs
 
 | Job | Primitive | Runs | Work | Backlog badge |
 | --- | --- | --- | --- | --- |
 | **Vision backfill** | Idle | After the bot has been quiet | Caption `message_media` rows still `pending` | Media pending |
+| **Search index** | Idle | After a longer quiet period | Build + embed each message's searchable text into `chat_message_search` | Messages pending |
 | **Task poller** | Interval | Every tick | Fire due scheduled tasks, advance `next_run_at`, delete spent one-shots | Overdue tasks |
 | **History summary** | Daily | `daily_jobs_run_time` | Compress each finished chat-day into embedded topic summaries | Chat-days |
 | **Memory** | Daily | `daily_jobs_run_time` | Two ordered passes: passive extraction, then consolidation | Chat-days to read + notes to fold |
@@ -68,7 +69,27 @@ private copy of the same ~100-line shape. A feature now supplies only its
 | **Self-improvement** | Daily | `daily_jobs_run_time` | Distill feedback into new preference and correction versions | — |
 | **yt-dlp updater** | Daily | `daily_jobs_run_time` (plus once at boot) | Install a newer yt-dlp from upstream into `data/bin` | — |
 
-The **browser-agent runner** is an eighth piece of background machinery but not a
+### Message search index
+
+The second idle job, and the one whose debounce is deliberately longer (90s
+against the backfill's 45s). The two share a quiet window and an endpoint, and
+indexing *depends* on the backfill's output: a photo described during a quiet
+window should be indexed with its description, not a minute before it exists.
+
+A message is due when it has no index row, or when either source changed since it
+was built — its own `edited_at`, or its media's `described_at`. That second clause
+is what makes the index self-healing rather than one-shot: nearly every media
+message is indexed once as a bare `[photo]` and picked up again once the describer
+has said what it shows.
+
+With no embedding model configured the job still runs and still indexes the text —
+rows just carry a null vector, and search falls back to its lexical halves. Rows
+written that way keep the null vector forever (nothing about the message changed,
+so nothing makes them due), which is why
+`DELETE /api/history/search-index` exists: it empties the index and re-arms a
+rebuild, the recovery path after configuring embeddings.
+
+The **browser-agent runner** is a ninth piece of background machinery but not a
 scheduler: it is a queue pump over the `browser_agent_runs` table, woken by an
 enqueue signal rather than a clock. At boot it sweeps any run left `running` by a
 previous process to `failed`.
@@ -97,6 +118,7 @@ Each job owns its own idempotency, and each one is a different mechanism:
 | Job | What makes a re-run cheap |
 | --- | --- |
 | Vision backfill | Per-row `status = 'pending'` gating; `describeAndStore` re-checks status before spending a call |
+| Search index | `indexed_at` against the message's `edited_at` and its media's `described_at` — an up-to-date row is never re-embedded |
 | History summary | `chat_summary_days` records the message count at processing time — an unchanged day is skipped |
 | Memory extraction | `memory_extraction_days`, the same way |
 | Memory consolidation | A consumed note is deleted, so it is never re-spent |

@@ -1,6 +1,10 @@
 import "server-only";
 
 import {
+  BOT_MESSAGING_TOOL_NAMES,
+  registerBotMessagingMcpTools,
+} from "@/features/bot-messaging/server/mcp-tools";
+import {
   BROWSER_AGENT_TOOL_NAMES,
   registerBrowserAgentMcpTools,
 } from "@/features/browser-agent/server/mcp-tools";
@@ -65,6 +69,11 @@ function store(): RegistryStore {
  */
 const REGISTRARS: { feature: string; registrar: McpToolRegistrar; toolNames: string[] }[] = [
   { feature: "history", registrar: registerHistoryMcpTools, toolNames: HISTORY_TOOL_NAMES },
+  {
+    feature: "bot-messaging",
+    registrar: registerBotMessagingMcpTools,
+    toolNames: BOT_MESSAGING_TOOL_NAMES,
+  },
   {
     feature: "known-users",
     registrar: registerKnownUsersMcpTools,

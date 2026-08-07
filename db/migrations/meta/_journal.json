@@ -337,6 +337,13 @@
       "when": 1786104879326,
       "tag": "0047_bouncy_ink",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1786120370228,
+      "tag": "0048_dazzling_chamber",
+      "breakpoints": true
     }
   ]
 }

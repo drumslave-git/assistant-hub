@@ -32,6 +32,7 @@ import {
 } from "@/features/bot-messaging/server/service";
 import { registerRunAck } from "@/features/browser-agent/server/ack";
 import { extractMessageUrls } from "@/features/browser-agent/urls";
+import { pokeMessageIndexing } from "@/features/history/server/index-scheduler";
 import {
   applyMessageEdit,
   composeCurrentTurn,
@@ -350,6 +351,14 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
    * awaits the match before generating, so it is settled before any tool runs.
    */
   let ruleAuthorityUserId: string | null = null;
+  /**
+   * Which message this turn's reply is attached to. Defaults to the one being
+   * answered; the `reply_to_message` tool moves it to an earlier message when the
+   * answer is about that message ("here it is" landing under the photo somebody
+   * asked for). Scoped to this one message's collaborators, like the authority
+   * above — never module state.
+   */
+  let replyTargetMessageId = currentMessageId;
   /** A matched `always` rule can open a turn nobody addressed the bot in. */
   const canOpenTurn = alwaysRules.length > 0;
 
@@ -508,7 +517,11 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           chatId,
           telegramMessageId: input.telegramMessageId,
           content: input.content,
-          replyToMessageId: input.replyToMessageId,
+          // Where the reply actually landed, which is the message being answered
+          // unless a tool aimed it elsewhere. The service passes the incoming id
+          // (it does not know about retargeting), and a mirror that disagreed
+          // with Telegram would mislead every later read of the thread.
+          replyToMessageId: replyTargetMessageId,
         });
       } finally {
         // After the mirror write (so a stale-on-arrival ack soft-deletes the
@@ -571,6 +584,11 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             messageUrls: extractMessageUrls(messageText),
             threadId,
             collectImage,
+            // Lets a tool aim the reply at an earlier message. Delivery-only —
+            // the answer itself is still whatever the model writes.
+            setReplyTarget: (telegramMessageId) => {
+              replyTargetMessageId = telegramMessageId;
+            },
             onBrowserRunEnqueued: (runId) => enqueuedBrowserRuns.push(runId),
           },
           () =>
@@ -700,7 +718,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         : undefined,
     async sendReply(text: string) {
       return transport.sendReply(text, {
-        replyToMessageId: currentMessageId,
+        replyToMessageId: replyTargetMessageId,
         // A turn that enqueued a browsing run replies only with an "on it"
         // acknowledgement — no ping; the run's own report is the notification.
         silent: enqueuedBrowserRuns.length > 0,
@@ -719,7 +737,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           if (audio) {
             try {
               const sent = await transport.sendVoice(audio, {
-                replyToMessageId: currentMessageId,
+                replyToMessageId: replyTargetMessageId,
                 ...(threadId != null ? { threadId } : {}),
               });
               return { messageId: sent.messageId, asVoice: true };
@@ -728,7 +746,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             }
           }
           const sent = await transport.sendReply(text, {
-            replyToMessageId: currentMessageId,
+            replyToMessageId: replyTargetMessageId,
             silent: enqueuedBrowserRuns.length > 0,
           });
           return { messageId: sent.messageId, asVoice: false };
@@ -750,9 +768,10 @@ export async function processUpdate(
 ): Promise<HandleOutcome> {
   const message = update.message;
 
-  // Live traffic: push the idle vision-backfill run out and yield any batch in
-  // flight, so backfill only ever runs while the bot is quiet.
+  // Live traffic: push the idle background runs out and yield any batch in
+  // flight, so they only ever run while the bot is quiet.
   pokeVisionBackfill();
+  pokeMessageIndexing();
 
   // Remember every human sender + mirror every human message (addressed or not),
   // so the operator sees who talks to the bot and the history window has the full

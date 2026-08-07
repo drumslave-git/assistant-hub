@@ -54,6 +54,22 @@ export interface McpToolContext {
    */
   collectImage?: (base64: string) => void;
   /**
+   * Aims this turn's reply at an earlier message instead of the one being
+   * answered. Set by the tool that lets the bot point at something it found ("here
+   * it is" landing under the photo somebody asked for), so the answer arrives as a
+   * Telegram reply to *that* message and taps through to it.
+   *
+   * A sink rather than a tool-result field, for the same reason `collectImage` is
+   * one: this changes how the pipeline *delivers* the turn, which is not something
+   * the model's own answer text can carry. The pipeline validates nothing here —
+   * the tool has already checked the id belongs to this chat, and the delivery
+   * falls back to the triggering message if Telegram refuses the target.
+   *
+   * Absent when the turn has no reply to aim (e.g. a scheduled-task fire). A tool
+   * must treat that as "cannot point at a message here" and say so.
+   */
+  setReplyTarget?: (telegramMessageId: number) => void;
+  /**
    * Notifies the turn that `browse_web` enqueued a background browsing run.
    * The reply pipeline uses it to treat this turn's reply as a transient
    * acknowledgement: delivered silently, and deleted once the run posts its own

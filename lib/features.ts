@@ -67,6 +67,16 @@ export const FEATURES = {
     relatedIdsKey: "chat_summaries",
     path: "/history",
   },
+  // Split from `history` for the same reason `history-summaries` is: the indexing
+  // job runs continuously in the background and would otherwise bury the handful
+  // of traces an operator actually looks for under "what did history do today".
+  "history-index": {
+    id: "history-index",
+    label: "History search index",
+    realtimeTopic: "history",
+    relatedIdsKey: "chat_message_search",
+    path: "/history",
+  },
   "known-users": {
     id: "known-users",
     label: "Users",

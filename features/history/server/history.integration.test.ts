@@ -4,11 +4,8 @@ import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { listTraces, startTrace } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { TRANSCRIPT_PREAMBLE } from "./format";
-import {
-  getChatMessagesByTelegramIds,
-  getChatMessagesInRange,
-  searchChatMessages,
-} from "./repository";
+import { getChatMessagesByTelegramIds, getChatMessagesInRange } from "./repository";
+import { searchChatMessagesHybrid } from "./search-repository";
 import {
   applyMessageEdit,
   composeCurrentTurn,
@@ -388,8 +385,16 @@ describe("getHistoryOverview", () => {
   });
 });
 
-describe("searchChatMessages", () => {
-  it("matches content case-insensitively, excludes deleted, and caps at the limit", async () => {
+describe("searchChatMessagesHybrid", () => {
+  /** Hits in message order — the fused result is ranked, not chronological. */
+  const inOrder = (hits: { telegramMessageId: number; content: string }[]) =>
+    [...hits].sort((a, b) => a.telegramMessageId - b.telegramMessageId).map((h) => h.content);
+
+  /** Lexical-only search: the shape when no embedding model is configured. */
+  const search = (chatId: string, query: string, limit: number) =>
+    searchChatMessagesHybrid(ctx.db, { chatId, queryText: query, queryVector: null, limit });
+
+  it("matches content case-insensitively, excludes other chats, and caps at the limit", async () => {
     await recordIncomingMessage(
       { chatId: "5", telegramMessageId: 1, userId: "100", content: "I love Pizza", sentAt: EARLIER_TODAY },
       ctx.db,
@@ -408,10 +413,10 @@ describe("searchChatMessages", () => {
       ctx.db,
     );
 
-    const hits = await searchChatMessages(ctx.db, "5", "pizza", 50);
-    expect(hits.map((h) => h.content)).toEqual(["I love Pizza", "pizza is great"]);
+    const hits = await search("5", "pizza", 50);
+    expect(inOrder(hits)).toEqual(["I love Pizza", "pizza is great"]);
 
-    const capped = await searchChatMessages(ctx.db, "5", "pizza", 1);
+    const capped = await search("5", "pizza", 1);
     expect(capped).toHaveLength(1);
   });
 
@@ -424,8 +429,8 @@ describe("searchChatMessages", () => {
       { chatId: "5", telegramMessageId: 2, userId: "100", content: "no percent here", sentAt: EARLIER_TODAY },
       ctx.db,
     );
-    const hits = await searchChatMessages(ctx.db, "5", "50%", 50);
-    expect(hits.map((h) => h.content)).toEqual(["discount 50% today"]);
+    const hits = await search("5", "50%", 50);
+    expect(inOrder(hits)).toEqual(["discount 50% today"]);
   });
 });
 

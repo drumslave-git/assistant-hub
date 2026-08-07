@@ -308,7 +308,16 @@ function grammyTransport(ctx: Context): ReplyTransport {
   return {
     async sendReply(text, opts) {
       const params = {
-        reply_parameters: { message_id: opts.replyToMessageId },
+        // `allow_sending_without_reply` matters because the target is no longer
+        // always the message we are answering: a turn can aim its reply at an
+        // older message it found. Telegram rejects the whole send when the target
+        // is gone (deleted, or beyond what it will quote), and losing the answer
+        // to save the pointer is the wrong trade — without the flag, a stale
+        // target costs the user their reply.
+        reply_parameters: {
+          message_id: opts.replyToMessageId,
+          allow_sending_without_reply: true,
+        },
         ...(opts.silent ? { disable_notification: true } : {}),
       };
       try {
@@ -350,7 +359,12 @@ function grammyTransport(ctx: Context): ReplyTransport {
         String(ctx.chat!.id),
         new InputFile(Buffer.from(voice.base64, "base64"), voice.filename),
         {
-          reply_parameters: { message_id: opts.replyToMessageId },
+          // Same reasoning as the text reply above: the voice answer must arrive
+          // even when its reply target no longer exists.
+          reply_parameters: {
+            message_id: opts.replyToMessageId,
+            allow_sending_without_reply: true,
+          },
           ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
         },
       );

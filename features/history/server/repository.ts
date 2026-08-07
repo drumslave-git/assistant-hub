@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lt, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { chatMessages, type ChatMessageRow } from "@/db/schema";
@@ -283,38 +283,6 @@ export async function getChatMessagesByTelegramIds(
       ),
     )
     .orderBy(asc(chatMessages.id));
-  return rows.map(mapRow);
-}
-
-/** Escape LIKE metacharacters so a query term matches literally. */
-function escapeLike(term: string): string {
-  return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
-
-/**
- * Non-deleted messages in a chat whose content matches `query` (case-insensitive
- * substring), oldest first, capped at `limit`. Backs the `history_search` MCP
- * tool — a deeper-than-today lookup the model can request when the current-day
- * window is not enough.
- */
-export async function searchChatMessages(
-  db: DrizzleDb,
-  chatId: string,
-  query: string,
-  limit: number,
-): Promise<ChatMessageRecord[]> {
-  const rows = await db
-    .select()
-    .from(chatMessages)
-    .where(
-      and(
-        eq(chatMessages.chatId, chatId),
-        isNull(chatMessages.deletedAt),
-        ilike(chatMessages.content, `%${escapeLike(query)}%`),
-      ),
-    )
-    .orderBy(asc(chatMessages.id))
-    .limit(limit);
   return rows.map(mapRow);
 }
 

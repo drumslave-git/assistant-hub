@@ -138,10 +138,17 @@ name ≤64 chars, prompt ≤32 000.
 | --- | --- | --- | --- |
 | `GET` | `/api/history/summaries` | — | `SummaryJobInfo` |
 | `POST` | `/api/history/summaries/run` | — | `SummaryJobInfo` immediately (fire-and-forget) |
+| `GET` | `/api/history/search-index` | — | `SearchIndexStatus` |
+| `POST` | `/api/history/search-index` | — | `SearchIndexStatus` immediately (fire-and-forget) |
+| `DELETE` | `/api/history/search-index` | — | `SearchIndexStatus` + `{ cleared }` |
 | `GET` | `/api/history/export` | `?chatId=` (optional) | A CSV attachment: `history-<scope>.csv` |
 | `POST` | `/api/history/import` | `{ csv, mapping, delimiter? }` | `ImportResult` |
 
 `SummaryJobInfo` = `DailyJobInfoBase` + `{ pendingDays, embeddingsConfigured }`.
+
+`SearchIndexStatus` = `{ status: IdleJobStatus, pending }`. `DELETE` empties the
+index and re-arms a rebuild — the recovery path after configuring an embedding
+model, since rows indexed without one keep their null vector otherwise.
 
 `ImportResult` = `{ totalRows, imported, skippedDuplicates, errors: [{ line, message }], chatIds }`.
 Import is idempotent — rows whose `(chatId, telegramMessageId)` already exists are
@@ -299,6 +306,9 @@ PUT    /api/personalities/active
 
 GET    /api/history/summaries
 POST   /api/history/summaries/run
+GET    /api/history/search-index
+POST   /api/history/search-index
+DELETE /api/history/search-index
 GET    /api/history/export
 POST   /api/history/import
 

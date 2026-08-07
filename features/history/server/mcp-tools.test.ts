@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { buildResult, SELF_AUTHORED_ONLY_NOTE } from "./mcp-tools";
+import { buildResult, mergeMatches, SELF_AUTHORED_ONLY_NOTE } from "./mcp-tools";
 import type { ChatMessageRecord } from "./repository";
+import type { MessageSearchMatch } from "./search-repository";
 
 /**
  * The history tools' result format, pinned on the one property grounding depends
@@ -89,8 +90,74 @@ describe("buildResult", () => {
           role: "assistant",
           content: "hello",
           at: "2026-07-28T10:00:00.000Z",
+          author: "you (the bot)",
         },
       ],
     });
+  });
+
+  it("names the person when the caller resolved labels", () => {
+    const labels = new Map([["42", "Bea"]]);
+    const text = textOf(buildResult([record({ content: "look at this" })], { labels }));
+    // "find the photo Bea sent" is unanswerable if every hit reads `a participant`.
+    expect(text).toContain("Bea: look at this");
+  });
+
+  it("still anonymizes a participant with no resolved label", () => {
+    const text = textOf(buildResult([record()], { labels: new Map() }));
+    expect(text).toContain("a participant: hello");
+  });
+
+  it("appends the media annotation, so an uncaptioned photo reads as what it shows", () => {
+    const mediaSuffixes = new Map([[11, " [photo: a weathered blue front door]"]]);
+    const result = buildResult([record({ content: "" })], { mediaSuffixes });
+    expect(textOf(result)).toContain("[photo: a weathered blue front door]");
+    // The structured payload carries the same text — a machine consumer reading
+    // only `content` would otherwise see an empty string for the whole hit.
+    expect(result.structuredContent.messages[0].content).toBe(
+      " [photo: a weathered blue front door]",
+    );
+  });
+
+  it("still calls out a self-authored-only result when the hits carry media", () => {
+    const text = textOf(
+      buildResult([record({ role: "assistant", userId: null, content: "" })], {
+        mediaSuffixes: new Map([[11, " [photo: a chart]"]]),
+      }),
+    );
+    expect(text).toContain(SELF_AUTHORED_ONLY_NOTE);
+  });
+});
+
+describe("mergeMatches", () => {
+  function match(over: Partial<MessageSearchMatch> & { id: number; score: number }): MessageSearchMatch {
+    return {
+      ...record({ id: over.id, telegramMessageId: over.id + 10 }),
+      indexedContent: null,
+      mediaKind: null,
+      ...over,
+    };
+  }
+
+  it("keeps a message's best score across phrasings rather than its last", () => {
+    const merged = mergeMatches(
+      [
+        [match({ id: 1, score: 0.1 })],
+        [match({ id: 1, score: 0.9 })],
+      ],
+      10,
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].score).toBe(0.9);
+  });
+
+  it("selects by relevance but returns in message order", () => {
+    // 3 is the weakest hit and must be dropped by the cap; the two that survive
+    // come back oldest-first, so the transcript reads forwards.
+    const merged = mergeMatches(
+      [[match({ id: 3, score: 0.1 }), match({ id: 2, score: 0.5 }), match({ id: 1, score: 0.9 })]],
+      2,
+    );
+    expect(merged.map((m) => m.id)).toEqual([1, 2]);
   });
 });

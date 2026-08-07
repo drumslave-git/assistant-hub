@@ -28,6 +28,7 @@ known_users ◄──┬── group_members ──► known_groups
                └── user_memories
 
 chat_messages ── (chat_id, telegram_message_id) ─┬─ message_media ──► media_blobs
+                                                 ├─ chat_message_search (search projection)
                                                  └─ (mirrors every message)
 chat_summaries        ◄── chat_summary_days        (per-day processing markers)
 memory_extraction_days                             (per-day processing markers)
@@ -160,6 +161,31 @@ memory extraction and the analytics volume charts all read.
 - `chat_messages_content_trgm_idx` — GIN trigram index serving
   `history_search`'s arbitrary-substring `ILIKE`. Without it every search is a
   sequential scan of the chat's full mirror.
+
+### `chat_message_search`
+
+The searchable projection of one mirrored message — what `history_search` looks
+through, as opposed to what the chat literally contains. Built and embedded by the
+[search-index job](background-jobs.md#message-search-index).
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `chat_id`, `telegram_message_id` | text + bigint, composite PK | FK to `chat_messages`, `on delete cascade` |
+| `content` | text NOT NULL | The message's own text **plus its media annotation** — the exact string that was embedded |
+| `embedding` | vector(1024) | Null when no embedding model is configured |
+| `indexed_at` | timestamptz NOT NULL | Staleness clock: compared against the message's `edited_at` and its media's `described_at` |
+
+Two reasons it is a table rather than columns on `chat_messages`. A picture is not
+its caption: an uncaptioned photo's message row holds `''`, and what it *shows*
+lives in `message_media.description` — joining the two here is what makes a photo,
+video, GIF, sticker or voice note searchable at all. And the vector is wide: every
+reply reads the 24-hour window with a `select *` over `chat_messages`, so a 1024-
+dimensional column there would drag ~4 KB through the hottest read in the app for a
+background job's benefit. Same reasoning as `media_blobs`.
+
+Indexes: HNSW cosine on `embedding`, plus GIN on `to_tsvector('simple', content)`
+and a `gin_trgm_ops` index on `content`, both added directly in the migration —
+one per half of the hybrid search.
 
 ### `chat_summaries`
 

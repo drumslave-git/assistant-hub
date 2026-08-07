@@ -4,14 +4,24 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { getDb } from "@/db/drizzle";
+import { formatKnownUserLabel } from "@/features/known-users/format";
+import { getKnownUsersByIds } from "@/features/known-users/server/repository";
+import { resolveChatUserByReference } from "@/features/known-users/server/service";
+import { getEmbeddingRuntime } from "@/features/settings/server/service";
+import { getMediaSuffixesForMessages } from "@/features/vision/server/service";
+import { MEDIA_KINDS, type MediaKind } from "@/features/vision/types";
+import { embedOne } from "@/server/llm/embeddings";
 import { getToolContext } from "@/server/mcp/context";
 import { recallChatTopics } from "./recall";
 import {
   getChatMessagesByTelegramIds,
   getChatMessagesInRange,
-  searchChatMessages,
   type ChatMessageRecord,
 } from "./repository";
+import {
+  searchChatMessagesHybrid,
+  type MessageSearchMatch,
+} from "./search-repository";
 
 /**
  * History exposed as MCP tools — deeper-than-the-window lookups the model can
@@ -62,6 +72,7 @@ const historyOutputSchema = {
       role: z.string(),
       content: z.string(),
       at: z.string(),
+      author: z.string(),
     }),
   ),
 };
@@ -71,15 +82,28 @@ const historyOutputSchema = {
  * the API's message roles, not the authorship question the model has to answer
  * ("did anyone here actually say this, or is this just me?"), and a result that
  * only says `assistant` reads as ordinary history.
+ *
+ * `labels` names the human when the caller resolved one. Without it a participant
+ * stays anonymous — the historical default, and still the right answer for the
+ * lookups whose job is only to dereference an id. A search that can be *filtered*
+ * by person must name people, though: "find the photo of Bea's door" is
+ * unanswerable if every hit reads `a participant`.
  */
-function authorOf(record: ChatMessageRecord): string {
-  return record.role === "assistant" ? "you (the bot)" : "a participant";
+function authorOf(record: ChatMessageRecord, labels?: Map<string, string>): string {
+  if (record.role === "assistant") return "you (the bot)";
+  const label = record.userId ? labels?.get(record.userId) : undefined;
+  return label ?? "a participant";
 }
 
 /** One message rendered as an id-anchored transcript line. */
-function formatLine(record: ChatMessageRecord): string {
+function formatLine(
+  record: ChatMessageRecord,
+  extras?: { labels?: Map<string, string>; mediaSuffixes?: Map<number, string> },
+): string {
   const reply = record.replyToMessageId != null ? ` [reply to #${record.replyToMessageId}]` : "";
-  return `[#${record.telegramMessageId}] [${record.sentAt}] ${authorOf(record)}${reply}: ${record.content}`;
+  const suffix = extras?.mediaSuffixes?.get(record.telegramMessageId) ?? "";
+  const author = authorOf(record, extras?.labels);
+  return `[#${record.telegramMessageId}] [${record.sentAt}] ${author}${reply}: ${record.content}${suffix}`;
 }
 
 /**
@@ -100,16 +124,22 @@ export const SELF_AUTHORED_ONLY_NOTE =
   "again is not finding a source. Treat this as not found.";
 
 /** Build the tool result (text transcript + structured messages) from records. */
-export function buildResult(records: ChatMessageRecord[]) {
+export function buildResult(
+  records: ChatMessageRecord[],
+  extras?: { labels?: Map<string, string>; mediaSuffixes?: Map<number, string> },
+) {
   const messages = records.map((r) => ({
     id: r.telegramMessageId,
     replyTo: r.replyToMessageId,
     role: r.role,
-    content: r.content,
+    content: `${r.content}${extras?.mediaSuffixes?.get(r.telegramMessageId) ?? ""}`,
     at: r.sentAt,
+    author: authorOf(r, extras?.labels),
   }));
   const transcript =
-    records.length === 0 ? "(no matching messages)" : records.map(formatLine).join("\n");
+    records.length === 0
+      ? "(no matching messages)"
+      : records.map((record) => formatLine(record, extras)).join("\n");
   const selfAuthoredOnly =
     records.length > 0 && records.every((record) => record.role === "assistant");
   const text = selfAuthoredOnly ? `${transcript}\n\n${SELF_AUTHORED_ONLY_NOTE}` : transcript;
@@ -119,14 +149,93 @@ export function buildResult(records: ChatMessageRecord[]) {
   };
 }
 
-/** Merge results from several queries into one de-duplicated, ordered list. */
-function mergeById(batches: ChatMessageRecord[][]): ChatMessageRecord[] {
-  const byId = new Map<number, ChatMessageRecord>();
+/**
+ * Merge the hits of several queries, keeping each message's best score — a
+ * message that ranks under two phrasings should not be penalized for it — then
+ * return the top `limit` in chronological order.
+ *
+ * Ranked while merging, chronological when rendered: relevance decides *which*
+ * messages come back, but a transcript that jumps around in time is hard to read
+ * and its `[reply to #…]` anchors stop lining up with anything above them.
+ */
+export function mergeMatches(
+  batches: MessageSearchMatch[][],
+  limit: number,
+): MessageSearchMatch[] {
+  const best = new Map<number, MessageSearchMatch>();
   for (const batch of batches) {
-    for (const record of batch) byId.set(record.id, record);
+    for (const match of batch) {
+      const existing = best.get(match.id);
+      if (!existing || match.score > existing.score) best.set(match.id, match);
+    }
   }
-  return [...byId.values()].sort((a, b) => a.id - b.id);
+  return [...best.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .sort((a, b) => a.id - b.id);
 }
+
+/** Resolve the speaker labels for a set of hits, so each line names its author. */
+async function resolveLabels(records: ChatMessageRecord[]): Promise<Map<string, string>> {
+  const userIds = [...new Set(records.map((r) => r.userId).filter((id): id is string => !!id))];
+  if (userIds.length === 0) return new Map();
+  const users = await getKnownUsersByIds(getDb(), userIds);
+  return new Map(users.map((user) => [user.userId, formatKnownUserLabel(user)]));
+}
+
+/**
+ * Turn the model's `author` reference into the ids to filter by, or an error
+ * message to hand back instead of searching.
+ *
+ * A miss must not silently widen the search. "Find Bea's photo" answered with
+ * everyone's photos is worse than an error: the model has no way to tell that the
+ * filter was dropped, and the first plausible hit becomes Bea's photo in the
+ * reply.
+ */
+async function resolveAuthorFilter(
+  chatId: string,
+  author: string,
+): Promise<{ ok: true; userIds: string[] } | { ok: false; error: string }> {
+  const resolved = await resolveChatUserByReference(chatId, author);
+  if (resolved.status === "matched") return { ok: true, userIds: [resolved.user.userId] };
+  if (resolved.status === "ambiguous") {
+    return {
+      ok: false,
+      error:
+        `"${author}" matches ${resolved.count} people in this chat — search again with a more ` +
+        "specific name (for example their @username), or drop the author filter.",
+    };
+  }
+  return {
+    ok: false,
+    error:
+      `Nobody in this chat goes by "${author}", so there are no messages of theirs to search. ` +
+      "Check the name against the conversation, or search without the author filter.",
+  };
+}
+
+/**
+ * What the search tool tells the model about itself.
+ *
+ * Written to fix one specific blind spot: a picture is not its caption. Most
+ * photos arrive with no text at all, and a model that thinks of search as "look
+ * for these words in what people typed" will not try to find one — it will say it
+ * cannot see old images. So the description leads with the fact that pictures,
+ * clips and voice notes are searchable by their *content*, and says plainly that
+ * the query does not have to be anyone's wording.
+ */
+const HISTORY_SEARCH_DESCRIPTION =
+  "Search this whole conversation's stored history — every message ever sent here, not just " +
+  "the recent ones you are shown. " +
+  "Searches by meaning as well as by wording, so describe what you are looking for in plain " +
+  "words; it does not have to match how anyone phrased it, or even be the same language. " +
+  "Photos, videos, GIFs, stickers and voice messages are searched by what is IN them: a " +
+  "picture of a door is found by searching for a door, even when it was posted with no caption " +
+  "at all. This is how to find a specific image, clip or recording somebody sent earlier. " +
+  "Narrow by person with 'author' and to pictures/clips with 'media_kinds' when the request " +
+  "names one (\"the photo Bea sent\", \"that video from last week\"). " +
+  "Each result is anchored as #<id> — that id is how a specific message is referred to " +
+  "afterwards, so keep it if the answer is about one particular message.";
 
 /** Register the history MCP tools on the shared server. */
 export function registerHistoryMcpTools(server: McpServer): void {
@@ -134,22 +243,37 @@ export function registerHistoryMcpTools(server: McpServer): void {
     HISTORY_SEARCH_TOOL,
     {
       title: "Search conversation history",
-      description:
-        "Search this conversation's full stored history for messages containing the given " +
-        "text (case-insensitive). Use it to recall things said earlier, since only the last " +
-        "24 hours of messages are provided automatically. Pass one query string, or several " +
-        "to search multiple phrasings at once.",
+      description: HISTORY_SEARCH_DESCRIPTION,
       inputSchema: {
         query: z
           .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
-          .describe("Text to look for — a single string, or an array of strings"),
+          .describe(
+            "What to look for — a single string, or an array of phrasings searched at once. " +
+              "Describe the thing in plain words; it does not have to be the wording anyone used.",
+          ),
+        author: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Only messages sent by this person — a first name, @username, or nickname used in " +
+              "this chat. Omit to search everyone's messages.",
+          ),
+        media_kinds: z
+          .array(z.enum(MEDIA_KINDS))
+          .min(1)
+          .optional()
+          .describe(
+            "Only messages carrying media of these kinds. Use it when the thing being looked " +
+              "for is a picture or a clip rather than something written. Omit for any message.",
+          ),
         limit: z
           .number()
           .int()
           .min(1)
           .max(SEARCH_LIMIT_MAX)
           .default(SEARCH_LIMIT_DEFAULT)
-          .describe(`Max matches per query (max ${SEARCH_LIMIT_MAX})`),
+          .describe(`Max matches to return (max ${SEARCH_LIMIT_MAX})`),
       },
       outputSchema: historyOutputSchema,
       annotations: {
@@ -159,15 +283,56 @@ export function registerHistoryMcpTools(server: McpServer): void {
         openWorldHint: false,
       },
     },
-    async ({ query, limit }) => {
+    async ({ query, author, media_kinds, limit }) => {
       const { chatId } = getToolContext();
       const queries = Array.isArray(query) ? query : [query];
       const cap = limit ?? SEARCH_LIMIT_DEFAULT;
       const db = getDb();
+
+      let authorUserIds: string[] | undefined;
+      if (author) {
+        const resolved = await resolveAuthorFilter(chatId, author);
+        if (!resolved.ok) {
+          return {
+            content: [{ type: "text" as const, text: resolved.error }],
+            isError: true,
+          };
+        }
+        authorUserIds = resolved.userIds;
+      }
+
+      // Embeddings are optional. Without a configured model the search runs on
+      // its lexical halves alone — worse recall, but it still works, which beats
+      // telling the model "unavailable" and having it claim it cannot look.
+      const embedding = await getEmbeddingRuntime().catch(() => null);
+      const filters = {
+        ...(authorUserIds ? { authorUserIds } : {}),
+        ...(media_kinds ? { mediaKinds: media_kinds as MediaKind[] } : {}),
+      };
+
       const batches = await Promise.all(
-        queries.map((q) => searchChatMessages(db, chatId, q, cap)),
+        queries.map(async (q) => {
+          const vector = embedding ? await embedOne(embedding, q).catch(() => null) : null;
+          return searchChatMessagesHybrid(db, {
+            chatId,
+            queryText: q,
+            queryVector: vector,
+            limit: cap,
+            filters,
+          });
+        }),
       );
-      return buildResult(mergeById(batches));
+
+      const matches = mergeMatches(batches, cap);
+      const [labels, mediaSuffixes] = await Promise.all([
+        resolveLabels(matches),
+        getMediaSuffixesForMessages(
+          chatId,
+          matches.map((m) => m.telegramMessageId),
+          db,
+        ),
+      ]);
+      return buildResult(matches, { labels, mediaSuffixes });
     },
   );
 

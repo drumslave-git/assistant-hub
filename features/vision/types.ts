@@ -8,7 +8,17 @@
  * (described by the vision model) plus `voice` (transcribed by the audio-capable
  * chat model — the transcript plays the role of the description).
  */
-export type MediaKind = "photo" | "sticker" | "image_document" | "animation" | "video" | "voice";
+export const MEDIA_KINDS = [
+  "photo",
+  "sticker",
+  "image_document",
+  "animation",
+  "video",
+  "voice",
+] as const;
+
+/** The union, derived from the list so a new kind cannot be added to only one. */
+export type MediaKind = (typeof MEDIA_KINDS)[number];
 
 /** Lifecycle status of a stored media row. */
 export type MediaStatus = "pending" | "described" | "unavailable";

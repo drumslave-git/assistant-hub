@@ -264,7 +264,7 @@ the task was cancelled.) The result itself still reaches the model unchanged.
 
 ## The tool catalog
 
-25 tools across 8 owning features.
+26 tools across 9 owning features.
 
 ### History — `mcp-tools-history`
 
@@ -274,10 +274,33 @@ query words it), while recall searches by meaning.
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `history_search` | `query` (string or array), `limit` | Case-insensitive substring search over this chat's full stored history |
+| `history_search` | `query` (string or array), `author?`, `media_kinds?`, `limit` | Hybrid search over this chat's full stored history — semantic, full-text and substring, fused by reciprocal rank. Finds media by **what it shows**, not just its caption |
 | `history_get_in_range` | `from`, `to` (ISO-8601) | This chat's messages in a range, oldest first |
 | `history_get_by_message_ids` | `ids` (array) | Read messages referenced as `#<id>` in the transcript. Missing ids are omitted |
 | `history_recall_topics` | `query` (string or array), `limit` | Search past daily topic summaries by meaning; returns date, summary and the message ids to read the originals |
+
+`history_search` reads `chat_message_search` — a projection of each message
+holding its own text **plus its media annotation**, embedded for semantic search
+(see [data-model](./data-model.md) and
+[background jobs](./background-jobs.md#message-search-index)). That is what makes
+"find the photo of the front door" answerable: an uncaptioned photo's message row
+holds `''`, and only the projection carries what the picture shows. Hits name
+their author, so the `author` filter has something to be checked against; the
+bot-vs-participant distinction and the self-authored-only warning are unchanged.
+
+### Bot messaging — `mcp-tools-bot-messaging`
+
+| Tool | Input | Purpose |
+| --- | --- | --- |
+| `reply_to_message` | `message_id` | Attach this turn's reply to an earlier message in this chat instead of the one being answered |
+
+The one tool that changes **delivery** rather than doing work. Answering "where's
+that photo of the door?" under the question leaves the asker to go looking; a
+reply aimed at the found message quotes it and taps through to it. It sends
+nothing itself — the turn still produces exactly one message — and it validates
+the id against this chat's mirror first, because Telegram refuses a send whose
+reply target it cannot find. Deliveries pass `allow_sending_without_reply`, so a
+target that has since been deleted costs the pointer, not the answer.
 
 ### Memory — `mcp-tools-memory`
 

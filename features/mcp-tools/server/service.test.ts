@@ -6,6 +6,7 @@ import {
   HISTORY_RECALL_TOOL,
   HISTORY_SEARCH_TOOL,
 } from "@/features/history/server/mcp-tools";
+import { REPLY_TO_MESSAGE_TOOL } from "@/features/bot-messaging/server/mcp-tools";
 import { BROWSE_WEB_TOOL } from "@/features/browser-agent/server/mcp-tools";
 import { CHAT_RULES_TOOL_NAMES } from "@/features/chat-rules/server/mcp-tools";
 import { IMAGE_GENERATE_TOOL } from "@/features/image-gen/server/mcp-tools";
@@ -26,6 +27,7 @@ const ALL_TOOLS = [
   HISTORY_GET_IN_RANGE_TOOL,
   HISTORY_GET_BY_MESSAGE_IDS_TOOL,
   HISTORY_RECALL_TOOL,
+  REPLY_TO_MESSAGE_TOOL,
   UPDATE_USER_ALIASES_TOOL,
   ...SCHEDULED_TASKS_TOOL_NAMES,
   ...SPECIALISTS_TOOL_NAMES,
@@ -49,6 +51,7 @@ describe("getToolsView", () => {
     // The owning feature is what gives the tool its `mcp-tools-image-gen` Debug scope.
     expect(featureOf(IMAGE_GENERATE_TOOL)).toBe("image-gen");
     expect(featureOf(BROWSE_WEB_TOOL)).toBe("browser-agent");
+    expect(featureOf(REPLY_TO_MESSAGE_TOOL)).toBe("bot-messaging");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });
 });

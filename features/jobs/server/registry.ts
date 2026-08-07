@@ -1,11 +1,14 @@
 import "server-only";
 
+import { getDb } from "@/db/drizzle";
 import type { AnalyticsJobInfo } from "@/features/analytics/types";
 import { getAnalyticsJobInfo } from "@/features/analytics/server/scheduler";
 import {
   getYtDlpJobInfo,
   type YtDlpJobInfo,
 } from "@/features/browser-agent/server/ytdlp-scheduler";
+import { getMessageIndexingStatus } from "@/features/history/server/index-scheduler";
+import { countMessagesNeedingIndex } from "@/features/history/server/search-repository";
 import { getSummaryJobInfo, type SummaryJobInfo } from "@/features/history/server/summary-scheduler";
 import { getMemoryJobInfo, type MemoryJobInfo } from "@/features/memory/server/scheduler";
 import {
@@ -25,12 +28,12 @@ import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
 import type { JobView } from "../types";
 
 /**
- * The one place that knows all seven background jobs — the reader half of the
+ * The one place that knows all eight background jobs — the reader half of the
  * consolidated `/jobs` dashboard. It calls each feature's existing `getXJobInfo`
  * getter and normalizes the two different scheduler status shapes (idle vs
  * interval, plus each job's own backlog/pause state) into a single {@link JobView}
  * the board renders uniformly. This coupling mirrors `register-node.ts`, which is
- * likewise the single place that starts all seven.
+ * likewise the single place that starts all eight.
  *
  * The per-job mappers are pure and exported so the normalization (activity
  * derivation, last-run passthrough, backlog, progress) is unit-testable without
@@ -79,6 +82,32 @@ export function visionJobView(status: IdleJobStatus, pendingMedia: number): JobV
     runDisabled: pendingMedia === 0,
     notice: null,
     backlog: pendingMedia > 0 ? { label: "media pending", count: pendingMedia } : null,
+    nextRunAt: status.nextRunAt,
+    lastRunAt: status.lastRunAt,
+    lastResult: status.lastSummary,
+    failed: status.lastError != null,
+    progress: status.progress,
+  };
+}
+
+/**
+ * Message search index — the other idle-debounced job. Its backlog counts
+ * messages whose searchable text is missing or out of date, which includes every
+ * photo still waiting for the vision backfill to say what it shows.
+ */
+export function messageIndexJobView(status: IdleJobStatus, pending: number): JobView {
+  return {
+    id: "history-index",
+    title: "Search index",
+    description:
+      "Indexes each message by what it says and what its media shows, so history can be " +
+      "searched by meaning. Runs while the bot is quiet.",
+    activity: status.phase,
+    href: "/history",
+    runEndpoint: "/api/history/search-index",
+    runDisabled: pending === 0,
+    notice: null,
+    backlog: pending > 0 ? { label: "messages pending", count: pending } : null,
     nextRunAt: status.nextRunAt,
     lastRunAt: status.lastRunAt,
     lastResult: status.lastSummary,
@@ -240,9 +269,10 @@ export function ytdlpJobView(info: YtDlpJobInfo | null): JobView {
  * so one failing job cannot blank the whole board.
  */
 export async function getAllJobs(): Promise<JobView[]> {
-  const [pendingMedia, tasks, selfImprovement, summary, memory, analytics, ytdlp] =
+  const [pendingMedia, pendingIndex, tasks, selfImprovement, summary, memory, analytics, ytdlp] =
     await Promise.all([
       getPendingMediaCount().catch(() => 0),
+      countMessagesNeedingIndex(getDb()).catch(() => 0),
       getTaskSchedulerInfo().catch(() => null),
       getSelfImprovementJobInfo().catch(() => null),
       getSummaryJobInfo().catch(() => null),
@@ -251,9 +281,11 @@ export async function getAllJobs(): Promise<JobView[]> {
       getYtDlpJobInfo().catch(() => null),
     ]);
   const vision = getVisionBackfillStatus();
+  const index = getMessageIndexingStatus();
 
   return [
     visionJobView(vision, pendingMedia),
+    messageIndexJobView(index, pendingIndex),
     taskJobView(tasks),
     summaryJobView(summary),
     memoryJobView(memory),

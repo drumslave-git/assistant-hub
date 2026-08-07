@@ -13,6 +13,10 @@ import {
   stopYtDlpUpdater,
 } from "@/features/browser-agent/server/ytdlp-scheduler";
 import {
+  startMessageIndexing,
+  stopMessageIndexing,
+} from "@/features/history/server/index-scheduler";
+import {
   startSummaryScheduler,
   stopSummaryScheduler,
 } from "@/features/history/server/summary-scheduler";
@@ -41,6 +45,7 @@ export function registerNode(): void {
     if (shuttingDown) return;
     shuttingDown = true;
     stopVisionBackfill();
+    stopMessageIndexing();
     stopTaskScheduler();
     stopSelfImprovementScheduler();
     stopSummaryScheduler();
@@ -70,6 +75,13 @@ export function registerNode(): void {
   // window; bot activity re-arms the idle wait thereafter. Independent of the bot
   // token — a run with no LLM configured settles as a no-op.
   startVisionBackfill();
+
+  // Start the in-process message search-indexing scheduler. It builds each
+  // message's searchable text (its own words plus what its photo/video/voice
+  // says) and embeds it, so `history_search` finds things by meaning. Runs on a
+  // longer idle debounce than the backfill above, since it wants that run's
+  // descriptions; with no embedding model configured it still indexes the text.
+  startMessageIndexing();
 
   // Start the periodic scheduled-tasks poller. It fires due tasks at their
   // wall-clock time (independent of bot activity); a tick with no LLM configured,

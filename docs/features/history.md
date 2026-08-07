@@ -97,13 +97,16 @@ not embedded, so semantic recall is unavailable. The job card says so.
 
 ## Tools
 
-Four MCP tools under `mcp-tools-history`. The chat is bound per turn, so a tool
+Four MCP tools under `mcp-tools-history`. (Pointing a reply *at* something they
+found is a separate tool owned by bot-messaging — see
+[llm-and-mcp](../architecture/llm-and-mcp.md#bot-messaging--mcp-tools-bot-messaging).)
+The chat is bound per turn, so a tool
 only ever reads the current conversation — the model does not pass (and cannot
 pick) a chat id.
 
 | Tool | Kind | Notes |
 | --- | --- | --- |
-| `history_search` | Literal | Substring, case-insensitive. Served by the trigram index |
+| `history_search` | Hybrid | Semantic + full text + substring over every message, media included. Filters by `author` and `media_kinds` |
 | `history_get_in_range` | Literal | ISO-8601 range, oldest first |
 | `history_get_by_message_ids` | Literal | Reads a `#<id>` referenced in the transcript; missing ids are omitted |
 | `history_recall_topics` | Semantic | Searches the daily summaries by meaning; returns date, summary and message ids |
@@ -112,6 +115,44 @@ The split is deliberate: the literal tools are exact but blind (they only find w
 was worded the way the query words it), while recall finds a months-old subject the
 chat phrased differently — and then hands back ids so the model reads what was
 actually said instead of trusting a summary's paraphrase.
+
+### How `history_search` finds a photo
+
+It searches the [search index](#search-index), not `chat_messages`, and fuses
+three pools by reciprocal rank (k=60, the same scheme `history_recall_topics`
+uses):
+
+| Pool | Finds | Blind to |
+| --- | --- | --- |
+| Vector, over the index's embedding | Paraphrase, another language, and **what a picture shows** | Exact rare tokens |
+| Full text, over the index's content | Names, error codes, exact tokens | Anything phrased differently |
+| Substring, over `chat_messages.content` | What was typed, including a message sent minutes ago | Media; anything not typed |
+
+The third pool is the tool's original behaviour and stays because it is the only
+one reading the mirror directly: a message sent since the last indexing run has no
+index row yet, and a search that could not find it would be a regression the other
+two would hide.
+
+Hits are ranked to decide *which* messages come back, then rendered
+chronologically — a transcript that jumps around in time is hard to read and its
+`[reply to #…]` anchors stop lining up. Each line names its author (resolved
+through known-users), which is what makes `author` a filter worth trusting: a
+reference that matches nobody, or matches several people, is an error result
+rather than a silently widened search.
+
+### Search index
+
+`chat_message_search` holds each message's searchable text — its own words **plus
+its media annotation** — and that text's embedding. Built by an idle background
+job; see [background jobs](../architecture/background-jobs.md#message-search-index)
+for the staleness rule and the rebuild endpoint.
+
+The point of it: an uncaptioned photo is a `chat_messages` row whose `content` is
+`''`. No lexical search over the mirror can ever find it, however it is phrased.
+What the picture shows lives in `message_media.description`, and joining the two
+into one indexed string is what makes "find the photo of the front door"
+answerable at all. The same applies to a video, a GIF, a sticker, and a voice
+message (whose transcript plays the role of the description).
 
 ## Dashboard
 

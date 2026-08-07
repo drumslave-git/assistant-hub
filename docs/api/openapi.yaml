@@ -720,6 +720,58 @@ paths:
                       data: { $ref: "#/components/schemas/SummaryJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/history/search-index:
+    get:
+      tags: [history]
+      summary: Message search-index job status
+      responses:
+        "200":
+          description: Scheduler status plus the indexing backlog
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/SearchIndexStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [history]
+      summary: Index messages now
+      description: |
+        Fire-and-forget — a backlog can take many embedding calls, so the snapshot
+        is returned immediately and progress arrives over the `history` SSE topic.
+      responses:
+        "200":
+          description: Status at the moment of triggering
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/SearchIndexStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [history]
+      summary: Rebuild the search index from scratch
+      description: |
+        Empties `chat_message_search` and arms a run. The recovery path after
+        configuring an embedding model: rows indexed without one are up to date by
+        the staleness rule and would otherwise keep a null vector forever. The
+        text is all still in the mirror, so nothing is lost — only re-derived.
+      responses:
+        "200":
+          description: Status after clearing, with the number of rows dropped
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/SearchIndexStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/history/export:
     get:
       tags: [history]
@@ -2148,6 +2200,20 @@ components:
               description: >
                 Where that binary comes from — the self-updating copy in `data/bin`,
                 whatever is on PATH (the image's pinned build), or nowhere.
+
+    SearchIndexStatus:
+      type: object
+      required: [status, pending]
+      properties:
+        status: { $ref: "#/components/schemas/IdleJobStatus" }
+        pending:
+          type: integer
+          description: |
+            Messages whose searchable text is missing or out of date — including
+            every photo still waiting for the vision backfill to say what it shows.
+        cleared:
+          type: integer
+          description: Index rows dropped by a rebuild (DELETE only).
 
     SummaryJobInfo:
       allOf:

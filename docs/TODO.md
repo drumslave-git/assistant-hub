@@ -28,6 +28,114 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Find a photo and reply to it (`done` pending production deploy + live verification, 2026-08-07)
+
+User request, 2026-08-07: *"userA: find the photo of userB's door → bot finds the
+original message with the photo and replies to that message 'here it is'."*
+Neither half was possible.
+
+`history_search` matched `chat_messages.content` only, so an uncaptioned photo —
+which is most of them — was invisible to every lookup the bot had; and the reply
+target was hard-wired to the message being answered, so there was no way to point
+at anything.
+
+Decisions taken with the user before implementing:
+
+- **Delivery**: retarget *this turn's* reply rather than sending a second message
+  or copying the photo back. One message, and it taps through to the original.
+- **Retrieval**: embeddings, over **every** message type — text, photos, videos,
+  GIFs, voice — not a keyword-only first cut.
+- **Tool shape**: extend `history_search`; no second lookup tool.
+
+### What shipped
+
+- `chat_message_search` (migration `0048_dazzling_chamber`, **applied to the dev
+  DB**) — each message's searchable text (its own words **plus** its media
+  annotation) and that text's `vector(1024)`. A table, not columns on
+  `chat_messages`: the reply path reads the 24h window with `select *`, and a 4 KB
+  vector on that row would be dragged through the hottest read in the app.
+- `features/history/server/index-messages.ts` + `index-scheduler.ts` — idle job,
+  90s debounce against the vision backfill's 45s so it runs *after* the describer
+  in the same quiet window. Due-scan compares `indexed_at` against the message's
+  `edited_at` and its media's `described_at`, which is what makes it self-healing:
+  a photo indexed as bare `[photo]` is re-indexed once the description lands.
+- `search-repository.ts` — hybrid search, three pools fused by RRF (k=60, same
+  scheme as `searchChatSummaries`): vector, full text, and the original substring
+  pool over `chat_messages` (kept because it is the only one that sees a message
+  sent since the last indexing run).
+- `history_search` — hybrid, plus `author` and `media_kinds` filters, and each hit
+  now names its author. The bot-vs-participant distinction and
+  `SELF_AUTHORED_ONLY_NOTE` are untouched; an unresolvable `author` is an **error
+  result**, never a silently widened search.
+- `features/bot-messaging/server/mcp-tools.ts` — `reply_to_message`, the first
+  bot-messaging tool. Validates the id against this chat's mirror, then moves the
+  turn's target through a new `setReplyTarget` context sink (same shape as
+  `collectImage`, and for the same reason: it changes *delivery*, which a tool
+  result cannot carry). The mirror records where the reply actually landed.
+- Telegram sends now pass `allow_sending_without_reply`, so a target deleted since
+  it was found costs the quote rather than the whole answer.
+- `/api/history/search-index` (GET/POST/DELETE) + a card on the Jobs board.
+
+### Two bugs the integration test caught that typechecking could not
+
+1. **`= any(${ids}::text[])` fails at runtime.** An array in a Drizzle `sql`
+   template expands to a comma-separated *parameter list*, not one array-typed
+   parameter, so Postgres got `'200'::text[]` and raised "malformed array
+   literal". `in (${ids})` is the form that works.
+2. **Raw `db.execute` returns timestamps as strings**, not the `Date` the query
+   builder hands back — the driver's type parsing is not applied to an untyped
+   statement. `row.sent_at.toISOString()` threw on every hit.
+
+### Verification
+
+`npm run lint` clean, `npm run typecheck` clean. `npm run test` 1039 passed / 21
+failed — the same 21 pre-existing `ytdlp-binary` + `media-download` Windows
+environment failures. New: 10 integration cases in
+`features/history/server/search-index.integration.test.ts` (including the exact
+scenario: an uncaptioned photo found by "door", nothing before indexing, hits
+after), 5 in `features/bot-messaging/server/mcp-tools.test.ts`, 7 unit cases for
+the result format and rank-merge. `history.integration.test.ts`'s two
+`searchChatMessages` cases were retargeted at the hybrid function, which replaces
+it. `npm run build` not run (would kill the running dev server).
+
+### Measured against the live dev database and endpoint
+
+The full dev backlog — **1366 messages** — was indexed in one run from the Jobs
+board: 1366 rows written, **1366 embedded** (`bge-m3:latest`), live progress
+ticking on the card, ~2 minutes end to end. Nothing was left due.
+
+Then the exact scenario, as a raw cosine query over the built index:
+
+| query | rank | hit |
+| --- | --- | --- |
+| "a photo of a door" | 3 (0.334) | An uncaptioned photo *"looking through an open door into a bathroom"* |
+
+That message's own text is `Тут душевний чіназес` — nothing about a door, and not
+in English. It is unreachable by any search this bot had before: the mirror row
+carries the caption, and the caption says nothing. Ranks 1–2 were other indoor
+photos, which is the expected shape of a vector-only top-5; the tool additionally
+fuses full text and substring and returns more than five.
+
+### Remaining risks / live verification checklist
+
+- **Not yet exercised through the bot itself.** The retrieval is proven; what is
+  not is the model choosing to call `history_search` with `media_kinds` and then
+  `reply_to_message`. First live check: ask for a photo by something only its
+  description says, and confirm the reply lands *under* the photo.
+- **Production backlog is larger than dev's 1366.** It runs only while the bot is
+  quiet and yields to live traffic, but watch the first night's `history-index`
+  traces for the backlog actually draining.
+- **Vision descriptions are English** (the describe prompt is), while chats here
+  are not. The measurement above shows the vector half bridging that; the
+  full-text half will not. If recall is poor for non-English queries, that is the
+  thing to look at first — not more prompt text.
+- Rows indexed before an embedding model is configured keep a null vector forever.
+  `DELETE /api/history/search-index` is the recovery path; it is not automatic.
+- `reply_to_message` is one more tool for a 12B model to choose wrongly. The
+  failure mode to watch is it retargeting an ordinary turn at some unrelated
+  message — visible as a reply landing in a strange place, and in the
+  `mcp-tools-bot-messaging` Debug scope.
+
 ## Backend normalization layer (`in-progress`, 2026-08-07)
 
 User decision, 2026-08-07: "bot breaks every time I switch backend… implement an

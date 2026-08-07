@@ -418,6 +418,65 @@ export type ChatMessageRow = typeof chatMessages.$inferSelect;
 export type ChatMessageInsert = typeof chatMessages.$inferInsert;
 
 /**
+ * The searchable projection of one mirrored message — what `history_search` looks
+ * through, as opposed to what the chat literally contains.
+ *
+ * Two things make it a table of its own rather than columns on `chat_messages`.
+ *
+ * First, a picture is not its caption. A photo of someone's front door is usually
+ * sent with no text at all, so the message row holds `''` and no lexical search
+ * can ever find it; what it *says* lives in `message_media.description` (and, for
+ * a voice message, in its transcript). `content` here is the two joined — the
+ * message's own text plus its rendered media annotation — so a photo, video, GIF,
+ * sticker or voice note is searchable by what is in it, on equal footing with
+ * text. It is also the exact string that was embedded, so a hit can be explained.
+ *
+ * Second, the vector is wide. Every reply reads the 24-hour window with a plain
+ * `select *` over `chat_messages`; a 1024-dimensional column on that row would be
+ * ~4 KB dragged through the hottest read in the app for the sake of a background
+ * job. Same reasoning as `media_blobs` — bulk lives beside the row, not in it.
+ *
+ * `indexed_at` is the staleness clock: the indexing job re-reads any message whose
+ * `edited_at`, or whose media's `described_at`, is newer than this. That is what
+ * makes the index self-healing, since a photo's description arrives minutes or
+ * hours after the photo itself.
+ *
+ * `embedding` is nullable for the same reason `chat_summaries.embedding` is:
+ * embeddings are optional configuration, and a chat with none configured must
+ * still be searchable lexically rather than not at all.
+ */
+export const chatMessageSearch = pgTable(
+  "chat_message_search",
+  {
+    chatId: text("chat_id").notNull(),
+    telegramMessageId: bigint("telegram_message_id", { mode: "number" }).notNull(),
+    /** Message text + rendered media annotation — the string that was embedded. */
+    content: text("content").notNull(),
+    /** Embedding of `content`. Null when no embedding model is configured. */
+    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
+    /** When this row was last (re)built — compared to the sources to detect staleness. */
+    indexedAt: timestamp("indexed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.chatId, t.telegramMessageId] }),
+    // The index never outlives what it indexes: purging a message purges its row.
+    foreignKey({
+      columns: [t.chatId, t.telegramMessageId],
+      foreignColumns: [chatMessages.chatId, chatMessages.telegramMessageId],
+      name: "chat_message_search_message_fk",
+    }).onDelete("cascade"),
+    // Approximate-nearest-neighbour index for the semantic half of the hybrid
+    // search. The full-text half uses a GIN index on `to_tsvector('simple',
+    // content)` and the substring half a `gin_trgm_ops` index, both added by hand
+    // in the migration (an expression index has no Drizzle column to hang off).
+    index("chat_message_search_embedding_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+  ],
+);
+
+export type ChatMessageSearchRow = typeof chatMessageSearch.$inferSelect;
+export type ChatMessageSearchInsert = typeof chatMessageSearch.$inferInsert;
+
+/**
  * One topic discussed in one chat on one day, as distilled by the daily
  * summarization job — the long-term half of history recall. The 24-hour window
  * injected into every reply covers *today*; anything older is found by searching
