@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 import { Badge, Button, Field, Input, Select, Switch } from "@/components/ui";
 
+import { BackendField } from "./BackendField";
 import type { BackendConnection, ProbeState, SecretField } from "./connection";
 
 /** All the wording one backend section differs by. */
@@ -126,6 +127,19 @@ export function ConnectionSection<T>({
             )}
           </Field>
         </>
+      ) : null}
+
+      {/* Only meaningful for a section with its own host: one that reuses the LLM
+          connection inherits that endpoint's backend along with its key, exactly
+          as the server resolves it. Showing a second control here would offer a
+          choice the runtime does not honor. */}
+      {conn.separate ? (
+        <BackendField
+          idPrefix={idPrefix}
+          value={conn.backend}
+          onChange={conn.setBackend}
+          baseUrl={conn.resolvedUrl}
+        />
       ) : null}
 
       <Field id={`${idPrefix}Model`} label={labels.modelLabel} hint={labels.modelHint}>

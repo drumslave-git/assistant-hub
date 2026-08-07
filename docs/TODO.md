@@ -127,17 +127,53 @@ Two things improved for free by moving off the OpenAI SDK:
 - **`isContextOverflowError` takes the backend**, so an adapter's phrasings are
   tried after the shared concept matcher.
 
+### Measured against the live Ollama (0.32.6, 12B thinking model)
+
+One classifier prompt, identical verdict every time:
+
+| body                       | completion tokens | latency |
+| -------------------------- | ----------------- | ------- |
+| (nothing)                  | 135               | 2269 ms |
+| `reasoning_effort: "low"`  | 94                | 1784 ms |
+| `reasoning_effort: "none"` | **17**            | **802 ms** |
+
+So `"low"` — what the bot has been sending all along — is **not** a weaker
+"off". It still thinks. `"none"` is the switch, and it is now what the Ollama
+adapter emits for `reasoning: "off"`.
+
+Also measured, and why the adapter does *not* send `think`: Ollama's native flag
+works on `/api/chat` (17 tokens, 816 ms, no thinking) but the OpenAI-compatible
+`/v1/chat/completions` route this app speaks **ignores it** — 128 completion
+tokens with it and without. `chat_template_kwargs: {thinking:false}` and
+`options: {think:false}` were also tried on `/v1` and did not disable it.
+
+llama.cpp and vLLM mappings remain **documented, not measured** — no live
+instance of either. Their tests assert the body produced, not a server's answer.
+
+### Settings UI
+
+`features/settings/ui/BackendField.tsx` — one dropdown + Detect control, used by
+the LLM section in `SettingsForm` and by all four optional sections through
+`ConnectionSection`. A section reusing the LLM connection shows no control: it
+inherits that endpoint's backend at read time, so persisting one would be a
+second, silently-ignored source of truth.
+
+`POST /api/settings/detect-backend` fingerprints an endpoint. Ollama's
+`/api/version` is tried before vLLM's bare `/version` — both answer `{version}`,
+and the reverse order would let a generic body claim an Ollama host.
+
+**Not visually verified.** The dev server runs, but `/settings` is behind the
+operator password and the repo has no React component-test setup (no
+testing-library/jsdom, zero `.test.tsx`), so the rendered control has not been
+exercised. Logic is covered by `detect.test.ts`; the form itself is not.
+
 ### Remaining
 
 - Embeddings/images onto the AI SDK provider (they still use the `openai` SDK,
   as do speech/transcription, which the package cannot serve at all).
-- Backend selector + Detect button in the five Settings connection sections;
-  `detectBackendSchema` is already in `features/settings/server/schema.ts` and
-  `detectBackend()` in `server/llm/backends/detect.ts`, but no route or UI yet.
-- Live confirmation of each adapter's reasoning knob against a real server. The
-  mappings are what each backend documents; only a live endpoint can prove the
-  server honors them, and the tests deliberately assert the body we produce
-  rather than the server's response.
+- Flip the classifiers from `reasoning: "low"` to `"off"` once the operator sets
+  the LLM backend to Ollama — that is the measured 8x token drop on the gates.
+  Tracked under Reply latency below.
 
 ## Reply latency (`todo`, 2026-08-07)
 

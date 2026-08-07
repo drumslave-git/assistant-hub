@@ -23,11 +23,22 @@ function completionWithReasoning(field: string, text: string): unknown {
 }
 
 describe("thinking control differs per backend", () => {
-  it("Ollama sends its own think flag, because it was measured ignoring reasoning_effort", () => {
+  // Measured against a live Ollama 0.32.6: "none" took one classifier call from
+  // 135 completion tokens to 17, while "low" only reached 94 — it still thinks.
+  // The bot was already sending "low", which is why the gates stayed slow.
+  it('Ollama needs "none"; "low" is not a weaker "off"', () => {
     expect(chatBodyExtrasFor("ollama", { reasoning: "off" })).toEqual({
-      think: false,
+      reasoningEffort: "none",
+    });
+    expect(chatBodyExtrasFor("ollama", { reasoning: "low" })).toEqual({
       reasoningEffort: "low",
     });
+  });
+
+  // Ollama's native flag works on /api/chat but is ignored by the /v1 route this
+  // app speaks (measured: 128 completion tokens with it and without).
+  it("does not send Ollama's native think flag, which the /v1 route drops", () => {
+    expect(chatBodyExtrasFor("ollama", { reasoning: "off" })).not.toHaveProperty("think");
   });
 
   it("llama.cpp turns thinking off through the chat template, not a sampler field", () => {
@@ -60,7 +71,7 @@ describe("thinking control differs per backend", () => {
   it("never sends one backend's vendor flag to another", () => {
     for (const id of LLM_BACKEND_IDS) {
       const body = chatBodyExtrasFor(id, { reasoning: "off" });
-      if (id !== "ollama") expect(body).not.toHaveProperty("think");
+      expect(body).not.toHaveProperty("think");
       if (id !== "llamacpp") expect(body).not.toHaveProperty("reasoning_format");
     }
   });

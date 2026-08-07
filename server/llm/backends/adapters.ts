@@ -46,13 +46,26 @@ function readMessageField(rawResponse: unknown, fields: readonly string[]): stri
 /**
  * Ollama.
  *
- * Thinking is a first-class per-request flag (`think`) rather than a sampling
- * parameter, and its OpenAI-compatible route maps `reasoning_effort` onto that
- * flag only on versions new enough to do so — on the live bot, `reasoning_effort:
- * "low"` was measured being ignored while the model kept emitting ~180 reasoning
- * tokens to answer a yes/no question. Both fields are therefore sent: `think` is
- * the one Ollama has always understood, `reasoning_effort` is the one it will
- * understand going forward, and neither is meaningful to the other backends.
+ * `reasoning_effort: "none"` is the only thing that stops a thinking model here,
+ * and the distinction between it and `"low"` is the whole reason this adapter
+ * exists. Measured against a live Ollama 0.32.6 serving a 12B thinking model,
+ * one classifier prompt, identical verdict every time:
+ *
+ * | body                       | completion tokens | latency |
+ * | -------------------------- | ----------------- | ------- |
+ * | (nothing)                  | 135               | 2269 ms |
+ * | `reasoning_effort: "low"`  | 94                | 1784 ms |
+ * | `reasoning_effort: "none"` | **17**            | **802 ms** |
+ *
+ * So `"low"` is not a weaker "off" — it still thinks, which is why the bot's
+ * classifiers were paying ~180 reasoning tokens to emit a 15-token verdict while
+ * already sending `"low"`.
+ *
+ * `think` is deliberately **not** sent. It is Ollama's native flag and it works
+ * — on `/api/chat`, where it took the same call to 17 tokens — but the
+ * OpenAI-compatible `/v1/chat/completions` route this app speaks ignores it
+ * (measured: 128 tokens with and without). Sending a field the route drops would
+ * only suggest a control we do not have.
  *
  * Context overflow does **not** raise here: Ollama truncates to `num_ctx` and
  * answers anyway. See {@link LlmBackendAdapter.contextOverflowBehavior} for why
@@ -63,9 +76,9 @@ const ollama: LlmBackendAdapter = {
   chatBodyExtras(intent: ChatRequestIntent): Record<string, JsonValue> {
     switch (intent.reasoning) {
       case "off":
-        return { think: false, reasoningEffort: "low" };
+        return { reasoningEffort: "none" };
       case "low":
-        return { think: "low", reasoningEffort: "low" };
+        return { reasoningEffort: "low" };
       default:
         return {};
     }

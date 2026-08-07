@@ -40,7 +40,7 @@ function providerCapturing(captured: { body?: Record<string, unknown> }) {
 }
 
 describe("providerOptions carries vendor fields into the request body", () => {
-  it("sends Ollama's think flag, which no typed SDK option covers", async () => {
+  it("sends the value measured to actually stop Ollama thinking", async () => {
     const captured: { body?: Record<string, unknown> } = {};
     await generateText({
       model: providerCapturing(captured).chatModel("m"),
@@ -48,7 +48,7 @@ describe("providerOptions carries vendor fields into the request body", () => {
       maxRetries: 0,
       providerOptions: { llm: chatBodyExtrasFor("ollama", { reasoning: "off" }) },
     });
-    expect(captured.body?.think).toBe(false);
+    expect(captured.body?.reasoning_effort).toBe("none");
   });
 
   it("sends llama.cpp's nested chat_template_kwargs intact", async () => {
@@ -208,9 +208,9 @@ describe("chatCompletion end to end, only the network stubbed", () => {
       { model: "gemma:12b", messages: [{ role: "user", content: "hi" }], reasoning: "off" },
     );
 
-    // The point of the whole layer: the operator named Ollama, so Ollama's knob
-    // is what reached the endpoint.
-    expect(captured.body?.think).toBe(false);
+    // The point of the whole layer: the operator named Ollama, so the value
+    // measured to actually stop it thinking is what reached the endpoint.
+    expect(captured.body?.reasoning_effort).toBe("none");
     expect(result.content).toBe("hi");
     expect(result.model).toBe("gemma:12b");
     expect(result.usage).toEqual({ promptTokens: 10, completionTokens: 4, totalTokens: 14 });
@@ -228,7 +228,8 @@ describe("chatCompletion end to end, only the network stubbed", () => {
       { model: "gemma:12b", messages: [{ role: "user", content: "hi" }], reasoning: "off" },
     );
 
-    // An unnamed endpoint behaves exactly as it did before this layer existed.
+    // An unnamed endpoint behaves exactly as it did before this layer existed:
+    // the conservative "low" the spec defines, never a vendor field.
     expect(captured.body).not.toHaveProperty("think");
     expect(captured.body).not.toHaveProperty("chat_template_kwargs");
     expect(captured.body?.reasoning_effort).toBe("low");

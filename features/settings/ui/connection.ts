@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 
 import type { ApiErrorBody } from "@/lib/api-error";
+import type { LlmBackendId } from "@/lib/llm-backend";
 
 /**
  * Shared state machines for the settings connection sections. The form used to
@@ -107,12 +108,13 @@ export type SecretField = ReturnType<typeof useSecretField>;
  * edit so the section's probe result can be invalidated.
  */
 export function useBackendConnection(
-  initial: { baseUrl: string | null; model: string | null },
+  initial: { baseUrl: string | null; model: string | null; backend: LlmBackendId },
   onChange: () => void,
 ) {
   const [baseUrl, setBaseUrlState] = useState(initial.baseUrl ?? "");
   const [separate, setSeparateState] = useState(Boolean(initial.baseUrl));
   const [model, setModelState] = useState(initial.model ?? "");
+  const [backend, setBackendState] = useState<LlmBackendId>(initial.backend);
 
   // The backend as configured right now: its own URL only when the operator
   // asked for a separate backend, otherwise "reuse the LLM connection" (null).
@@ -125,6 +127,7 @@ export function useBackendConnection(
     baseUrl,
     separate,
     model,
+    backend,
     resolvedUrl,
     urlMissing,
     setBaseUrl(next: string) {
@@ -139,11 +142,16 @@ export function useBackendConnection(
       setModelState(next);
       onChange();
     },
+    setBackend(next: LlmBackendId) {
+      setBackendState(next);
+      onChange();
+    },
     /** Re-seed from the saved record after a successful save. */
-    applySaved(saved: { baseUrl: string | null; model: string | null }) {
+    applySaved(saved: { baseUrl: string | null; model: string | null; backend: LlmBackendId }) {
       setBaseUrlState(saved.baseUrl ?? "");
       setSeparateState(Boolean(saved.baseUrl));
       setModelState(saved.model ?? "");
+      setBackendState(saved.backend);
     },
   };
 }

@@ -8,6 +8,7 @@ import { Badge, Button, Field, Input, Select, Switch, Tabs, type TabItem } from 
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import type { KnownUser } from "@/features/known-users/server/schema";
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
+import type { LlmBackendId } from "@/lib/llm-backend";
 import type { Settings } from "../server/schema";
 import {
   readError,
@@ -15,6 +16,7 @@ import {
   useProbe,
   useSecretField,
 } from "./connection";
+import { BackendField } from "./BackendField";
 import { ChangePasswordSection } from "./ChangePasswordSection";
 import { ConnectionSection } from "./ConnectionSection";
 
@@ -70,6 +72,7 @@ export function SettingsForm({
 
   // Core LLM connection.
   const [llmBaseUrl, setLlmBaseUrl] = useState(initial.llmBaseUrl ?? "");
+  const [llmBackend, setLlmBackend] = useState<LlmBackendId>(initial.llmBackend);
   const apiKey = useSecretField(initial.apiKeyConfigured);
   const [model, setModel] = useState(initial.model ?? "");
   // Seed with the server-preloaded list (falling back to just the saved model);
@@ -95,19 +98,19 @@ export function SettingsForm({
     "/api/settings/test-embeddings",
   );
   const emb = useBackendConnection(
-    { baseUrl: initial.embeddingBaseUrl, model: initial.embeddingModel },
+    { baseUrl: initial.embeddingBaseUrl, model: initial.embeddingModel, backend: initial.embeddingBackend },
     embedProbe.reset,
   );
   const embKey = useSecretField(initial.embeddingApiKeyConfigured);
   const imageProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-images");
   const img = useBackendConnection(
-    { baseUrl: initial.imageBaseUrl, model: initial.imageModel },
+    { baseUrl: initial.imageBaseUrl, model: initial.imageModel, backend: initial.imageBackend },
     imageProbe.reset,
   );
   const imgKey = useSecretField(initial.imageApiKeyConfigured);
   const speechProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-speech");
   const spc = useBackendConnection(
-    { baseUrl: initial.speechBaseUrl, model: initial.speechModel },
+    { baseUrl: initial.speechBaseUrl, model: initial.speechModel, backend: initial.speechBackend },
     speechProbe.reset,
   );
   const spcKey = useSecretField(initial.speechApiKeyConfigured);
@@ -116,7 +119,7 @@ export function SettingsForm({
     "/api/settings/test-transcription",
   );
   const stt = useBackendConnection(
-    { baseUrl: initial.transcriptionBaseUrl, model: initial.transcriptionModel },
+    { baseUrl: initial.transcriptionBaseUrl, model: initial.transcriptionModel, backend: initial.transcriptionBackend },
     transcriptionProbe.reset,
   );
   const sttKey = useSecretField(initial.transcriptionApiKeyConfigured);
@@ -192,7 +195,15 @@ export function SettingsForm({
     setSave({ kind: "saving" });
     const patch: Record<string, unknown> = {
       llmBaseUrl: llmBaseUrl.trim() === "" ? null : llmBaseUrl.trim(),
+      llmBackend,
       model: model === "" ? null : model,
+      // Sent for every section that has its own host. One reusing the LLM
+      // connection inherits that endpoint's backend at read time, so persisting
+      // a value for it would be a second, silently-ignored source of truth.
+      ...(emb.separate ? { embeddingBackend: emb.backend } : {}),
+      ...(img.separate ? { imageBackend: img.backend } : {}),
+      ...(spc.separate ? { speechBackend: spc.backend } : {}),
+      ...(stt.separate ? { transcriptionBackend: stt.backend } : {}),
     };
     if (apiKey.dirty) patch.apiKey = apiKey.patchValue;
     if (botToken.dirty) patch.telegramBotToken = botToken.patchValue;
@@ -293,11 +304,28 @@ export function SettingsForm({
       setTimezone(data.timezone);
       setDailyJobsRunTime(data.dailyJobsRunTime);
       setBrowserDownloadLimitGb(String(data.browserDownloadLimitGb));
-      emb.applySaved({ baseUrl: data.embeddingBaseUrl, model: data.embeddingModel });
-      img.applySaved({ baseUrl: data.imageBaseUrl, model: data.imageModel });
-      spc.applySaved({ baseUrl: data.speechBaseUrl, model: data.speechModel });
+      setLlmBackend(data.llmBackend);
+      emb.applySaved({
+        baseUrl: data.embeddingBaseUrl,
+        model: data.embeddingModel,
+        backend: data.embeddingBackend,
+      });
+      img.applySaved({
+        baseUrl: data.imageBaseUrl,
+        model: data.imageModel,
+        backend: data.imageBackend,
+      });
+      spc.applySaved({
+        baseUrl: data.speechBaseUrl,
+        model: data.speechModel,
+        backend: data.speechBackend,
+      });
       setSpeechVoice(data.speechVoice ?? "");
-      stt.applySaved({ baseUrl: data.transcriptionBaseUrl, model: data.transcriptionModel });
+      stt.applySaved({
+        baseUrl: data.transcriptionBaseUrl,
+        model: data.transcriptionModel,
+        backend: data.transcriptionBackend,
+      });
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
       router.refresh();
@@ -379,6 +407,13 @@ export function SettingsForm({
           />
         )}
       </Field>
+
+      <BackendField
+        idPrefix="llm"
+        value={llmBackend}
+        onChange={setLlmBackend}
+        baseUrl={llmBaseUrl.trim() === "" ? null : llmBaseUrl.trim()}
+      />
 
       <div className="flex flex-wrap items-center gap-3">
         <Button
