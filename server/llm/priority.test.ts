@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resetLlmPriorityGateForTests, withLlmPriority } from "./priority";
+import {
+  MAX_INTERACTIVE_IN_FLIGHT,
+  resetLlmPriorityGateForTests,
+  withLlmPriority,
+} from "./priority";
 
 /** A run() the test resolves by hand, recording when it started. */
 function controllable(label: string, started: string[]) {
@@ -136,5 +140,58 @@ describe("withLlmPriority", () => {
     expect(started).toEqual(["next"]);
     next.release();
     await pNext;
+  });
+});
+
+describe("interactive concurrency cap", () => {
+  /** A call that parks until released, so overlap is observable. */
+  function gated() {
+    let release!: () => void;
+    const started = { yes: false };
+    const promise = new Promise<void>((r) => (release = r));
+    return {
+      release,
+      started,
+      run: async () => {
+        started.yes = true;
+        await promise;
+      },
+    };
+  }
+
+  it("runs up to the cap at once and holds the rest back", async () => {
+    resetLlmPriorityGateForTests();
+    const calls = Array.from({ length: MAX_INTERACTIVE_IN_FLIGHT + 2 }, gated);
+    const running = calls.map((c) => withLlmPriority("interactive", c.run));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Exactly the cap started; the surplus is parked in RAM, not on the wire.
+    expect(calls.filter((c) => c.started.yes)).toHaveLength(MAX_INTERACTIVE_IN_FLIGHT);
+
+    calls[0].release();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls.filter((c) => c.started.yes)).toHaveLength(MAX_INTERACTIVE_IN_FLIGHT + 1);
+
+    calls.forEach((c) => c.release());
+    await Promise.all(running);
+  });
+
+  it("wakes a queued interactive call before any background one", async () => {
+    resetLlmPriorityGateForTests();
+    const busy = Array.from({ length: MAX_INTERACTIVE_IN_FLIGHT }, gated);
+    const running = busy.map((c) => withLlmPriority("interactive", c.run));
+
+    const order: string[] = [];
+    // Background queues first — and must still lose, because priority here is
+    // structural rather than first-come.
+    const bg = withLlmPriority("background", async () => void order.push("background"));
+    const queued = withLlmPriority("interactive", async () => void order.push("interactive"));
+
+    busy.forEach((c) => c.release());
+    await Promise.all([...running, queued, bg]);
+    expect(order).toEqual(["interactive", "background"]);
   });
 });

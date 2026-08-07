@@ -311,9 +311,8 @@ From the production trace/analytics review, 2026-08-07 (1,939 traces,
   generation starts. 1,704 of those turns ended in silence.
 - `gemma4:26B` measured **2.3x faster per token** than `gemma4:12b` across every
   call kind — worth checking the 12b's GPU layer split.
-- Interactive calls bypass the priority gate entirely with no concurrency limit,
-  so a burst of group chatter self-congests (addressing-check p50 4.3s vs p95
-  27.3s).
+- ~~Interactive calls bypass the priority gate with no concurrency limit~~ —
+  capped at 4 on 2026-08-07, see below.
 - ~~The 24h history window is injected as one message, invalidating the KV
   prefix~~ — **measured and wrong**, see below. The real cache-breaker was the
   per-sender blocks sitting *above* the window; fixed 2026-08-07.
@@ -356,6 +355,36 @@ reason attached.
 backend truncates rather than raising: a needle placed at the very start of the
 window was recalled at 2.4k, 7.7k and 14.5k prompt tokens. The window is intact
 at the sizes this bot uses.
+
+## Interactive concurrency cap (`done`, 2026-08-07)
+
+Interactive calls used to skip the gate entirely. The assumption behind that was
+that the endpoint is serial, so queueing in-process would only add latency. It is
+not serial — it serves in parallel — but it has a cliff, and unbounded sat past
+it.
+
+Measured live, 16 requests over four distinct chat histories:
+
+| in flight | wall time | p50      |
+| --------- | --------- | -------- |
+| 4         | 13996 ms  | 3381 ms  |
+| 8         | 11398 ms  | 4823 ms  |
+| 16        | 16698 ms  | 12750 ms |
+
+Unbounded is the last row and is the worst of both — **longer** overall than a cap
+of 4 and nearly 4x the latency for the person waiting. That is the shape of the
+production `addressing-check` spread (p50 4.3s, p95 27.3s), and 16 concurrent
+calls is ordinary traffic: eight group messages arriving together produce exactly
+that, because each fires an addressing check and a standing-rule match.
+
+Capped at **4**, not 8: someone is waiting on one reply, not on the batch, and 8
+buys ~19% wall time for ~43% more latency per turn. Not a serialization — at a
+cap of 1 the burst took 10.0s against 6.4s unbounded, so the parallelism is real
+and worth using up to the cliff.
+
+Interactive waiters queue separately from background ones so priority stays
+structural: a freed slot always wakes an interactive call first, and background
+work cannot get in front of a person by having queued earlier.
 
 ## The owner can cancel anyone's scheduled task (`done` pending production deploy + live verification, 2026-08-07)
 
