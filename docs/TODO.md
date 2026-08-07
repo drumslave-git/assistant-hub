@@ -263,9 +263,37 @@ Tool *selection* alone survives reasoning-off (3/3 correct tool, 772 ms vs
 final answer when it comes back with no tool calls, and that same call is the
 one that wrote the reply.
 
-Untried, and the better lead if reply latency is revisited: `gemma4:26b`
-measured **2.3x the tokens/sec of 12b** across every call kind in the operator's
-own analytics — possibly faster *and* better, with no quality trade.
+### gemma4:26b benchmarked and rejected (2026-08-07 — do not retry)
+
+The dashboard's Model performance card shows `gemma4:26b` at **2.3x the
+tokens/sec of 12b**, which read as free speed. A controlled benchmark against the
+live endpoint says the opposite: **12b is faster on every call shape**, and
+neither model made a mistake.
+
+Both models warmed first (a cold VRAM load would otherwise be charged to
+whichever case ran first) and grouped per model to avoid swap thrash. Median of
+3 runs each:
+
+| case                     | 12b p50 | 26b p50 | tok/s 12b | tok/s 26b | correct |
+| ------------------------ | ------- | ------- | --------- | --------- | ------- |
+| classifier (reasoning off) | **646 ms**  | 800 ms   | 26.3 | 21.3 | 3/3 both |
+| short reply              | **1689 ms** | 2050 ms  | 59.2 | 37.6 | 3/3 both |
+| arithmetic               | **6215 ms** | 6674 ms  | 71.8 | 44.2 | 3/3 both |
+| tool selection           | **2619 ms** | 4241 ms  | 61.5 | 41.5 | 3/3 both |
+| big prompt (~26k tokens) | **6097 ms** | 10134 ms | 53.3 | 43.3 | 3/3 both |
+
+26b is the more *concise* model — 295 tokens to 12b's 446 on the arithmetic, 77
+to 100 on the short reply — but its lower throughput more than cancels that.
+
+**Why the dashboard disagreed, and what to do about it.** `tokensPerSec` on the
+Model performance card is `completionTokens / latency` summed over calls made at
+different times under different load. Latency there includes time queued behind
+other work on a serial endpoint, so the number measures *how busy the box was
+while that model happened to be in use*, not how fast the model is. 12b carries
+3,189 lifetime calls including every busy period; 26b carries 228, mostly from
+quiet ones. The card is not wrong about what it reports — it is a poor proxy for
+model speed, and it was read as one here. Worth a hint on the card saying so
+before it misleads someone again.
 
 ## Reply latency (`todo`, 2026-08-07)
 
