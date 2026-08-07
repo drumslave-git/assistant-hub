@@ -37,6 +37,13 @@ describe("buildActionClaimMessages", () => {
     const system = buildActionClaimMessages({ request: "r", reply: "a" })[0].content as string;
     expect(system).toMatch(/offers to do something/i);
     expect(system).toMatch(/cannot do something/i);
+    // The one hard case found live: agreeing to stop bringing a topic up is a
+    // promise about talking, and talking needs no tool. Left ambiguous it read
+    // as "promised", which would suppress an honest reply — and the classifier
+    // burned its whole budget failing to settle it.
+    expect(system).toMatch(/how it will talk or behave/i);
+    expect(system).toMatch(/stop bringing something up/i);
+    expect(system).toMatch(/struck off/i);
     // The quote must come back in the reply's own words — a translated citation
     // could never be found in the reply and would silently disable the guard.
     expect(system).toMatch(/reply's own language/i);

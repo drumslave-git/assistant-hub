@@ -87,16 +87,57 @@ Verification: `npm run typecheck` clean, `npm run lint` clean,
 **pre-existing** (confirmed failing identically on a stashed clean tree). Those
 are unrelated to this change and are open work of their own.
 
+### Round 2 — first day live: the gate cost 40s and returned nothing (2026-08-07)
+
+Trace `ab4fc127…` (reply, 2026-08-07 13:26 Kyiv). A user asked the bot to stop
+bringing a topic up. It agreed — "crossing it off the repertoire" — with no tool
+call, so the gate ran, spent its whole 3,000-token classifier budget on that
+two-sentence reply, and was cut off at `finish_reason: "length"` with no verdict
+after **40.4s**. Fail-open worked exactly as designed (warn step traced, reply
+delivered unchanged), but the turn took 60.7s end to end and the gate was 2/3 of
+it.
+
+Two things, one cause.
+
+The question was genuinely ambiguous and the prompt had no answer for it. A
+promise about how the bot will *talk* in later messages — stop mentioning
+something, drop a topic, be shorter — needs no tool, because talking is the one
+thing it does without one. Left unaddressed, the likelier verdict was
+`promised`, which would have forced a retry and then suppressed a perfectly
+honest reply behind the system notice. So that case is now its own `none` bullet
+in the classifier prompt, phrased to cover the figurative forms ("struck off",
+"dropped", "closed") the persona actually reaches for.
+
+And the gate had no budget of its own. It inherited `CLASSIFIER_MAX_TOKENS`
+(3,000), which is sized for the addressing check, where truncation means a
+missed summons. Truncation *here* just restores the pre-gate behaviour, so its
+worst case is pure cost. It now has `HONESTY_GATE_MAX_TOKENS` (800) and
+`HONESTY_GATE_TIMEOUT_MS` (20s) — ~5x and ~4x this endpoint's own measured norm
+for a classifier call of this shape (120–160 completion tokens, 3–5s, from the
+`chat rule match` calls in these same traces), so neither can cut off a verdict
+that was going to arrive. `runClassifier` grew an optional budget argument;
+model and reasoning effort stay shared.
+
+Files: `features/bot-messaging/server/action-claim.ts` (+ test),
+`server/telegram/process-update.ts`. `npm run typecheck` clean, `npm run lint`
+clean, `npx vitest run features/bot-messaging server/telegram` 229 passed; full
+`npm run test` unchanged at 974 passed / 21 pre-existing browser-agent failures.
+
 Remaining risks:
 
 - Scope. The gate only sees turns with **zero** tool calls. A reply that called
   `tasks_list` and then lied about what came back is a different failure the
   mechanical signal cannot see.
 - Cost. One extra classifier call on every tool-less turn, which is most
-  ordinary conversation. Not measured against the live endpoint yet.
-- False positives. A confirmed claim costs a second reply generation. Live
-  behaviour on ordinary chatter is unverified — watch the "reply claimed an
-  action no tool performed — retrying" step on Debug.
+  ordinary conversation. Bounded now, but a normal verdict is still ~3–5s added
+  to every such turn, and that has not been measured across a day's traffic.
+- The new caps are sized from two traces, not a sample. If the "honesty gate
+  failed — reply left as written" step starts appearing on ordinary turns, the
+  cap is biting real verdicts and wants raising.
+- False positives. A confirmed claim costs a second reply generation, and no
+  live one has been observed yet — the only two gate runs so far were one
+  `none` and one truncation. Watch the "reply claimed an action no tool
+  performed — retrying" step on Debug.
 - The underlying trigger is untouched: the model still cannot see which
   scheduled tasks exist without calling `tasks_list`, while chat rules *are*
   injected as standing state. Whatever fired at that chat is still firing.

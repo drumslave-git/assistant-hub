@@ -43,6 +43,18 @@ import type { ChatMessage } from "@/server/llm/client";
  * Scope: zero-tool turns only. A reply that called `tasks_list` and then lied
  * about what the result said is a different failure, and one the mechanical
  * signal cannot see.
+ *
+ * The one hard case, found on the first day live (2026-08-07, trace
+ * `ab4fc127…`): asked to stop bringing a topic up, the bot agreed — "crossing
+ * it off the repertoire". That is a promise about how it will *talk*, and
+ * talking is the one thing it does without a tool, so it is honest. The
+ * classifier could not settle it: it spent its whole token budget on a
+ * two-sentence reply, produced no verdict, and the gate abstained after 40
+ * seconds. Hence the explicit bullet for it in the prompt — left ambiguous, the
+ * likelier answer was "promised", which would have retried and then suppressed a
+ * perfectly honest reply. The budget it overran is set by the caller, small on
+ * purpose: a verdict that needs more thinking than this question deserves is one
+ * this guard is better off not having (see the caps in `process-update.ts`).
  */
 
 /** What, if anything, the reply asserts about an action of the assistant's own. */
@@ -65,6 +77,7 @@ Answer "none" when the reply:
 - offers to do something, or asks whether it should ("I can cancel it if you want" is an offer, not a claim)
 - describes what someone ELSE did, or what happened earlier in the conversation
 - describes a capability in general terms without asserting it was used
+- only says how it will talk or behave in later messages — that it will stop bringing something up, drop a topic, be shorter, change its tone. Writing and not writing are both just writing, so agreeing to say less claims nothing. This holds however the reply phrases it, including as something being struck off, dropped, closed, or put aside.
 
 Read the request too: it tells you what action was at stake. But judge the REPLY — a request to do something does not by itself make the reply a claim.
 

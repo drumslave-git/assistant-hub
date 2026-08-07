@@ -109,12 +109,40 @@ const CLASSIFIER_REASONING_EFFORT = "low" as const;
 const CLASSIFIER_MAX_TOKENS = 3_000;
 
 /**
+ * What the honesty gate is allowed to spend before it gives up.
+ *
+ * Deliberately far below {@link CLASSIFIER_MAX_TOKENS}, because the two
+ * classifiers fail in opposite directions. A truncated addressing check is a
+ * missed summons — the bot stays silent when it was called — so that one is
+ * given room. A truncated honesty gate abstains, and abstaining is exactly the
+ * behaviour the app had before the gate existed: the reply goes out as written.
+ * Its worst case is therefore pure cost, and cost is what these bound.
+ *
+ * Sized from this endpoint's own traces: a classifier call of this shape answers
+ * in 120–160 completion tokens in 3–5s. The cap is ~5x a normal verdict and the
+ * timeout ~4x a normal call, so neither can bite a verdict that was going to
+ * arrive; what they cut off is a model that has started circling. It did, on day
+ * one (trace `ab4fc127…`, 2026-08-07): 3,000 tokens and 40 seconds on a
+ * two-sentence reply, no verdict, on a turn that took 60s in total. The gate
+ * abstained correctly and the user still waited for it.
+ *
+ * The timeout measures the wire, not the in-app queue (see `chatCompletion`), so
+ * a busy endpoint does not spend it before the request is even sent.
+ */
+const HONESTY_GATE_MAX_TOKENS = 800;
+const HONESTY_GATE_TIMEOUT_MS = 20_000;
+
+/**
  * One classification call against the configured model: no tools, no history, no
  * persona — a single question about a single piece of text, not a conversation.
  * Shared by every classifier the reply path runs (addressing, its verifier, the
- * honesty gate) so they cannot drift apart on model, effort, or token cap.
+ * honesty gate) so they cannot drift apart on model or reasoning effort. Only
+ * the budget varies, and only where a caller has a reason — see above.
  */
-async function runClassifier(messages: ChatMessage[]) {
+async function runClassifier(
+  messages: ChatMessage[],
+  budget?: { maxTokens?: number; timeoutMs?: number },
+) {
   const runtime = await getLlmRuntime();
   if (!runtime) {
     throw ApiError.serviceUnavailable(
@@ -125,7 +153,8 @@ async function runClassifier(messages: ChatMessage[]) {
   return chatCompletion(conn, {
     model: runtime.model,
     messages,
-    maxTokens: CLASSIFIER_MAX_TOKENS,
+    maxTokens: budget?.maxTokens ?? CLASSIFIER_MAX_TOKENS,
+    ...(budget?.timeoutMs !== undefined ? { timeoutMs: budget.timeoutMs } : {}),
     reasoningEffort: CLASSIFIER_REASONING_EFFORT,
   });
 }
@@ -554,8 +583,14 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     analyzeAddressing: overrides?.analyzeAddressing ?? runClassifier,
     // Checks a drafted reply that called no tool for a claim that something was
     // done (`features/bot-messaging/server/action-claim.ts`). Same call shape as
-    // the analyzer above, over the answer instead of the incoming message.
-    checkActionClaim: runClassifier,
+    // the analyzer above, over the answer instead of the incoming message, on a
+    // much tighter budget — a gate that cannot decide quickly is one the user is
+    // better off not waiting for.
+    checkActionClaim: (messages: ChatMessage[]) =>
+      runClassifier(messages, {
+        maxTokens: HONESTY_GATE_MAX_TOKENS,
+        timeoutMs: HONESTY_GATE_TIMEOUT_MS,
+      }),
     // The words the chat has already reported as *not* the bot's name, so the
     // analyzer stops answering to someone else's name. Read only when the
     // analyzer actually runs (the service calls this lazily).
