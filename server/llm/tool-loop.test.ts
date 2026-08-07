@@ -361,9 +361,45 @@ describe("runToolLoop", () => {
   });
 });
 
-// Mock the OpenAI SDK so chatCompletionWithTools can be exercised end-to-end
-// against a scripted provider response, the same way client.test.ts does.
+/**
+ * The provider stub, scripted in the endpoint's own response shape and
+ * translated to a transport round — the same seam `client.test.ts` mocks, so
+ * both completion paths are exercised against an identical fake provider. That
+ * matters here: the invariant these tests defend is that the two paths agree.
+ */
 const createMock = vi.fn();
+
+vi.mock("./transport", () => ({
+  completeRound: async (conn: unknown, input: unknown) => {
+    const completion = (await createMock(conn, input)) as {
+      model?: string;
+      choices?: Array<{
+        message?: { content?: string | null; tool_calls?: ChatCompletionMessageToolCall[] };
+        finish_reason?: string;
+      }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+    const choice = completion.choices?.[0];
+    return {
+      content: choice?.message?.content?.trim() ?? "",
+      toolCalls: choice?.message?.tool_calls ?? [],
+      usage: completion.usage
+        ? {
+            promptTokens: completion.usage.prompt_tokens,
+            completionTokens: completion.usage.completion_tokens,
+            totalTokens: completion.usage.total_tokens,
+          }
+        : undefined,
+      latencyMs: 1,
+      requestBody: { model: completion.model },
+      responseBody: completion,
+      finishReason: choice?.finish_reason ?? "stop",
+      servedModel: completion.model,
+    };
+  },
+}));
+
+// Still mocked for its error classes, which the retry predicate classifies on.
 vi.mock("openai", () => {
   class OpenAI {
     chat = { completions: { create: createMock } };
@@ -570,7 +606,8 @@ describe("chatCompletionWithTools — round retries", () => {
     // The download ran once, not once per attempt.
     expect(callTool).toHaveBeenCalledOnce();
     // And the retried round carried the tool result forward rather than restarting.
-    const retried = createMock.mock.calls[2][0].messages;
+    // `[1]` is the transport's input; `[0]` is the connection.
+    const retried = createMock.mock.calls[2][1].messages;
     expect(retried.at(-1)).toMatchObject({ role: "tool", content: "downloaded" });
   });
 });

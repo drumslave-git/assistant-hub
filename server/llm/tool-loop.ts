@@ -8,10 +8,10 @@ import type {
 
 import { ApiError } from "@/lib/api-error";
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
+import { adapterFor, type ReasoningMode } from "./backends";
 import {
   CHAT_COMPLETION_TIMEOUT_MS,
   CONTEXT_EXHAUSTED_MESSAGE,
-  createOpenAiClient,
   finishReasonOf,
   servedModelOf,
   withLlmRetry,
@@ -22,6 +22,7 @@ import {
   type LlmRetryInfo,
 } from "./client";
 import { withLlmPriority, type LlmPriority } from "./priority";
+import { completeRound } from "./transport";
 
 /**
  * Chat completion with tools as ONE conversation. Each round the model either
@@ -361,15 +362,6 @@ function toSeedMessages(messages: ChatMessage[]): ChatCompletionMessageParam[] {
   return messages.map((m) => ({ role: m.role, content: m.content }) as ChatCompletionMessageParam);
 }
 
-function mapUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): ChatUsage | undefined {
-  if (!usage) return undefined;
-  return {
-    promptTokens: usage.prompt_tokens,
-    completionTokens: usage.completion_tokens,
-    totalTokens: usage.total_tokens,
-  };
-}
-
 /**
  * Generate a chat completion with tool support against an OpenAI-compatible
  * endpoint. Returns the same {@link ChatCompletionResult} shape as
@@ -399,13 +391,20 @@ export async function chatCompletionWithTools(
     priority?: LlmPriority;
     /** Hard cap on generated tokens per round — see `chatCompletion`'s `maxTokens`. */
     maxTokens?: number;
+    /** What to ask of a thinking model per round — see `chatCompletion`'s `reasoning`. */
+    reasoning?: ReasoningMode;
   },
 ): Promise<ChatCompletionResult> {
   const seed = toSeedMessages(input.messages);
   const maxTokensField =
     input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {};
-  const requestBody = { model: input.model, messages: seed, tools: input.tools, ...maxTokensField };
-  const client = createOpenAiClient(conn);
+  const requestBody = {
+    model: input.model,
+    messages: seed,
+    tools: input.tools,
+    ...maxTokensField,
+    ...adapterFor(conn.backend).chatBodyExtras({ reasoning: input.reasoning }),
+  };
   const timeout = input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS;
   const priority = input.priority ?? "interactive";
 
@@ -428,25 +427,31 @@ export async function chatCompletionWithTools(
           // Each round takes the gate on its own, so tool executions between
           // rounds never hold the endpoint slot.
           withLlmPriority(priority, async () => {
-            const start = Date.now();
-            const completion = await client.chat.completions.create(
-              {
-                model: input.model,
-                messages: conversation,
-                ...(tools ? { tools } : {}),
-                ...maxTokensField,
-              },
-              { timeout },
-            );
-            const latencyMs = Date.now() - start;
-            const message = completion.choices[0]?.message;
+            const round = await completeRound(conn, {
+              model: input.model,
+              messages: conversation,
+              ...(tools ? { tools } : {}),
+              ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+              ...(input.reasoning ? { reasoning: input.reasoning } : {}),
+              timeoutMs: timeout,
+            });
+            // Rebuilt rather than taken from the provider: the transport speaks
+            // the SDK's shape, and what the loop appends to `conversation` must
+            // be the OpenAI shape it feeds back on the next round. `tool_calls`
+            // is omitted when empty — a `null` there is rejected by some
+            // backends on the following request.
+            const assistantMessage = {
+              role: "assistant",
+              content: round.content || null,
+              ...(round.toolCalls.length > 0 ? { tool_calls: round.toolCalls } : {}),
+            } as ChatCompletionMessageParam;
             return {
-              assistantMessage: (message ?? { role: "assistant", content: "" }) as ChatCompletionMessageParam,
-              toolCalls: message?.tool_calls ?? [],
-              content: message?.content?.trim() ?? "",
-              usage: mapUsage(completion.usage),
-              latencyMs,
-              raw: completion,
+              assistantMessage,
+              toolCalls: round.toolCalls,
+              content: round.content,
+              usage: round.usage,
+              latencyMs: round.latencyMs,
+              raw: round.responseBody,
             };
           }),
         { baseUrl: conn.baseUrl, priority, onRetry: input.onRetry },

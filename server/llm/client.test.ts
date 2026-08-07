@@ -126,8 +126,44 @@ describe("toOpenAiBaseUrl", () => {
   });
 });
 
-// Mock the OpenAI SDK so chatCompletion can be tested without a live endpoint.
+/**
+ * The provider stub. Fixtures are written in the endpoint's own response shape —
+ * that is what a reader needs to see to judge these tests — and translated to a
+ * transport round below, which is the boundary `chatCompletion` actually calls.
+ * Mocking there rather than inside the SDK keeps the tests about retry,
+ * deadlines and result mapping, not about how the SDK is wired.
+ */
 const createMock = vi.fn();
+
+vi.mock("./transport", () => ({
+  completeRound: async (conn: unknown, input: { timeoutMs?: number }) => {
+    const completion = (await createMock(conn, input)) as {
+      model?: string;
+      choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+    const choice = completion.choices?.[0];
+    return {
+      content: choice?.message?.content?.trim() ?? "",
+      toolCalls: [],
+      usage: completion.usage
+        ? {
+            promptTokens: completion.usage.prompt_tokens,
+            completionTokens: completion.usage.completion_tokens,
+            totalTokens: completion.usage.total_tokens,
+          }
+        : undefined,
+      latencyMs: 1,
+      requestBody: { model: completion.model },
+      responseBody: completion,
+      finishReason: choice?.finish_reason ?? "stop",
+      servedModel: completion.model,
+    };
+  },
+}));
+
+// The OpenAI SDK is still mocked: its error classes are what
+// `isRetryableLlmError` and `toLlmError` classify on the non-transport paths.
 vi.mock("openai", () => {
   class OpenAI {
     chat = { completions: { create: createMock } };
@@ -320,7 +356,7 @@ describe("wire deadlines", () => {
 
     expect(createMock).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ timeout: REPLY_CHAT_COMPLETION_TIMEOUT_MS }),
+      expect.objectContaining({ timeoutMs: REPLY_CHAT_COMPLETION_TIMEOUT_MS }),
     );
     createMock.mockReset();
   });

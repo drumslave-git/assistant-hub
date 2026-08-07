@@ -1,6 +1,6 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText } from "ai";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 import { chatBodyExtrasFor } from "./backends";
@@ -170,6 +170,88 @@ describe("toModelMessages", () => {
         { type: "tool-call", toolName: "t" },
       ],
     });
+  });
+});
+
+describe("chatCompletion end to end, only the network stubbed", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** Stub global fetch (what the provider uses when given none) and record the body. */
+  function stubEndpoint(captured: { body?: Record<string, unknown> }, completion: unknown) {
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify(completion), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+  }
+
+  const completion = {
+    id: "1",
+    object: "chat.completion",
+    created: 0,
+    model: "gemma:12b",
+    choices: [
+      { index: 0, message: { role: "assistant", content: "  hi  " }, finish_reason: "stop" },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+  };
+
+  it("carries the declared backend's thinking knob all the way to the wire", async () => {
+    const { chatCompletion } = await import("./client");
+    const captured: { body?: Record<string, unknown> } = {};
+    stubEndpoint(captured, completion);
+
+    const result = await chatCompletion(
+      { baseUrl: "https://inference.invalid/v1", apiKey: null, backend: "ollama" },
+      { model: "gemma:12b", messages: [{ role: "user", content: "hi" }], reasoning: "off" },
+    );
+
+    // The point of the whole layer: the operator named Ollama, so Ollama's knob
+    // is what reached the endpoint.
+    expect(captured.body?.think).toBe(false);
+    expect(result.content).toBe("hi");
+    expect(result.model).toBe("gemma:12b");
+    expect(result.usage).toEqual({ promptTokens: 10, completionTokens: 4, totalTokens: 14 });
+    expect(result.responseBody).toMatchObject({ id: "1" });
+    expect(result.requestBody).toBeTruthy();
+  });
+
+  it("sends no vendor field when the backend is left generic", async () => {
+    const { chatCompletion } = await import("./client");
+    const captured: { body?: Record<string, unknown> } = {};
+    stubEndpoint(captured, completion);
+
+    await chatCompletion(
+      { baseUrl: "https://inference.invalid/v1", apiKey: null },
+      { model: "gemma:12b", messages: [{ role: "user", content: "hi" }], reasoning: "off" },
+    );
+
+    // An unnamed endpoint behaves exactly as it did before this layer existed.
+    expect(captured.body).not.toHaveProperty("think");
+    expect(captured.body).not.toHaveProperty("chat_template_kwargs");
+    expect(captured.body?.reasoning_effort).toBe("low");
+  });
+
+  it("names a context overflow from the endpoint's own error body", async () => {
+    const { chatCompletion, isContextOverflowError } = await import("./client");
+    vi.stubGlobal("fetch", async () =>
+      new Response(JSON.stringify({ error: { message: "the request exceeds n_ctx" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const failure = await chatCompletion(
+      { baseUrl: "https://inference.invalid/v1", apiKey: null, backend: "llamacpp" },
+      { model: "m", messages: [{ role: "user", content: "hi" }] },
+    ).catch((err: unknown) => err);
+
+    // The phrasing carries no "context" word, so only the llama.cpp adapter's
+    // pattern can see it — and it is read off the body the SDK preserved.
+    expect(isContextOverflowError(failure, "llamacpp")).toBe(true);
+    expect(isContextOverflowError(failure)).toBe(false);
   });
 });
 

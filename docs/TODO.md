@@ -90,12 +90,13 @@ four known keys (`@ai-sdk/openai-compatible/dist/index.js`, the
 So an adapter's `chatBodyExtras()` maps onto `providerOptions` directly and no
 `fetch` shim is needed. Two consequences for the adapters:
 
-- Vendor fields must be written in the **wire spelling** (`reasoning_format`,
-  not `reasoningFormat`), since anything camel-cased that collides with a typed
-  option name would be swallowed by the filter.
-- `reasoning_effort` in snake case passes through as a vendor field; the typed
-  `reasoningEffort` option is the SDK-native way to say the same thing. The
-  adapters use the wire spelling so one code path produces the whole body.
+- Genuine vendor fields use their **wire spelling** (`think`,
+  `chat_template_kwargs`, `reasoning_format`) and pass through untouched.
+- `reasoningEffort` is the exception and must use the **camelCase typed name**.
+  The model writes `reasoning_effort` into the body *after* the passthrough
+  spread, so a snake-case `reasoning_effort` is overwritten by the unset typed
+  option and never reaches the endpoint. Found by the end-to-end test, not by
+  reading the code.
 
 `server/llm/transport.ts` is the single wire, and `server/llm/transport.test.ts`
 pins the passthrough against the real provider with a stub `fetch` — asserting
@@ -108,13 +109,28 @@ turns to it verbatim across rounds, so that shape is a stable internal DTO;
 converting at the edge leaves the loop, the browser agent, and the MCP tool
 bridge untouched by the transport swap.
 
+`chatCompletion` and the tool loop's round factory both run on the transport.
+Migration `0047` is applied to the dev DB and the existing row backfilled to
+`openai-compatible`.
+
+Behavior is deliberately unchanged until an operator names a backend: the
+classifiers still pass `reasoning: "low"`, which on the generic adapter produces
+the identical `reasoning_effort: "low"` body they always sent, and the reply path
+passes no reasoning preference at all.
+
+Two things improved for free by moving off the OpenAI SDK:
+
+- **Error bodies survive.** `APICallError` keeps `responseBody`, where the OpenAI
+  SDK discarded any JSON error body that was not its own `{error:{}}` shape —
+  the "500 status code (no body)" problem `fetchWithErrorDetail` exists to work
+  around. `isContextOverflowError` and `toLlmError` now read it.
+- **`isContextOverflowError` takes the backend**, so an adapter's phrasings are
+  tried after the shared concept matcher.
+
 ### Remaining
 
-- **Wire `transport.completeRound` into `chatCompletion` and the tool loop's
-  round factory.** The module is built, typechecked and tested, but
-  `server/llm/client.ts` still calls the `openai` SDK — nothing uses the new
-  transport yet, so runtime behavior is unchanged so far.
-- Embeddings/images onto the AI SDK provider.
+- Embeddings/images onto the AI SDK provider (they still use the `openai` SDK,
+  as do speech/transcription, which the package cannot serve at all).
 - Backend selector + Detect button in the five Settings connection sections;
   `detectBackendSchema` is already in `features/settings/server/schema.ts` and
   `detectBackend()` in `server/llm/backends/detect.ts`, but no route or UI yet.

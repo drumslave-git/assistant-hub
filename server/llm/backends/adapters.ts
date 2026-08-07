@@ -5,6 +5,14 @@ import { normalizeModelName } from "@/features/self-improvement/model-name";
 import type { ChatRequestIntent, JsonValue, LlmBackendAdapter } from "./types";
 
 /**
+ * Field spelling is not free choice. A genuine vendor field is written in its
+ * **wire** spelling (`think`, `chat_template_kwargs`, `reasoning_format`) and
+ * passes through the provider untouched. `reasoningEffort` is the exception: it
+ * is one of the four options the provider types itself, and it writes
+ * `reasoning_effort` into the body *after* the passthrough spread — so a
+ * snake-case `reasoning_effort` here would be silently overwritten by the unset
+ * typed option and never reach the endpoint. It is pinned by a test.
+ *
  * The four backend adapters, deliberately in one file: their value is in being
  * comparable. Reading them side by side is how you see that "turn thinking off"
  * is four different requests, which is the fact that kept breaking the bot on
@@ -55,9 +63,9 @@ const ollama: LlmBackendAdapter = {
   chatBodyExtras(intent: ChatRequestIntent): Record<string, JsonValue> {
     switch (intent.reasoning) {
       case "off":
-        return { think: false, reasoning_effort: "low" };
+        return { think: false, reasoningEffort: "low" };
       case "low":
-        return { think: "low", reasoning_effort: "low" };
+        return { think: "low", reasoningEffort: "low" };
       default:
         return {};
     }
@@ -124,9 +132,9 @@ const vllm: LlmBackendAdapter = {
   chatBodyExtras(intent: ChatRequestIntent): Record<string, JsonValue> {
     switch (intent.reasoning) {
       case "off":
-        return { chat_template_kwargs: { enable_thinking: false }, reasoning_effort: "low" };
+        return { chat_template_kwargs: { enable_thinking: false }, reasoningEffort: "low" };
       case "low":
-        return { reasoning_effort: "low" };
+        return { reasoningEffort: "low" };
       default:
         return {};
     }
@@ -155,7 +163,7 @@ const generic: LlmBackendAdapter = {
   id: "openai-compatible",
   chatBodyExtras(intent: ChatRequestIntent): Record<string, JsonValue> {
     return intent.reasoning === "off" || intent.reasoning === "low"
-      ? { reasoning_effort: "low" }
+      ? { reasoningEffort: "low" }
       : {};
   },
   readReasoning(raw) {

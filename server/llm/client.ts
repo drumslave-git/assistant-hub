@@ -6,12 +6,16 @@ import OpenAI, {
   APIError,
 } from "openai";
 
+import { APICallError } from "ai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 import { ApiError } from "@/lib/api-error";
 import type { LlmBackendId } from "@/lib/llm-backend";
 
+import { adapterFor } from "./backends";
+import type { ReasoningMode } from "./backends";
 import { withLlmPriority, type LlmPriority } from "./priority";
+import { completeRound } from "./transport";
 
 export type { LlmPriority } from "./priority";
 
@@ -281,6 +285,28 @@ function apiErrorDetail(err: APIError): string {
 }
 
 /**
+ * The most informative sentence on an AI SDK call error: the endpoint's own
+ * body when it sent one, else the SDK's message. Preferred over the message
+ * alone because an OpenAI-compatible server's real reason ("Image generation
+ * failed: Input type (c10::Half) and bias type (float) should be the same")
+ * lives in the body, and a generic status line is what replaces it otherwise.
+ */
+function sdkErrorDetail(err: InstanceType<typeof APICallError>): string {
+  const body = err.responseBody?.trim();
+  if (!body) return err.message;
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const nested = (parsed.error as { message?: unknown } | undefined)?.message;
+    for (const value of [nested, parsed.detail, parsed.message]) {
+      if (typeof value === "string" && value.trim()) return value;
+    }
+  } catch {
+    // Not JSON — the body is the message.
+  }
+  return body;
+}
+
+/**
  * True when an LLM failure means the request was too large for the model's
  * context window — the one provider error a caller can fix by sending less
  * (e.g. shrinking the injected history) rather than by retrying as-is.
@@ -294,15 +320,26 @@ function apiErrorDetail(err: APIError): string {
  * order. OpenAI's own wording (`maximum context length … Please reduce …`)
  * contains no "exceeded" and is matched separately.
  */
-export function isContextOverflowError(err: unknown): boolean {
+export function isContextOverflowError(err: unknown, backend?: LlmBackendId | null): boolean {
+  // The AI SDK keeps the endpoint's raw error body on the error, where the
+  // OpenAI SDK discarded any JSON body that was not its own `{error:{}}` shape.
+  // The sentence that names the overflow often lives only there, so both are
+  // searched — see `fetchWithErrorDetail` for the failure this used to cause.
+  const body = APICallError.isInstance(err) ? (err.responseBody ?? "") : "";
   const message =
-    err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  if (!message) return false;
+    (err instanceof Error ? err.message : typeof err === "string" ? err : "") +
+    (body ? `\n${body}` : "");
+  if (!message.trim()) return false;
   if (/maximum context length/i.test(message)) return true; // OpenAI, vLLM
-  return (
+  if (
     /context[_ ](?:size|length|window)|context overflow/i.test(message) &&
     /exceed|overflow|too (?:large|long|big|many)/i.test(message)
-  );
+  ) {
+    return true;
+  }
+  // Phrasings the concept matcher cannot see, contributed by the backend the
+  // operator declared — never instead of the shared matcher, only after it.
+  return adapterFor(backend).contextOverflowPatterns.some((pattern) => pattern.test(message));
 }
 
 /**
@@ -328,6 +365,17 @@ export function isRetryableLlmError(err: unknown): boolean {
   // rejected request is rejected the same way every time).
   if (err instanceof APIConnectionError) return true; // covers the timeout subclass
   if (err instanceof APIError) return err.status === undefined || err.status >= 500;
+  // AI SDK transport. `isRetryable` already encodes the 408/409/429/5xx rule;
+  // a call that never reached a status (connection dropped, deadline hit) has
+  // none, and is the hung-request case this whole retry exists for.
+  if (APICallError.isInstance(err)) {
+    return err.isRetryable || err.statusCode === undefined || err.statusCode >= 500;
+  }
+  // A deadline that fired: the SDK surfaces `timeout` as an abort, which says
+  // nothing about the request and is worth one more attempt.
+  if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
+    return true;
+  }
   // Already mapped by a caller: the endpoint-unavailable family, and nothing
   // else — `bad_request` (401/403) is a configuration fault, not a bad moment.
   if (err instanceof ApiError) return err.code === "service_unavailable";
@@ -417,6 +465,19 @@ export function toLlmError(err: unknown, baseUrl: string): ApiError {
     // anything else from the endpoint is treated as it being unavailable.
     const code = err.status === 401 || err.status === 403 ? "bad_request" : "service_unavailable";
     return new ApiError(code, `LLM endpoint error (${err.status ?? "unknown"}): ${apiErrorDetail(err)}`);
+  }
+  if (APICallError.isInstance(err)) {
+    // No status at all means the call never got an answer — a dropped
+    // connection or a fired deadline, which is the endpoint being unreachable
+    // rather than an endpoint error to quote a status for.
+    if (err.statusCode === undefined) {
+      return ApiError.serviceUnavailable(`Could not reach ${baseUrl}: ${err.message}`);
+    }
+    const code =
+      err.statusCode === 401 || err.statusCode === 403 ? "bad_request" : "service_unavailable";
+    // The raw body is kept by this SDK, so the server's own explanation survives
+    // — it is usually the only text that says what actually went wrong.
+    return new ApiError(code, `LLM endpoint error (${err.statusCode}): ${sdkErrorDetail(err)}`);
   }
   return ApiError.serviceUnavailable(err instanceof Error ? err.message : String(err));
 }
@@ -536,12 +597,15 @@ export async function chatCompletion(
      */
     maxTokens?: number;
     /**
-     * Bound for a thinking model's reasoning. Classification calls pass "low":
-     * their answer is a small JSON verdict, and unbounded thinking was measured
-     * costing more wall time than the verdict itself. Ignored by providers and
-     * models without the knob.
+     * What to ask of a thinking model. The *intent*, not the field: which knob
+     * expresses it is the backend adapter's business (`./backends`), because
+     * they disagree — `reasoning_effort` is measured being ignored by Ollama,
+     * which wants `think`, while llama.cpp wants a chat-template argument.
+     *
+     * Classification calls pass "off": their answer is a small JSON verdict, and
+     * thinking was measured costing ~180 tokens to produce a 15-token answer.
      */
-    reasoningEffort?: "low" | "medium" | "high";
+    reasoning?: ReasoningMode;
     /** Reports the exact request body just before it is sent (for trace recording). */
     onRequest?: (requestBody: unknown) => void | Promise<void>;
     /**
@@ -553,11 +617,15 @@ export async function chatCompletion(
   },
 ): Promise<ChatCompletionResult> {
   const priority = input.priority ?? "interactive";
+  // Reported to the trace before the call, so the response step's elapsed time
+  // is provider latency. The transport reports the *actual* body the SDK built
+  // afterwards, and that is what the result carries — this is the caller's
+  // preview, kept in the shape the trace has always recorded.
   const requestBody = {
     model: input.model,
     messages: input.messages as ChatCompletionMessageParam[],
     ...(input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
-    ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
+    ...adapterFor(conn.backend).chatBodyExtras({ reasoning: input.reasoning }),
   };
   const timeout =
     input.timeoutMs ??
@@ -575,37 +643,37 @@ export async function chatCompletion(
       // measure the wire, not the in-app queue; the queue wait shows up in traces
       // as the gap before the request event.
       withLlmPriority(priority, async () => {
-        const start = Date.now();
         await input.onRequest?.(requestBody);
-        const created = await createOpenAiClient(conn).chat.completions.create(requestBody, {
-          timeout,
+        const round = await completeRound(conn, {
+          model: input.model,
+          messages: input.messages as ChatCompletionMessageParam[],
+          ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+          ...(input.reasoning ? { reasoning: input.reasoning } : {}),
+          timeoutMs: timeout,
         });
-        return { completion: created, latencyMs: Date.now() - start };
+        return { completion: round, latencyMs: round.latencyMs };
       }),
     { baseUrl: conn.baseUrl, priority, onRetry: input.onRetry },
   );
 
-  const content = completion.choices[0]?.message?.content?.trim() ?? "";
-  if (!content) {
+  if (!completion.content) {
     throw ApiError.serviceUnavailable(
-      finishReasonOf(completion) === "length"
+      completion.finishReason === "length"
         ? CONTEXT_EXHAUSTED_MESSAGE
         : "LLM returned an empty response",
     );
   }
   return {
-    content,
+    content: completion.content,
     model: input.model,
-    servedModel: servedModelOf(completion),
-    usage: completion.usage
-      ? {
-          promptTokens: completion.usage.prompt_tokens,
-          completionTokens: completion.usage.completion_tokens,
-          totalTokens: completion.usage.total_tokens,
-        }
-      : undefined,
+    // The provider's own answer, preferred over the SDK's echo of what we asked
+    // for: a served model that stops matching the configured one is real
+    // information (see `ChatCompletionResult.servedModel`).
+    servedModel: servedModelOf(completion.responseBody) ?? completion.servedModel,
+    usage: completion.usage,
     latencyMs,
-    requestBody,
-    responseBody: completion,
+    // The body the SDK actually built and sent, not the preview above.
+    requestBody: completion.requestBody ?? requestBody,
+    responseBody: completion.responseBody,
   };
 }

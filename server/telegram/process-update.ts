@@ -74,6 +74,7 @@ import { VOICE_TURN_NOTE, VOICE_UNAVAILABLE_NOTE } from "@/features/voice/format
 import { synthesizeVoiceReply } from "@/features/voice/server/speak";
 import { ApiError } from "@/lib/api-error";
 import { resolveRequiredLanguage } from "@/lib/language";
+import type { ReasoningMode } from "@/server/llm/backends";
 import {
   chatCompletion,
   llmUsageOf,
@@ -105,7 +106,16 @@ import type { IncomingUpdate, ReplyTransport } from "./transport";
  * summons. 3,000 clears every observed answer with room while still stopping a
  * runaway.
  */
-const CLASSIFIER_REASONING_EFFORT = "low" as const;
+/**
+ * What the classifiers ask of a thinking model.
+ *
+ * "low" rather than "off" deliberately, for now: on the generic adapter it
+ * produces the identical `reasoning_effort: "low"` body these calls have always
+ * sent, so naming the backend is what changes behavior, not this migration.
+ * Turning it to "off" is the measured win (~180 reasoning tokens to produce a
+ * 15-token verdict) and is tracked separately in `docs/TODO.md`.
+ */
+const CLASSIFIER_REASONING: ReasoningMode = "low";
 const CLASSIFIER_MAX_TOKENS = 3_000;
 
 /**
@@ -155,7 +165,7 @@ async function runClassifier(
     messages,
     maxTokens: budget?.maxTokens ?? CLASSIFIER_MAX_TOKENS,
     ...(budget?.timeoutMs !== undefined ? { timeoutMs: budget.timeoutMs } : {}),
-    reasoningEffort: CLASSIFIER_REASONING_EFFORT,
+    reasoning: CLASSIFIER_REASONING,
   });
 }
 
@@ -637,7 +647,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
                 model: runtime.model,
                 messages,
                 maxTokens: CLASSIFIER_MAX_TOKENS,
-                reasoningEffort: CLASSIFIER_REASONING_EFFORT,
+                reasoning: CLASSIFIER_REASONING,
               },
             );
             await replyTrace.event({

@@ -26,7 +26,7 @@ describe("thinking control differs per backend", () => {
   it("Ollama sends its own think flag, because it was measured ignoring reasoning_effort", () => {
     expect(chatBodyExtrasFor("ollama", { reasoning: "off" })).toEqual({
       think: false,
-      reasoning_effort: "low",
+      reasoningEffort: "low",
     });
   });
 
@@ -40,13 +40,13 @@ describe("thinking control differs per backend", () => {
   it("vLLM combines the template argument with the spec field", () => {
     expect(chatBodyExtrasFor("vllm", { reasoning: "off" })).toEqual({
       chat_template_kwargs: { enable_thinking: false },
-      reasoning_effort: "low",
+      reasoningEffort: "low",
     });
   });
 
   it("the generic adapter sends only what the OpenAI spec guarantees", () => {
     expect(chatBodyExtrasFor("openai-compatible", { reasoning: "off" })).toEqual({
-      reasoning_effort: "low",
+      reasoningEffort: "low",
     });
   });
 
