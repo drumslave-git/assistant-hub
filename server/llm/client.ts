@@ -5,9 +5,12 @@ import OpenAI, {
   APIConnectionTimeoutError,
   APIError,
 } from "openai";
+
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 import { ApiError } from "@/lib/api-error";
+import type { LlmBackendId } from "@/lib/llm-backend";
+
 import { withLlmPriority, type LlmPriority } from "./priority";
 
 export type { LlmPriority } from "./priority";
@@ -22,6 +25,17 @@ export type { LlmPriority } from "./priority";
 export interface LlmConnection {
   baseUrl: string;
   apiKey?: string | null;
+  /**
+   * Which inference server answers at {@link baseUrl} — see
+   * `@/lib/llm-backend` and `./backends`.
+   *
+   * A property of the *host*, exactly like {@link apiKey}: when a feature falls
+   * back to the LLM endpoint because it has none of its own, it inherits that
+   * endpoint's backend along with its key. Omitted resolves to the conservative
+   * generic adapter, so a connection assembled without one behaves as it did
+   * before this existed.
+   */
+  backend?: LlmBackendId | null;
 }
 
 const LIST_MODELS_TIMEOUT_MS = 15_000;

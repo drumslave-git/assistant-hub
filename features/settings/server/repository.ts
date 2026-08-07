@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { settings, type SettingsRow } from "@/db/schema";
+import { type LlmBackendId, toLlmBackendId } from "@/lib/llm-backend";
 
 /**
  * Typed persistence for the single settings row. Pure data access: no policy, no
@@ -20,6 +21,8 @@ export const SETTINGS_ID = "singleton";
 export interface SettingsRecord {
   llmBaseUrl: string | null;
   llmApiKey: string | null;
+  /** Which inference server serves the LLM endpoint — see `@/lib/llm-backend`. */
+  llmBackend: LlmBackendId;
   model: string | null;
   activePersonalityId: string | null;
   telegramBotToken: string | null;
@@ -28,18 +31,24 @@ export interface SettingsRecord {
   embeddingBaseUrl: string | null;
   /** Embedding endpoint API key (only used with `embeddingBaseUrl`). */
   embeddingApiKey: string | null;
+  /** Which inference server serves the embedding endpoint. */
+  embeddingBackend: LlmBackendId;
   /** Embedding model id; null disables embedding-backed capabilities. */
   embeddingModel: string | null;
   /** Image endpoint base URL; null means "reuse the LLM connection". */
   imageBaseUrl: string | null;
   /** Image endpoint API key (only used with `imageBaseUrl`). */
   imageApiKey: string | null;
+  /** Which inference server serves the image endpoint. */
+  imageBackend: LlmBackendId;
   /** Image model id; null disables image generation. */
   imageModel: string | null;
   /** Speech endpoint base URL; null means "reuse the LLM connection". */
   speechBaseUrl: string | null;
   /** Speech endpoint API key (only used with `speechBaseUrl`). */
   speechApiKey: string | null;
+  /** Which inference server serves the speech endpoint. */
+  speechBackend: LlmBackendId;
   /** Speech (TTS) model id; null disables voice replies. */
   speechModel: string | null;
   /** Voice name for the speech endpoint; null → endpoint default. */
@@ -48,6 +57,8 @@ export interface SettingsRecord {
   transcriptionBaseUrl: string | null;
   /** Transcription endpoint API key (only used with `transcriptionBaseUrl`). */
   transcriptionApiKey: string | null;
+  /** Which inference server serves the transcription endpoint. */
+  transcriptionBackend: LlmBackendId;
   /** Transcription (STT) model id; null → voice falls back to the chat model. */
   transcriptionModel: string | null;
   ownerUsername: string | null;
@@ -70,22 +81,27 @@ export interface SettingsRecord {
 export interface SettingsPatch {
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;
+  llmBackend?: LlmBackendId;
   model?: string | null;
   activePersonalityId?: string | null;
   telegramBotToken?: string | null;
   tavilyApiKey?: string | null;
   embeddingBaseUrl?: string | null;
   embeddingApiKey?: string | null;
+  embeddingBackend?: LlmBackendId;
   embeddingModel?: string | null;
   imageBaseUrl?: string | null;
   imageApiKey?: string | null;
+  imageBackend?: LlmBackendId;
   imageModel?: string | null;
   speechBaseUrl?: string | null;
   speechApiKey?: string | null;
+  speechBackend?: LlmBackendId;
   speechModel?: string | null;
   speechVoice?: string | null;
   transcriptionBaseUrl?: string | null;
   transcriptionApiKey?: string | null;
+  transcriptionBackend?: LlmBackendId;
   transcriptionModel?: string | null;
   ownerUsername?: string | null;
   ownerUserId?: string | null;
@@ -119,22 +135,30 @@ function mapRow(row: SettingsRow): SettingsRecord {
   return {
     llmBaseUrl: row.llmBaseUrl,
     llmApiKey: row.llmApiKey,
+    // Coerced, not cast: the column is plain text, so a hand-edited or
+    // future-version value must degrade to the conservative adapter rather than
+    // reach the adapter registry as an id it does not have.
+    llmBackend: toLlmBackendId(row.llmBackend),
     model: row.model,
     activePersonalityId: row.activePersonalityId,
     telegramBotToken: row.telegramBotToken,
     tavilyApiKey: row.tavilyApiKey,
     embeddingBaseUrl: row.embeddingBaseUrl,
     embeddingApiKey: row.embeddingApiKey,
+    embeddingBackend: toLlmBackendId(row.embeddingBackend),
     embeddingModel: row.embeddingModel,
     imageBaseUrl: row.imageBaseUrl,
     imageApiKey: row.imageApiKey,
+    imageBackend: toLlmBackendId(row.imageBackend),
     imageModel: row.imageModel,
     speechBaseUrl: row.speechBaseUrl,
     speechApiKey: row.speechApiKey,
+    speechBackend: toLlmBackendId(row.speechBackend),
     speechModel: row.speechModel,
     speechVoice: row.speechVoice,
     transcriptionBaseUrl: row.transcriptionBaseUrl,
     transcriptionApiKey: row.transcriptionApiKey,
+    transcriptionBackend: toLlmBackendId(row.transcriptionBackend),
     transcriptionModel: row.transcriptionModel,
     ownerUsername: row.ownerUsername,
     ownerUserId: row.ownerUserId,

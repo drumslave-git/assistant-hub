@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { LLM_BACKEND_IDS } from "@/lib/llm-backend";
+
 /**
  * Settings validation contract — the single source of truth for the shape and
  * bounds of the DB-backed configuration. Shared by the service, the Route
@@ -14,6 +16,13 @@ const model = z.string().trim().min(1).max(200);
 const apiKey = z.string().trim().max(500);
 const botToken = z.string().trim().max(200);
 
+/**
+ * Which inference server sits behind an endpoint. Not a secret and not
+ * nullable — every endpoint resolves to some backend, and an unnamed one
+ * resolves to the conservative generic adapter (see `@/lib/llm-backend`).
+ */
+const backend = z.enum(LLM_BACKEND_IDS);
+
 /** Owner is chosen from known users; the id is Telegram's numeric user id. */
 const ownerUserId = z.string().trim().regex(/^\d+$/, "Invalid user id");
 
@@ -27,6 +36,8 @@ const timeOfDay = z
 export const settingsSchema = z.object({
   /** OpenAI-compatible endpoint base URL, or null when unconfigured. */
   llmBaseUrl: baseUrl.nullable(),
+  /** Which inference server serves the LLM endpoint. */
+  llmBackend: backend,
   /** Selected chat model id, or null when none picked. */
   model: model.nullable(),
   /** Whether an API key is stored (the value itself is never exposed). */
@@ -37,18 +48,24 @@ export const settingsSchema = z.object({
   webSearchConfigured: z.boolean(),
   /** Embedding endpoint base URL, or null to reuse the LLM connection. */
   embeddingBaseUrl: baseUrl.nullable(),
+  /** Which inference server serves the embedding endpoint. */
+  embeddingBackend: backend,
   /** Selected embedding model id, or null when none picked (semantic recall off). */
   embeddingModel: model.nullable(),
   /** Whether an embedding API key is stored (the value itself is never exposed). */
   embeddingApiKeyConfigured: z.boolean(),
   /** Image endpoint base URL, or null to reuse the LLM connection. */
   imageBaseUrl: baseUrl.nullable(),
+  /** Which inference server serves the image endpoint. */
+  imageBackend: backend,
   /** Selected image model id, or null when none picked (image generation off). */
   imageModel: model.nullable(),
   /** Whether an image API key is stored (the value itself is never exposed). */
   imageApiKeyConfigured: z.boolean(),
   /** Speech endpoint base URL, or null to reuse the LLM connection. */
   speechBaseUrl: baseUrl.nullable(),
+  /** Which inference server serves the speech endpoint. */
+  speechBackend: backend,
   /** Selected speech (TTS) model id, or null when none picked (voice replies off). */
   speechModel: model.nullable(),
   /** Voice name for the speech endpoint, or null for the endpoint default. */
@@ -57,6 +74,8 @@ export const settingsSchema = z.object({
   speechApiKeyConfigured: z.boolean(),
   /** Transcription endpoint base URL, or null to reuse the LLM connection. */
   transcriptionBaseUrl: baseUrl.nullable(),
+  /** Which inference server serves the transcription endpoint. */
+  transcriptionBackend: backend,
   /** Selected transcription model id, or null → voice falls back to the chat model. */
   transcriptionModel: model.nullable(),
   /** Whether a transcription API key is stored (the value itself is never exposed). */
@@ -87,22 +106,27 @@ export type Settings = z.infer<typeof settingsSchema>;
 export const updateSettingsSchema = z
   .object({
     llmBaseUrl: baseUrl.nullable(),
+    llmBackend: backend,
     model: model.nullable(),
     apiKey: apiKey.nullable(),
     telegramBotToken: botToken.nullable(),
     tavilyApiKey: apiKey.nullable(),
     embeddingBaseUrl: baseUrl.nullable(),
     embeddingApiKey: apiKey.nullable(),
+    embeddingBackend: backend,
     embeddingModel: model.nullable(),
     imageBaseUrl: baseUrl.nullable(),
     imageApiKey: apiKey.nullable(),
+    imageBackend: backend,
     imageModel: model.nullable(),
     speechBaseUrl: baseUrl.nullable(),
     speechApiKey: apiKey.nullable(),
+    speechBackend: backend,
     speechModel: model.nullable(),
     speechVoice: z.string().trim().max(100).nullable(),
     transcriptionBaseUrl: baseUrl.nullable(),
     transcriptionApiKey: apiKey.nullable(),
+    transcriptionBackend: backend,
     transcriptionModel: model.nullable(),
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
@@ -184,3 +208,14 @@ export const testTranscriptionSchema = z.object({
 });
 
 export type TestTranscription = z.infer<typeof testTranscriptionSchema>;
+
+/**
+ * Input for the backend fingerprint probe: the URL to identify. Unauthenticated
+ * native admin routes (`/api/version`, `/props`, `/version`) are what answer, so
+ * no key is taken — nothing here reads or needs a secret.
+ */
+export const detectBackendSchema = z.object({
+  baseUrl,
+});
+
+export type DetectBackend = z.infer<typeof detectBackendSchema>;

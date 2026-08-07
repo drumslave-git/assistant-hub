@@ -5,6 +5,7 @@ import { getDb } from "@/db/drizzle";
 import { getKnownUser } from "@/features/known-users/server/repository";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
+import { DEFAULT_LLM_BACKEND, type LlmBackendId } from "@/lib/llm-backend";
 import type { TraceTrigger } from "@/lib/trace";
 import { listModels } from "@/server/llm/client";
 import {
@@ -54,21 +55,26 @@ const FEATURE = FEATURES["settings"];
 function toClientSettings(record: SettingsRecord | null): Settings {
   return {
     llmBaseUrl: record?.llmBaseUrl ?? null,
+    llmBackend: record?.llmBackend ?? DEFAULT_LLM_BACKEND,
     model: record?.model ?? null,
     apiKeyConfigured: Boolean(record?.llmApiKey),
     telegramBotTokenConfigured: Boolean(record?.telegramBotToken),
     webSearchConfigured: Boolean(record?.tavilyApiKey),
     embeddingBaseUrl: record?.embeddingBaseUrl ?? null,
+    embeddingBackend: record?.embeddingBackend ?? DEFAULT_LLM_BACKEND,
     embeddingModel: record?.embeddingModel ?? null,
     embeddingApiKeyConfigured: Boolean(record?.embeddingApiKey),
     imageBaseUrl: record?.imageBaseUrl ?? null,
+    imageBackend: record?.imageBackend ?? DEFAULT_LLM_BACKEND,
     imageModel: record?.imageModel ?? null,
     imageApiKeyConfigured: Boolean(record?.imageApiKey),
     speechBaseUrl: record?.speechBaseUrl ?? null,
+    speechBackend: record?.speechBackend ?? DEFAULT_LLM_BACKEND,
     speechModel: record?.speechModel ?? null,
     speechVoice: record?.speechVoice ?? null,
     speechApiKeyConfigured: Boolean(record?.speechApiKey),
     transcriptionBaseUrl: record?.transcriptionBaseUrl ?? null,
+    transcriptionBackend: record?.transcriptionBackend ?? DEFAULT_LLM_BACKEND,
     transcriptionModel: record?.transcriptionModel ?? null,
     transcriptionApiKeyConfigured: Boolean(record?.transcriptionApiKey),
     ownerUsername: record?.ownerUsername ?? null,
@@ -128,10 +134,20 @@ export async function getWebSearchApiKey(db: DrizzleDb = getDb()): Promise<strin
  */
 export async function getLlmRuntime(
   db: DrizzleDb = getDb(),
-): Promise<{ baseUrl: string; apiKey: string | null; model: string } | null> {
+): Promise<{
+  baseUrl: string;
+  apiKey: string | null;
+  model: string;
+  backend: LlmBackendId;
+} | null> {
   const record = await getSettingsRecord(db);
   if (!record?.llmBaseUrl || !record.model) return null;
-  return { baseUrl: record.llmBaseUrl, apiKey: record.llmApiKey, model: record.model };
+  return {
+    baseUrl: record.llmBaseUrl,
+    apiKey: record.llmApiKey,
+    model: record.model,
+    backend: record.llmBackend,
+  };
 }
 
 /**
@@ -150,6 +166,9 @@ function toEmbeddingRuntime(record: SettingsRecord | null): EmbeddingRuntime | n
   return {
     baseUrl,
     apiKey: ownEndpoint ? record.embeddingApiKey : record.llmApiKey,
+    // The backend follows the host, exactly like the key above: falling back to
+    // the LLM endpoint means inheriting the server that answers there.
+    backend: ownEndpoint ? record.embeddingBackend : record.llmBackend,
     model: record.embeddingModel,
   };
 }
@@ -180,6 +199,7 @@ function toImageRuntime(record: SettingsRecord | null): ImageRuntime | null {
   return {
     baseUrl,
     apiKey: ownEndpoint ? record.imageApiKey : record.llmApiKey,
+    backend: ownEndpoint ? record.imageBackend : record.llmBackend,
     model: record.imageModel,
   };
 }
@@ -208,6 +228,7 @@ function toSpeechRuntime(record: SettingsRecord | null): SpeechRuntime | null {
   return {
     baseUrl,
     apiKey: ownEndpoint ? record.speechApiKey : record.llmApiKey,
+    backend: ownEndpoint ? record.speechBackend : record.llmBackend,
     model: record.speechModel,
     voice: record.speechVoice,
   };
@@ -255,6 +276,7 @@ function toTranscriptionRuntime(record: SettingsRecord | null): TranscriptionRun
   return {
     baseUrl,
     apiKey: ownEndpoint ? record.transcriptionApiKey : record.llmApiKey,
+    backend: ownEndpoint ? record.transcriptionBackend : record.llmBackend,
     model: record.transcriptionModel,
   };
 }
@@ -394,6 +416,7 @@ export async function getBotPolicy(db: DrizzleDb = getDb()): Promise<BotPolicy> 
 function toPatch(input: UpdateSettings): SettingsPatch {
   const patch: SettingsPatch = {};
   if (input.llmBaseUrl !== undefined) patch.llmBaseUrl = input.llmBaseUrl;
+  if (input.llmBackend !== undefined) patch.llmBackend = input.llmBackend;
   if (input.model !== undefined) patch.model = input.model;
   if (input.apiKey !== undefined) patch.llmApiKey = input.apiKey === "" ? null : input.apiKey;
   if (input.telegramBotToken !== undefined) {
@@ -403,16 +426,19 @@ function toPatch(input: UpdateSettings): SettingsPatch {
     patch.tavilyApiKey = input.tavilyApiKey === "" ? null : input.tavilyApiKey;
   }
   if (input.embeddingBaseUrl !== undefined) patch.embeddingBaseUrl = input.embeddingBaseUrl;
+  if (input.embeddingBackend !== undefined) patch.embeddingBackend = input.embeddingBackend;
   if (input.embeddingModel !== undefined) patch.embeddingModel = input.embeddingModel;
   if (input.embeddingApiKey !== undefined) {
     patch.embeddingApiKey = input.embeddingApiKey === "" ? null : input.embeddingApiKey;
   }
   if (input.imageBaseUrl !== undefined) patch.imageBaseUrl = input.imageBaseUrl;
+  if (input.imageBackend !== undefined) patch.imageBackend = input.imageBackend;
   if (input.imageModel !== undefined) patch.imageModel = input.imageModel;
   if (input.imageApiKey !== undefined) {
     patch.imageApiKey = input.imageApiKey === "" ? null : input.imageApiKey;
   }
   if (input.speechBaseUrl !== undefined) patch.speechBaseUrl = input.speechBaseUrl;
+  if (input.speechBackend !== undefined) patch.speechBackend = input.speechBackend;
   if (input.speechModel !== undefined) patch.speechModel = input.speechModel;
   if (input.speechApiKey !== undefined) {
     patch.speechApiKey = input.speechApiKey === "" ? null : input.speechApiKey;
@@ -423,6 +449,7 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   if (input.transcriptionBaseUrl !== undefined) {
     patch.transcriptionBaseUrl = input.transcriptionBaseUrl;
   }
+  if (input.transcriptionBackend !== undefined) patch.transcriptionBackend = input.transcriptionBackend;
   if (input.transcriptionModel !== undefined) {
     patch.transcriptionModel = input.transcriptionModel;
   }
@@ -782,22 +809,27 @@ export async function testTranscription(
 const EMPTY_RECORD: SettingsRecord = {
   llmBaseUrl: null,
   llmApiKey: null,
+  llmBackend: DEFAULT_LLM_BACKEND,
   model: null,
   activePersonalityId: null,
   telegramBotToken: null,
   tavilyApiKey: null,
   embeddingBaseUrl: null,
   embeddingApiKey: null,
+  embeddingBackend: DEFAULT_LLM_BACKEND,
   embeddingModel: null,
   imageBaseUrl: null,
   imageApiKey: null,
+  imageBackend: DEFAULT_LLM_BACKEND,
   imageModel: null,
   speechBaseUrl: null,
   speechApiKey: null,
+  speechBackend: DEFAULT_LLM_BACKEND,
   speechModel: null,
   speechVoice: null,
   transcriptionBaseUrl: null,
   transcriptionApiKey: null,
+  transcriptionBackend: DEFAULT_LLM_BACKEND,
   transcriptionModel: null,
   ownerUsername: null,
   ownerUserId: null,

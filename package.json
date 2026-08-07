@@ -22,10 +22,12 @@
     "release:major": "npm version major --no-git-tag-version"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.25",
     "@ghostery/adblocker-playwright": "^2.18.1",
     "@grammyjs/runner": "^2.0.3",
     "@grammyjs/types": "^3.28.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "ai": "^7.0.56",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
     "echarts": "^6.1.0",

@@ -55,6 +55,19 @@ export const settings = pgTable(
     llmBaseUrl: text("llm_base_url"),
     /** Optional API key for the LLM endpoint. Secret — never returned in plaintext. */
     llmApiKey: text("llm_api_key"),
+    /**
+     * Which inference server serves {@link llmBaseUrl} — see `@/lib/llm-backend`.
+     *
+     * "OpenAI-compatible" describes the wire shape, not the behavior, and the
+     * behavioral gaps (whether a thinking model can be told to stop, whether an
+     * oversized prompt raises or is silently truncated) broke the bot on every
+     * backend switch. Declaring the server is what lets
+     * `server/llm/backends` normalize it in one place.
+     *
+     * Defaults to the generic adapter, which assumes nothing beyond the spec —
+     * so every row written before this column existed behaves exactly as it did.
+     */
+    llmBackend: text("llm_backend").notNull().default("openai-compatible"),
     /** Selected chat model id (from the endpoint's `/v1/models`). */
     model: text("model"),
     /**
@@ -95,6 +108,8 @@ export const settings = pgTable(
      * is used along with the LLM base URL.
      */
     embeddingApiKey: text("embedding_api_key"),
+    /** Which inference server serves the embedding endpoint — see {@link llmBackend}. */
+    embeddingBackend: text("embedding_backend").notNull().default("openai-compatible"),
     /**
      * Embedding model id (e.g. `bge-m3`). Must emit vectors of
      * {@link EMBEDDING_DIMENSIONS} components — the width the vector columns are
@@ -115,6 +130,8 @@ export const settings = pgTable(
      * along with the LLM base URL.
      */
     imageApiKey: text("image_api_key"),
+    /** Which inference server serves the image endpoint — see {@link llmBackend}. */
+    imageBackend: text("image_backend").notNull().default("openai-compatible"),
     /**
      * Image generation model id. Null disables the `image_generate` tool rather
      * than failing a reply — the same "degrade, don't guess a model id" rule
@@ -132,6 +149,8 @@ export const settings = pgTable(
      * along with the LLM base URL.
      */
     speechApiKey: text("speech_api_key"),
+    /** Which inference server serves the speech endpoint — see {@link llmBackend}. */
+    speechBackend: text("speech_backend").notNull().default("openai-compatible"),
     /**
      * Speech (TTS) model id. Null disables voice replies rather than failing a
      * reply — the same "degrade, don't guess a model id" rule
@@ -152,6 +171,8 @@ export const settings = pgTable(
      * otherwise the LLM key is used along with the LLM base URL.
      */
     transcriptionApiKey: text("transcription_api_key"),
+    /** Which inference server serves the transcription endpoint — see {@link llmBackend}. */
+    transcriptionBackend: text("transcription_backend").notNull().default("openai-compatible"),
     /**
      * Transcription (STT) model id. When set, voice messages are transcribed on
      * the dedicated `/v1/audio/transcriptions` endpoint; when null, transcription

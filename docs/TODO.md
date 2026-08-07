@@ -28,6 +28,127 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Backend normalization layer (`in-progress`, 2026-08-07)
+
+User decision, 2026-08-07: "bot breaks every time I switch backend… implement an
+adaptation/normalization layer per backend instead of layers of fixes every
+time." Step zero, ahead of the reply-latency work below.
+
+Decisions taken with the user before implementing:
+
+- **Scope**: all five endpoints get their own backend selector (LLM, embedding,
+  image, speech, transcription) — they can genuinely be different servers.
+- **Tool loop**: `runToolLoop` stays hand-rolled; the AI SDK is transport only.
+  The SDK's agent has no stall guard, no `compact()`, no forced tools-free final
+  round, and no per-round usage reporting — and Analytics groups on the round.
+- **Backends**: Ollama, llama.cpp, vLLM, and a generic OpenAI-compatible
+  fallback (the default, and what every pre-existing settings row resolves to).
+- **Detection**: manual dropdown plus a Detect button that fingerprints the
+  endpoint. Never automatic — a silent change is the bug class this prevents.
+- **Speech/transcription**: keep the `openai` SDK internally.
+  `@ai-sdk/openai-compatible` supports chat, completion, embedding and image
+  models only — it has no transcription or speech model type.
+- **Cutover**: adapter layer first with no behavior change, then the latency
+  work as a separate change, so a regression has one candidate cause.
+
+Confirmed breakages the layer must pin (user, 2026-08-07): thinking/reasoning
+control, context-overflow error shape, served-model-id normalization. Tool-call
+dialect was explicitly *not* one of them.
+
+### Done so far
+
+- `lib/llm-backend.ts` — client-safe ids/labels/coercion.
+- `server/llm/backends/` — adapter interface, four adapters, registry, endpoint
+  fingerprinting. Pure: no fetch, no SDK, so every quirk is testable without a
+  server.
+- `db/schema.ts` + `db/migrations/0047_bouncy_ink.sql` — five backend columns,
+  `NOT NULL DEFAULT 'openai-compatible'` so existing rows keep current behavior.
+- Settings zod schemas, repository, service, and `LlmConnection` carry the
+  backend. It follows the **host**, like the API key: an endpoint that falls
+  back to the LLM connection inherits its backend too.
+- `server/llm/backends/backends.test.ts` — 17 tests.
+
+Proof: `npm run lint` clean, `npm run typecheck` clean, `npm run test`
+1002 passed / 21 failed — the same 21 fail on a stashed clean tree
+(`ytdlp-binary`, `media-download`; environment-dependent, unrelated).
+
+**Migration not applied locally** — no Postgres reachable at the configured
+`DATABASE_URL`. It is generated and committed; apply on deploy with
+`npm run db:migrate`.
+
+### How the vendor fields reach the wire
+
+`providerOptions[<provider name>]` is the seam, exactly as the provider's docs
+describe. The typed options schema
+(`{user, reasoningEffort, textVerbosity, strictJsonSchema}`) is `$strip`, which
+reads like it would discard everything else — it does not. The model spreads the
+raw `providerOptions` entry into the request body and filters out **only** those
+four known keys (`@ai-sdk/openai-compatible/dist/index.js`, the
+`Object.fromEntries(...)` spread in `getArgs`). Every other key — `think`,
+`chat_template_kwargs`, `reasoning_format` — is passed straight through.
+
+So an adapter's `chatBodyExtras()` maps onto `providerOptions` directly and no
+`fetch` shim is needed. Two consequences for the adapters:
+
+- Vendor fields must be written in the **wire spelling** (`reasoning_format`,
+  not `reasoningFormat`), since anything camel-cased that collides with a typed
+  option name would be swallowed by the filter.
+- `reasoning_effort` in snake case passes through as a vendor field; the typed
+  `reasoningEffort` option is the SDK-native way to say the same thing. The
+  adapters use the wire spelling so one code path produces the whole body.
+
+`server/llm/transport.ts` is the single wire, and `server/llm/transport.test.ts`
+pins the passthrough against the real provider with a stub `fetch` — asserting
+the behavior rather than the declaration, because reading the declaration got it
+wrong once.
+
+The conversation stays in OpenAI's message shape and is converted once at the
+transport boundary. `./tool-loop` owns the conversation and appends assistant
+turns to it verbatim across rounds, so that shape is a stable internal DTO;
+converting at the edge leaves the loop, the browser agent, and the MCP tool
+bridge untouched by the transport swap.
+
+### Remaining
+
+- **Wire `transport.completeRound` into `chatCompletion` and the tool loop's
+  round factory.** The module is built, typechecked and tested, but
+  `server/llm/client.ts` still calls the `openai` SDK — nothing uses the new
+  transport yet, so runtime behavior is unchanged so far.
+- Embeddings/images onto the AI SDK provider.
+- Backend selector + Detect button in the five Settings connection sections;
+  `detectBackendSchema` is already in `features/settings/server/schema.ts` and
+  `detectBackend()` in `server/llm/backends/detect.ts`, but no route or UI yet.
+- Live confirmation of each adapter's reasoning knob against a real server. The
+  mappings are what each backend documents; only a live endpoint can prove the
+  server honors them, and the tests deliberately assert the body we produce
+  rather than the server's response.
+
+## Reply latency (`todo`, 2026-08-07)
+
+From the production trace/analytics review, 2026-08-07 (1,939 traces,
+2026-07-22 → 2026-08-07):
+
+- Replies run **p50 36.8s, p90 86.8s**.
+- **90% of every generated token is hidden `reasoning`** — a measured reply
+  averaged 78 characters of answer against 3,895 of reasoning. One sample reply
+  that emitted no reasoning returned an 80-character answer in **3.0s** against
+  **49.3s** for a same-sized answer with 10,964 characters of reasoning.
+- The two pre-reply gates (`addressing-check` 206 min, `chat-rule-match` 123 min)
+  are **37% of all LLM wall time**, against 60 min for reply generation itself —
+  and both sit on the critical path, costing the median reply ~13.5s before
+  generation starts. 1,704 of those turns ended in silence.
+- `gemma4:26B` measured **2.3x faster per token** than `gemma4:12b` across every
+  call kind — worth checking the 12b's GPU layer split.
+- Interactive calls bypass the priority gate entirely with no concurrency limit,
+  so a burst of group chatter self-congests (addressing-check p50 4.3s vs p95
+  27.3s).
+- The 24h history window is injected as **one** message
+  (`features/history/server/service.ts`), so its content changes every turn and
+  invalidates the KV prefix cache across ~20k of the ~21k prompt tokens.
+
+Blocked on the normalization layer above by user decision (2026-08-07): the
+thinking fix is exactly a per-backend knob, so it lands after the seam exists.
+
 ## The owner can cancel anyone's scheduled task (`done` pending production deploy + live verification, 2026-08-07)
 
 User decision, 2026-08-07: "I as an owner should be able to cancel other users
