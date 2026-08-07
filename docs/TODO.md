@@ -199,6 +199,44 @@ Same classifier prompt, identical verdict, only the stored backend differing:
   `chat-rule-match` should drop from ~135 completion tokens to ~17, and the
   `reasoning` field on their responses should be gone.
 
+### Reply calls keep thinking (user decision, 2026-08-07 — do not retry)
+
+Turning reasoning off on the **reply** path was measured against the live
+endpoint and **rejected**. It is not a latency trade, it is a correctness
+regression, and the second failure below is the one this bot already has a gate
+for.
+
+Three runs each, gemma4:12b, live:
+
+*"split a 2400 bill between 5, two ate half"* — correct answer $600 / $300:
+
+| reasoning | result |
+| --------- | ------ |
+| on        | **3/3 correct** |
+| off       | **0/3 correct** — $480/$240, a garbled half-answer, $533.33/$266.67 |
+
+*"did she push it yet?"* over history where only Bea can know — the bot should
+ask her or say it does not know:
+
+| reasoning | result |
+| --------- | ------ |
+| on        | 3/3 fine: *"@Bea, have you pushed the changes?"* / *"She hasn't mentioned if she pushed it yet."* |
+| off       | 3/3 **fabricated**: *"Not yet, still checking the logs."* / *"Not yet. Checking now."* |
+
+That last one asserts a fact it cannot know *and* an action it is not
+performing — exactly what `runActionClaimGate` exists to catch. So it is also
+**slower**, not faster: those replies trip the gate, which forces a regeneration
+plus a re-check. Two extra calls to save 800 ms.
+
+Tool *selection* alone survives reasoning-off (3/3 correct tool, 772 ms vs
+4704 ms), but it cannot be isolated: `runToolLoop` only learns a round was the
+final answer when it comes back with no tool calls, and that same call is the
+one that wrote the reply.
+
+Untried, and the better lead if reply latency is revisited: `gemma4:26b`
+measured **2.3x the tokens/sec of 12b** across every call kind in the operator's
+own analytics — possibly faster *and* better, with no quality trade.
+
 ## Reply latency (`todo`, 2026-08-07)
 
 From the production trace/analytics review, 2026-08-07 (1,939 traces,
