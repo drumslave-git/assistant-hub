@@ -59,7 +59,7 @@ async function resolveDeps(): Promise<(ConsolidateDeps & ExtractDeps) | null> {
     getTimezone().catch(() => "UTC"),
   ]);
   if (!llm) return null;
-  const conn = { baseUrl: llm.baseUrl, apiKey: llm.apiKey };
+  const conn = { baseUrl: llm.baseUrl, apiKey: llm.apiKey, backend: llm.backend };
   return {
     complete: (messages) =>
       chatCompletion(conn, { model: llm.model, messages, priority: "background" }),

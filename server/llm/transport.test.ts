@@ -122,6 +122,44 @@ describe("toModelMessages", () => {
     });
   });
 
+  /**
+   * The SDK rejects `system` turns inside `messages` unless told otherwise, and
+   * every reply this app sends interleaves them — the time context after the
+   * history window, the language directive last. Nothing mocked catches it: the
+   * failure is inside `generateText`, so it needs a real provider call.
+   *
+   * It shipped once. Every reply would have failed with
+   * `AI_InvalidPromptError` on deploy.
+   */
+  it("accepts system turns positioned between other turns", async () => {
+    const captured: { body?: Record<string, unknown> } = {};
+    await generateText({
+      model: providerCapturing(captured).chatModel("m"),
+      messages: toModelMessages([
+        { role: "system", content: "be nice" },
+        { role: "user", content: "earlier" },
+        { role: "assistant", content: "earlier answer" },
+        { role: "system", content: "It is now 14:00." },
+        { role: "system", content: "Reply in English." },
+        { role: "user", content: "now" },
+      ]),
+      allowSystemInMessages: true,
+      maxRetries: 0,
+    });
+    const sent = captured.body?.messages as Array<{ role: string; content: string }>;
+    // Order is the point: a system turn collapsed into a leading block would
+    // stop outranking the history it was placed after.
+    expect(sent.map((m) => m.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "system",
+      "system",
+      "user",
+    ]);
+    expect(sent.at(-2)?.content).toBe("Reply in English.");
+  });
+
   it("carries a vision turn's image through as an image part", () => {
     const [message] = toModelMessages([
       {

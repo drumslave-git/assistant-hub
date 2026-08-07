@@ -336,7 +336,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
     const result = await runBrowserAgent({
       goal: run.goal,
       sourceUrls: run.sourceUrls,
-      conn: { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey },
+      conn: { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
       model: runtime.model,
       toolContext,
       requiredLanguage: resolveRequiredLanguage(storedLanguage) ?? null,

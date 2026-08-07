@@ -25,7 +25,7 @@ import { runSelfImprovement } from "./analyze";
 async function runIncorporation(ctx?: IntervalRunContext): Promise<string> {
   const runtime = await getLlmRuntime().catch(() => null);
   if (!runtime) return "LLM not configured";
-  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
 
   const outcome = await withAdvisoryLock("self-improvement", async () => {
     const personalityPrompt = await getActivePersonalityPrompt().catch(() => null);

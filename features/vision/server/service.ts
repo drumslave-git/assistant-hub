@@ -355,7 +355,7 @@ export async function resolveDescribeDeps(
 ): Promise<DescribeDeps | null> {
   const runtime = await getLlmRuntime().catch(() => null);
   if (!runtime) return null;
-  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
   const stt = await getTranscriptionRuntime().catch(() => null);
   return {
     complete: (messages) => chatCompletion(conn, { model: runtime.model, messages, priority }),

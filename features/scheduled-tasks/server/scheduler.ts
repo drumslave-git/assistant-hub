@@ -182,7 +182,7 @@ async function runTick(ctx?: IntervalRunContext): Promise<{ summary: string }> {
 
   const runtime = await getLlmRuntime().catch(() => null);
   if (!runtime) return { summary: "LLM not configured" };
-  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
 
   const outcome = await withAdvisoryLock("scheduled-tasks", async () => {
     const [timezone, personalityPrompt, toolset] = await Promise.all([

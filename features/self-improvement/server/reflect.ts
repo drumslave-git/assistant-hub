@@ -182,7 +182,7 @@ export async function reflectOnFeedback(
 export async function resolveReflectionDeps(db?: DrizzleDb): Promise<ReflectionDeps | null> {
   const runtime = await getLlmRuntime(db).catch(() => null);
   if (!runtime) return null;
-  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
   const personalityPrompt = await getActivePersonalityPrompt().catch(() => null);
   return {
     complete: (messages) =>

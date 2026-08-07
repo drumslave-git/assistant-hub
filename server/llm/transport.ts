@@ -223,6 +223,14 @@ export async function completeRound(
   const result = await generateText({
     model: provider.chatModel(input.model),
     messages: toModelMessages(input.messages),
+    // The SDK rejects `system` turns inside `messages` by default, steering
+    // callers to its single `instructions` field. That does not fit this app:
+    // the reply prompt places system turns *between* other turns on purpose —
+    // the time context sits after the history window, and the language
+    // directive last of all, at maximum recency so it outranks the language of
+    // the message, the history, and the persona. Collapsing them into one
+    // leading block would silently change what the model weighs most.
+    allowSystemInMessages: true,
     ...(input.tools ? { tools: toToolSet(input.tools) } : {}),
     ...(input.maxTokens !== undefined ? { maxOutputTokens: input.maxTokens } : {}),
     // One round per call: the loop decides whether there is another, because it

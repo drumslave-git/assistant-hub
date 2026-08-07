@@ -162,18 +162,42 @@ second, silently-ignored source of truth.
 `/api/version` is tried before vLLM's bare `/version` — both answer `{version}`,
 and the reverse order would let a generic body claim an Ollama host.
 
-**Not visually verified.** The dev server runs, but `/settings` is behind the
-operator password and the repo has no React component-test setup (no
-testing-library/jsdom, zero `.test.tsx`), so the rendered control has not been
-exercised. Logic is covered by `detect.test.ts`; the form itself is not.
+Verified in the browser against the live endpoint: the control renders in the
+Core tab, Detect returned "Detected Ollama 0.32.6" and set the dropdown, and
+saving persisted `llm_backend = 'ollama'` while leaving the four inheriting
+sections untouched.
+
+### Two bugs the live check caught that nothing mocked could
+
+1. **System turns were rejected outright.** The AI SDK refuses `system` messages
+   inside `messages` unless `allowSystemInMessages` is set, steering callers to
+   its single `instructions` field. That does not fit this app — the reply prompt
+   places system turns *between* other turns deliberately (time context after the
+   history window, language directive last, at maximum recency). Left unset,
+   **every reply would have failed on deploy** with `AI_InvalidPromptError`. Now
+   pinned by a test that asserts the sent role order.
+2. **The backend never reached the wire.** Ten call sites built their connection
+   as `{ baseUrl, apiKey }`, dropping `backend`, so `adapterFor` fell back to the
+   generic adapter and the operator's choice did nothing. Fixed at every site.
+   The footgun remains: a bare object literal silently loses the field. Worth
+   making the runtime itself an `LlmConnection` that callers spread.
+
+### Measured through the app's own code path, live
+
+Same classifier prompt, identical verdict, only the stored backend differing:
+
+| `llm_backend`        | completion tokens | latency | reasoning |
+| -------------------- | ----------------- | ------- | --------- |
+| `openai-compatible`  | 149               | 2519 ms | 431 chars |
+| `ollama`             | **17**            | **683 ms** | **0**  |
 
 ### Remaining
 
 - Embeddings/images onto the AI SDK provider (they still use the `openai` SDK,
   as do speech/transcription, which the package cannot serve at all).
-- Flip the classifiers from `reasoning: "low"` to `"off"` once the operator sets
-  the LLM backend to Ollama — that is the measured 8x token drop on the gates.
-  Tracked under Reply latency below.
+- Watch the first production reply traces after deploy: `addressing-check` and
+  `chat-rule-match` should drop from ~135 completion tokens to ~17, and the
+  `reasoning` field on their responses should be gone.
 
 ## Reply latency (`todo`, 2026-08-07)
 

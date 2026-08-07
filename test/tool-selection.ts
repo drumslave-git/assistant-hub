@@ -220,7 +220,7 @@ export async function runToolSelection(testCase: ToolSelectionCase): Promise<Too
   let error: string | null = null;
   try {
     const result = await chatCompletionWithTools(
-      { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey },
+      { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
       {
         model: runtime.model,
         messages,

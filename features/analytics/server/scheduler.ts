@@ -61,7 +61,7 @@ async function runJob(ctx?: IntervalRunContext): Promise<string> {
   const llm = await getLlmRuntime().catch(() => null);
   if (!llm) return "LLM not configured";
   const timeZone = await getTimezone().catch(() => "UTC");
-  const conn = { baseUrl: llm.baseUrl, apiKey: llm.apiKey };
+  const conn = { baseUrl: llm.baseUrl, apiKey: llm.apiKey, backend: llm.backend };
   const deps = {
     complete: (messages: Parameters<typeof chatCompletion>[1]["messages"]) =>
       chatCompletion(conn, { model: llm.model, messages, priority: "background" }),

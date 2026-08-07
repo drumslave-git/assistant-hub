@@ -93,29 +93,41 @@ import type { IncomingUpdate, ReplyTransport } from "./transport";
  * Generation bounds for the per-message classification calls (addressing
  * analyzer, addressing verifier, chat rule match). Their answer is a small JSON
  * verdict, but the configured model may be a thinking model — measured on the
- * live bot, unbounded thinking cost up to ~1,000 tokens (14s) per verdict. The
- * effort knob keeps the thinking short; the token cap is a hard stop against
- * runaway generation, roomy enough that a legitimate think-then-answer never
- * truncates (a truncated verdict reads as "not addressed"). User decision,
- * 2026-08-01: same model for classifications, thinking capped.
+ * live bot, unbounded thinking cost up to ~1,000 tokens (14s) per verdict.
  *
- * Cap sized against the live endpoint (probe, 2026-08-01): gemma4:12b's
- * thinking on this exact call shape regularly runs 850–2,300 tokens even at
- * low effort — a 1,000-token cap truncated 3 of 8 probe calls mid-think
- * (`finish_reason: "length"`, empty content), which in production is a missed
- * summons. 3,000 clears every observed answer with room while still stopping a
- * runaway.
+ * The token cap is a hard stop against runaway generation, not the thinking
+ * control — {@link CLASSIFIER_REASONING} is that. It stays roomy (3,000) on
+ * purpose: a truncated verdict reads as "not addressed", i.e. a missed summons,
+ * and a 1,000-token cap truncated 3 of 8 probe calls mid-think
+ * (`finish_reason: "length"`, empty content) back when thinking could not be
+ * switched off. With reasoning off a verdict costs ~17 tokens, so the cap
+ * should now never be reached at all — it is there for the backend that ignores
+ * the switch. User decision, 2026-08-01: same model for classifications,
+ * thinking capped.
  */
 /**
- * What the classifiers ask of a thinking model.
+ * What the classifiers ask of a thinking model: nothing.
  *
- * "low" rather than "off" deliberately, for now: on the generic adapter it
- * produces the identical `reasoning_effort: "low"` body these calls have always
- * sent, so naming the backend is what changes behavior, not this migration.
- * Turning it to "off" is the measured win (~180 reasoning tokens to produce a
- * 15-token verdict) and is tracked separately in `docs/TODO.md`.
+ * These calls answer with a small JSON verdict — `{"name_match": "absent",
+ * "matched_text": null}` — and were measured spending ~180 reasoning tokens to
+ * produce 15 tokens of it. Against the live Ollama, on one such prompt with an
+ * identical verdict every time:
+ *
+ * | body                       | completion tokens | latency |
+ * | -------------------------- | ----------------- | ------- |
+ * | (nothing)                  | 135               | 2269 ms |
+ * | `reasoning_effort: "low"`  | 94                | 1784 ms |
+ * | `reasoning_effort: "none"` | **17**            | **802 ms** |
+ *
+ * "low" was what this sent before, on the assumption that it bounded the
+ * thinking. It does not — it still thinks, which is why the two gates were 37%
+ * of all LLM wall time while already asking for less.
+ *
+ * The adapter decides which field carries this (`server/llm/backends`), so an
+ * endpoint left on the generic backend still gets the conservative "low" it
+ * always did; only a named backend gets its measured off switch.
  */
-const CLASSIFIER_REASONING: ReasoningMode = "low";
+const CLASSIFIER_REASONING: ReasoningMode = "off";
 const CLASSIFIER_MAX_TOKENS = 3_000;
 
 /**
@@ -159,7 +171,7 @@ async function runClassifier(
       "LLM is not configured — set the endpoint and model in Settings",
     );
   }
-  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
   return chatCompletion(conn, {
     model: runtime.model,
     messages,
@@ -514,7 +526,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             "LLM is not configured — set the endpoint and model in Settings",
           );
         }
-        const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+        const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
         // No tools registered → a single inference (cache-friendly path). A reply
         // that needs no tool still costs one inference even when tools are offered.
         const toolset = await getToolset();
@@ -642,7 +654,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
               data: { messages },
             });
             const result = await chatCompletion(
-              { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey },
+              { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
               {
                 model: runtime.model,
                 messages,
