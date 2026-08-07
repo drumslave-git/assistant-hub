@@ -387,15 +387,21 @@ describe("handleIncomingMessage", () => {
     await handleIncomingMessage(incoming({ message: m, chatType: "group", text: "@MyBot explain" }), d);
 
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    // system prompt, chat context, addressing hint, transcript, current message.
+    // system prompt, chat context, transcript, addressing hint, current message.
+    //
+    // The order is load-bearing, not incidental: everything per-*chat* sits
+    // above the history window and everything per-*sender* below it, so a change
+    // of speaker cannot invalidate the endpoint's KV prefix and force the whole
+    // window to be re-read. Measured on the live endpoint, getting this wrong
+    // cost 532ms → 3923ms on every turn where the speaker changed.
     expect(messages.map((msg: { role: string }) => msg.role)).toEqual([
       "system",
       "system",
+      "user",
       "system",
       "user",
-      "user",
     ]);
-    expect(messages[2].content).toContain("from Bob (@bob), who mentioned you");
+    expect(messages[3].content).toContain("from Bob (@bob), who mentioned you");
     expect(messages.at(-1)).toEqual({ role: "user", content: "[#7] Bob (@bob): @MyBot explain" });
 
     const events = recorder.event.mock.calls.map((c) => c[0]);

@@ -887,14 +887,28 @@ export async function handleIncomingMessage(
         historyMessages: ChatMessage[],
         enforcement?: EnforcementTurn,
       ): ChatMessage[] => [
+        // Everything above the history window is per-*chat* and changes rarely:
+        // the persona, the roster, what the bot durably knows about these
+        // people. That is deliberate — an endpoint reuses its KV cache for as
+        // long as the token prefix is unchanged, and this is what keeps a
+        // 20k-token window from being re-read on every message.
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
         ...(memory ? [{ role: "system" as const, content: memory.content }] : []),
+        ...historyMessages,
+        // Per-*sender* blocks sit below the window, not above it. They used to
+        // be above, which meant every change of speaker invalidated the prefix
+        // and re-read the whole history: measured on the live endpoint, an
+        // alternating-speaker group went 532ms → 3923ms per turn, and moving
+        // these two below it brought that back to 658ms. In a group, the
+        // speaker changes on most turns.
+        //
+        // It also reads better: both blocks are about the turn being answered,
+        // so sitting next to it is where an instruction about "now" belongs.
         ...(senderPreferences
           ? [{ role: "system" as const, content: senderPreferences.content }]
           : []),
         ...(addressingHint ? [{ role: "system" as const, content: addressingHint }] : []),
-        ...historyMessages,
         ...(deps.timeContext ? [{ role: "system" as const, content: deps.timeContext }] : []),
         ...(languageInstruction
           ? [{ role: "system" as const, content: languageInstruction }]

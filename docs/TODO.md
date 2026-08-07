@@ -314,12 +314,48 @@ From the production trace/analytics review, 2026-08-07 (1,939 traces,
 - Interactive calls bypass the priority gate entirely with no concurrency limit,
   so a burst of group chatter self-congests (addressing-check p50 4.3s vs p95
   27.3s).
-- The 24h history window is injected as **one** message
-  (`features/history/server/service.ts`), so its content changes every turn and
-  invalidates the KV prefix cache across ~20k of the ~21k prompt tokens.
+- ~~The 24h history window is injected as one message, invalidating the KV
+  prefix~~ — **measured and wrong**, see below. The real cache-breaker was the
+  per-sender blocks sitting *above* the window; fixed 2026-08-07.
 
 Blocked on the normalization layer above by user decision (2026-08-07): the
 thinking fix is exactly a per-backend knob, so it lands after the seam exists.
+
+## Prompt ordering and the KV prefix cache (`done`, 2026-08-07)
+
+Measured against the live endpoint, `gemma4:12b`, ~9.4k-token window.
+
+**The blob→split refactor was rejected.** The claim was that injecting the 24h
+window as one message invalidates the cache each turn, because that message's
+content changes. It does not: the cache keys on the **token sequence**, not on
+message boundaries, and a new line is appended to the *end* of the blob — so the
+prefix is preserved either way.
+
+| history shape          | turn 1  | turn 2 | turn 3 |
+| ---------------------- | ------- | ------ | ------ |
+| one blob (today)       | 4752 ms | 768 ms | 692 ms |
+| one message per line   | 5247 ms | 713 ms | 700 ms |
+
+**The real cache-breaker was prompt order**, and it is now fixed. The per-sender
+blocks (communication preferences, addressing hint) sat *above* the history
+window, so every change of speaker invalidated the prefix and re-read the whole
+window. In a group, the speaker changes on most turns.
+
+| per-sender blocks         | t1 Alex | t2 Alex | t3 Bea  | t4 Cai  |
+| ------------------------- | ------- | ------- | ------- | ------- |
+| above the window (before) | 4209 ms | 532 ms  | 3923 ms | 3918 ms |
+| below the window (now)    | 3930 ms | 532 ms  | 658 ms  | 673 ms  |
+
+~3.3s per turn whenever the speaker changes. The rule the ordering now follows:
+**per-chat context above the window, per-turn context below it.** Anything added
+above it later must be stable for the whole chat, or it silently costs a full
+re-prefill per message. `service.test.ts` asserts the role order with that
+reason attached.
+
+**No truncation.** Separately checked, since the Ollama adapter records that this
+backend truncates rather than raising: a needle placed at the very start of the
+window was recalled at 2.4k, 7.7k and 14.5k prompt tokens. The window is intact
+at the sizes this bot uses.
 
 ## The owner can cancel anyone's scheduled task (`done` pending production deploy + live verification, 2026-08-07)
 
