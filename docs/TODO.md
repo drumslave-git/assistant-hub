@@ -191,10 +191,40 @@ Same classifier prompt, identical verdict, only the stored backend differing:
 | `openai-compatible`  | 149               | 2519 ms | 431 chars |
 | `ollama`             | **17**            | **683 ms** | **0**  |
 
+### Embeddings and images
+
+Both run on the AI SDK provider now, through the shared `server/llm/provider.ts`
+factory that chat also uses — it exists so the three cannot drift on the two
+things easy to get subtly wrong: base URL normalization and the
+`providerOptions` key. Chat briefly had its own copy that skipped the URL
+normalization, which worked only because the stored setting already ended in
+`/v1`; an operator entering `http://host:11434` would have hit the wrong path.
+
+Verified live against `bge-m3:latest`: probe reports 1024 dimensions, and a
+3-input batch keeps one vector per input **in order** — vector 1 has similarity
+1.0 against the same text embedded alone, versus 0.45 cross. That check exists
+because `embedMany` pairs vectors to inputs *positionally*: the provider maps
+`response.data` straight across and discards each entry's `index`, which the old
+code placed by. An arity check now stands in for that guard — a short or padded
+response fails loudly instead of misaligning every vector after the gap.
+
+Images are unverified: `image_model` is `docker.io/ai/stable-diffusion:Q4`, which
+the configured endpoint does not serve (a Docker Model Runner leftover), and
+Ollama has no `/v1/images/generations` at all. The port typechecks and the code
+path is the same one embeddings proved; the endpoint is what is missing.
+
+The `openai` package stays for speech, transcription, and `listModels` — the
+first two have no model type in `@ai-sdk/openai-compatible`, and the provider
+exposes no model listing.
+
+Also fixed while here: a fired deadline now names the endpoint. The AI SDK paths
+bound themselves with `AbortSignal`, which throws a bare `TimeoutError` whose
+message ("The operation was aborted due to timeout") names neither the host nor
+the attempt — useless in a trace read months later.
+
 ### Remaining
 
-- Embeddings/images onto the AI SDK provider (they still use the `openai` SDK,
-  as do speech/transcription, which the package cannot serve at all).
+- Nothing outstanding on the normalization layer itself.
 - Watch the first production reply traces after deploy: `addressing-check` and
   `chat-rule-match` should drop from ~135 completion tokens to ~17, and the
   `reasoning` field on their responses should be gone.

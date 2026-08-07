@@ -479,6 +479,15 @@ export function toLlmError(err: unknown, baseUrl: string): ApiError {
     // — it is usually the only text that says what actually went wrong.
     return new ApiError(code, `LLM endpoint error (${err.statusCode}): ${sdkErrorDetail(err)}`);
   }
+  // A fired deadline. The AI SDK paths bound themselves with `AbortSignal`,
+  // which surfaces as a bare `TimeoutError`/`AbortError` whose message ("The
+  // operation was aborted due to timeout") names neither the endpoint nor what
+  // was being attempted — useless in a trace an operator is reading months
+  // later. The OpenAI SDK's own timeout said which host it gave up on, and so
+  // does this.
+  if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+    return ApiError.serviceUnavailable(`Request to ${baseUrl} timed out`);
+  }
   return ApiError.serviceUnavailable(err instanceof Error ? err.message : String(err));
 }
 

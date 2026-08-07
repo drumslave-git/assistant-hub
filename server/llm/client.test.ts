@@ -183,6 +183,27 @@ vi.mock("openai", () => {
   return { default: OpenAI, APIError, APIConnectionError, APIConnectionTimeoutError };
 });
 
+describe("toLlmError", () => {
+  it("names the endpoint a fired deadline gave up on", async () => {
+    const { toLlmError } = await import("./client");
+    // What `AbortSignal.timeout` throws. Its own message names neither the host
+    // nor the attempt, which is all a trace would otherwise have to show.
+    const aborted = new Error("The operation was aborted due to timeout");
+    aborted.name = "TimeoutError";
+    expect(toLlmError(aborted, "http://endpoint.invalid/v1")).toMatchObject({
+      code: "service_unavailable",
+      message: "Request to http://endpoint.invalid/v1 timed out",
+    });
+  });
+
+  it("treats a fired deadline as worth retrying — it says nothing about the request", async () => {
+    const { isRetryableLlmError } = await import("./client");
+    const aborted = new Error("aborted");
+    aborted.name = "TimeoutError";
+    expect(isRetryableLlmError(aborted)).toBe(true);
+  });
+});
+
 describe("chatCompletion", () => {
   afterEach(() => createMock.mockReset());
 

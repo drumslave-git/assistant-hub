@@ -2,7 +2,10 @@ import "server-only";
 
 import { ApiError } from "@/lib/api-error";
 
-import { createOpenAiClient, listModels, toLlmError, type LlmConnection } from "./client";
+import { generateImage } from "ai";
+
+import { listModels, toLlmError, type LlmConnection } from "./client";
+import { createProvider } from "./provider";
 
 /**
  * Shared client for OpenAI-compatible `/v1/images/generations` endpoints — the
@@ -14,8 +17,10 @@ import { createOpenAiClient, listModels, toLlmError, type LlmConnection } from "
  * connection is passed in explicitly; the settings service resolves it from the
  * DB, falling back to the LLM connection when no image base URL is configured.
  *
- * Images are always requested as base64 (`b64_json`): Ollama's image endpoint and
- * the GPT image models return no URLs, so there is nothing else to ask for.
+ * Requests go through the same AI SDK provider as chat (`./provider`), so the
+ * base URL, key and `providerOptions` keying are resolved identically. The
+ * provider asks for base64 itself and normalizes a backend that answers with a
+ * URL instead, which is why no `response_format` is specified here.
  */
 
 /**
@@ -56,18 +61,20 @@ export async function generateImages(
 ): Promise<string[]> {
   const size = input.size ?? DEFAULT_IMAGE_SIZE;
   try {
-    const response = await createOpenAiClient(runtime).images.generate(
-      {
-        model: runtime.model,
-        prompt: input.prompt,
-        size: `${size[0]}x${size[1]}`,
-        response_format: "b64_json",
-      },
-      { timeout: IMAGE_TIMEOUT_MS },
-    );
-    const images = (response.data ?? [])
-      .map((item) => item.b64_json)
-      .filter((b64): b64 is string => Boolean(b64));
+    const result = await generateImage({
+      model: createProvider(runtime).imageModel(runtime.model),
+      prompt: input.prompt,
+      size: `${size[0]}x${size[1]}`,
+      // A diffusion model can spend minutes on one image, and the caller is a
+      // tool call rather than a page render — so the deadline is generous, and
+      // the retry is the caller's to decide, not a silent second render.
+      maxRetries: 0,
+      abortSignal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
+    });
+    // `base64` is what the callers store and send; the SDK exposes the same
+    // bytes as `uint8Array`, so no `response_format` needs requesting — it
+    // asks for base64 itself and normalizes providers that answer with a URL.
+    const images = result.images.map((image) => image.base64).filter(Boolean);
     if (images.length === 0) {
       throw ApiError.serviceUnavailable("Image endpoint returned no image data");
     }

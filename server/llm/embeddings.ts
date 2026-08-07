@@ -3,11 +3,15 @@ import "server-only";
 import { ApiError } from "@/lib/api-error";
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 
-import { createOpenAiClient, toLlmError, type LlmConnection } from "./client";
+import { embedMany } from "ai";
+
+import { toLlmError, type LlmConnection } from "./client";
+import { createProvider } from "./provider";
 
 /**
- * Shared client for OpenAI-compatible `/v1/embeddings` endpoints — the sibling of
- * {@link import("./client")}, and the vector half of long-term history recall.
+ * Embeddings over an OpenAI-compatible `/v1/embeddings` endpoint — the vector
+ * half of long-term history recall. Runs on the same AI SDK provider as chat
+ * (`./provider`), so base URL, key and provider options resolve identically.
  *
  * Embeddings usually come from a different model than chat (e.g. `bge-m3`) and
  * sometimes a different host, so the connection is passed in explicitly; the
@@ -41,15 +45,24 @@ export async function embed(
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
   try {
-    const response = await createOpenAiClient(runtime).embeddings.create(
-      { model: runtime.model, input: texts },
-      { timeout: EMBEDDING_TIMEOUT_MS },
-    );
-    // The API contract allows the data array to come back out of order; `index`
-    // is authoritative, so place each vector rather than trusting position.
-    const vectors: number[][] = new Array(texts.length);
-    for (const entry of response.data ?? []) {
-      vectors[entry.index] = entry.embedding as number[];
+    const { embeddings } = await embedMany({
+      model: createProvider(runtime).embeddingModel(runtime.model),
+      values: texts,
+      // Retries belong to the caller's job schedule, not to a nested loop here:
+      // embedding runs inside background work that already reruns on failure.
+      maxRetries: 0,
+      abortSignal: AbortSignal.timeout(EMBEDDING_TIMEOUT_MS),
+    });
+    const vectors = embeddings as number[][];
+    // One vector per input, in input order. The count is checked because the SDK
+    // pairs vectors to inputs *positionally* — it maps `data` straight across and
+    // drops each entry's `index`, which this used to place by. A short or padded
+    // response would therefore misalign every vector after the gap rather than
+    // fail, so the arity check below is what stands in for that guard.
+    if (vectors.length !== texts.length) {
+      throw ApiError.serviceUnavailable(
+        `Embedding endpoint returned ${vectors.length} vectors for ${texts.length} inputs`,
+      );
     }
     for (const [i, vector] of vectors.entries()) {
       if (!vector) {

@@ -1,6 +1,5 @@
 import "server-only";
 
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { dynamicTool, generateText, jsonSchema, type ModelMessage, type ToolSet } from "ai";
 import type {
   ChatCompletionMessageParam,
@@ -13,6 +12,7 @@ import { toLlmBackendId } from "@/lib/llm-backend";
 import { adapterFor } from "./backends";
 import type { ReasoningMode } from "./backends";
 import type { ChatContentPart, ChatUsage, LlmConnection } from "./client";
+import { createProvider, PROVIDER_NAME } from "./provider";
 
 /**
  * The single wire between this app and whichever inference server is configured.
@@ -57,13 +57,6 @@ export interface TransportInput {
   timeoutMs: number;
   abortSignal?: AbortSignal;
 }
-
-/**
- * Provider name the SDK keys `providerOptions` under. Constant rather than the
- * backend id: the adapter already decides *what* to send, so keying by backend
- * would only add a way for the two to disagree.
- */
-const PROVIDER_NAME = "llm";
 
 /** Text of an OpenAI content field, flattening the multimodal part array. */
 function partsToText(content: string | ChatContentPart[] | null | undefined): string {
@@ -212,11 +205,7 @@ export async function completeRound(
   input: TransportInput,
 ): Promise<TransportRound> {
   const adapter = adapterFor(toLlmBackendId(conn.backend));
-  const provider = createOpenAICompatible({
-    name: PROVIDER_NAME,
-    baseURL: conn.baseUrl,
-    ...(conn.apiKey ? { apiKey: conn.apiKey } : {}),
-  });
+  const provider = createProvider(conn);
 
   const extras = adapter.chatBodyExtras({ reasoning: input.reasoning });
   const start = Date.now();
