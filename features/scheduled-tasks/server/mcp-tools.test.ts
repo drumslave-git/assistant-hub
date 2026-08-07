@@ -1,18 +1,45 @@
-import { describe, expect, it } from "vitest";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { runWithToolContext } from "@/server/mcp/context";
 
 import type { ScheduledTask } from "../types";
 import {
   TASKS_CREATE_DESCRIPTION,
+  TASKS_DELETE_TOOL,
   TASKS_UPDATE_DESCRIPTION,
   checkOwnership,
   isTaskId,
+  registerScheduledTasksMcpTools,
   unknownTaskText,
 } from "./mcp-tools";
+
+vi.mock("@/features/settings/server/service", () => ({ getBotPolicy: vi.fn() }));
+vi.mock("./service", () => ({
+  createScheduledTaskService: vi.fn(),
+  editScheduledTaskService: vi.fn(),
+  getScheduledTasks: vi.fn(),
+  getTask: vi.fn(),
+  removeScheduledTaskService: vi.fn(),
+  summarizeTask: vi.fn(),
+}));
+
+const settings = vi.mocked(await import("@/features/settings/server/service"));
+const service = vi.mocked(await import("./service"));
+
+/** The bot owner, the task's author, and an unrelated participant. */
+const OWNER = "1";
+const AUTHOR = "100";
+const OTHER = "200";
+
+/** What a tool handler returns, as far as these assertions need it. */
+type ToolResult = { isError?: boolean; content: { type: string; text: string }[] };
 
 /**
  * The author rule for the task MCP tools: a chat participant may edit/cancel only
  * tasks they created, and only within their own chat — plus how a mutation that
- * names an id no task has explains itself.
+ * names an id no task has explains itself. The owner is exempt from the author
+ * half of that (user decision, 2026-08-07), never from the chat half.
  */
 
 /**
@@ -82,6 +109,42 @@ describe("checkOwnership", () => {
   it("hands the chat's ids back on a miss, so the next round can retry", () => {
     const denied = checkOwnership(null, { chatId: "555", userId: "100" }, LIVE_ID, [LIVE_ID]);
     expect(denied?.content[0].text).toContain(LIVE_ID);
+  });
+
+  describe("the owner", () => {
+    it("may manage a task somebody else created", () => {
+      expect(
+        checkOwnership(task(), { chatId: "555", userId: OTHER, isOwner: true }, "task-1"),
+      ).toBeNull();
+    });
+
+    // Nobody could touch these from chat before: created from the dashboard,
+    // they have no author for the rule to match.
+    it("may manage an authorless dashboard task", () => {
+      expect(
+        checkOwnership(
+          task({ createdByUserId: null }),
+          { chatId: "555", userId: OTHER, isOwner: true },
+          "task-1",
+        ),
+      ).toBeNull();
+    });
+
+    // Chat scoping is not part of the exemption — it is the boundary the tool
+    // context binds, and no rights reach across it.
+    it("still cannot reach another chat's task", () => {
+      const denied = checkOwnership(
+        task({ chatId: "999" }),
+        { chatId: "555", userId: OTHER, isOwner: true },
+        "task-1",
+      );
+      expect(denied?.content[0].text).toMatch(/in this chat/i);
+    });
+
+    it("is named in the denial, so the bot can say who could do it", () => {
+      const denied = checkOwnership(task(), { chatId: "555", userId: OTHER }, "task-1");
+      expect(denied?.content[0].text).toMatch(/only the bot's owner/i);
+    });
   });
 });
 
@@ -184,5 +247,93 @@ describe("TASKS_UPDATE_DESCRIPTION", () => {
     expect(TASKS_UPDATE_DESCRIPTION).toContain(
       "Updating only the time, schedule or 'enabled' needs no context",
     );
+  });
+});
+
+/**
+ * Where the owner flag `checkOwnership` reads actually comes from.
+ *
+ * Not the sender's id but the turn's **authority** — the sender normally, the
+ * author of the standing chat rule when a rule drove the turn ("rule creator
+ * beats message source", user decision 2026-07-29), the same resolution
+ * `browse_web` uses. Provenance is a separate question and stays with the
+ * sender.
+ *
+ * And it must fail closed. A permission check whose policy read failed has to
+ * narrow rights, never widen them.
+ */
+describe(`${TASKS_DELETE_TOOL} owner resolution`, () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    settings.getBotPolicy.mockResolvedValue({ ownerUserId: OWNER, maintenanceModeEnabled: false });
+    service.getTask.mockResolvedValue(task({ createdByUserId: AUTHOR }));
+    service.getScheduledTasks.mockResolvedValue([task({ createdByUserId: AUTHOR })]);
+    service.removeScheduledTaskService.mockResolvedValue(undefined as never);
+    service.summarizeTask.mockReturnValue("daily at 09:00");
+  });
+
+  /** Invoke tasks_delete on someone else's task in the given turn context. */
+  async function deleteAs(ctx: { userId: string | null; authorityUserId?: string | null }) {
+    const registered = new Map<string, (args: { id: string }) => Promise<ToolResult>>();
+    const server = {
+      registerTool: (name: string, _config: unknown, fn: unknown) => {
+        registered.set(name, fn as (args: { id: string }) => Promise<ToolResult>);
+      },
+    } as unknown as McpServer;
+    registerScheduledTasksMcpTools(server);
+    const run = registered.get(TASKS_DELETE_TOOL)!;
+    return runWithToolContext({ chatId: "555", ...ctx }, () => run({ id: "task-1" }));
+  }
+
+  it("lets the owner cancel it", async () => {
+    const result = await deleteAs({ userId: OWNER });
+
+    expect(result.isError).toBeUndefined();
+    expect(service.removeScheduledTaskService).toHaveBeenCalledWith("task-1", expect.anything());
+  });
+
+  it("does not let anyone else cancel it", async () => {
+    const result = await deleteAs({ userId: OTHER });
+
+    expect(result.isError).toBe(true);
+    expect(service.removeScheduledTaskService).not.toHaveBeenCalled();
+  });
+
+  it("lends the owner's rights to a turn their standing rule drove", async () => {
+    const result = await deleteAs({ userId: OTHER, authorityUserId: OWNER });
+
+    expect(result.isError).toBeUndefined();
+    expect(service.removeScheduledTaskService).toHaveBeenCalled();
+  });
+
+  it("does not lend anyone else's", async () => {
+    const result = await deleteAs({ userId: OWNER, authorityUserId: OTHER });
+
+    expect(result.isError).toBe(true);
+    expect(service.removeScheduledTaskService).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the policy cannot be read", async () => {
+    settings.getBotPolicy.mockRejectedValue(new Error("db down"));
+
+    const result = await deleteAs({ userId: OWNER });
+
+    expect(result.isError).toBe(true);
+    expect(service.removeScheduledTaskService).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when no owner is configured", async () => {
+    settings.getBotPolicy.mockResolvedValue({ ownerUserId: null, maintenanceModeEnabled: false });
+
+    const result = await deleteAs({ userId: OWNER });
+
+    expect(result.isError).toBe(true);
+  });
+
+  it("leaves the author's own rights untouched", async () => {
+    const result = await deleteAs({ userId: AUTHOR });
+
+    expect(result.isError).toBeUndefined();
+    expect(service.removeScheduledTaskService).toHaveBeenCalled();
   });
 });

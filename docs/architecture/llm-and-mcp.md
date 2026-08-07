@@ -220,7 +220,11 @@ The consequences are structural, not advisory:
   never given. That reference is resolved against the actual participants of the
   current chat.
 - Scheduled-task mutations are author-scoped: listing shows all of the chat's
-  tasks, but a participant may only edit or cancel tasks they created.
+  tasks, but a participant may only edit or cancel tasks they created. The owner
+  is exempt and may edit or cancel any task in a chat they are in, including the
+  authorless dashboard-created ones (user decision, 2026-08-07). Chat scoping is
+  not part of the exemption. Owner status is resolved from the turn's authority,
+  the same way the browser agent's download rights are.
 
 ### Tool tracing
 

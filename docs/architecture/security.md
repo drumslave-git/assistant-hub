@@ -150,7 +150,9 @@ the model was told:
 - The model is never given numeric ids. A person is named by a name already
   visible in the conversation, and that reference is resolved against the actual
   participants of the current chat.
-- Scheduled-task mutations are author-scoped.
+- Scheduled-task mutations are author-scoped, with the owner exempt from the
+  author half (never the chat half) and owner status resolved from the turn’s
+  authority. An unreadable policy fails closed: the author rule stands.
 - The browser agent's download tools are gated to owner-authorized runs, resolved
   at enqueue time — not at call time, and not from anything the model says. The
   authority is the sender, except on a turn a standing chat rule drove, where it
@@ -235,7 +237,7 @@ one.
 | Owner | `settings.owner_user_id`. Keeps a working bot under maintenance mode; enables the browser agent's download tools |
 | Maintenance mode | Everyone but the owner gets a static notice and no LLM reply; the LLM analyzer is off for everyone; no scheduled task fires |
 | Feedback menus | Answerable only by the person who reacted — anyone else gets a toast. A Telegram group message cannot be shown to a single member, so this is enforced at the callback handler |
-| Task authorship | A participant may only edit or cancel tasks they created |
+| Task authorship | A participant may only edit or cancel tasks they created. The owner is exempt from the author rule (not from chat scoping); owner status comes from the turn authority, and an unreadable policy fails closed |
 
 ## Operational recommendations
 

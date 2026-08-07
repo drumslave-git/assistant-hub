@@ -28,6 +28,58 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## The owner can cancel anyone's scheduled task (`done` pending production deploy + live verification, 2026-08-07)
+
+User decision, 2026-08-07: "I as an owner should be able to cancel other users
+scheduled tasks." The chat tools were author-scoped with no exception — a
+participant could edit or cancel only tasks they created — so the owner could see
+every task in `tasks_list` and mutate none of them but their own. Authorless
+tasks (created from the dashboard, `createdByUserId: null`) were unreachable from
+chat by *anyone*. The dashboard route handlers have always been unrestricted, so
+the gap was chat-only.
+
+`checkOwnership` now takes `isOwner` and returns early on it, after the chat
+check and never before: `chatId` is bound by the tool context and is the boundary
+no rights reach across, so the owner reaches only the current chat's tasks like
+everyone else. What they are exempt from is the author rule inside it.
+
+Scope: the exemption covers **both** mutating tools, not delete alone. They share
+one guard, and `tasks_update` can set `enabled: false` — the softer form of the
+same cancel. Exempting delete only would have let the owner destroy a task but
+not pause it. Say so if the intent was narrower.
+
+`guardMutation` resolves owner status from the turn's **authority**
+(`authorityUserId ?? userId`) — the same resolution `browse_web` uses, so an
+owner's standing chat rule lends the right the same way. Provenance is untouched:
+`createdByUserId` still records whoever really created the task. It fails
+**closed** — an unreadable policy or no configured owner means the author rule
+stands, because widening rights on a failed read is the one outcome a permission
+check must never have.
+
+Both tool descriptions now state the real rule and tell the model to just call
+the tool rather than refuse on the user's behalf or guess at authorship; the
+denial text names the owner as the one who can, so the bot can say why.
+
+Files: `features/scheduled-tasks/server/mcp-tools.ts` (+ test — 11 new, covering
+the pure rule and the authority resolution end to end through the registered
+`tasks_delete` handler), `docs/api/endpoints.md`, `docs/api/openapi.yaml`,
+`docs/architecture/llm-and-mcp.md`, `docs/architecture/security.md`,
+`docs/features/scheduled-tasks.md`, `docs/operations/operator-guide.md` — six
+docs asserted the old rule, three of them specifically that a dashboard-created
+task could not be touched from chat.
+
+Verification: `npm run typecheck` clean, `npm run lint` clean, `npm run test` 985
+passed / 21 pre-existing browser-agent failures (unchanged, see below).
+
+Remaining risks:
+
+- Untested against the live bot. The model has to actually call `tasks_delete`
+  for someone else's task now instead of talking itself out of it — the failure
+  the honesty gate below was built for.
+- No audit trail beyond the existing tool trace. An owner cancelling someone
+  else's task looks the same in the task's own history as the author doing it;
+  the trace's `actor` is the only record of who asked.
+
 ## The bot said a task was cancelled without calling any tool at all (`done` pending production deploy + live verification, 2026-08-06)
 
 Trace `3db16957…` (reply, 2026-08-06 12:29 Kyiv), and the turn before it. A user

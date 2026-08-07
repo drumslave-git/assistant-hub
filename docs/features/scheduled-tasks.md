@@ -133,7 +133,9 @@ topic in addition to `router.refresh()` after each mutation.
 `GET|POST /api/scheduled-tasks/run` (the poller's status / one immediate tick).
 
 Note that a dashboard-created task has `createdByUserId: null` — the operator is not a
-Telegram user — which means the chat tools cannot mutate it.
+Telegram user — which means the author-scoped chat tools cannot mutate it. The owner is
+the exception: exempt from the author rule, they can cancel or edit any task in a chat
+they are in, authorless ones included (user decision, 2026-08-07).
 
 ## Configuration
 

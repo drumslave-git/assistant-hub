@@ -228,7 +228,8 @@ next-run time in the past simply never arrives, and this notice is the only plac
 says why.
 
 A task you create here has no author, so the in-chat tools (which are author-scoped)
-cannot modify it.
+cannot modify it — unless you ask the bot as the configured owner, who is exempt from
+the author rule and can cancel or edit any task in a chat they are in.
 
 ## Browser agent (`/browser`)
 

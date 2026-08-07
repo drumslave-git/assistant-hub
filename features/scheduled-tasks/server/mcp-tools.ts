@@ -3,6 +3,7 @@ import "server-only";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { getBotPolicy } from "@/features/settings/server/service";
 import { ApiError } from "@/lib/api-error";
 import type { TraceTrigger } from "@/lib/trace";
 import { getToolContext } from "@/server/mcp/context";
@@ -30,6 +31,13 @@ import {
  * task. Listing/reading show all of the chat's tasks (with their author) so the
  * model can see what exists; only the mutations are author-scoped. Deliveries go
  * to the chat the task belongs to.
+ *
+ * The **owner is exempt from the author rule** (user decision, 2026-08-07) and may
+ * edit or cancel any task in a chat they are in — including the ones with no
+ * author at all, created from the dashboard, which until now nobody could touch
+ * from chat. Chat scoping is not part of the exemption: the owner reaches only
+ * the current chat's tasks, like everyone else, because `chatId` is bound by the
+ * tool context and never passed by the model.
  */
 
 export const TASKS_CREATE_TOOL = "tasks_create";
@@ -98,19 +106,28 @@ export function unknownTaskText(id: string, knownIds: string[]): string {
 
 /**
  * Whether the current participant may edit/cancel this task: it must belong to
- * this chat and have been created by them. Returns an error result to relay when
- * not, else null. `knownIds` are this chat's task ids, used only to explain a
- * miss (see {@link unknownTaskText}). Exported for unit testing the author rule.
+ * this chat and have been created by them — or the turn must carry the owner's
+ * rights. Returns an error result to relay when not, else null. `knownIds` are
+ * this chat's task ids, used only to explain a miss (see
+ * {@link unknownTaskText}). Exported for unit testing the author rule.
+ *
+ * The chat check comes first and the owner does **not** pass it: `chatId` is the
+ * boundary the tool context binds, and no rights reach across it. What the owner
+ * is exempt from is the author rule inside their own chat.
  */
 export function checkOwnership(
   task: ScheduledTask | null,
-  ctx: { chatId: string; userId?: string | null },
+  ctx: { chatId: string; userId?: string | null; isOwner?: boolean },
   id: string,
   knownIds: string[] = [],
 ): ReturnType<typeof errorResult> | null {
   if (!task || task.chatId !== ctx.chatId) return errorResult(unknownTaskText(id, knownIds));
+  if (ctx.isOwner) return null;
   if (!ctx.userId || task.createdByUserId !== ctx.userId) {
-    return errorResult(`Task ${id} was created by someone else — you can only change tasks you created.`);
+    return errorResult(
+      `Task ${id} was created by someone else — you can only change tasks you created. ` +
+        `Only the bot's owner can change or cancel another person's task.`,
+    );
   }
   return null;
 }
@@ -123,14 +140,28 @@ async function chatTaskIds(chatId: string): Promise<string[]> {
 /**
  * Resolve the task a mutating tool named, or the error result to relay: the miss
  * and author rules for `tasks_update`/`tasks_delete` in one place.
+ *
+ * Owner status is read from the turn's **authority** — the sender normally, the
+ * author of the standing chat rule when a rule drove the turn — the same
+ * resolution `browse_web` uses, and the one `McpToolContext.authorityUserId`
+ * documents. Provenance is untouched: the task's `createdByUserId` still records
+ * whoever really created it. A settings read the policy calls cheap enough to run
+ * per message, so it is resolved plainly rather than only on the deny path.
+ *
+ * Best-effort, and it fails **closed**: an unreadable policy means no owner is
+ * recognized, so the author rule stands. Widening rights on a failed read is the
+ * one outcome a permission check must never have.
  */
 async function guardMutation(
   id: string,
-  ctx: { chatId: string; userId?: string | null },
+  ctx: { chatId: string; userId?: string | null; authorityUserId?: string | null },
 ): Promise<ReturnType<typeof errorResult> | null> {
   const task = await getTask(id);
   const found = task != null && task.chatId === ctx.chatId;
-  return checkOwnership(task, ctx, id, found ? [] : await chatTaskIds(ctx.chatId));
+  const policy = await getBotPolicy().catch(() => null);
+  const authority = ctx.authorityUserId ?? ctx.userId;
+  const isOwner = Boolean(policy?.ownerUserId && authority === policy.ownerUserId);
+  return checkOwnership(task, { ...ctx, isOwner }, id, found ? [] : await chatTaskIds(ctx.chatId));
 }
 
 /**
@@ -208,8 +239,9 @@ export const TASKS_CREATE_DESCRIPTION =
  * fire stayed exactly as blind as before.
  */
 export const TASKS_UPDATE_DESCRIPTION =
-  "Change or enable/disable a task in THIS chat by its id — only tasks the current user " +
-  "created (you cannot change someone else's task). Only the fields you pass are changed. " +
+  "Change or enable/disable a task in THIS chat by its id — tasks the current user created, " +
+  "and any task in this chat when the current user is the bot's owner. Just call it: the tool " +
+  "decides, and answers plainly if the user is not allowed. Only the fields you pass are changed. " +
   "Get the id from tasks_list; tasks_list and tasks_get show each task's saved context. " +
   "IMPORTANT — the same rule as tasks_create: when the task fires you will have ONLY the " +
   "stored 'instruction' and 'context' texts, no chat transcript and no conversation memory. " +
@@ -358,8 +390,10 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
     {
       title: "Cancel scheduled task",
       description:
-        "Cancel (delete) a task in THIS chat by its id — only tasks the current user created " +
-        "(you cannot cancel someone else's task). Get the id from tasks_list.",
+        "Cancel (delete) a task in THIS chat by its id — tasks the current user created, and " +
+        "any task in this chat when the current user is the bot's owner. Just call it: the tool " +
+        "decides, and answers plainly if the user is not allowed, so never refuse on their " +
+        "behalf or guess at who created a task. Get the id from tasks_list.",
       inputSchema: { id: z.string().min(1).describe("Task id to cancel (from tasks_list)") },
       annotations: {
         readOnlyHint: false,

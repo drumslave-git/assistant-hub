@@ -984,7 +984,7 @@ paths:
       description: |
         Times are local wall-clock in the operator timezone. A dashboard-created
         task has `createdByUserId: null`, so the author-scoped chat tools cannot
-        mutate it.
+        mutate it — except the owner, who is exempt from the author rule.
       requestBody:
         required: true
         content:
@@ -2345,7 +2345,7 @@ components:
         threadId: { type: [integer, "null"] }
         createdByUserId:
           type: [string, "null"]
-          description: The author. Null for a dashboard-created task, which the author-scoped chat tools cannot mutate.
+          description: The author. Null for a dashboard-created task, which the author-scoped chat tools cannot mutate — except by the owner, who is exempt from the author rule.
         instruction: { type: string }
         scheduleKind: { $ref: "#/components/schemas/ScheduleKind" }
         timeOfDay: { $ref: "#/components/schemas/TimeOfDay" }

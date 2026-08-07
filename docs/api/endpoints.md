@@ -189,7 +189,9 @@ writing it is an upsert and there is nothing to address individually.
 `true` while maintenance mode is on — due tasks stay due and deliver once it ends.
 
 A dashboard-created task has `createdByUserId: null`, so the chat tools (which are
-author-scoped) cannot mutate it. Schedule coherence — a `once` task needs a
+author-scoped) cannot mutate it — except for the owner, who is exempt from the
+author rule and may cancel or edit any task in a chat they are in. Schedule
+coherence — a `once` task needs a
 `runDate`, a `weekly` task needs `weekdays` — is enforced by the service, which also
 computes `nextRunAt` in the operator timezone.
 
