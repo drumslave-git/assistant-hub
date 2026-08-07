@@ -286,8 +286,25 @@ function ModelTableBody({ filters }: { filters: CardFilters }) {
   );
 }
 
+/**
+ * Why this column is not a model benchmark.
+ *
+ * It is `completionTokens / latency`, summed over calls made at different times,
+ * and latency on a shared endpoint includes time spent queued behind other work.
+ * So it reports how busy the box was while a model happened to be in use. A
+ * rarely-used model that ran mostly during quiet periods will out-score the
+ * everyday one on the same hardware — which is exactly how it was misread once
+ * (2026-08-07: a 26B model showed 2.3x the 12B's rate here, and lost to it on
+ * every call shape in a controlled benchmark).
+ */
+const TOKENS_PER_SEC_NOTE =
+  "Completion tokens per second of measured latency, which includes time queued " +
+  "behind other work on a shared endpoint. Higher usually means the endpoint was " +
+  "quieter, not that the model is faster — do not compare models with it.";
+
 function ModelRows({ models }: { models: ModelStat[] }) {
   return (
+    <>
     <Table minWidth={800}>
       <TableHead>
         <TableRow header>
@@ -297,7 +314,13 @@ function ModelRows({ models }: { models: ModelStat[] }) {
           <TableHeaderCell align="right">Avg</TableHeaderCell>
           <TableHeaderCell align="right">p50</TableHeaderCell>
           <TableHeaderCell align="right">p95</TableHeaderCell>
-          <TableHeaderCell align="right">Tokens/s</TableHeaderCell>
+          <TableHeaderCell
+            align="right"
+            title={TOKENS_PER_SEC_NOTE}
+            className="cursor-help underline decoration-dotted underline-offset-4"
+          >
+            Tokens/s
+          </TableHeaderCell>
           <TableHeaderCell align="right">Prompt</TableHeaderCell>
           <TableHeaderCell align="right">Completion</TableHeaderCell>
         </TableRow>
@@ -336,6 +359,12 @@ function ModelRows({ models }: { models: ModelStat[] }) {
         ])}
       </TableBody>
     </Table>
+    <p className="mt-3 text-xs text-faint">
+      Tokens/s counts queue time, so it reflects how busy the endpoint was rather
+      than how fast a model is. Benchmark models directly instead of comparing
+      this column.
+    </p>
+    </>
   );
 }
 

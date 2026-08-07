@@ -65,7 +65,16 @@ export interface CallKindStat {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  /** Completion tokens per second of latency, or null when latency is unknown. */
+  /**
+   * Completion tokens per second of latency, or null when latency is unknown.
+   *
+   * **Not a model speed measurement.** The latency it divides by includes time
+   * spent queued behind other work on a shared endpoint, so this reports how
+   * busy the endpoint was while a model happened to be in use. A rarely-used
+   * model that ran mostly during quiet periods out-scores the everyday one on
+   * the same hardware. Measured 2026-08-07: a 26B model showed 2.3x the 12B's
+   * rate here and lost to it on every call shape in a controlled benchmark.
+   */
   tokensPerSec: number | null;
 }
 
@@ -74,7 +83,9 @@ export interface CallKindStat {
  *
  * The model level deliberately carries no latency average: it would be a mean over
  * unlike kinds of work. It carries volume (rounds, tokens) and throughput — a ratio
- * of sums, which stays well-defined across a mix. Latency lives on {@link callKinds}.
+ * of sums, which stays well-defined across a mix, though see
+ * {@link CallKindStat.tokensPerSec} for what that ratio does and does not mean.
+ * Latency lives on {@link callKinds}.
  */
 export interface ModelStat {
   /** Clean model name (registry prefixes stripped). */
