@@ -146,6 +146,28 @@ and the failure is one unremarkable `tool` message. Restating it where the model
 deciding what to do next is what makes it land. Generic in the loop, so every
 feature's tools get it.
 
+### A round that produced nothing is asked again
+
+A round can come back with **no message text and no tool call**: nothing the chat
+can receive, and no work started. The loop appends a system turn saying exactly
+that and asks once more (`MAX_EMPTY_ROUND_RETRIES = 1`); a second empty round is a
+model with nothing to say, and the caller's empty-answer failure stands. The retry
+is recorded as a warn step on the trace, so a turn that needed it cannot pass for
+a clean one.
+
+The failure it exists for (trace `ef8634e5…`, 2026-08-08): asked to find a photo,
+gemma4:12b reasoned its way to the *correct* call and then emitted it inside its
+reasoning as literal text — `<|tool_call>call:history_search{author:…}`, with the
+chat template's quote tokens leaking into the argument values. `tool_calls` was
+absent, content empty, `finish_reason: "stop"`. 600 tokens spent, nothing run, and
+the group got a failure notice. This is a **tool-call dialect** failure, the one
+class the backend normalization layer had recorded as *not* a problem.
+
+Deliberately nothing is parsed out of the reasoning text. A call reconstructed
+from garbled pseudo-syntax is a call the model never actually made, and tool
+selection stays the model's. What the loop acts on is the mechanical fact that the
+round produced nothing at all.
+
 ## Call kinds
 
 `features/analytics/llm-call-kind.ts` is the taxonomy of LLM calls the app makes,

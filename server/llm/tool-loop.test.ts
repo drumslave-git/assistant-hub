@@ -611,3 +611,85 @@ describe("chatCompletionWithTools — round retries", () => {
     expect(retried.at(-1)).toMatchObject({ role: "tool", content: "downloaded" });
   });
 });
+
+describe("a round that produces nothing", () => {
+  /** The failure shape from trace `ef8634e5…`: no content, no tool calls. */
+  const empty = (): ToolLoopRound => answer("");
+
+  it("asks again once, and delivers the answer the retry produced", async () => {
+    const complete = vi.fn().mockResolvedValueOnce(empty()).mockResolvedValueOnce(answer("here it is"));
+    const seen: number[] = [];
+
+    const result = await runToolLoop({
+      seed: [{ role: "user", content: "find it" }],
+      complete,
+      callTool: vi.fn(),
+      onEmptyRound: (attempt) => void seen.push(attempt),
+    });
+
+    expect(result.content).toBe("here it is");
+    expect(result.rounds).toBe(2);
+    // Visible, not silent — a turn that needed an extra round must not read as
+    // a clean one on Debug.
+    expect(seen).toEqual([1]);
+  });
+
+  it("lets the retry make the tool call the empty round failed to emit", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(empty())
+      .mockResolvedValueOnce(calls([toolCall("c1", "history_search", { query: ["door"] })]))
+      .mockResolvedValueOnce(answer("found it"));
+    const callTool = vi.fn().mockResolvedValue(okResult("[#1] …"));
+
+    const result = await runToolLoop({ seed: [], complete, callTool });
+
+    expect(callTool).toHaveBeenCalledWith("history_search", { query: ["door"] });
+    expect(result.content).toBe("found it");
+  });
+
+  it("tells the model what was wrong, without naming a tool", async () => {
+    const complete = vi.fn().mockResolvedValueOnce(empty()).mockResolvedValueOnce(answer("ok"));
+    await runToolLoop({ seed: [{ role: "user", content: "hi" }], complete, callTool: vi.fn() });
+
+    const retried = complete.mock.calls[1][0] as { role: string; content: string }[];
+    const notice = retried[retried.length - 1];
+    expect(notice.role).toBe("system");
+    // The one thing that was actually wrong: where the call has to go.
+    expect(notice.content).toContain("inside your thinking is not one");
+  });
+
+  it("gives up after one retry rather than looping on a model with nothing to say", async () => {
+    const complete = vi.fn().mockResolvedValue(empty());
+    const result = await runToolLoop({ seed: [], complete, callTool: vi.fn() });
+
+    expect(complete).toHaveBeenCalledTimes(2);
+    // The caller's empty-answer failure is the honest outcome from here.
+    expect(result.content).toBe("");
+    expect(result.loopDetected).toBe(false);
+  });
+
+  it("leaves a whitespace-only round to the same treatment", async () => {
+    const complete = vi.fn().mockResolvedValueOnce(answer("   ")).mockResolvedValueOnce(answer("real"));
+    const result = await runToolLoop({ seed: [], complete, callTool: vi.fn() });
+    expect(result.content).toBe("real");
+  });
+
+  it("does not re-ask a round that emitted a tool call but no text", async () => {
+    // Normal: a tool turn has no content by design.
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(calls([toolCall("c1", "echo", {})]))
+      .mockResolvedValueOnce(answer("done"));
+    const onEmptyRound = vi.fn();
+
+    await runToolLoop({
+      seed: [],
+      complete,
+      callTool: vi.fn().mockResolvedValue(okResult("x")),
+      onEmptyRound,
+    });
+
+    expect(onEmptyRound).not.toHaveBeenCalled();
+  });
+});

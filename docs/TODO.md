@@ -173,8 +173,58 @@ same 21 pre-existing yt-dlp failures; 12 integration cases (2 new, for the
 filters-only lookup and the no-criteria refusal), 20 renderer cases (10 new) and
 11 `lib/telegram` cases (8 new).
 
+### Round 4 — the tool call went into the reasoning channel (2026-08-08)
+
+Trace `ef8634e5…`, and **not** a search bug: the round-2 description fix worked.
+Asked to find a photo somebody had posted, gemma4:12b composed exactly the right
+call — author + media_kinds + query together, in one call — and then emitted it
+*inside its reasoning* as literal text:
+
+```
+<|tool_call>call:history_search{author:"R.K.",media_kinds:[<|"|>photo<|"|>],query:[<|"|>ПМ<|"|>]}<tool_call|>
+```
+
+The `<|"|>` around each value is the chat template's own quote tokens leaking
+through. The API response carried **no `tool_calls`**, empty content, and
+`finish_reason: "stop"` — 600 completion tokens, nothing run — so the reply path
+raised "LLM returned an empty response", failed the trace, and the group got an
+error notice.
+
+This is a **tool-call dialect** failure: the class the normalization-layer entry
+above explicitly records as *not* one of the confirmed breakages. It is now, and
+it is not specific to the new tools — any turn that decides on a tool inside its
+thinking can hit it.
+
+*User decision, 2026-08-08*, asked with four options (retry / salvage the call out
+of the reasoning text / both / measure first): **retry the round once**, and leave
+the chat-facing failure text as it is.
+
+So `runToolLoop` now re-asks a round that produced neither an answer nor a tool
+call, once, appending `EMPTY_ROUND_NOTICE` — which restates the single thing that
+was wrong (a tool call written in the thinking is not a tool call) and leaves both
+exits open, the same shape as `toolFailureNotice`. Nothing is parsed out of the
+reasoning: a call reconstructed from garbled pseudo-syntax is a call the model
+never made, and tool *selection* stays the model's. The retry is a warn step on
+the trace (`round produced no answer and no tool call — asking again`), which is
+also the signal that will say whether this is rare or routine.
+
+Note this reverses, for the tool loop only, the 2026-08-03 decision that an empty
+completion is not retryable. That decision was about the *transport* retry
+(`withLlmRetry`), where an empty completion means the provider answered fine and
+re-sending changes nothing; here the retry carries a new system turn, so it is a
+different request.
+
+Files: `server/llm/tool-loop.ts`, `features/bot-messaging/server/service.ts`,
+`server/telegram/process-update.ts`, `docs/architecture/llm-and-mcp.md`.
+Verification: `npm run lint` clean, `npm run typecheck` clean, `npm run test` 1068
+passed / the same 21 pre-existing yt-dlp failures; 6 new tool-loop cases.
+
 ### Remaining risks / live verification checklist
 
+- **The retry is one extra round, not a cure.** If the model re-emits into the
+  reasoning channel a second time the turn still fails, exactly as before. Watch
+  the new warn step: frequent appearances mean this wants fixing at the backend
+  adapter (salvage, or a different tool-call dialect), not in the loop.
 - **Not yet exercised through the bot itself since round 2/3.** Next live check:
   ask for a photo by something only its description says, and confirm the reply
   cites ids that are tappable and does not paste a result line.
@@ -223,7 +273,10 @@ Decisions taken with the user before implementing:
 
 Confirmed breakages the layer must pin (user, 2026-08-07): thinking/reasoning
 control, context-overflow error shape, served-model-id normalization. Tool-call
-dialect was explicitly *not* one of them.
+dialect was explicitly *not* one of them — **until 2026-08-08**, when a live turn
+emitted its tool call inside the reasoning channel and the round came back empty
+(see "the tool call went into the reasoning channel" below). Handled generically
+in the tool loop for now; if it recurs it belongs here, in the Ollama adapter.
 
 ### Done so far
 

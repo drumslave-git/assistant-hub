@@ -85,6 +85,12 @@ export interface RunToolLoopParams {
    * round, so it needs each one.
    */
   onRound?: (round: ToolLoopRound, report: RoundReport) => void | Promise<void>;
+  /**
+   * Reports a round that produced neither an answer nor a tool call, and is being
+   * asked again — see {@link EMPTY_ROUND_NOTICE}. Visible, not silent: a turn that
+   * took an extra round must not pass for a clean one on Debug.
+   */
+  onEmptyRound?: (attempt: number) => void | Promise<void>;
   /** Hard cap on model rounds; unset = unbounded (progress guard still applies). */
   maxRounds?: number;
   /**
@@ -147,6 +153,40 @@ const DEFAULT_MAX_ROUNDS = 16;
  * stampede the DB pool or Playwright — so parallel, with a small cap.
  */
 const MAX_PARALLEL_TOOL_CALLS = 4;
+
+/**
+ * How many times a round that produced *nothing* — no message text, no tool
+ * call — is asked again before the loop gives up on it. One: a second empty
+ * round is a model that has nothing to say, not a glitch, and the caller's
+ * empty-answer failure is the honest outcome.
+ */
+const MAX_EMPTY_ROUND_RETRIES = 1;
+
+/**
+ * Shown to the model after a round that produced neither an answer nor a tool
+ * call (user decision, 2026-08-08).
+ *
+ * Production trace `ef8634e5…`: asked to find a photo somebody had posted, the
+ * model reasoned its way to the correct call and then emitted it *inside its
+ * reasoning* as literal text — `<|tool_call>call:history_search{author:…}` — with
+ * the chat template's quote tokens leaking into the argument values. The API
+ * response therefore carried no `tool_calls`, empty content, and
+ * `finish_reason: "stop"`: 600 tokens spent, no work started, and the chat got a
+ * failure notice instead of an answer.
+ *
+ * A round like that is a mechanical fact worth acting on, not a judgement about
+ * what the model should have chosen: it decided, and the decision did not leave
+ * the model. So the retry restates the one thing that was wrong — where the call
+ * has to go — and leaves both exits open, exactly like {@link toolFailureNotice}.
+ * Nothing is parsed out of the reasoning text: a call reconstructed from garbled
+ * pseudo-syntax would be a call the model never actually made.
+ */
+export const EMPTY_ROUND_NOTICE =
+  "Your last turn produced nothing: no message and no tool call. Nothing was run and nobody " +
+  "received anything. If you decided to use a tool, it must be emitted as a real tool call — a " +
+  "tool call written out inside your thinking is not one and never runs. Do it now: either make " +
+  "the tool call for real, or write the plain answer. Do not describe what you are about to do " +
+  "instead of doing it.";
 
 /**
  * Map `items` through `fn` with at most `limit` in flight, results in input
@@ -233,6 +273,8 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
   const seen = new Set<string>();
   let latencyMs = 0;
   let stalls = 0;
+  /** Rounds that produced neither an answer nor a tool call, and were re-asked. */
+  let emptyRounds = 0;
   let rounds = 0;
   let lastRaw: unknown = null;
 
@@ -279,6 +321,16 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
     const toolCalls = round.toolCalls;
     // A round that asked for no tools is the answer; anything else is a tool turn.
     await params.onRound?.(round, { index: rounds - 1, isFinal: toolCalls.length === 0 });
+
+    // Neither an answer nor a tool call: nothing the chat can receive, and no
+    // work started. Ask once more before giving up — see EMPTY_ROUND_NOTICE.
+    if (toolCalls.length === 0 && !round.content.trim() && emptyRounds < MAX_EMPTY_ROUND_RETRIES) {
+      emptyRounds += 1;
+      conversation.push({ role: "system", content: EMPTY_ROUND_NOTICE });
+      await params.onEmptyRound?.(emptyRounds);
+      continue;
+    }
+
     if (toolCalls.length === 0) {
       return {
         content: round.content,
@@ -383,6 +435,8 @@ export async function chatCompletionWithTools(
     onRetry?: (info: LlmRetryInfo) => void | Promise<void>;
     /** Reports each model round's own tokens/latency — see {@link RunToolLoopParams.onRound}. */
     onRound?: (round: ToolLoopRound, report: RoundReport) => void | Promise<void>;
+    /** Reports an empty round being re-asked — see {@link RunToolLoopParams.onEmptyRound}. */
+    onEmptyRound?: (attempt: number) => void | Promise<void>;
     /** Per-round conversation rewrite — see {@link RunToolLoopParams.compact}. */
     compact?: (conversation: ChatCompletionMessageParam[]) => ChatCompletionMessageParam[];
     maxRounds?: number;
@@ -464,6 +518,7 @@ export async function chatCompletionWithTools(
     callTool: input.callTool,
     onToolCall: input.onToolCall,
     onRound: input.onRound,
+    onEmptyRound: input.onEmptyRound,
     compact: input.compact,
     maxRounds: input.maxRounds ?? DEFAULT_MAX_ROUNDS,
   });

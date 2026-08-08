@@ -182,6 +182,8 @@ export interface BotMessagingDeps {
     onRequest?: (requestBody: unknown) => void | Promise<void>,
     onRound?: (round: ReplyRound) => void | Promise<void>,
     onRetry?: (info: LlmRetryInfo) => void | Promise<void>,
+    /** A round that produced neither an answer nor a tool call, being re-asked. */
+    onEmptyRound?: (attempt: number) => void | Promise<void>,
   ) => Promise<GeneratedReply>;
   /**
    * Run one plain completion for the addressing analyzer (real: `chatCompletion`
@@ -985,6 +987,18 @@ export async function handleIncomingMessage(
               level: "warn",
               message: `LLM call failed — retrying (attempt ${info.attempt} of ${info.attempts})`,
               data: { error: info.error, delayMs: info.delayMs },
+            });
+          },
+          // Same reasoning as the retry above: a turn that needed an extra round
+          // because one produced nothing must not read as a clean turn. This is
+          // the signal that says whether the tool-call-in-the-reasoning failure
+          // (trace `ef8634e5…`) is rare or routine.
+          async (attempt) => {
+            await trace.event({
+              type: "step",
+              level: "warn",
+              message: "round produced no answer and no tool call — asking again",
+              data: { attempt },
             });
           },
         );

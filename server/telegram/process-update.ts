@@ -554,7 +554,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     },
     generateReply:
       overrides?.generateReply ??
-      (async (messages: ChatMessage[], onToolCall, onRequest, onRound, onRetry) => {
+      (async (messages: ChatMessage[], onToolCall, onRequest, onRound, onRetry, onEmptyRound) => {
         const runtime = await getLlmRuntime();
         if (!runtime) {
           throw ApiError.serviceUnavailable(
@@ -623,6 +623,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             timeoutMs: REPLY_CHAT_COMPLETION_TIMEOUT_MS,
             onRequest,
             onRetry,
+            onEmptyRound,
             onToolCall: (rec) =>
               onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
             onRound: (round, report) =>
