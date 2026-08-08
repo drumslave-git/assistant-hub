@@ -92,6 +92,14 @@ Design constraints worth preserving:
   from paired replacements) and the transport falls back to a plain-text send if
   Telegram still refuses.
 - Long replies are split at natural boundaries, never truncated.
+- **Message citations become links.** A reply that says "the first photo was in
+  #13488, the other two in #15114 and #15115" has every reference rendered as a
+  `t.me/c/<chat>/<id>` anchor, so each one taps through to that message. The ids
+  are checked against the chat's mirror first — a whitelist, not a pattern, so an
+  invented or mistyped id stays plain text rather than linking nowhere. Only
+  supergroups and channels have a per-message URL; in a basic group or a DM
+  nothing is linked. Word hashtags (`#weekend`), URL fragments and citations
+  inside code spans are left alone.
 - The reply normally lands under the message it answers. The `reply_to_message`
   tool moves that target to an earlier message when the answer is *about* that
   message ("here it is", under the photo somebody asked the bot to find). It

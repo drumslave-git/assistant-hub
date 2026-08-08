@@ -16,6 +16,8 @@
  * Telegram still rejects the HTML.
  */
 
+import { MESSAGE_REF_PATTERN } from "@/lib/telegram";
+
 const PLACEHOLDER = "\u0000";
 
 function escapeHtml(text: string): string {
@@ -49,10 +51,32 @@ function convertBlockquotes(lines: string[]): string[] {
 }
 
 /**
+ * Which `#<id>` citations to turn into links, and what to build them from.
+ *
+ * `ids` is a whitelist, never "every number that looks like one": the pipeline
+ * checks each cited id against the chat's mirror first, so a model that invents
+ * or mistypes an id produces plain text rather than a link to nothing. `baseUrl`
+ * is null for a chat with no per-message URL (a basic group, a private chat), and
+ * then nothing is linked at all.
+ */
+export interface MessageLinkOptions {
+  baseUrl: string | null;
+  ids: readonly number[];
+}
+
+/**
  * Render model Markdown as Telegram-safe HTML. Always returns balanced,
  * fully-escaped markup; input with no Markdown comes back as escaped text.
+ *
+ * With {@link MessageLinkOptions}, citations like `#13488` become tappable links
+ * to those messages — the bot can then answer "the first photo was in #13488, the
+ * other two in #15114 and #15115" and have every reference go somewhere, which is
+ * what a person asking about old messages actually wanted.
  */
-export function renderTelegramHtml(markdown: string): string {
+export function renderTelegramHtml(
+  markdown: string,
+  messageLinks?: MessageLinkOptions,
+): string {
   // The placeholder char delimits lifted-out code spans below; model text
   // containing it would corrupt the restore, so it is dropped first.
   let s = markdown.replace(/\r\n/g, "\n").replaceAll(PLACEHOLDER, "");
@@ -77,9 +101,23 @@ export function renderTelegramHtml(markdown: string): string {
   // every tag below is emitted by a paired replacement, so balance holds.
   s = escapeHtml(s);
 
-  // Links before emphasis, so emphasis inside the label still converts.
+  // Message citations before anything else, and lifted out: an anchor that is
+  // already a placeholder cannot be nested inside another anchor, italicized
+  // halfway, or split by a line rule.
+  if (messageLinks?.baseUrl && messageLinks.ids.length > 0) {
+    const linkable = new Set(messageLinks.ids);
+    const base = messageLinks.baseUrl;
+    s = s.replace(MESSAGE_REF_PATTERN, (whole, before: string, mark: string, digits: string) => {
+      if (!linkable.has(Number(digits))) return whole;
+      return `${before}${lift(`<a href="${escapeAttr(`${base}/${digits}`)}">${mark}${digits}</a>`)}`;
+    });
+  }
+
+  // Links before emphasis, so emphasis inside the label still converts. A label
+  // may not contain a placeholder: that is what stops a Markdown link wrapped
+  // around a citation from producing a nested <a>, which Telegram rejects.
   s = s.replace(
-    /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    new RegExp(`\\[([^\\]\\n${PLACEHOLDER}]+)\\]\\((https?://[^\\s)]+)\\)`, "g"),
     (_m, label: string, url: string) => `<a href="${escapeAttr(url)}">${label}</a>`,
   );
 

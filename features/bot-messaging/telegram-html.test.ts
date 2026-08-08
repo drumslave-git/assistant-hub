@@ -70,3 +70,65 @@ describe("renderTelegramHtml", () => {
     }
   });
 });
+
+describe("message citations", () => {
+  const links = { baseUrl: "https://t.me/c/1234567890", ids: [13488, 15114, 15115] };
+
+  it("turns every cited id into a link to that message", () => {
+    // The shape a person actually asked for (2026-08-07): several messages
+    // named in one ordinary sentence, each one tappable.
+    const html = renderTelegramHtml(
+      "First photo was in #13488, the other two under #15114 and #15115.",
+      links,
+    );
+    expect(html).toBe(
+      'First photo was in <a href="https://t.me/c/1234567890/13488">#13488</a>, the other two ' +
+        'under <a href="https://t.me/c/1234567890/15114">#15114</a> and ' +
+        '<a href="https://t.me/c/1234567890/15115">#15115</a>.',
+    );
+  });
+
+  it("links a numero-sign citation the same way", () => {
+    const html = renderTelegramHtml("see \u211613488", links);
+    expect(html).toBe('see <a href="https://t.me/c/1234567890/13488">\u211613488</a>');
+  });
+
+  it("leaves an id that is not in the whitelist as plain text", () => {
+    // An invented or mistyped id must not become a link to nothing.
+    expect(renderTelegramHtml("in #99999", links)).toBe("in #99999");
+  });
+
+  it("links nothing when the chat has no per-message URL", () => {
+    expect(renderTelegramHtml("in #13488", { baseUrl: null, ids: [13488] })).toBe("in #13488");
+  });
+
+  it("links nothing when no options are passed at all", () => {
+    expect(renderTelegramHtml("in #13488")).toBe("in #13488");
+  });
+
+  it("leaves hashtags and URL fragments alone", () => {
+    const html = renderTelegramHtml("#weekend at https://e.com/a#13488", {
+      ...links,
+      ids: [13488],
+    });
+    expect(html).not.toContain("<a");
+  });
+
+  it("does not touch a citation inside code", () => {
+    expect(renderTelegramHtml("`#13488`", links)).toBe("<code>#13488</code>");
+  });
+
+  it("does not nest an anchor inside a Markdown link", () => {
+    // Telegram rejects nested <a>, which would cost the whole send.
+    const html = renderTelegramHtml("[see #13488](https://e.com)", links);
+    const opens = html.match(/<a[ >]/g)?.length ?? 0;
+    expect(opens).toBe(html.match(/<\/a>/g)?.length ?? 0);
+    expect(html).not.toMatch(/<a[^>]*>[^<]*<a/);
+  });
+
+  it("still emphasizes text around a citation", () => {
+    expect(renderTelegramHtml("**bold** #13488", links)).toBe(
+      '<b>bold</b> <a href="https://t.me/c/1234567890/13488">#13488</a>',
+    );
+  });
+});

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildResult, mergeMatches, SELF_AUTHORED_ONLY_NOTE } from "./mcp-tools";
+import { buildResult, mergeMatches, SELF_AUTHORED_ONLY_NOTE, unquote } from "./mcp-tools";
 import type { ChatMessageRecord } from "./repository";
 import type { MessageSearchMatch } from "./search-repository";
 
@@ -126,6 +126,78 @@ describe("buildResult", () => {
       }),
     );
     expect(text).toContain(SELF_AUTHORED_ONLY_NOTE);
+  });
+});
+
+describe("search result size", () => {
+  /** A vision description is 600–1500 chars; fifty of them buried a reply. */
+  const longDescription = ` [photo: ${"a weathered blue front door ".repeat(40)}]`;
+
+  it("cuts each hit to a snippet and marks the cut", () => {
+    const text = textOf(
+      buildResult([record({ content: "" })], {
+        mediaSuffixes: new Map([[11, longDescription]]),
+        maxContentChars: 220,
+      }),
+    );
+    const line = text.split("\n")[0];
+    expect(line.length).toBeLessThan(320);
+    // Cut, not complete — the model must not read a snippet as the whole message.
+    expect(line.endsWith("…")).toBe(true);
+    // The anchor survives: it is the only part of the line that is acted on.
+    expect(line).toContain("[#11]");
+  });
+
+  it("leaves a short hit untouched", () => {
+    const text = textOf(
+      buildResult([record({ content: "short" })], { maxContentChars: 220 }),
+    );
+    expect(text).toContain(": short");
+    expect(text).not.toContain("…");
+  });
+
+  it("keeps every hit in full on the structured payload, which is trace-only", () => {
+    const result = buildResult([record({ content: "" })], {
+      mediaSuffixes: new Map([[11, longDescription]]),
+      maxContentChars: 220,
+    });
+    // The loop feeds the model `result.text`; Debug records this verbatim, so
+    // truncating it would lose the raw body an operator needs.
+    expect(result.structuredContent.messages[0].content).toBe(longDescription);
+  });
+
+  it("appends the usage note to a non-empty result, and never to an empty one", () => {
+    const note = "USAGE NOTE";
+    expect(textOf(buildResult([record()], { usageNote: note }))).toContain(note);
+    expect(textOf(buildResult([], { usageNote: note }))).toBe("(no matching messages)");
+  });
+
+  it("keeps both notes when a self-authored-only result also carries the usage note", () => {
+    const text = textOf(
+      buildResult([record({ role: "assistant", userId: null })], { usageNote: "USAGE NOTE" }),
+    );
+    expect(text).toContain(SELF_AUTHORED_ONLY_NOTE);
+    expect(text).toContain("USAGE NOTE");
+  });
+});
+
+describe("unquote", () => {
+  it("strips the stray quotes a model wraps an argument in", () => {
+    // Production, 2026-08-07: `author` arrived as the string `"R.K."`, quotes
+    // included, and exact-name resolution missed a person who was right there.
+    expect(unquote('"R.K."')).toBe("R.K.");
+    expect(unquote("'Bea'")).toBe("Bea");
+    expect(unquote(" `Cai` ")).toBe("Cai");
+  });
+
+  it("leaves an ordinary reference alone, including quotes inside it", () => {
+    expect(unquote("Bea")).toBe("Bea");
+    expect(unquote("@rok13")).toBe("@rok13");
+    expect(unquote('the "boss"')).toBe('the "boss"');
+  });
+
+  it("does not strip a lone quote character", () => {
+    expect(unquote('"')).toBe('"');
   });
 });
 

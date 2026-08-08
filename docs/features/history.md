@@ -133,6 +133,19 @@ one reading the mirror directly: a message sent since the last indexing run has 
 index row yet, and a search that could not find it would be a regression the other
 two would hide.
 
+Results are **snippets, not messages**: each hit's body is cut to ~220 characters
+in the text the model reads, and the default is 10 hits (max 50). A vision
+description runs 600–1500 characters, and returning fifty of them in full took one
+production reply prompt to 38.8k tokens and got the raw result line pasted into
+the chat. The full bodies survive in the structured payload, which is what Debug
+records — the loop feeds the model `result.text` only. To read one message in
+full, fetch it by its id.
+
+A query is optional when `author` or `media_kinds` is given: "the photos she sent"
+is a real lookup with nothing to rank by, and it answers with the most recent
+matches. Requiring a query is what made a production turn drop the author filter
+and search the whole chat instead.
+
 Hits are ranked to decide *which* messages come back, then rendered
 chronologically — a transcript that jumps around in time is hard to read and its
 `[reply to #…]` anchors stop lining up. Each line names its author (resolved

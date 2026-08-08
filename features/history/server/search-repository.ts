@@ -251,7 +251,6 @@ export async function searchChatMessagesHybrid(
   },
 ): Promise<MessageSearchMatch[]> {
   const text = params.queryText.trim();
-  if (!text && !params.queryVector) return [];
 
   // Pull a deeper pool from each half than we return: a result ranked #10 by one
   // half and #12 by another should be able to win overall, which it cannot if
@@ -284,6 +283,25 @@ export async function searchChatMessagesHybrid(
     cm.reply_to_message_id, cm.sent_at, cm.edited_at, cm.created_at,
     s.content as indexed_content, mm.kind as media_kind
   `;
+
+  // Filters with no query at all — "the photos she sent". A legitimate lookup
+  // with nothing to rank by, so it answers with the most recent matches instead
+  // of nothing. Rejecting it forces the model to invent a query, and in
+  // production (2026-08-07) that is exactly what happened: it retried without
+  // the author filter and searched the whole chat.
+  if (!text && !params.queryVector) {
+    if (authorIds.length === 0 && kinds.length === 0) return [];
+    const rows = await db.execute<PoolRow>(sql`
+      select ${columns} ${source}
+      order by cm.id desc
+      limit ${params.limit}
+    `);
+    // Newest first while selecting, message order when returned — same contract
+    // as a ranked search, so callers render one way.
+    return rows.rows
+      .map((row) => ({ ...mapPoolRow(row), score: 0 }))
+      .sort((a, b) => a.id - b.id);
+  }
 
   const vectorPool: PoolRow[] = params.queryVector
     ? (

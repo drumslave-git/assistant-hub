@@ -274,7 +274,7 @@ query words it), while recall searches by meaning.
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `history_search` | `query` (string or array), `author?`, `media_kinds?`, `limit` | Hybrid search over this chat's full stored history — semantic, full-text and substring, fused by reciprocal rank. Finds media by **what it shows**, not just its caption |
+| `history_search` | `query?` (string or array), `author?`, `media_kinds?`, `limit` | Hybrid search over this chat's full stored history — semantic, full-text and substring, fused by reciprocal rank. Finds media by **what it shows**, not just its caption. Returns anchored snippets, not full messages |
 | `history_get_in_range` | `from`, `to` (ISO-8601) | This chat's messages in a range, oldest first |
 | `history_get_by_message_ids` | `ids` (array) | Read messages referenced as `#<id>` in the transcript. Missing ids are omitted |
 | `history_recall_topics` | `query` (string or array), `limit` | Search past daily topic summaries by meaning; returns date, summary and the message ids to read the originals |
@@ -293,6 +293,13 @@ bot-vs-participant distinction and the self-authored-only warning are unchanged.
 | Tool | Input | Purpose |
 | --- | --- | --- |
 | `reply_to_message` | `message_id` | Attach this turn's reply to an earlier message in this chat instead of the one being answered |
+
+Pointing at *one* message. When the answer names several, citing their `#<id>`s in
+an ordinary sentence is the better shape — the delivery layer turns each cited id
+into a link to that message (see
+[Bot messaging](../features/bot-messaging.md#delivery)), so one reply can carry
+three working references. The two compose: attach the reply to the main one, cite
+the rest.
 
 The one tool that changes **delivery** rather than doing work. Answering "where's
 that photo of the door?" under the question leaves the asker to go looking; a

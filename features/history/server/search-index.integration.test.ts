@@ -213,6 +213,39 @@ describe("message search index", () => {
     expect(videos.map((h) => h.telegramMessageId)).toEqual([72]);
   });
 
+  it("answers a filters-only lookup — 'the photos she sent' — with the most recent matches", async () => {
+    // Production, 2026-08-07: the model's first call was `{author: "…"}` with no
+    // query, which the schema rejected; it retried without the author filter and
+    // searched the whole chat. A filter with nothing to rank by is a real
+    // request, so it is answered rather than refused.
+    await seedDescribedPhoto({ telegramMessageId: 111, userId: BEA, description: "A blue front door." });
+    await seedDescribedPhoto({ telegramMessageId: 112, userId: ALEX, description: "A red garage door." });
+    await recordIncomingMessage(
+      { chatId: CHAT, telegramMessageId: 113, userId: BEA, content: "just text", sentAt: new Date() },
+      ctx.db,
+    );
+    await runMessageIndexing({}, ctx.db);
+
+    const hits = await searchChatMessagesHybrid(ctx.db, {
+      chatId: CHAT,
+      queryText: "",
+      queryVector: null,
+      limit: 20,
+      filters: { authorUserIds: [BEA], mediaKinds: ["photo"] },
+    });
+    expect(hits.map((h) => h.telegramMessageId)).toEqual([111]);
+  });
+
+  it("returns nothing for a lookup with neither a query nor a filter", async () => {
+    await recordIncomingMessage(
+      { chatId: CHAT, telegramMessageId: 121, userId: ALEX, content: "hello", sentAt: new Date() },
+      ctx.db,
+    );
+    // The tool refuses this before it gets here; the repository must not answer
+    // "everything" if it ever does.
+    expect(await search("")).toEqual([]);
+  });
+
   it("finds a message sent since the last indexing run", async () => {
     // The substring half reads `chat_messages` directly for exactly this reason:
     // a message minutes old has no index row yet, and a search that could not

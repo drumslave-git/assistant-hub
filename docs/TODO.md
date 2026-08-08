@@ -116,12 +116,74 @@ carries the caption, and the caption says nothing. Ranks 1–2 were other indoor
 photos, which is the expected shape of a vector-only top-5; the tool additionally
 fuses full text and substring and returns more than five.
 
+### Round 2 — first live run, from one trace (2026-08-07)
+
+Trace `eccd1190…`. Asked in the group to find a photo of a door somebody had
+posted, the bot did find one — and answered by **pasting a raw result line into
+the chat**: `[#13488] [2026-07-29T12:11:15.000Z] <name> (@<handle>): … [photo:
+Photo of a weathered, rustic building exterior…]`. Four separate defects, all
+visible in the one trace.
+
+1. **`query` was required, so the model's first call was rejected.** It called
+   `{author: "…"}` with no query — a perfectly good request — got a zod
+   validation error, and retried as `{query: ["door", …]}` **without the author
+   filter**. Requiring a query is what made it search the whole chat. Query is
+   now optional when `author` or `media_kinds` is given, and a filters-only
+   lookup returns the most recent matches.
+2. **The author arrived quoted**: the argument was the string `"R.K."`, quotes
+   included, so exact-name resolution would have missed a person who was right
+   there. `unquote` strips one layer of surrounding quotes — a mechanical fix to
+   a stray delimiter, not a guess at what a name means.
+3. **One search returned 41 KB / ~11.8k tokens.** 50 hits × full vision
+   descriptions, taking the reply prompt to 38.8k. Results are now snippets
+   (~220 chars) with a default of 10 hits (max 50). Only the model-facing text is
+   cut: `structuredContent` is trace-only (the loop feeds the model
+   `result.text`), so Debug still records every body in full.
+4. **`reply_to_message` was offered and never called** — the model pasted the
+   line instead. Every result now carries `SEARCH_RESULT_USAGE_NOTE`.
+
+### Round 3 — citations as links (user decision, 2026-08-07)
+
+On the next run the bot answered in prose — *"the first photo was in #13488, the
+other two under #15114 and #15115"* — and the user's verdict was **"I like this
+more, just if they can be anchors to messages or something."** So that shape is
+the target, not the single retarget: several messages named in one sentence, each
+one tappable.
+
+A cited `#<id>` is now rendered as a `t.me/c/<chat>/<id>` anchor. The ids are
+resolved against the chat's mirror before delivery — a **whitelist, not a
+pattern**, so an invented or mistyped id stays plain text instead of linking
+nowhere. `messageLinkBase` returns null for a basic group or a DM, which have no
+per-message URL at all, and then nothing is linked. Anchors are lifted out of the
+Markdown pipeline as placeholders so they cannot be nested inside another link
+(Telegram rejects nested `<a>`, which would cost the whole send), italicized in
+half, or split by a line rule. Word hashtags, URL fragments and citations inside
+code spans are untouched.
+
+The two mechanisms compose rather than compete: attach the reply to the main
+message, cite the rest inline. `SEARCH_RESULT_USAGE_NOTE` now says so — cite ids
+in your own sentence, never paste the line they came from.
+
+Files: `lib/telegram.ts` (`MESSAGE_REF_PATTERN`, `findMessageRefs`,
+`messageLinkBase`), `features/bot-messaging/telegram-html.ts`,
+`server/telegram/{transport,bot-manager,process-update}.ts`,
+`features/history/server/{mcp-tools,search-repository}.ts`. Verification:
+`npm run lint` clean, `npm run typecheck` clean, `npm run test` 1062 passed / the
+same 21 pre-existing yt-dlp failures; 12 integration cases (2 new, for the
+filters-only lookup and the no-criteria refusal), 20 renderer cases (10 new) and
+11 `lib/telegram` cases (8 new).
+
 ### Remaining risks / live verification checklist
 
-- **Not yet exercised through the bot itself.** The retrieval is proven; what is
-  not is the model choosing to call `history_search` with `media_kinds` and then
-  `reply_to_message`. First live check: ask for a photo by something only its
-  description says, and confirm the reply lands *under* the photo.
+- **Not yet exercised through the bot itself since round 2/3.** Next live check:
+  ask for a photo by something only its description says, and confirm the reply
+  cites ids that are tappable and does not paste a result line.
+- **The snippet cut is 220 characters, chosen from one trace.** If the model
+  starts picking the wrong message because the descriptions are cut too early,
+  that number is the dial — not the hit count.
+- **Citations only link in supergroups.** In a DM or a basic group the bot will
+  still write `#13488` and it will be plain text. Nothing tells the model that,
+  so it may promise a link that is not one.
 - **Production backlog is larger than dev's 1366.** It runs only while the bot is
   quiet and yields to live traffic, but watch the first night's `history-index`
   traces for the backlog actually draining.

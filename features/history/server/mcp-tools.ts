@@ -55,8 +55,26 @@ export const HISTORY_TOOL_NAMES = [
   HISTORY_RECALL_TOOL,
 ];
 
-const SEARCH_LIMIT_DEFAULT = 50;
-const SEARCH_LIMIT_MAX = 200;
+/**
+ * Search results are a *pointer list*, not a reading list — hence a small default
+ * and a modest ceiling.
+ *
+ * Production, 2026-08-07: one search returned 50 hits carrying their full vision
+ * descriptions — 41 KB, ~11.8k tokens, taking the reply prompt to 38.8k. The
+ * model then answered by pasting one raw result line into the chat. Ten anchored
+ * snippets are enough to identify the right message; the full text of a specific
+ * one is a separate, deliberate read.
+ */
+const SEARCH_LIMIT_DEFAULT = 10;
+const SEARCH_LIMIT_MAX = 50;
+
+/**
+ * How much of each hit the model reads. A vision description runs 600–1500
+ * characters — enough to identify a photo ten times over, and enough that fifty
+ * of them bury the conversation they were meant to serve. Only the model-facing
+ * text is cut; the structured payload (trace-only) keeps every hit in full.
+ */
+const SNIPPET_CHARS = 220;
 const GET_BY_IDS_MAX = 50;
 const RECALL_LIMIT_DEFAULT = 8;
 const RECALL_LIMIT_MAX = 20;
@@ -95,15 +113,27 @@ function authorOf(record: ChatMessageRecord, labels?: Map<string, string>): stri
   return label ?? "a participant";
 }
 
+/** Cut a hit's body to a snippet, marking the cut so nothing reads as complete. */
+function snippet(text: string, maxChars: number | undefined): string {
+  if (maxChars == null || text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars).trimEnd()}…`;
+}
+
 /** One message rendered as an id-anchored transcript line. */
 function formatLine(
   record: ChatMessageRecord,
-  extras?: { labels?: Map<string, string>; mediaSuffixes?: Map<number, string> },
+  extras?: {
+    labels?: Map<string, string>;
+    mediaSuffixes?: Map<number, string>;
+    /** Cut each line's body to this many characters (searches only). */
+    maxContentChars?: number;
+  },
 ): string {
   const reply = record.replyToMessageId != null ? ` [reply to #${record.replyToMessageId}]` : "";
   const suffix = extras?.mediaSuffixes?.get(record.telegramMessageId) ?? "";
   const author = authorOf(record, extras?.labels);
-  return `[#${record.telegramMessageId}] [${record.sentAt}] ${author}${reply}: ${record.content}${suffix}`;
+  const body = snippet(`${record.content}${suffix}`, extras?.maxContentChars);
+  return `[#${record.telegramMessageId}] [${record.sentAt}] ${author}${reply}: ${body}`;
 }
 
 /**
@@ -126,7 +156,19 @@ export const SELF_AUTHORED_ONLY_NOTE =
 /** Build the tool result (text transcript + structured messages) from records. */
 export function buildResult(
   records: ChatMessageRecord[],
-  extras?: { labels?: Map<string, string>; mediaSuffixes?: Map<number, string> },
+  extras?: {
+    labels?: Map<string, string>;
+    mediaSuffixes?: Map<number, string>;
+    /**
+     * Cut each line's body in the model-facing text. The structured payload below
+     * is unaffected: it is trace-only (the loop feeds the model `result.text`
+     * alone), so Debug keeps the complete bodies while the conversation carries
+     * snippets.
+     */
+    maxContentChars?: number;
+    /** Appended after the transcript — how to use the result, not what it says. */
+    usageNote?: string;
+  },
 ) {
   const messages = records.map((r) => ({
     id: r.telegramMessageId,
@@ -142,7 +184,11 @@ export function buildResult(
       : records.map((record) => formatLine(record, extras)).join("\n");
   const selfAuthoredOnly =
     records.length > 0 && records.every((record) => record.role === "assistant");
-  const text = selfAuthoredOnly ? `${transcript}\n\n${SELF_AUTHORED_ONLY_NOTE}` : transcript;
+  const notes = [
+    ...(selfAuthoredOnly ? [SELF_AUTHORED_ONLY_NOTE] : []),
+    ...(extras?.usageNote && records.length > 0 ? [extras.usageNote] : []),
+  ];
+  const text = [transcript, ...notes].join("\n\n");
   return {
     content: [{ type: "text" as const, text }],
     structuredContent: { ok: true, count: records.length, messages },
@@ -184,6 +230,27 @@ async function resolveLabels(records: ChatMessageRecord[]): Promise<Map<string, 
 }
 
 /**
+ * Strip one layer of surrounding quotes from an argument value.
+ *
+ * Production, 2026-08-07: the model passed `author` as the JSON string `"\"R.K.\""`
+ * — the name, quoted, inside the string. Resolution is by exact name, so the
+ * quotes alone would have missed a person who is unambiguously in the chat. This
+ * is a mechanical fix to a mechanical mistake (a stray delimiter), not a guess at
+ * what a name might mean: nothing here folds spelling, transliterates, or matches
+ * approximately.
+ */
+const QUOTE_CHARS = ['"', "'", "`", "«", "»", "“", "”"];
+
+export function unquote(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return trimmed;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if (!QUOTE_CHARS.includes(first) || !QUOTE_CHARS.includes(last)) return trimmed;
+  return trimmed.slice(1, -1).trim();
+}
+
+/**
  * Turn the model's `author` reference into the ids to filter by, or an error
  * message to hand back instead of searching.
  *
@@ -215,6 +282,31 @@ async function resolveAuthorFilter(
 }
 
 /**
+ * Appended to every non-empty search result.
+ *
+ * Production, 2026-08-07: asked to find a photo somebody had posted, the bot
+ * answered by pasting a result line into the group verbatim — `[#13488]`, the ISO
+ * timestamp, the `(@username)`, and a half-sentence of the vision description
+ * with an ellipsis. The chat saw the lookup's internal format instead of an
+ * answer, and the photo itself was never pointed at.
+ *
+ * So the result says what it is: an index, in a format that is not chat text,
+ * whose ids exist to be *used*. Citing `#<id>` in an ordinary sentence is not
+ * only allowed but wanted (user decision, 2026-08-07 — "I like this more, just if
+ * they can be anchors"): the delivery layer turns a cited id into a tappable link
+ * to that message, so "the first one was in #13488, the other two in #15114 and
+ * #15115" gives the chat three working references in one reply. What must not
+ * happen is the raw line being pasted around them.
+ */
+export const SEARCH_RESULT_USAGE_NOTE =
+  "These lines are lookup output, not chat text — never paste one into a reply, and never " +
+  "repeat a timestamp, a username or a [photo: …] block from it. A snippet ending in … is cut, " +
+  "not the whole message. " +
+  "DO cite the messages you found by their #<id> in your own ordinary sentence — a cited id " +
+  "becomes a tappable link to that message, so naming them (\"the first one is in #123, the " +
+  "other two in #456 and #789\") is exactly how to answer. Cite only ids from this result.";
+
+/**
  * What the search tool tells the model about itself.
  *
  * Written to fix one specific blind spot: a picture is not its caption. Most
@@ -232,10 +324,12 @@ const HISTORY_SEARCH_DESCRIPTION =
   "Photos, videos, GIFs, stickers and voice messages are searched by what is IN them: a " +
   "picture of a door is found by searching for a door, even when it was posted with no caption " +
   "at all. This is how to find a specific image, clip or recording somebody sent earlier. " +
-  "Narrow by person with 'author' and to pictures/clips with 'media_kinds' when the request " +
-  "names one (\"the photo Bea sent\", \"that video from last week\"). " +
-  "Each result is anchored as #<id> — that id is how a specific message is referred to " +
-  "afterwards, so keep it if the answer is about one particular message.";
+  "Combine the filters with the query rather than choosing between them — \"the photo of the " +
+  "door Bea sent\" is query 'door' plus author 'Bea' plus media_kinds ['photo'], all three in " +
+  "ONE call. With a filter you may omit the query entirely (\"the photos Bea sent\" → author " +
+  "plus media_kinds, no query), which returns her most recent ones. " +
+  "Results are short snippets for identifying the right message, not the messages themselves; " +
+  "each is anchored as #<id>, and that id is how you point at one afterwards.";
 
 /** Register the history MCP tools on the shared server. */
 export function registerHistoryMcpTools(server: McpServer): void {
@@ -247,9 +341,11 @@ export function registerHistoryMcpTools(server: McpServer): void {
       inputSchema: {
         query: z
           .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+          .optional()
           .describe(
             "What to look for — a single string, or an array of phrasings searched at once. " +
-              "Describe the thing in plain words; it does not have to be the wording anyone used.",
+              "Describe the thing in plain words; it does not have to be the wording anyone " +
+              "used. Optional when 'author' or 'media_kinds' is given.",
           ),
         author: z
           .string()
@@ -285,13 +381,28 @@ export function registerHistoryMcpTools(server: McpServer): void {
     },
     async ({ query, author, media_kinds, limit }) => {
       const { chatId } = getToolContext();
-      const queries = Array.isArray(query) ? query : [query];
+      const queries = query == null ? [] : Array.isArray(query) ? query : [query];
       const cap = limit ?? SEARCH_LIMIT_DEFAULT;
       const db = getDb();
 
+      if (queries.length === 0 && !author && !media_kinds) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                "Nothing to search for: give a query, or narrow by author or media_kinds (or " +
+                "both). Searching this chat with no criteria at all would just return its most " +
+                "recent messages, which you already have.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
       let authorUserIds: string[] | undefined;
       if (author) {
-        const resolved = await resolveAuthorFilter(chatId, author);
+        const resolved = await resolveAuthorFilter(chatId, unquote(author));
         if (!resolved.ok) {
           return {
             content: [{ type: "text" as const, text: resolved.error }],
@@ -310,18 +421,31 @@ export function registerHistoryMcpTools(server: McpServer): void {
         ...(media_kinds ? { mediaKinds: media_kinds as MediaKind[] } : {}),
       };
 
-      const batches = await Promise.all(
-        queries.map(async (q) => {
-          const vector = embedding ? await embedOne(embedding, q).catch(() => null) : null;
-          return searchChatMessagesHybrid(db, {
-            chatId,
-            queryText: q,
-            queryVector: vector,
-            limit: cap,
-            filters,
-          });
-        }),
-      );
+      // No query, only filters ("the photos she sent") — one filtered read of the
+      // most recent matches, with nothing to embed or rank.
+      const batches =
+        queries.length === 0
+          ? [
+              await searchChatMessagesHybrid(db, {
+                chatId,
+                queryText: "",
+                queryVector: null,
+                limit: cap,
+                filters,
+              }),
+            ]
+          : await Promise.all(
+              queries.map(async (q) => {
+                const vector = embedding ? await embedOne(embedding, q).catch(() => null) : null;
+                return searchChatMessagesHybrid(db, {
+                  chatId,
+                  queryText: q,
+                  queryVector: vector,
+                  limit: cap,
+                  filters,
+                });
+              }),
+            );
 
       const matches = mergeMatches(batches, cap);
       const [labels, mediaSuffixes] = await Promise.all([
@@ -332,7 +456,12 @@ export function registerHistoryMcpTools(server: McpServer): void {
           db,
         ),
       ]);
-      return buildResult(matches, { labels, mediaSuffixes });
+      return buildResult(matches, {
+        labels,
+        mediaSuffixes,
+        maxContentChars: SNIPPET_CHARS,
+        usageNote: SEARCH_RESULT_USAGE_NOTE,
+      });
     },
   );
 

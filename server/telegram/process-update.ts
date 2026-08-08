@@ -33,6 +33,7 @@ import {
 import { registerRunAck } from "@/features/browser-agent/server/ack";
 import { extractMessageUrls } from "@/features/browser-agent/urls";
 import { pokeMessageIndexing } from "@/features/history/server/index-scheduler";
+import { getChatMessagesByTelegramIds } from "@/features/history/server/repository";
 import {
   applyMessageEdit,
   composeCurrentTurn,
@@ -84,6 +85,8 @@ import {
   type ChatContentPart,
   type ChatMessage,
 } from "@/server/llm/client";
+import { getDb } from "@/db/drizzle";
+import { findMessageRefs } from "@/lib/telegram";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import { runWithToolContext } from "@/server/mcp/context";
 import type { TraceRecorder } from "@/server/trace";
@@ -312,6 +315,25 @@ interface BuildDepsInput {
    */
   trace?: TraceRecorder;
   overrides?: ProcessOverrides;
+}
+
+/**
+ * Which `#<id>` citations in a reply point at messages that really exist here.
+ *
+ * A reply that says "the first photo was in #13488, the other two in #15114 and
+ * #15115" is a good answer — but only if those references go somewhere, which is
+ * why they are resolved into links at delivery. The check against the mirror is
+ * the whole safety story: a model that misreads an id, or invents one, gets plain
+ * text rather than a link to a message nobody can open.
+ *
+ * Costs one indexed lookup, and only when the reply cites something at all. Never
+ * throws: a failed check drops the links, not the reply.
+ */
+async function resolveLinkableMessageIds(chatId: string, text: string): Promise<number[]> {
+  const cited = findMessageRefs(text);
+  if (cited.length === 0) return [];
+  const found = await getChatMessagesByTelegramIds(getDb(), chatId, cited).catch(() => []);
+  return found.map((message) => message.telegramMessageId);
 }
 
 /** Build the per-message collaborators the bot-messaging service needs. */
@@ -722,6 +744,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         // A turn that enqueued a browsing run replies only with an "on it"
         // acknowledgement — no ping; the run's own report is the notification.
         silent: enqueuedBrowserRuns.length > 0,
+        linkableMessageIds: await resolveLinkableMessageIds(chatId, text),
       });
     },
     // Voice-to-voice (user decision): a voice message is answered with a voice
@@ -748,6 +771,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           const sent = await transport.sendReply(text, {
             replyToMessageId: replyTargetMessageId,
             silent: enqueuedBrowserRuns.length > 0,
+            linkableMessageIds: await resolveLinkableMessageIds(chatId, text),
           });
           return { messageId: sent.messageId, asVoice: false };
         }

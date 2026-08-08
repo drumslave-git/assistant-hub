@@ -5,7 +5,7 @@ import { Bot, GrammyError, HttpError, InputFile, type Context } from "grammy";
 
 import { renderTelegramHtml } from "@/features/bot-messaging/telegram-html";
 import { getTelegramBotToken } from "@/features/settings/server/service";
-import { telegramFileKind, type TelegramFileKind } from "@/lib/telegram";
+import { messageLinkBase, telegramFileKind, type TelegramFileKind } from "@/lib/telegram";
 
 import { processCallbackUpdate } from "./process-callback";
 import { processReactionUpdate } from "./process-reaction";
@@ -320,8 +320,15 @@ function grammyTransport(ctx: Context): ReplyTransport {
         },
         ...(opts.silent ? { disable_notification: true } : {}),
       };
+      const messageLinks = {
+        baseUrl: messageLinkBase(String(ctx.chat!.id)),
+        ids: opts.linkableMessageIds ?? [],
+      };
       try {
-        const sent = await ctx.reply(renderTelegramHtml(text), { ...params, parse_mode: "HTML" });
+        const sent = await ctx.reply(renderTelegramHtml(text, messageLinks), {
+          ...params,
+          parse_mode: "HTML",
+        });
         return { messageId: sent.message_id };
       } catch (err) {
         if (!isEntityParseError(err)) throw err;

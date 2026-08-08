@@ -39,7 +39,18 @@ export interface ReplyTransport {
    */
   sendReply(
     text: string,
-    opts: { replyToMessageId: number; threadId?: number; silent?: boolean },
+    opts: {
+      replyToMessageId: number;
+      threadId?: number;
+      silent?: boolean;
+      /**
+       * Message ids the reply cites that really exist in this chat, so the
+       * renderer can turn `#<id>` into a tappable link. Resolved by the pipeline
+       * (which can read the mirror) rather than here, and a whitelist rather than
+       * a pattern, so an invented id stays plain text instead of linking nowhere.
+       */
+      linkableMessageIds?: number[];
+    },
   ): Promise<{ messageId: number }>;
   /**
    * Delete one of the bot's own messages. Optional (a capturing test transport
