@@ -98,8 +98,8 @@ sets URL + model together — the explicit-choice path, no listing). Also repair
 9 expectations in the settings integration file that predated the backend layer
 (`llmBackend` defaults missing from `getSettings`, `backend` missing from the
 four runtime getters) — this suite runs separately from `npm run test` and had
-not been run since that change landed. `npm run build` not run (dev server live
-on 3200, same rule as previous entries).
+not been run since that change landed. `npm run build` clean (run after the
+dev server was stopped); version bumped to 1.33.0.
 
 Remaining risks:
 
