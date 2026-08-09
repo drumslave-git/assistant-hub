@@ -38,9 +38,11 @@ import { ConnectionSection } from "./ConnectionSection";
  * the patch is a *stored* selection, and when the same patch repoints the
  * endpoint serving it, the server verifies it against the new endpoint's model
  * list and clears it if it is not served (see `clearStaleModelSelections`).
- * After a save, anything the server cleared that way is surfaced next to the
- * Save button, and a stale selection is flagged on its own tab as soon as a
- * connection test proves it stale.
+ * The form covers the case that check cannot see — a selection stale against
+ * the *unchanged* endpoint (e.g. left behind by a switch made before this
+ * existed): a fresh "Test connection" flags it on its own tab, and the save
+ * sends it as null. Either way, everything cleared is named next to the Save
+ * button.
  *
  * The repeated machinery lives in `connection.ts` (probe + secret-input + backend
  * state hooks) and `ConnectionSection.tsx` (the embeddings/images section shell);
@@ -308,6 +310,32 @@ export function SettingsForm({
       patch.transcriptionApiKey = sttKey.patchValue;
     }
 
+    // A selection a fresh "Test connection" proved stale is cleared with the
+    // save, exactly as the warning on its tab promises. This is the client's
+    // half of the job: the server only verifies when the same patch moves an
+    // endpoint, which a leftover stale against the *unchanged* endpoint never
+    // triggers. The probe resets on any URL edit, so a fresh list always
+    // describes the endpoint currently in the form.
+    const staleCleared: string[] = [];
+    if (connProbe.state.kind === "ok") {
+      if (model !== "" && !models.includes(model)) {
+        patch.model = null;
+        staleCleared.push("chat model");
+      }
+      if (!emb.separate && emb.model !== "" && !models.includes(emb.model)) {
+        patch.embeddingModel = null;
+        staleCleared.push("embedding model");
+      }
+      if (!img.separate && img.model !== "" && !models.includes(img.model)) {
+        patch.imageModel = null;
+        staleCleared.push("image model");
+      }
+      if (!spc.separate && spc.model !== "" && !models.includes(spc.model)) {
+        patch.speechModel = null;
+        staleCleared.push("speech model");
+      }
+    }
+
     // With every field sent changed-only, an untouched form produces an empty
     // patch, which the API rightly rejects — there is simply nothing to do.
     if (Object.keys(patch).length === 0) {
@@ -326,10 +354,12 @@ export function SettingsForm({
         return;
       }
       const { data } = (await res.json()) as { data: Settings };
-      // A stored selection we did not send that came back null was cleared by
-      // the server — the repointed endpoint verifiably does not serve it. Name
-      // it next to the Save button; its own tab may not be the visible one.
-      const cleared: string[] = [];
+      // Everything cleared for staleness gets named next to the Save button —
+      // its own tab may not be the visible one. Two sources: what this client
+      // cleared from its own fresh probe, and a stored selection we did not
+      // send that came back null, which the server cleared after verifying it
+      // against the endpoint this same patch repointed.
+      const cleared: string[] = [...staleCleared];
       if (!("model" in patch) && model !== "" && data.model === null) cleared.push("chat model");
       if (!("embeddingModel" in patch) && emb.model !== "" && data.embeddingModel === null) {
         cleared.push("embedding model");
@@ -864,7 +894,7 @@ export function SettingsForm({
           ) : null}
           {save.kind === "saved" && clearedOnSave.length > 0 ? (
             <span className="text-sm text-warning">
-              Cleared {clearedOnSave.join(", ")} — not served by the new endpoint. Pick
+              Cleared {clearedOnSave.join(", ")} — not served by the configured endpoint. Pick
               replacements on their tabs when ready.
             </span>
           ) : null}

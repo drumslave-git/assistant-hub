@@ -60,9 +60,16 @@ short-circuits to "Saved" without a request.
 
 Surfaced twice in the UI: after a successful "Test connection", a shared
 section's model absent from the fresh list gets a warning on its own tab (and is
-no longer re-offered as a select option); after save, whatever the server
-actually cleared is named next to the Save button ("Cleared embedding model — not
-served by the new endpoint…").
+no longer re-offered as a select option); after save, whatever was cleared is
+named next to the Save button.
+
+The form also owns the case the server check cannot see: a selection stale
+against the *unchanged* endpoint (left behind by a switch made before this
+existed — the live dev DB's `docker.io/ai/stable-diffusion:Q4` image model is
+exactly this). A save sends a probe-flagged selection as null; the probe resets
+on any URL edit, so a fresh list always describes the endpoint currently in the
+form. Found during browser verification: the warning promised "cleared on save"
+while a save with an unchanged URL would have cleared nothing.
 
 ### The rework — nine tabs, one per concern
 

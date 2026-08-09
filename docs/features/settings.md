@@ -63,9 +63,14 @@ any stored selection it verifiably does not serve, in the same write, with a
 warn event per cleared model on the update trace. A model sent in the same
 patch is trusted as an explicit choice; when the listing fails nothing is
 cleared (absence must be proven); the transcription model is exempt because
-whisper-class servers often expose no listing. The form surfaces the outcome
-twice: a freshly-tested LLM list flags a provably-stale selection on its own
-tab, and whatever the server actually cleared is named next to the Save button.
+whisper-class servers often expose no listing.
+
+The form owns the case that check cannot see: a selection stale against the
+*unchanged* endpoint (left behind by a switch made before this existed). A
+fresh "Test connection" flags it on its own tab and the save sends it as null
+— the probe resets on any URL edit, so a fresh list always describes the
+endpoint currently in the form. Either way, everything cleared is named next
+to the Save button.
 
 The repeated machinery lives in shared modules rather than being copied per section:
 `ui/connection.ts` holds the probe flow and the write-only secret-input state machines
