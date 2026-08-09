@@ -68,9 +68,9 @@ whole dependency manifest into the browser bundle).
 ## DB-backed Settings
 
 One typed row (`settings`, `id = 'singleton'`). Read with `GET /api/settings`,
-written with `PATCH /api/settings`; the dashboard form (Settings page) has seven
-tabs and one Save button that persists every changed field regardless of which
-tab is open. The exception is the **Security** tab: the password change there
+written with `PATCH /api/settings`; the dashboard form (Settings page) has nine
+tabs — one per concern — and one Save button that persists every changed field
+regardless of which tab is open. The exception is the **Security** tab: the password change there
 posts to its own endpoint (`POST /api/auth/change-password`) with its own
 button, because it is an auth action, not a settings patch.
 
@@ -78,16 +78,42 @@ Secrets are **write-only**. They are accepted on input and never returned — th
 client-facing shape exposes only a `…Configured: boolean`. Omitting a secret key
 from a PATCH leaves the stored value alone; sending `null` clears it.
 
-### Core
+### LLM
 
 | Field | Type | Effect when unset |
 | --- | --- | --- |
 | `llmBaseUrl` | URL (≤500 chars) | No replies, no background LLM job does work — every job settles as a no-op |
 | `model` | string (≤200) | Same: the reply path needs a chosen model |
 | `apiKey` | secret | Sent as the bearer token when present; many self-hosted endpoints need none |
+
+A model id is only meaningful on the endpoint it was picked from, so a PATCH
+that repoints an endpoint verifies the stored selections now served by it: the
+new endpoint is asked for its `/v1/models` list and any stored model it
+verifiably does not serve is **cleared in the same write** (recorded as warn
+events on the update trace, and named next to the Save button in the form).
+This covers the chat model and the embedding/image/speech models of sections
+reusing the LLM connection — a selection made against the old backend cannot
+silently outlive it and fail later inside a background job. Two deliberate
+limits: a model sent in the same PATCH is trusted as an explicit choice, and
+when the new endpoint cannot be listed nothing is cleared — absence is only
+acted on when proven. The transcription model is exempt (whisper-class servers
+often expose no listing).
+
+### Telegram
+
+| Field | Type | Effect when unset |
+| --- | --- | --- |
 | `telegramBotToken` | secret (≤200) | The poller cannot start; Overview says so |
 | `ownerUserId` | numeric string | Owner-gated behavior is off (maintenance mode then closes the bot to everyone; browser-agent downloads stay disabled) |
 | `maintenanceModeEnabled` | boolean | `false`. When on, only the owner is answered (and only through deterministic addressing), and no scheduled task fires |
+
+`ownerUsername` is stored denormalized from the chosen known user, for display
+only.
+
+### General
+
+| Field | Type | Effect when unset |
+| --- | --- | --- |
 | `timezone` | IANA name | `UTC`. Governs every rendered timestamp, scheduled-task wall-clock times, daily-job run time, and analytics period boundaries |
 | `dailyJobsRunTime` | `HH:MM` | `04:00`. The local time in `timezone` that **all** daily jobs run at |
 | `browserDownloadLimitGb` | int 1–100 | `10`. Hard ceiling on a single browser-agent download, for every download tool. A disk guard — it never lowers the quality the agent fetches |
@@ -97,17 +123,14 @@ upload limit (`TELEGRAM_MAX_UPLOAD_MB` in `lib/telegram.ts`; user decision,
 2026-08-01 — the old `browserDownloadMaxMb` setting only ever restated a fact
 about Telegram).
 
-`ownerUsername` is stored denormalized from the chosen known user, for display
-only.
-
 ### Embeddings
 
 Powers semantic recall over history summaries and semantic memory search.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `embeddingBaseUrl` | URL | Null reuses the Core LLM connection |
-| `embeddingApiKey` | secret | Null reuses the Core key |
+| `embeddingBaseUrl` | URL | Null reuses the LLM connection |
+| `embeddingApiKey` | secret | Null reuses the LLM key |
 | `embeddingModel` | string | Null turns semantic recall off — summaries are still written, just not embedded |
 
 Every stored vector must be **1024** wide (`lib/embeddings.ts`,
@@ -121,8 +144,8 @@ Postgres error inside a nightly job.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `imageBaseUrl` | URL | Null reuses the Core LLM connection |
-| `imageApiKey` | secret | Null reuses the Core key |
+| `imageBaseUrl` | URL | Null reuses the LLM connection |
+| `imageApiKey` | secret | Null reuses the LLM key |
 | `imageModel` | string | Null disables the `image_generate` tool (it returns a clear error result rather than silently doing nothing) |
 
 **Test image endpoint** checks the configured model is actually served rather
@@ -132,8 +155,8 @@ than generating a picture.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `speechBaseUrl` | URL | Null reuses the Core LLM connection |
-| `speechApiKey` | secret | Null reuses the Core key |
+| `speechBaseUrl` | URL | Null reuses the LLM connection |
+| `speechApiKey` | secret | Null reuses the LLM key |
 | `speechModel` | string | Null disables voice replies |
 | `speechVoice` | string (≤100) | Null uses the endpoint default |
 
@@ -141,8 +164,8 @@ than generating a picture.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `transcriptionBaseUrl` | URL | Null reuses the Core LLM connection |
-| `transcriptionApiKey` | secret | Null reuses the Core key |
+| `transcriptionBaseUrl` | URL | Null reuses the LLM connection |
+| `transcriptionApiKey` | secret | Null reuses the LLM key |
 | `transcriptionModel` | string | Null falls back to transcribing with the audio-capable chat model |
 
 **Test transcription** transcribes a fraction of a second of generated silence —

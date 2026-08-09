@@ -20,12 +20,12 @@ because guessing is exactly what the trace archive exists to avoid.
 
 | Check | Fix |
 | --- | --- |
-| Overview → Telegram bot says "Not configured" | Set the bot token in Settings → Core |
+| Overview → Telegram bot says "Not configured" | Set the bot token in Settings → Telegram |
 | Says "Stopped" | Click Start on the bot control card |
 | Says "Error" | Read the message. Ending in `reconnecting automatically` means the network dropped and the manager is retrying every 15s — nothing to do but restore the connection. Otherwise Telegram refused: an invalid token, or another process holding the same token's `getUpdates` lock |
 | Says "Running" but nothing happens | Continue below |
 | Overview → LLM endpoint is red | Fix the connection; use Settings → Test connection for the real error |
-| Overview → Model says none selected | Pick one in Settings → Core |
+| Overview → Model says none selected | Pick one in Settings → LLM |
 
 If the poller is running and the LLM is reachable, the message was probably not
 considered addressed — next section.
@@ -68,7 +68,7 @@ spellings.
 
 ## Everyone gets a "maintenance" notice
 
-Maintenance mode is on. Settings → Core → turn it off.
+Maintenance mode is on. Settings → Telegram → turn it off.
 
 While it is on: only the owner gets normal replies (and only through deterministic
 addressing — the LLM analyzer is off for everyone), and **no scheduled task fires**.
@@ -81,7 +81,7 @@ addressing — the LLM analyzer is off for everyone), and **no scheduled task fi
 | Task shows `enabled: false` | Enable it |
 | `nextRunAt` is null | A spent one-shot, or an incoherent schedule. Re-save it |
 | `attempts` is climbing | A due one-shot keeps failing; it is capped at 5 attempts. The fire trace under `scheduled-tasks` has the error |
-| Time is wrong by hours | Settings → Core → Timezone. Task times are wall-clock in *that* zone, not the container's `TZ` |
+| Time is wrong by hours | Settings → General → Timezone. Task times are wall-clock in *that* zone, not the container's `TZ` |
 | Job card shows no LLM configured | A tick with no LLM is a no-op — the task fires by asking the model to write the message |
 
 ## Replies feel slow

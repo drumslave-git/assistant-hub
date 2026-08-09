@@ -24,7 +24,7 @@ import { tinySilenceWav } from "@/server/media/audio";
 
 /** Short timeout so opening the Settings page stays responsive against a dead endpoint. */
 const MODELS_PRELOAD_TIMEOUT_MS = 5_000;
-import { withTrace } from "@/server/trace";
+import { withTrace, type TraceRecorder } from "@/server/trace";
 import {
   getSettingsRecord,
   SETTINGS_ID,
@@ -522,6 +522,137 @@ function redact(input: UpdateSettings): Record<string, unknown> {
   return out;
 }
 
+/**
+ * Bound on the model listing a save performs to verify stored selections
+ * against a repointed endpoint. An explicit save can afford a little more than
+ * a page load, but it must never hang the Save button on a dead host.
+ */
+const STALE_MODEL_CHECK_TIMEOUT_MS = 10_000;
+
+/**
+ * Model selections that are picked from an endpoint's `/v1/models` listing, and
+ * the connection fields resolving where each is served. Transcription is
+ * deliberately absent: whisper-class servers often expose no listing, so
+ * absence from one proves nothing (the UI field is free text for the same
+ * reason) — a transcription selection is never cleared on unverifiable
+ * evidence.
+ */
+const LISTED_MODEL_SECTIONS = [
+  { label: "chat", modelKey: "model", baseUrlKey: "llmBaseUrl", apiKeyKey: "llmApiKey" },
+  {
+    label: "embedding",
+    modelKey: "embeddingModel",
+    baseUrlKey: "embeddingBaseUrl",
+    apiKeyKey: "embeddingApiKey",
+  },
+  { label: "image", modelKey: "imageModel", baseUrlKey: "imageBaseUrl", apiKeyKey: "imageApiKey" },
+  {
+    label: "speech",
+    modelKey: "speechModel",
+    baseUrlKey: "speechBaseUrl",
+    apiKeyKey: "speechApiKey",
+  },
+] as const;
+
+type ConnField =
+  | (typeof LISTED_MODEL_SECTIONS)[number]["modelKey"]
+  | (typeof LISTED_MODEL_SECTIONS)[number]["baseUrlKey"]
+  | (typeof LISTED_MODEL_SECTIONS)[number]["apiKeyKey"];
+
+/** A connection field's value once the patch is applied over the stored record. */
+function effective(
+  before: SettingsRecord | null,
+  patch: SettingsPatch,
+  key: ConnField,
+): string | null {
+  const patched = patch[key];
+  return patched !== undefined ? patched : (before?.[key] ?? null);
+}
+
+/**
+ * Clear model selections that a connection change has made stale.
+ *
+ * A model id is only meaningful on the endpoint it was picked from. When a
+ * patch repoints that endpoint — the LLM base URL changes and a section reuses
+ * that connection, or a section's own URL changes (including falling back to
+ * the LLM one) — the new endpoint is asked for its model list and any stored
+ * selection it verifiably does not serve is cleared in the same write, instead
+ * of failing later inside a background job against a backend that never had it.
+ *
+ * Deliberate limits, all on the side of not destroying configuration:
+ * - A model set in this very patch is trusted — the operator just chose it.
+ * - When the new endpoint cannot be listed (down, slow, key rejected), nothing
+ *   is cleared: absence is only acted on when it is proven.
+ * - Transcription is exempt (see {@link LISTED_MODEL_SECTIONS}).
+ *
+ * Mutates `patch`; returns human labels of what was cleared.
+ */
+async function clearStaleModelSelections(
+  before: SettingsRecord | null,
+  patch: SettingsPatch,
+  trace: TraceRecorder,
+): Promise<string[]> {
+  // Only a base-URL change can repoint where a model is served.
+  const urlKeys = ["llmBaseUrl", "embeddingBaseUrl", "imageBaseUrl", "speechBaseUrl"] as const;
+  if (urlKeys.every((key) => patch[key] === undefined)) return [];
+
+  const checks: Array<
+    (typeof LISTED_MODEL_SECTIONS)[number] & { model: string; url: string; apiKey: string | null }
+  > = [];
+  for (const section of LISTED_MODEL_SECTIONS) {
+    if (patch[section.modelKey] !== undefined) continue;
+    const model = before?.[section.modelKey] ?? null;
+    if (!model) continue;
+    // The chat section's base URL *is* the LLM one, so its fallback is a no-op.
+    const urlBefore = before?.[section.baseUrlKey] ?? before?.llmBaseUrl ?? null;
+    const ownAfter = effective(before, patch, section.baseUrlKey);
+    const urlAfter = ownAfter ?? effective(before, patch, "llmBaseUrl");
+    if (!urlAfter || urlAfter === urlBefore) continue;
+    // The key follows the host, exactly as the runtime resolves it.
+    const apiKey = ownAfter
+      ? effective(before, patch, section.apiKeyKey)
+      : effective(before, patch, "llmApiKey");
+    checks.push({ ...section, model, url: urlAfter, apiKey });
+  }
+  if (checks.length === 0) return [];
+
+  // One listing per distinct endpoint, shared by every section now pointing at it.
+  const byEndpoint = new Map<string, typeof checks>();
+  for (const check of checks) {
+    const key = `${check.url} ${check.apiKey ?? ""}`;
+    byEndpoint.set(key, [...(byEndpoint.get(key) ?? []), check]);
+  }
+
+  const cleared: string[] = [];
+  for (const group of byEndpoint.values()) {
+    const { url, apiKey } = group[0];
+    let served: string[];
+    try {
+      served = await listModels({ baseUrl: url, apiKey }, STALE_MODEL_CHECK_TIMEOUT_MS);
+    } catch (err) {
+      await trace.event({
+        type: "step",
+        level: "warn",
+        message: `Could not list models on ${url} — stored model selections left unchanged`,
+        data: { error: err instanceof Error ? err.message : String(err) },
+      });
+      continue;
+    }
+    for (const check of group) {
+      if (served.includes(check.model)) continue;
+      patch[check.modelKey] = null;
+      cleared.push(`${check.label} model`);
+      await trace.event({
+        type: "step",
+        level: "warn",
+        message: `Cleared ${check.label} model — "${check.model}" is not served by ${url}`,
+        data: { model: check.model, endpoint: url },
+      });
+    }
+  }
+  return cleared;
+}
+
 /** Apply a validated partial update, recording the change as a trace. */
 export async function updateSettings(
   input: UpdateSettings,
@@ -537,10 +668,14 @@ export async function updateSettings(
       if (input.ownerUserId !== undefined) {
         Object.assign(patch, await ownerPatch(db, input.ownerUserId));
       }
+      const cleared = await clearStaleModelSelections(await getSettingsRecord(db), patch, trace);
       const record = await upsertSettings(db, patch);
       await trace.event({ type: "db", message: "settings row upserted" });
       await trace.succeed({
-        outputSummary: `Updated ${fields.join(", ")}`,
+        outputSummary:
+          cleared.length > 0
+            ? `Updated ${fields.join(", ")}; cleared stale ${cleared.join(", ")}`
+            : `Updated ${fields.join(", ")}`,
         relatedIds: { [FEATURE.relatedIdsKey]: [SETTINGS_ID] },
       });
       return toClientSettings(record);

@@ -42,6 +42,7 @@ export function ConnectionSection<T>({
   probe,
   renderOk,
   onTest,
+  modelWarning,
   freeTextModel,
   children,
 }: {
@@ -55,6 +56,12 @@ export function ConnectionSection<T>({
   /** The success badge content for this probe's payload. */
   renderOk: (result: T) => ReactNode;
   onTest: () => void;
+  /**
+   * Rendered under the model control when the current selection is known to be
+   * stale (e.g. not served by the freshly-tested LLM endpoint this section
+   * reuses), so the operator learns it on the tab where they can fix it.
+   */
+  modelWarning?: string | null;
   /**
    * Render the model as a free-text input (with `models` as datalist
    * suggestions) instead of a strict select. For backends whose model ids the
@@ -180,6 +187,8 @@ export function ConnectionSection<T>({
           )
         }
       </Field>
+
+      {modelWarning ? <p className="text-sm text-warning">{modelWarning}</p> : null}
 
       {children}
 

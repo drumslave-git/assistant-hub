@@ -15,23 +15,32 @@ import {
   useBackendConnection,
   useProbe,
   useSecretField,
+  type BackendConnection,
 } from "./connection";
 import { BackendField } from "./BackendField";
 import { ChangePasswordSection } from "./ChangePasswordSection";
 import { ConnectionSection } from "./ConnectionSection";
 
 /**
- * Bot settings editor. Client Component with seven tabs: **Core** (the LLM
- * connection + model, Telegram token, owner, and maintenance mode — without which
- * the bot cannot run), **Embeddings** (the endpoint powering semantic recall over
- * history summaries), **Images** (the endpoint powering image generation),
- * **Speech** (the endpoint powering voice replies), **Transcription** (the
- * speech-to-text endpoint for voice messages, chat-model fallback),
+ * Bot settings editor. Client Component with nine tabs, one per concern: **LLM**
+ * (the chat endpoint, key, backend and model), **Embeddings** (the endpoint
+ * powering semantic recall over history summaries), **Images** (image
+ * generation), **Speech** (voice replies), **Transcription** (speech-to-text for
+ * voice messages, chat-model fallback), **Telegram** (bot token, owner,
+ * maintenance mode), **General** (timezone, daily jobs, download limit),
  * **Integrations** (optional feature keys like Tavily for web search), and
  * **Security** (operator password change — its own endpoint and button, not part
  * of the settings patch). One Save button below the tabs persists every changed
  * field regardless of the active tab. Secret keys are write-only — shown as
  * "configured" but their values never leave the server.
+ *
+ * Only changed fields are sent, which the server relies on: a model absent from
+ * the patch is a *stored* selection, and when the same patch repoints the
+ * endpoint serving it, the server verifies it against the new endpoint's model
+ * list and clears it if it is not served (see `clearStaleModelSelections`).
+ * After a save, anything the server cleared that way is surfaced next to the
+ * Save button, and a stale selection is flagged on its own tab as soon as a
+ * connection test proves it stale.
  *
  * The repeated machinery lives in `connection.ts` (probe + secret-input + backend
  * state hooks) and `ConnectionSection.tsx` (the embeddings/images section shell);
@@ -125,10 +134,14 @@ export function SettingsForm({
   const sttKey = useSecretField(initial.transcriptionApiKeyConfigured);
 
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
+  // Model selections the server cleared on the last save because the repointed
+  // endpoint verifiably does not serve them — shown next to the Save button,
+  // since the sections they belong to live on other tabs.
+  const [clearedOnSave, setClearedOnSave] = useState<string[]>([]);
   // Controlled so the global Save row can step aside on the Security tab, whose
   // password change has its own endpoint and button — two visible submit
   // buttons for one visible form invite pressing the wrong one.
-  const [activeTab, setActiveTab] = useState("core");
+  const [activeTab, setActiveTab] = useState("llm");
 
   // Probe the LLM endpoint (a user action, not an effect); its model list also
   // feeds the dropdowns below.
@@ -193,17 +206,31 @@ export function SettingsForm({
 
   async function onSave() {
     setSave({ kind: "saving" });
+    setClearedOnSave([]);
+    // Changed fields only. The server depends on that: a model missing from the
+    // patch is a stored selection, which it verifies (and clears) when the same
+    // patch repoints the endpoint serving it.
+    const trimmedLlmUrl = llmBaseUrl.trim() === "" ? null : llmBaseUrl.trim();
+    const pickedModel = model === "" ? null : model;
     const patch: Record<string, unknown> = {
-      llmBaseUrl: llmBaseUrl.trim() === "" ? null : llmBaseUrl.trim(),
-      llmBackend,
-      model: model === "" ? null : model,
-      // Sent for every section that has its own host. One reusing the LLM
+      ...(trimmedLlmUrl !== (initial.llmBaseUrl ?? null) ? { llmBaseUrl: trimmedLlmUrl } : {}),
+      ...(llmBackend !== initial.llmBackend ? { llmBackend } : {}),
+      ...(pickedModel !== (initial.model ?? null) ? { model: pickedModel } : {}),
+      // Sent only for a section that has its own host. One reusing the LLM
       // connection inherits that endpoint's backend at read time, so persisting
       // a value for it would be a second, silently-ignored source of truth.
-      ...(emb.separate ? { embeddingBackend: emb.backend } : {}),
-      ...(img.separate ? { imageBackend: img.backend } : {}),
-      ...(spc.separate ? { speechBackend: spc.backend } : {}),
-      ...(stt.separate ? { transcriptionBackend: stt.backend } : {}),
+      ...(emb.separate && emb.backend !== initial.embeddingBackend
+        ? { embeddingBackend: emb.backend }
+        : {}),
+      ...(img.separate && img.backend !== initial.imageBackend
+        ? { imageBackend: img.backend }
+        : {}),
+      ...(spc.separate && spc.backend !== initial.speechBackend
+        ? { speechBackend: spc.backend }
+        : {}),
+      ...(stt.separate && stt.backend !== initial.transcriptionBackend
+        ? { transcriptionBackend: stt.backend }
+        : {}),
     };
     if (apiKey.dirty) patch.apiKey = apiKey.patchValue;
     if (botToken.dirty) patch.telegramBotToken = botToken.patchValue;
@@ -281,6 +308,13 @@ export function SettingsForm({
       patch.transcriptionApiKey = sttKey.patchValue;
     }
 
+    // With every field sent changed-only, an untouched form produces an empty
+    // patch, which the API rightly rejects — there is simply nothing to do.
+    if (Object.keys(patch).length === 0) {
+      setSave({ kind: "saved" });
+      return;
+    }
+
     try {
       const res = await fetch("/api/settings", {
         method: "PATCH",
@@ -292,6 +326,21 @@ export function SettingsForm({
         return;
       }
       const { data } = (await res.json()) as { data: Settings };
+      // A stored selection we did not send that came back null was cleared by
+      // the server — the repointed endpoint verifiably does not serve it. Name
+      // it next to the Save button; its own tab may not be the visible one.
+      const cleared: string[] = [];
+      if (!("model" in patch) && model !== "" && data.model === null) cleared.push("chat model");
+      if (!("embeddingModel" in patch) && emb.model !== "" && data.embeddingModel === null) {
+        cleared.push("embedding model");
+      }
+      if (!("imageModel" in patch) && img.model !== "" && data.imageModel === null) {
+        cleared.push("image model");
+      }
+      if (!("speechModel" in patch) && spc.model !== "" && data.speechModel === null) {
+        cleared.push("speech model");
+      }
+      setClearedOnSave(cleared);
       apiKey.clear();
       botToken.clear();
       tavilyKey.clear();
@@ -299,6 +348,7 @@ export function SettingsForm({
       imgKey.clear();
       spcKey.clear();
       sttKey.clear();
+      setModel(data.model ?? "");
       setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
@@ -336,39 +386,48 @@ export function SettingsForm({
 
   const canPickModel = models.length > 0;
 
-  // Embedding model options. When embeddings share the LLM endpoint (the common
-  // case — no separate URL), the endpoint's own model list is authoritative, so a
-  // "Test connection" on the Core tab refreshes this dropdown too. With a separate
-  // embedding host we fall back to what the server preloaded from that host. The
-  // saved model is always kept as an option, so an unreachable endpoint cannot
-  // silently blank out a working selection.
-  const listedEmbeddingModels =
-    !emb.separate && models.length > 0 ? models : initialEmbeddingModels;
-  const embeddingModels =
-    emb.model && !listedEmbeddingModels.includes(emb.model)
-      ? [emb.model, ...listedEmbeddingModels]
-      : listedEmbeddingModels;
+  // A successful "Test connection" makes the LLM endpoint's list authoritative
+  // for every section reusing that connection: a selection absent from it is
+  // provably stale (the exact state a backend switch leaves behind).
+  const llmListFresh = connProbe.state.kind === "ok";
+  const staleWarning = (m: string) =>
+    `"${m}" is not served by the tested endpoint — it will be cleared on save unless you pick another.`;
 
-  // Image model options, resolved exactly like the embedding ones above.
-  const listedImageModels = !img.separate && models.length > 0 ? models : initialImageModels;
-  const imageModels =
-    img.model && !listedImageModels.includes(img.model)
-      ? [img.model, ...listedImageModels]
-      : listedImageModels;
+  // Options for one section's model select. When the section shares the LLM
+  // endpoint (the common case — no separate URL), the endpoint's own model list
+  // is authoritative, so a "Test connection" on the LLM tab refreshes the
+  // dropdown too; with a separate host we fall back to what the server
+  // preloaded from that host. The saved model is kept as an option — so an
+  // unreachable endpoint cannot silently blank out a working selection —
+  // unless it is provably stale, in which case keeping it would re-offer
+  // exactly the selection the save is about to clear.
+  function sectionModels(conn: BackendConnection, preloaded: string[]) {
+    const listed = !conn.separate && models.length > 0 ? models : preloaded;
+    const stale =
+      llmListFresh && !conn.separate && conn.model !== "" && !listed.includes(conn.model);
+    const options =
+      conn.model && !listed.includes(conn.model) && !stale ? [conn.model, ...listed] : listed;
+    return { options, warning: stale ? staleWarning(conn.model) : null };
+  }
 
-  // Speech model options, resolved exactly like the image ones above.
-  const listedSpeechModels = !spc.separate && models.length > 0 ? models : initialSpeechModels;
-  const speechModels =
-    spc.model && !listedSpeechModels.includes(spc.model)
-      ? [spc.model, ...listedSpeechModels]
-      : listedSpeechModels;
+  const embeddingModels = sectionModels(emb, initialEmbeddingModels);
+  const imageModels = sectionModels(img, initialImageModels);
+  const speechModels = sectionModels(spc, initialSpeechModels);
 
   // Transcription model suggestions (free-text field — whisper servers rarely list).
   const transcriptionModels =
     !stt.separate && models.length > 0 ? models : initialTranscriptionModels;
 
-  const coreTab = (
+  const chatModelStale = llmListFresh && model !== "" && !models.includes(model);
+
+  const llmTab = (
     <div className="space-y-5">
+      <p className="text-sm text-muted">
+        The chat endpoint and model every reply runs on. The optional endpoints on the other tabs
+        reuse this connection unless given their own — so repointing it here repoints them too, and
+        any of their model selections the new endpoint does not serve is cleared on save.
+      </p>
+
       <Field
         id="llmBaseUrl"
         label="OpenAI-compatible API URL"
@@ -461,6 +520,17 @@ export function SettingsForm({
         )}
       </Field>
 
+      {chatModelStale ? <p className="text-sm text-warning">{staleWarning(model)}</p> : null}
+    </div>
+  );
+
+  const telegramTab = (
+    <div className="space-y-5">
+      <p className="text-sm text-muted">
+        How the bot connects to Telegram and who operates it. Save the token, then start the bot
+        from the Overview.
+      </p>
+
       <Field
         id="telegramBotToken"
         label="Telegram bot token"
@@ -523,6 +593,14 @@ export function SettingsForm({
           </div>
         )}
       </Field>
+    </div>
+  );
+
+  const generalTab = (
+    <div className="space-y-5">
+      <p className="text-sm text-muted">
+        Operational defaults that are not tied to any one endpoint or to Telegram.
+      </p>
 
       <Field
         id="timezone"
@@ -599,7 +677,8 @@ export function SettingsForm({
       }}
       conn={emb}
       secret={embKey}
-      models={embeddingModels}
+      models={embeddingModels.options}
+      modelWarning={embeddingModels.warning}
       probe={embedProbe.state}
       renderOk={(r) => (
         <>
@@ -632,7 +711,8 @@ export function SettingsForm({
       }}
       conn={img}
       secret={imgKey}
-      models={imageModels}
+      models={imageModels.options}
+      modelWarning={imageModels.warning}
       probe={imageProbe.state}
       renderOk={(r) => (
         <>
@@ -666,7 +746,8 @@ export function SettingsForm({
       }}
       conn={spc}
       secret={spcKey}
-      models={speechModels}
+      models={speechModels.options}
+      modelWarning={speechModels.warning}
       probe={speechProbe.state}
       renderOk={(r) => (
         <>
@@ -751,11 +832,13 @@ export function SettingsForm({
   );
 
   const tabs: TabItem[] = [
-    { id: "core", label: "Core", content: coreTab },
+    { id: "llm", label: "LLM", content: llmTab },
     { id: "embeddings", label: "Embeddings", content: embeddingsTab },
     { id: "images", label: "Images", content: imagesTab },
     { id: "speech", label: "Speech", content: speechTab },
     { id: "transcription", label: "Transcription", content: transcriptionTab },
+    { id: "telegram", label: "Telegram", content: telegramTab },
+    { id: "general", label: "General", content: generalTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },
     { id: "security", label: "Security", content: <ChangePasswordSection /> },
   ];
@@ -777,6 +860,12 @@ export function SettingsForm({
           {save.kind === "saved" ? (
             <span className="inline-flex items-center gap-1 text-sm text-success">
               <Check className="h-4 w-4" aria-hidden /> Saved
+            </span>
+          ) : null}
+          {save.kind === "saved" && clearedOnSave.length > 0 ? (
+            <span className="text-sm text-warning">
+              Cleared {clearedOnSave.join(", ")} — not served by the new endpoint. Pick
+              replacements on their tabs when ready.
             </span>
           ) : null}
           {save.kind === "error" ? (

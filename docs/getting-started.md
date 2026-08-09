@@ -84,11 +84,11 @@ are in [Deployment](operations/deployment.md).
    Do this **before** exposing the port beyond localhost or your LAN: until a
    password exists the app is open, and whoever reaches `/setup` first owns the
    dashboard.
-2. **Configure the LLM connection.** Settings → Core: enter the base URL of your
+2. **Configure the LLM connection.** Settings → LLM: enter the base URL of your
    OpenAI-compatible endpoint (including `/v1` if your server serves it there)
    and an API key if it needs one. Press **Test connection** — it calls
    `/v1/models` for real — then pick a model from the returned list and save.
-3. **Add the Telegram bot token.** Settings → Core, same Save button. The bot
+3. **Add the Telegram bot token.** Settings → Telegram, same Save button. The bot
    reads its token from the database.
 4. **Set the owner and timezone.** Owner is picked from known users, so it can
    only be set after that person has messaged the bot at least once. Timezone is

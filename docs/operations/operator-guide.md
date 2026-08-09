@@ -244,7 +244,7 @@ Runs are unbounded by design: only the stall guard ends one that stops progressi
 If a run is stuck, that is what to expect it to eventually do — and the forced final
 round will still produce a report from what was gathered.
 
-One size setting under Settings → Core: `browserDownloadLimitGb` is the ceiling on
+One size setting under Settings → General: `browserDownloadLimitGb` is the ceiling on
 what may be downloaded **at all**; past it the file tool gives up, the stream tool
 keeps a truncated but playable video, and the media tool refuses before it starts.
 The chat-attach ceiling is fixed at Telegram's 50 MB upload limit. A larger file
@@ -266,7 +266,7 @@ its work: paused by maintenance, no LLM configured, nothing to do. A job that si
 declines to run is exactly the failure an operator cannot diagnose from a dashboard
 that only ever shows "Enabled".
 
-Note that all daily jobs share one run time (Settings → Core → daily jobs run time).
+Note that all daily jobs share one run time (Settings → General → daily jobs run time).
 
 The **yt-dlp updater** card also carries the version of yt-dlp the media downloader
 will actually run, and whether it came from the app's self-updated copy or the
@@ -275,17 +275,28 @@ yt-dlp fails every media page at once, and **Run now** is the fix.
 
 ## Settings (`/settings`)
 
-Six tabs, **one** Save button that persists every changed field regardless of which
-tab is open.
+Nine tabs — one per concern — and **one** Save button that persists every changed
+field regardless of which tab is open.
 
 | Tab | Contents |
 | --- | --- |
-| **Core** | LLM connection + model, Telegram token, owner, maintenance mode, timezone, daily jobs run time, browser download cap |
+| **LLM** | The chat endpoint, key, backend and model every reply runs on |
 | **Embeddings** | Semantic recall over history summaries and memory search |
 | **Images** | Image generation |
 | **Speech** | Voice replies |
 | **Transcription** | Voice-message speech-to-text (falls back to the chat model when unset) |
+| **Telegram** | Bot token, owner, maintenance mode |
+| **General** | Timezone, daily jobs run time, browser download cap |
 | **Integrations** | Tavily key — the browsing agent's search fallback |
+| **Security** | Operator password change (its own button and endpoint) |
+
+The four optional endpoints reuse the LLM connection unless given their own, so
+**repointing the LLM URL repoints them too**. Saving an endpoint change verifies
+every stored model selection now served by the new endpoint and clears the ones
+it does not serve, naming them next to the Save button — pick replacements on
+their tabs. Nothing is cleared when the new endpoint cannot be listed, and the
+transcription model is never auto-cleared (whisper-class servers often expose no
+model listing).
 
 Every "Test …" button makes a **real call** and is recorded as a trace. Use them: they
 catch things a config check cannot, such as an embedding model whose vector width does

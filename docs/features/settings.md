@@ -38,17 +38,34 @@ URL can be re-tested without the browser resending the secret.
 
 ## The form
 
-`SettingsForm` is a Client Component with six tabs and **one** Save button below them
-that persists every changed field regardless of which tab is active:
+`SettingsForm` is a Client Component with nine tabs — one per concern — and **one**
+Save button below them that persists every changed field regardless of which tab is
+active:
 
 | Tab | Holds |
 | --- | --- |
-| **Core** | LLM connection + model, Telegram token, owner, maintenance mode, timezone, daily run time, the two browser download caps (chat-attach MB, disk-limit GB) — without which the bot cannot run |
+| **LLM** | The chat endpoint, key, backend and model — without which the bot cannot run |
 | **Embeddings** | The endpoint powering semantic recall over history summaries and memory search |
 | **Images** | The endpoint powering image generation |
 | **Speech** | The endpoint powering voice replies |
 | **Transcription** | The speech-to-text endpoint for voice messages (chat-model fallback) |
+| **Telegram** | Bot token, owner, maintenance mode |
+| **General** | Timezone, daily run time, the browser download disk cap |
 | **Integrations** | Optional feature keys — Tavily, the browsing agent's search fallback |
+| **Security** | Operator password change — its own endpoint and button, not part of the settings patch |
+
+The form sends **only changed fields**, and the service depends on that: a model
+absent from the patch is a *stored* selection. When the same patch repoints the
+endpoint serving it — the LLM base URL changes and a section reuses that
+connection, or a section's own URL changes (including falling back to the LLM
+one) — `clearStaleModelSelections` lists the new endpoint's models and clears
+any stored selection it verifiably does not serve, in the same write, with a
+warn event per cleared model on the update trace. A model sent in the same
+patch is trusted as an explicit choice; when the listing fails nothing is
+cleared (absence must be proven); the transcription model is exempt because
+whisper-class servers often expose no listing. The form surfaces the outcome
+twice: a freshly-tested LLM list flags a provably-stale selection on its own
+tab, and whatever the server actually cleared is named next to the Save button.
 
 The repeated machinery lives in shared modules rather than being copied per section:
 `ui/connection.ts` holds the probe flow and the write-only secret-input state machines

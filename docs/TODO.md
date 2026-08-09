@@ -28,6 +28,81 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Stale model selections survive an endpoint switch + Settings tab rework (`done` pending production deploy, 2026-08-09)
+
+User report, 2026-08-09: *"when I change main llm endpoint and for example embedding
+was using it also — embedding model stays selected even though new backend does not
+even have it."* Plus a requested rework: every model/backend on its own tab, same
+for Telegram settings.
+
+### The fix — verified clearing on save
+
+`clearStaleModelSelections` (`features/settings/server/service.ts`, inside
+`updateSettings`): when a PATCH repoints an endpoint — the LLM base URL changes
+and a section reuses that connection, or a section's own URL changes (including
+falling back to the LLM one) — the new endpoint's `/v1/models` is listed once
+per distinct endpoint and every stored selection it verifiably does not serve is
+cleared **in the same write**, with a warn event per cleared model on the update
+trace and `cleared stale …` in the output summary. Covers the chat model too
+(same staleness, same mechanism). Deliberate limits, all on the side of not
+destroying configuration:
+
+- a model sent in the same PATCH is trusted — the operator just picked it;
+- a failed listing clears nothing — absence is only acted on when proven
+  (per the "verify real state" rule; the trace records why);
+- transcription is exempt — whisper-class servers often expose no listing, so
+  absence from one proves nothing (why that field is free-text in the UI).
+
+The form now sends **only changed fields** (previously it always sent
+`llmBaseUrl`/`llmBackend`/`model`), which is what lets the server tell "stored
+selection" from "explicit choice". An untouched form produces an empty patch and
+short-circuits to "Saved" without a request.
+
+Surfaced twice in the UI: after a successful "Test connection", a shared
+section's model absent from the fresh list gets a warning on its own tab (and is
+no longer re-offered as a select option); after save, whatever the server
+actually cleared is named next to the Save button ("Cleared embedding model — not
+served by the new endpoint…").
+
+### The rework — nine tabs, one per concern
+
+Core split into **LLM** (endpoint, key, backend, test, model), **Telegram** (bot
+token, owner, maintenance mode) and **General** (timezone, daily jobs run time,
+download cap); Embeddings/Images/Speech/Transcription/Integrations/Security
+unchanged. `ConnectionSection` grew an optional `modelWarning` slot.
+
+### Proof
+
+Files: `features/settings/server/service.ts`,
+`features/settings/ui/{SettingsForm,ConnectionSection}.tsx`,
+`features/settings/server/settings.integration.test.ts` (8 new cases: clears
+verified-missing models across shared sections, keeps served ones, keeps all on
+a failed listing, trusts same-patch picks, own-endpoint sections untouched by an
+LLM URL change, fall-back-to-LLM validated, trace events recorded, no listing
+without a URL change; also fixed the pre-existing empty-defaults expectation
+missing the five `*Backend` fields), docs
+(`configuration.md`, `operations/{operator-guide,troubleshooting}.md`,
+`features/settings.md`, `getting-started.md`).
+
+`npm run lint` clean, `npm run typecheck` clean, `npm run test` 1068 passed / the
+same 21 pre-existing yt-dlp Windows failures. Settings integration suite 40/40
+and status integration 2/2 (the only other `updateSettings` caller; its one call
+sets URL + model together — the explicit-choice path, no listing). Also repaired
+9 expectations in the settings integration file that predated the backend layer
+(`llmBackend` defaults missing from `getSettings`, `backend` missing from the
+four runtime getters) — this suite runs separately from `npm run test` and had
+not been run since that change landed. `npm run build` not run (dev server live
+on 3200, same rule as previous entries).
+
+Remaining risks:
+
+- The stale check adds one model listing (≤10s bound) to a save that changes a
+  base URL. A dead new endpoint makes such a save take that long once — accepted
+  in exchange for never clearing on unproven absence.
+- A backend that serves a model while omitting it from `/v1/models` would get its
+  selection cleared; not observed on Ollama/llama.cpp/vLLM, and the operator is
+  told exactly what was cleared and why.
+
 ## Find a photo and reply to it (`done` pending production deploy + live verification, 2026-08-07)
 
 User request, 2026-08-07: *"userA: find the photo of userB's door → bot finds the
