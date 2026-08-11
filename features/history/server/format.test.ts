@@ -7,6 +7,7 @@ import {
   renderReplyRef,
   renderTranscript,
   renderTranscriptLine,
+  stripTranscriptEcho,
   toTranscriptLine,
   TRANSCRIPT_PREAMBLE,
 } from "./format";
@@ -83,6 +84,51 @@ describe("renderTranscriptLine", () => {
       content: "@bot tell him he is wrong",
     });
     expect(line).toBe("[#43] Bob (@bob) [reply to #42]: @bot tell him he is wrong");
+  });
+});
+
+describe("stripTranscriptEcho", () => {
+  it("strips a leading reply marker (the observed vLLM leak)", () => {
+    expect(stripTranscriptEcho("[reply to #560]\nGood. Now focus.")).toBe("Good. Now focus.");
+  });
+
+  it("strips a full echoed transcript line prefix", () => {
+    expect(stripTranscriptEcho("[#565] You (@MyBot) [reply to #563]: Nothing much.")).toBe(
+      "Nothing much.",
+    );
+  });
+
+  it("strips a bare id anchor", () => {
+    expect(stripTranscriptEcho("[#565] Nothing much.")).toBe("Nothing much.");
+  });
+
+  it("strips an echoed anchor with a quote", () => {
+    expect(stripTranscriptEcho('[reply to #560, quoting: "I did"] Good.')).toBe("Good.");
+  });
+
+  it("strips an echoed inline reply marker", () => {
+    expect(stripTranscriptEcho('[reply to Alice (@alice): "hi there"] Hello Alice.')).toBe(
+      "Hello Alice.",
+    );
+  });
+
+  it("strips the bot's bare You label before the colon", () => {
+    expect(stripTranscriptEcho("You: Nothing much.")).toBe("Nothing much.");
+  });
+
+  it("leaves a reply with no leading markers untouched", () => {
+    const reply = "Fun fact: #565 is not prime. [citation needed]";
+    expect(stripTranscriptEcho(reply)).toBe(reply);
+  });
+
+  it("leaves marker-like text deeper in the reply alone", () => {
+    expect(stripTranscriptEcho("[#12] See the message [reply to #9] above.")).toBe(
+      "See the message [reply to #9] above.",
+    );
+  });
+
+  it("returns a marker-only reply as-is rather than an empty message", () => {
+    expect(stripTranscriptEcho("[reply to #560]")).toBe("[reply to #560]");
   });
 });
 

@@ -452,8 +452,10 @@ works on `/api/chat` (17 tokens, 816 ms, no thinking) but the OpenAI-compatible
 tokens with it and without. `chat_template_kwargs: {thinking:false}` and
 `options: {think:false}` were also tried on `/v1` and did not disable it.
 
-llama.cpp and vLLM mappings remain **documented, not measured** — no live
-instance of either. Their tests assert the body produced, not a server's answer.
+llama.cpp mappings remain **documented, not measured** — no live instance. Its
+tests assert the body produced, not a server's answer. vLLM was measured live on
+2026-08-12 — see "vLLM measured live" below: the mapping is right, the
+deployment is not.
 
 ### Settings UI
 
@@ -599,6 +601,48 @@ while that model happened to be in use*, not how fast the model is. 12b carries
 quiet ones. The card is not wrong about what it reports — it is a poor proxy for
 model speed, and it was read as one here. Worth a hint on the card saying so
 before it misleads someone again.
+
+### vLLM measured live (`blocked` on a deployment decision, 2026-08-12)
+
+The operator switched chat to a live vLLM (0.26.0, `https://vllm.tcloud.monster`,
+`gemma4-12b`) on 2026-08-11 and reported two regressions the next day: replies
+leaking transcript markers (`[reply to #560]` delivered to Telegram) and no
+reasoning anywhere in Debug. Both trace to one fact, measured with raw curl
+against the endpoint:
+
+- **Default template never thinks.** A plain chat completion answers directly —
+  19 completion tokens on a live reply trace, `reasoning: ''`. The reply path
+  sends `reasoning: default` (leave the model alone) by design, so on this
+  server every reply runs thinking-off — the exact mode measured on 2026-08-07
+  to produce fabricated facts and wrong arithmetic ("Reply calls keep thinking",
+  above). The transcript-marker echo is the same degradation showing up as
+  format mimicry.
+- **`chat_template_kwargs: {enable_thinking: true}` is broken server-side.**
+  Non-streaming, the model thinks (192 completion tokens, `finish_reason: stop`)
+  but the response arrives with **both `content` and `reasoning` null/empty** —
+  the server's parsing swallows the entire answer. Streaming the same request
+  shows why: everything lands in `content` as raw text beginning with Gemma's
+  literal `thought` marker — no reasoning parser is separating the channels.
+  So the app must NOT force the kwarg on this server: replies would come back
+  empty. The vllm adapter's `readReasoning` (`reasoning`/`reasoning_content`)
+  is correct — the field exists in the schema and is simply never populated.
+
+**Blocker**: app-side nothing can restore thinking here; the fix is in the vLLM
+launch (a reasoning parser that understands the Gemma `thought` format +
+template defaulting to thinking on), or keeping chat on llama.cpp (which parses
+Gemma thinking natively into `reasoning_content` — the 3-way benchmark already
+ranked it best for chat replies). Next decision needed: the operator picks
+which; nothing to change in this repo either way.
+
+Mitigation shipped meanwhile (2026-08-12): `stripTranscriptEcho`
+(`features/history/server/format.ts`) mechanically strips the app's own
+transcript syntax (`[#<id>]` anchors, `[reply to …]` markers, the bot's `You`
+label) off the head of a generated reply before delivery, recording a warn step
+with both texts on the reply trace when it fires; plus an explicit input-only
+rule in `BASE_SYSTEM_PROMPT`'s Reply format block. Proof: unit tests for the
+stripper (9 cases) and two service-level tests (leaked reply delivered clean +
+clean reply untouched); affected test files 152 passed; `npm run lint` and
+`npm run typecheck` clean.
 
 ## Reply latency (`todo`, 2026-08-07)
 
