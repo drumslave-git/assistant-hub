@@ -90,6 +90,9 @@ export function SettingsForm({
   const vis = useRoleConfig({ backendId: initial.visionBackendId, model: initial.visionModel });
   const brw = useRoleConfig({ backendId: initial.browserBackendId, model: initial.browserModel });
   const [speechVoice, setSpeechVoice] = useState(initial.speechVoice ?? "");
+  const [audioTranscriptionMode, setAudioTranscriptionMode] = useState(
+    initial.audioTranscriptionMode,
+  );
 
   // Core operational settings.
   const botToken = useSecretField(initial.telegramBotTokenConfigured);
@@ -133,6 +136,9 @@ export function SettingsForm({
   const imageProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-images");
   const speechProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-speech");
   const audioProbe = useProbe<{ model: string; text: string }>("/api/settings/test-audio");
+  const visionProbe = useProbe<{ model: string; description: string }>(
+    "/api/settings/test-vision",
+  );
 
   async function onTestChat() {
     if (!chat.backendId) return;
@@ -211,6 +217,9 @@ export function SettingsForm({
       }
     }
 
+    if (audioTranscriptionMode !== initial.audioTranscriptionMode) {
+      patch.audioTranscriptionMode = audioTranscriptionMode;
+    }
     if (botToken.dirty) patch.telegramBotToken = botToken.patchValue;
     if (tavilyKey.dirty) patch.tavilyApiKey = tavilyKey.patchValue;
     if (speechVoice.trim() !== (initial.speechVoice ?? "")) {
@@ -277,6 +286,7 @@ export function SettingsForm({
       vis.applySaved({ backendId: data.visionBackendId, model: data.visionModel });
       brw.applySaved({ backendId: data.browserBackendId, model: data.browserModel });
       setSpeechVoice(data.speechVoice ?? "");
+      setAudioTranscriptionMode(data.audioTranscriptionMode);
       setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
@@ -469,8 +479,8 @@ export function SettingsForm({
       idPrefix="audio"
       labels={{
         intro:
-          "Audio turns incoming voice messages into text on a dedicated speech-to-text endpoint (whisper.cpp server, speaches, LocalAI…). When no audio model is set, voice messages are transcribed by the chat model instead — which then must be audio-capable (served with its mmproj).",
-        backendHint: "The host serving /v1/audio/transcriptions.",
+          "Audio turns incoming voice messages into text on a dedicated speech-to-text model. Whisper-class servers (whisper.cpp server, speaches, LocalAI…) take the audio on /v1/audio/transcriptions; providers like OpenRouter only take it through chat completions on an audio-capable model — pick the transcription mode to match. When no audio model is set, voice messages are transcribed by the chat model instead, which then must be audio-capable.",
+        backendHint: "The host serving the speech-to-text model.",
         modelLabel: "Audio (STT) model",
         modelHint:
           "Free text — whisper-class servers often don't list models (e.g. whisper-1, Systran/faster-whisper-large-v3). Empty: voice falls back to the chat model.",
@@ -493,9 +503,32 @@ export function SettingsForm({
       freeTextModel
       probe={audioProbe.state}
       renderOk={(r) => <>{r.model} — endpoint responded</>}
-      onTest={() => void audioProbe.run(roleProbeBody(aud))}
+      onTest={() =>
+        void audioProbe.run({ ...roleProbeBody(aud), transcriptionMode: audioTranscriptionMode })
+      }
       testDisabled={aud.model.trim() === ""}
-    />
+    >
+      <Field
+        id="audioTranscriptionMode"
+        label="Transcription mode"
+        hint="How the endpoint takes audio: the dedicated /v1/audio/transcriptions route (whisper-class servers), or a chat completion carrying the audio (OpenRouter and other chat-only providers)."
+      >
+        {({ id, describedBy }) => (
+          <Select
+            id={id}
+            aria-describedby={describedBy}
+            value={audioTranscriptionMode}
+            onChange={(e) => {
+              setAudioTranscriptionMode(e.target.value as typeof audioTranscriptionMode);
+              audioProbe.reset();
+            }}
+          >
+            <option value="transcriptions">Transcriptions endpoint (/v1/audio/transcriptions)</option>
+            <option value="chat">Chat completions (audio-capable chat model)</option>
+          </Select>
+        )}
+      </Field>
+    </RoleSection>
   );
 
   const visionTab = (
@@ -509,15 +542,25 @@ export function SettingsForm({
         modelHint:
           "The multimodal model that describes media. Empty: the chat model is used.",
         modelPlaceholder: "Use the chat model",
+        testLabel: "Test vision",
       }}
       backends={backends}
       backendId={vis.backendId}
-      onBackendChange={vis.setBackendId}
+      onBackendChange={(next) => {
+        vis.setBackendId(next);
+        visionProbe.reset();
+      }}
       inheritLabel={inheritLabel}
       model={vis.model}
-      onModelChange={vis.setModel}
+      onModelChange={(next) => {
+        vis.setModel(next);
+        visionProbe.reset();
+      }}
       models={roleModels(vis)}
       modelWarning={roleStale(vis) ? staleWarning(vis.model) : null}
+      probe={visionProbe.state}
+      renderOk={(r) => <>{r.model} — described the test image</>}
+      onTest={() => void visionProbe.run(roleProbeBody(vis))}
     />
   );
 

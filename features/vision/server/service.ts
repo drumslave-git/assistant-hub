@@ -333,17 +333,18 @@ export interface DescribeDeps {
   target?: { baseUrl: string; model: string };
   /**
    * Dedicated STT for voice rows (`/v1/audio/transcriptions`), present when the
-   * operator configured an audio (STT) model. When set, voice transcription
-   * uses it **instead of** the chat model's `input_audio` path (user decision:
-   * support both, whisper preferred when configured).
+   * operator configured an audio (STT) model in `transcriptions` mode. When
+   * set, voice transcription uses it **instead of** any `input_audio` path
+   * (user decision: support both, whisper preferred when configured).
    */
   transcribe?: (wav: Buffer) => Promise<TranscriptionResult>;
   /** Where `transcribe` sends the request, recorded like {@link target}. */
   transcribeTarget?: { baseUrl: string; model: string };
   /**
-   * The `input_audio` transcription fallback's completion — the **chat** (main)
-   * connection, which may differ from `complete` when the operator gave the
-   * vision role its own backend/model. Absent means `complete` serves both
+   * The `input_audio` transcription path's completion: the audio (STT) role's
+   * own connection when one is configured in `chat` mode, else the **chat**
+   * (main) connection — which may differ from `complete` when the operator gave
+   * the vision role its own backend/model. Absent means `complete` serves both
    * (they resolved to the same connection).
    */
   completeAudio?: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
@@ -374,24 +375,36 @@ export async function resolveDescribeDeps(
   return {
     complete: (messages) => chatCompletion(conn, { model: vision.model, messages, priority }),
     target: { baseUrl: vision.baseUrl, model: vision.model },
-    ...(stt
+    ...(stt && stt.mode === "transcriptions"
       ? {
           transcribe: (wav: Buffer) => transcribeAudio(stt, wav),
           transcribeTarget: { baseUrl: stt.baseUrl, model: stt.model },
         }
       : {}),
-    // The voice fallback belongs to the chat model ("audio: main by default"),
-    // so it is only split out when the vision role actually points elsewhere.
-    ...(chatDiffers
+    // A chat-mode audio role rides the `input_audio` branch — the same request
+    // shape as the fallback, with usage recorded on the trace — but on its own
+    // connection. Without one, the voice fallback belongs to the chat model
+    // ("audio: main by default"), split out only when the vision role actually
+    // points elsewhere.
+    ...(stt && stt.mode === "chat"
       ? {
           completeAudio: (messages) =>
             chatCompletion(
-              { baseUrl: chat.baseUrl, apiKey: chat.apiKey, backend: chat.backend },
-              { model: chat.model, messages, priority },
+              { baseUrl: stt.baseUrl, apiKey: stt.apiKey, backend: stt.backend },
+              { model: stt.model, messages, priority },
             ),
-          audioTarget: { baseUrl: chat.baseUrl, model: chat.model },
+          audioTarget: { baseUrl: stt.baseUrl, model: stt.model },
         }
-      : {}),
+      : chatDiffers
+        ? {
+            completeAudio: (messages) =>
+              chatCompletion(
+                { baseUrl: chat.baseUrl, apiKey: chat.apiKey, backend: chat.backend },
+                { model: chat.model, messages, priority },
+              ),
+            audioTarget: { baseUrl: chat.baseUrl, model: chat.model },
+          }
+        : {}),
   };
 }
 

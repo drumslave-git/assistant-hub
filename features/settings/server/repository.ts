@@ -43,6 +43,8 @@ export interface SettingsRecord {
   audioBackendId: string | null;
   /** Audio (STT) model id; null → voice falls back to the chat model. */
   audioModel: string | null;
+  /** How the audio role transcribes: the transcriptions endpoint, or chat `input_audio`. */
+  audioTranscriptionMode: "transcriptions" | "chat";
   /** Vision backend id; null → the chat backend. */
   visionBackendId: string | null;
   /** Vision model id; null → the chat model describes media. */
@@ -83,6 +85,7 @@ export interface SettingsPatch {
   speechVoice?: string | null;
   audioBackendId?: string | null;
   audioModel?: string | null;
+  audioTranscriptionMode?: "transcriptions" | "chat";
   visionBackendId?: string | null;
   visionModel?: string | null;
   browserBackendId?: string | null;
@@ -131,6 +134,7 @@ function mapRow(row: SettingsRow): SettingsRecord {
     speechVoice: row.speechVoice,
     audioBackendId: row.audioBackendId,
     audioModel: row.audioModel,
+    audioTranscriptionMode: row.audioTranscriptionMode,
     visionBackendId: row.visionBackendId,
     visionModel: row.visionModel,
     browserBackendId: row.browserBackendId,

@@ -19,6 +19,14 @@ const model = z.string().trim().min(1).max(200);
 const apiKey = z.string().trim().max(500);
 const botToken = z.string().trim().max(200);
 
+/**
+ * How the audio role transcribes: the OpenAI-style `/v1/audio/transcriptions`
+ * endpoint (whisper-class servers), or a chat completion carrying the audio as
+ * an `input_audio` part (providers like OpenRouter that only take audio through
+ * chat on audio-capable models).
+ */
+export const transcriptionModeSchema = z.enum(["transcriptions", "chat"]);
+
 /** A backend id from the catalog; null = "use the chat backend". */
 const backendId = z.string().trim().min(1).max(100);
 
@@ -55,6 +63,8 @@ export const settingsSchema = z.object({
   audioBackendId: backendId.nullable(),
   /** Selected audio (STT) model id, or null → voice falls back to the chat model. */
   audioModel: model.nullable(),
+  /** How the audio role transcribes (meaningful while an audio model is set). */
+  audioTranscriptionMode: transcriptionModeSchema,
   /** Vision backend id, or null to use the chat backend. */
   visionBackendId: backendId.nullable(),
   /** Selected vision model id, or null → the chat model describes media. */
@@ -104,6 +114,7 @@ export const updateSettingsSchema = z
     speechVoice: z.string().trim().max(100).nullable(),
     audioBackendId: backendId.nullable(),
     audioModel: model.nullable(),
+    audioTranscriptionMode: transcriptionModeSchema,
     visionBackendId: backendId.nullable(),
     visionModel: model.nullable(),
     browserBackendId: backendId.nullable(),
@@ -136,3 +147,14 @@ export const testRoleConnectionSchema = z.object({
 });
 
 export type TestRoleConnection = z.infer<typeof testRoleConnectionSchema>;
+
+/**
+ * The audio probe additionally takes the transcription mode, so "Test audio"
+ * exercises the same call style the voice path will use with the form's
+ * current (possibly unsaved) mode choice.
+ */
+export const testAudioConnectionSchema = testRoleConnectionSchema.extend({
+  transcriptionMode: transcriptionModeSchema.optional(),
+});
+
+export type TestAudioConnection = z.infer<typeof testAudioConnectionSchema>;

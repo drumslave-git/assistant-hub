@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { insertBackend } from "@/features/backends/server/repository";
 import { upsertKnownUser } from "@/features/known-users/server/repository";
 import type { LlmBackendId } from "@/lib/llm-backend";
-import { listModels } from "@/server/llm/client";
+import { chatCompletion, listModels } from "@/server/llm/client";
 import { getTraceDetail, listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "./repository";
@@ -23,6 +23,8 @@ import {
   getTelegramBotToken,
   getVisionRuntime,
   getWebSearchApiKey,
+  testAudio,
+  testVision,
   updateSettings,
 } from "./service";
 
@@ -30,10 +32,11 @@ import {
 // backend by listing its models; a test must never make that network call.
 vi.mock("@/server/llm/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/server/llm/client")>();
-  return { ...actual, listModels: vi.fn() };
+  return { ...actual, listModels: vi.fn(), chatCompletion: vi.fn() };
 });
 
 const listModelsMock = vi.mocked(listModels);
+const chatCompletionMock = vi.mocked(chatCompletion);
 
 /** Seed a known user so the owner can be chosen by id. */
 async function seedUser(ctx: TestDb, userId: string, username: string | null) {
@@ -71,6 +74,8 @@ beforeEach(async () => {
   // in which stored selections are never cleared.
   listModelsMock.mockReset();
   listModelsMock.mockRejectedValue(new Error("model listing unavailable in this test"));
+  chatCompletionMock.mockReset();
+  chatCompletionMock.mockRejectedValue(new Error("chat completion unavailable in this test"));
 });
 
 const trigger = { kind: "dashboard" } as const;
@@ -89,6 +94,7 @@ describe("getSettings", () => {
       speechVoice: null,
       audioBackendId: null,
       audioModel: null,
+      audioTranscriptionMode: "transcriptions",
       visionBackendId: null,
       visionModel: null,
       browserBackendId: null,
@@ -299,7 +305,24 @@ describe("role runtimes", () => {
     expect(await getAudioRuntime(ctx.db)).toMatchObject({
       baseUrl: "https://llm.example/v1",
       model: "whisper-1",
+      mode: "transcriptions",
     });
+  });
+
+  it("audio transcription mode round-trips and reaches the runtime", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    const set = await updateSettings(
+      {
+        chatBackendId: chatId,
+        model: "gemma",
+        audioModel: "omni-model",
+        audioTranscriptionMode: "chat",
+      },
+      trigger,
+      ctx.db,
+    );
+    expect(set.audioTranscriptionMode).toBe("chat");
+    expect(await getAudioRuntime(ctx.db)).toMatchObject({ model: "omni-model", mode: "chat" });
   });
 
   it("vision and browser fall back to the chat backend and model per unset half", async () => {
@@ -437,6 +460,71 @@ describe("stale model clearing on save", () => {
     listModelsMock.mockClear();
     await updateSettings({ speechVoice: "sky" }, trigger, ctx.db);
     expect(listModelsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("connection probes", () => {
+  /** A minimal successful completion, shaped like the real client returns. */
+  function completion(content: string, model: string) {
+    return {
+      content,
+      model,
+      latencyMs: 5,
+      requestBody: {},
+      responseBody: { choices: [{ message: { content } }] },
+    };
+  }
+
+  it("testAudio in chat mode probes through an input_audio completion", async () => {
+    const chatId = await seedBackend(ctx, {
+      name: "Router",
+      baseUrl: "https://router.example/v1",
+      apiKey: "sk-router",
+    });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    chatCompletionMock.mockResolvedValue(completion("hello there", "omni-model"));
+
+    const probe = await testAudio(
+      { model: "omni-model", transcriptionMode: "chat" },
+      trigger,
+      ctx.db,
+    );
+    expect(probe).toEqual({ model: "omni-model", text: "hello there" });
+
+    expect(chatCompletionMock).toHaveBeenCalledTimes(1);
+    const [conn, input] = chatCompletionMock.mock.calls[0];
+    expect(conn.baseUrl).toBe("https://router.example/v1");
+    expect(input.model).toBe("omni-model");
+    // The probe must exercise the same request shape the voice path sends.
+    const user = input.messages.find((m) => m.role === "user");
+    expect(Array.isArray(user?.content)).toBe(true);
+    expect(
+      (user?.content as Array<{ type: string }>).some((part) => part.type === "input_audio"),
+    ).toBe(true);
+  });
+
+  it("testVision describes a generated image through the resolved runtime", async () => {
+    const chatId = await seedBackend(ctx, {
+      name: "Main",
+      baseUrl: "https://llm.example/v1",
+    });
+    // No vision model set: the probe must test the chat-model fallback, since
+    // that is exactly what the describer will use.
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    chatCompletionMock.mockResolvedValue(completion("a red square", "gemma"));
+
+    const probe = await testVision({}, trigger, ctx.db);
+    expect(probe).toEqual({ model: "gemma", description: "a red square" });
+
+    const [, input] = chatCompletionMock.mock.calls[0];
+    const user = input.messages.find((m) => m.role === "user");
+    expect(
+      (user?.content as Array<{ type: string }>).some((part) => part.type === "image_url"),
+    ).toBe(true);
+  });
+
+  it("testVision rejects cleanly when nothing resolves", async () => {
+    await expect(testVision({}, trigger, ctx.db)).rejects.toThrow(/vision model/i);
   });
 });
 

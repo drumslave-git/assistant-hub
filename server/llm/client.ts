@@ -273,13 +273,37 @@ export function createOpenAiClient(conn: LlmConnection): OpenAI {
   });
 }
 
+/**
+ * The upstream provider's own error, when a gateway relayed one. OpenRouter
+ * answers `{error: {message: "Provider returned error", metadata: {raw,
+ * provider_name}}}` — the top-level message is a generic shrug, and the text
+ * that names what actually broke lives only in `metadata.raw`. Returned as
+ * `(provider) raw` so the operator reads the real reason, attributed.
+ */
+function relayedProviderDetail(error: object): string | null {
+  const metadata = (error as { metadata?: unknown }).metadata;
+  if (!metadata || typeof metadata !== "object") return null;
+  const { raw, provider_name: provider } = metadata as {
+    raw?: unknown;
+    provider_name?: unknown;
+  };
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  return typeof provider === "string" && provider.trim()
+    ? `(${provider.trim()}) ${raw.trim()}`
+    : raw.trim();
+}
+
 function apiErrorDetail(err: APIError): string {
   if (typeof err.error === "string") return err.error;
   // The human-readable half, when the provider gave one: both OpenAI's own shape
   // and anything normalized by `fetchWithErrorDetail` carry it here. Preferred over
   // stringifying the object, which buries the sentence that matters in braces.
   const message = (err.error as { message?: unknown } | undefined)?.message;
-  if (typeof message === "string" && message.trim()) return message;
+  const relayed = err.error ? relayedProviderDetail(err.error) : null;
+  if (typeof message === "string" && message.trim()) {
+    return relayed ? `${message.trim()} — ${relayed}` : message;
+  }
+  if (relayed) return relayed;
   if (err.error && Object.keys(err.error).length > 0) return JSON.stringify(err.error);
   return err.message;
 }
@@ -296,10 +320,15 @@ function sdkErrorDetail(err: InstanceType<typeof APICallError>): string {
   if (!body) return err.message;
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
-    const nested = (parsed.error as { message?: unknown } | undefined)?.message;
+    const error = parsed.error as { message?: unknown } | undefined;
+    const relayed = error && typeof error === "object" ? relayedProviderDetail(error) : null;
+    const nested = error?.message;
     for (const value of [nested, parsed.detail, parsed.message]) {
-      if (typeof value === "string" && value.trim()) return value;
+      if (typeof value === "string" && value.trim()) {
+        return relayed ? `${value.trim()} — ${relayed}` : value;
+      }
     }
+    if (relayed) return relayed;
   } catch {
     // Not JSON — the body is the message.
   }

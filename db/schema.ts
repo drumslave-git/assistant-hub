@@ -172,11 +172,24 @@ export const settings = pgTable(
     }),
     /**
      * Audio (STT) model id. When set, voice messages are transcribed on the
-     * dedicated `/v1/audio/transcriptions` endpoint; when null, transcription
-     * falls back to the chat model via an `input_audio` content part (which then
-     * requires an audio-capable chat model) — the "main by default" behavior.
+     * audio role's own connection, the way {@link audioTranscriptionMode} says;
+     * when null, transcription falls back to the chat model via an
+     * `input_audio` content part (which then requires an audio-capable chat
+     * model) — the "main by default" behavior.
      */
     audioModel: text("audio_model"),
+    /**
+     * How the audio role transcribes (user decision, 2026-08-12 — support
+     * both): `transcriptions` posts the audio file to the OpenAI-style
+     * `/v1/audio/transcriptions` endpoint (whisper-class servers);
+     * `chat` sends it as an `input_audio` part in a chat completion, for
+     * providers (e.g. OpenRouter) that only take audio through chat on
+     * audio-capable models. Only meaningful while {@link audioModel} is set.
+     */
+    audioTranscriptionMode: text("audio_transcription_mode")
+      .$type<"transcriptions" | "chat">()
+      .notNull()
+      .default("transcriptions"),
     /** Vision backend; null → chat backend ("main by default"). */
     visionBackendId: text("vision_backend_id").references(() => backends.id, {
       onDelete: "restrict",

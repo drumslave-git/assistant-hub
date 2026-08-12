@@ -28,6 +28,64 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Audio transcription modes + vision probe + relayed error detail (`done` pending production deploy, 2026-08-12)
+
+User decisions, 2026-08-12: the audio (STT) role must **support both**
+transcription styles — the OpenAI `/v1/audio/transcriptions` endpoint
+(whisper-class servers) *and* an `input_audio` chat completion (OpenRouter and
+other chat-only providers) — chosen explicitly via a new **Transcription mode**
+select on the Audio tab; and the Vision tab gets a real **Test vision** probe
+(a model listing cannot reveal a missing image-input modality — discovered when
+OpenRouter's gemma-4 turned out to accept no audio at all).
+
+### What shipped
+
+- `settings.audio_transcription_mode` (`transcriptions` | `chat`, default
+  `transcriptions`; migration `0051_salty_ezekiel`, **applied to the dev DB**).
+  Flows through schema/service/UI; "Test audio" takes the form's current mode.
+- `TranscriptionRuntime` carries `mode`; `transcribeAudio`/`probeTranscription`
+  dispatch on it (chat mode = `buildTranscribeMessages` + `chatCompletion`).
+  The live voice path routes chat-mode STT through `resolveDescribeDeps`'
+  existing `input_audio` branch (usage recorded on the trace) on the audio
+  role's own connection; the status probe follows the mode automatically.
+- `testVision` service + `POST /api/settings/test-vision`: describes a tiny
+  sharp-generated PNG (`server/media/image.ts`, twin of `tinySilenceWav`)
+  through the resolved vision runtime, including the chat-model fallback.
+- Relayed provider errors surfaced: OpenRouter's `error.metadata.raw` /
+  `provider_name` (the actual upstream failure behind a generic "Provider
+  returned error") now appear in `ApiError` messages and hence traces —
+  `relayedProviderDetail` in `server/llm/client.ts`, wired into both
+  `apiErrorDetail` (OpenAI SDK path) and `sdkErrorDetail` (AI SDK path).
+
+### Proof
+
+Files: `db/schema.ts` + `db/migrations/0051`, `server/llm/transcription.ts`,
+`server/llm/client.ts`, `server/media/image.ts` (new),
+`features/settings/server/{repository,schema,service}.ts`,
+`features/settings/ui/SettingsForm.tsx`, `features/vision/server/service.ts`,
+`app/api/settings/test-{audio,vision}/route.ts`.
+
+Lint clean; typecheck clean except the same three stale `.next/types` lines;
+settings integration suite 25/25 (new: mode round-trip, chat-mode `testAudio`
+asserting the `input_audio` request shape, `testVision` incl. fallback and
+clean rejection); `error-detail` unit suite 8/8 (new OpenRouter
+`metadata.raw` case). Browser-verified against the live dev server and real
+OpenRouter: chat-mode "Test audio" with `nemotron-3-nano-omni-30b-a3b`
+(`:free`) returned 200 with empty transcript for the probe silence; "Test
+vision" described the red probe square via the chat-model fallback; a 429 on
+the first vision attempt displayed the relayed detail ("(Google AI Studio)
+…temporarily rate-limited upstream…") proving the error-detail fix live.
+
+### Remaining risks
+
+- Production deploy runs 0051 (single additive column with default — low risk).
+- OpenRouter serves **no audio input on gemma-4** (`image, text, video` only),
+  so the operator's "gemma-4-26b for audio" plan needs an audio-capable model
+  there (only `:free` option today: `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`).
+- Chat-mode status probes make a real (tiny) LLM call when audio is configured
+  — same "real probe" doctrine as before, now potentially against a paid
+  provider.
+
 ## Backends catalog + per-role LLM configuration (`done` pending production deploy, 2026-08-12)
 
 User request, 2026-08-12: *"lets re-work our LLM backend"* — Backends as a CRUD

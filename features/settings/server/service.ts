@@ -11,7 +11,8 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { LlmBackendId } from "@/lib/llm-backend";
 import type { TraceTrigger } from "@/lib/trace";
-import { listModels } from "@/server/llm/client";
+import { buildDescribeMessages } from "@/features/vision/server/describe";
+import { chatCompletion, listModels, sanitizeMessagesForTrace } from "@/server/llm/client";
 import {
   probeEmbeddings,
   type EmbeddingProbe,
@@ -25,6 +26,7 @@ import {
   type TranscriptionRuntime,
 } from "@/server/llm/transcription";
 import { tinySilenceWav } from "@/server/media/audio";
+import { tinyProbePng } from "@/server/media/image";
 import { withTrace, type TraceRecorder } from "@/server/trace";
 import {
   getSettingsRecord,
@@ -33,7 +35,7 @@ import {
   type SettingsPatch,
   type SettingsRecord,
 } from "./repository";
-import type { Settings, TestRoleConnection, UpdateSettings } from "./schema";
+import type { Settings, TestAudioConnection, TestRoleConnection, UpdateSettings } from "./schema";
 
 /**
  * Settings domain service — the boundary the Route Handlers and Server
@@ -63,6 +65,7 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     speechVoice: record?.speechVoice ?? null,
     audioBackendId: record?.audioBackendId ?? null,
     audioModel: record?.audioModel ?? null,
+    audioTranscriptionMode: record?.audioTranscriptionMode ?? "transcriptions",
     visionBackendId: record?.visionBackendId ?? null,
     visionModel: record?.visionModel ?? null,
     browserBackendId: record?.browserBackendId ?? null,
@@ -240,7 +243,9 @@ export async function getSpeechRuntime(db: DrizzleDb = getDb()): Promise<SpeechR
  * Resolve the audio (STT) connection. The backend falls back to the chat one;
  * the model is mandatory — a null audio model means voice messages are
  * transcribed by the chat model via `input_audio` (the "main by default"
- * behavior), never by calling `/v1/audio/transcriptions` with a guessed id.
+ * behavior), never by calling an STT endpoint with a guessed id. The mode says
+ * how the dedicated connection takes audio: the `/v1/audio/transcriptions`
+ * endpoint, or an `input_audio` chat completion of its own.
  */
 async function toAudioRuntime(
   db: DrizzleDb,
@@ -254,6 +259,7 @@ async function toAudioRuntime(
     apiKey: backend.apiKey,
     backend: backend.type,
     model: record.audioModel,
+    mode: record.audioTranscriptionMode,
   };
 }
 
@@ -276,7 +282,14 @@ export async function getAudioRuntime(
  * nothing resolves to a full connection.
  */
 export async function getVisionRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
-  const record = await getSettingsRecord(db);
+  return toVisionRuntime(db, await getSettingsRecord(db));
+}
+
+/** The vision resolver behind {@link getVisionRuntime}, shared with the probe. */
+async function toVisionRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<LlmRuntime | null> {
   const model = record?.visionModel ?? record?.model ?? null;
   if (!record || !model) return null;
   const backend = await resolveRoleBackend(db, record, record.visionBackendId);
@@ -390,6 +403,9 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   for (const { modelKey, backendKey } of ROLE_FIELDS) {
     if (input[backendKey] !== undefined) patch[backendKey] = input[backendKey];
     if (input[modelKey] !== undefined) patch[modelKey] = input[modelKey];
+  }
+  if (input.audioTranscriptionMode !== undefined) {
+    patch.audioTranscriptionMode = input.audioTranscriptionMode;
   }
   if (input.speechVoice !== undefined) {
     patch.speechVoice = input.speechVoice === "" ? null : input.speechVoice;
@@ -841,7 +857,7 @@ export async function testSpeech(
  * resolver, so a passing test means the voice path's connection works.
  */
 export async function testAudio(
-  input: TestRoleConnection,
+  input: TestAudioConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<TranscriptionProbe> {
@@ -850,6 +866,9 @@ export async function testAudio(
     backendKey: "audioBackendId",
     modelKey: "audioModel",
   });
+  if (input.transcriptionMode !== undefined) {
+    merged.audioTranscriptionMode = input.transcriptionMode;
+  }
   const runtime = await toAudioRuntime(db, merged);
 
   return withTrace(
@@ -867,8 +886,11 @@ export async function testAudio(
       }
       await trace.event({
         type: "external_call",
-        message: `POST ${runtime.baseUrl} /audio/transcriptions`,
-        data: { model: runtime.model },
+        message:
+          runtime.mode === "chat"
+            ? `POST ${runtime.baseUrl} /chat/completions (input_audio)`
+            : `POST ${runtime.baseUrl} /audio/transcriptions`,
+        data: { model: runtime.model, mode: runtime.mode },
       });
       const probe = await probeTranscription(runtime, tinySilenceWav());
       await trace.event({
@@ -881,6 +903,76 @@ export async function testAudio(
     },
   );
 }
+
+/** What the vision probe learned: the model, and how it described the test image. */
+export interface VisionProbe {
+  model: string;
+  description: string;
+}
+
+/**
+ * Probe the vision configuration by actually describing a tiny generated image
+ * — a **real** probe, like audio: a model listing cannot say whether a model
+ * accepts image input (a provider lists a text-only model all the same), so
+ * only a genuine vision completion proves the endpoint, key, and model work.
+ * Recorded as a trace; submitted values are merged over the stored record and
+ * resolved through the runtime resolver — including the fallback to the chat
+ * model — so a passing test means the describer's connection works.
+ */
+export async function testVision(
+  input: TestRoleConnection,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<VisionProbe> {
+  const record = await getSettingsRecord(db);
+  const merged = mergeRoleInput(record, input, {
+    backendKey: "visionBackendId",
+    modelKey: "visionModel",
+  });
+  const runtime = await toVisionRuntime(db, merged);
+
+  return withTrace(
+    {
+      feature: FEATURE.id,
+      action: "test-vision",
+      trigger,
+      inputSummary: merged.visionModel ?? merged.model ?? "(no model)",
+    },
+    async (trace) => {
+      if (!runtime) {
+        throw ApiError.badRequest(
+          "Choose a vision model, or configure the chat role it falls back to.",
+        );
+      }
+      const image = await tinyProbePng();
+      const messages = buildDescribeMessages(
+        [{ base64: image.toString("base64"), mimeHint: "image/png" }],
+        null,
+      );
+      await trace.event({
+        type: "external_call",
+        message: `POST ${runtime.baseUrl} /chat/completions (vision)`,
+        data: { model: runtime.model, messages: sanitizeMessagesForTrace(messages) },
+      });
+      const result = await chatCompletion(
+        { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
+        { model: runtime.model, messages, timeoutMs: VISION_PROBE_TIMEOUT_MS },
+      );
+      await trace.event({
+        type: "output",
+        message: "vision endpoint described the test image",
+        // The provider's raw response body, verbatim (full-raw-bodies rule).
+        data: result.responseBody ?? { content: result.content },
+      });
+      const probe: VisionProbe = { model: runtime.model, description: result.content.trim() };
+      await trace.succeed({ outputSummary: `${probe.model} described the test image` });
+      return probe;
+    },
+  );
+}
+
+/** Short bound for the vision probe — one tiny image, an operator is waiting. */
+const VISION_PROBE_TIMEOUT_MS = 20_000;
 
 /** Field defaults for merging a partial probe input onto a never-written settings row. */
 const EMPTY_RECORD: SettingsRecord = {
@@ -895,6 +987,7 @@ const EMPTY_RECORD: SettingsRecord = {
   speechVoice: null,
   audioBackendId: null,
   audioModel: null,
+  audioTranscriptionMode: "transcriptions",
   visionBackendId: null,
   visionModel: null,
   browserBackendId: null,

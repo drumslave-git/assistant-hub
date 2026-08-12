@@ -76,6 +76,30 @@ describe("provider error detail", () => {
     expect(message).not.toContain("no body");
   });
 
+  it("surfaces the upstream provider error a gateway relayed under metadata.raw", async () => {
+    // OpenRouter's live shape: the top-level message is a generic "Provider
+    // returned error"; the text naming what actually broke — here a chat
+    // template rejecting the request — arrives only in `error.metadata.raw`.
+    stubFetch(
+      400,
+      JSON.stringify({
+        error: {
+          message: "Provider returned error",
+          code: 400,
+          metadata: {
+            raw: "System role not supported by this template",
+            provider_name: "SomeProvider",
+          },
+        },
+      }),
+    );
+
+    const message = await callAndMapError();
+    expect(message).toContain("Provider returned error");
+    expect(message).toContain("System role not supported by this template");
+    expect(message).toContain("SomeProvider");
+  });
+
   it("leaves a real OpenAI-shaped error untouched", async () => {
     stubFetch(
       400,
