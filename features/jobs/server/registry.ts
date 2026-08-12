@@ -22,6 +22,7 @@ import {
 import { getVisionBackfillStatus } from "@/features/vision/server/backfill-scheduler";
 import { getPendingMediaCount } from "@/features/vision/server/service";
 import type { JobActivity } from "@/components/jobs/JobStatusCard";
+import { featureDebugHref } from "@/lib/features";
 import type { IdleJobStatus } from "@/server/jobs/idle-scheduler";
 import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
 
@@ -242,13 +243,17 @@ export function selfImprovementJobView(info: SelfImprovementJobInfo | null): Job
  * downloads do not work".
  */
 export function ytdlpJobView(info: YtDlpJobInfo | null): JobView {
-  if (info == null) return errored("ytdlp-updater", "yt-dlp updater", "/browser");
+  // Details go to this job's own trace filter, not to /browser: unlike the
+  // other jobs it has no data page — the browser-agent page merely hosts its
+  // card — and landing an operator on "Browser agent" answers nothing about
+  // what the updater did. Its runs ARE its details.
+  if (info == null) return errored("ytdlp-updater", "yt-dlp updater", featureDebugHref("ytdlp-updater"));
   return {
     id: "ytdlp-updater",
     title: "yt-dlp updater",
     description: `Keeps the media downloader's yt-dlp current against upstream releases, daily at ${info.runTime} (${info.timezone}).`,
     activity: intervalActivity(info.status),
-    href: "/browser",
+    href: featureDebugHref("ytdlp-updater"),
     runEndpoint: "/api/browser/ytdlp/run",
     runDisabled: false,
     notice:
