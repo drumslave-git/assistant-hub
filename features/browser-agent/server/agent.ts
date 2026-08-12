@@ -165,12 +165,12 @@ function buildAgentSystemPrompt(
         `- A failed download tool is not yet a failed run: before giving up, try the other ` +
         `routes to the SAME content. If browser_download_media fails, re-check you gave it ` +
         `the exact page URL (the verbatim URLs list wins over the goal text) and try once ` +
-        `more; look for another official page of the very same content and try that. ` +
-        `Outside the big media platforms, also open the page and look for a direct file ` +
-        `link to download with browser_download_file, or a media URL in ` +
-        `browser_get_network (browser_download_stream for a .m3u8). Only when those are ` +
-        `exhausted has the run failed — then stop and report exactly what you tried and ` +
-        `how each attempt failed.\n` +
+        `more; look for another official page of the very same content and try that. Once ` +
+        `browser_download_media has actually failed, you may also open the page, play the ` +
+        `media, and check browser_get_network for a direct media URL — many sites serve ` +
+        `the video as a plain .mp4 (browser_download_file) or a .m3u8 stream ` +
+        `(browser_download_stream). Only when those are exhausted has the run failed — ` +
+        `then stop and report exactly what you tried and how each attempt failed.\n` +
         // Substitution guard (incident, 2026-08-01): a run that could not reach
         // the asked-for tweet searched up an unrelated music video and delivered
         // it as "similar". A failed goal must come back as a failure.
