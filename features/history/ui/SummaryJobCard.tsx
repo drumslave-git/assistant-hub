@@ -2,6 +2,7 @@
 
 import { Badge } from "@/components/ui";
 import { JobStatusCard, intervalJobActivity } from "@/components/jobs/JobStatusCard";
+import { DAILY_RUN_TIME_INVALID_NOTE } from "@/components/jobs/job-status";
 import type { SummaryJobInfo } from "../server/summary-scheduler";
 
 /**
@@ -33,6 +34,7 @@ export function SummaryJobCard({ initial }: { initial: SummaryJobInfo }) {
         )
       }
       nextRunAt={nextRunAt}
+      nextRunNote={nextRunAt ? null : DAILY_RUN_TIME_INVALID_NOTE}
       lastRunAt={lastResult?.at ?? null}
       lastResult={lastResult?.summary ?? null}
       failed={status.lastError != null}

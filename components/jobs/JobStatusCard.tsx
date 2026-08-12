@@ -18,7 +18,8 @@ import {
 } from "@/components/ui";
 import { Timestamp } from "@/components/time/Timestamp";
 import type { ApiErrorBody } from "@/lib/api-error";
-import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
+
+import type { JobActivity } from "./job-status";
 
 /**
  * The one status + control card for a background job. Every scheduler-backed
@@ -37,8 +38,9 @@ import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
  * the server-rendered props.
  */
 
-/** What a job is doing right now, as shown on its badge. */
-export type JobActivity = "running" | "idle" | "scheduled" | "stopped" | "paused";
+// Re-exported so existing card imports keep working; the definitions live in
+// the pure `./job-status` module, which the server-only jobs registry also uses.
+export { intervalJobActivity, type JobActivity } from "./job-status";
 
 const ACTIVITY_LABEL: Record<JobActivity, string> = {
   running: "Running",
@@ -55,17 +57,6 @@ const ACTIVITY_TONE: Record<JobActivity, BadgeTone> = {
   stopped: "danger",
   paused: "warning",
 };
-
-/**
- * Map the shared interval scheduler's status onto an activity. A ticking job is
- * running; an armed-but-quiet one is idle; an unarmed one is stopped. A job that
- * is *declining* to do its work reports `paused` instead — that is a policy state
- * the job body owns, not something the ticker can know.
- */
-export function intervalJobActivity(status: IntervalJobStatus): JobActivity {
-  if (status.ticking) return "running";
-  return status.running ? "idle" : "stopped";
-}
 
 export interface JobStatusCardProps {
   title: string;
@@ -92,6 +83,12 @@ export interface JobStatusCardProps {
   progress?: ReactNode;
   /** When the job next runs, or null when nothing is scheduled. */
   nextRunAt: string | null;
+  /**
+   * Why there is no next run, shown in the "Next run" cell when `nextRunAt` is
+   * null (e.g. "when the bot next goes quiet…"). An unexplained "—" reads as
+   * broken; for idle-debounced jobs an empty next-run is the normal state.
+   */
+  nextRunNote?: string | null;
   /** When the job last ran, or null when it never has. */
   lastRunAt: string | null;
   /** One-line outcome of the last run. */
@@ -111,6 +108,7 @@ export function JobStatusCard({
   detailsHref,
   progress,
   nextRunAt,
+  nextRunNote,
   lastRunAt,
   lastResult,
   failed = false,
@@ -181,7 +179,11 @@ export function JobStatusCard({
           <div className="flex justify-between gap-4">
             <dt>Next run</dt>
             <dd className="text-foreground">
-              <Timestamp iso={nextRunAt} />
+              {nextRunAt || !nextRunNote ? (
+                <Timestamp iso={nextRunAt} />
+              ) : (
+                <span className="text-muted">{nextRunNote}</span>
+              )}
             </dd>
           </div>
           <div className="flex justify-between gap-4">

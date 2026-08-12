@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui";
 import { JobStatusCard, intervalJobActivity } from "@/components/jobs/JobStatusCard";
+import { NO_UPCOMING_TASKS_NOTE } from "@/components/jobs/job-status";
 import type { TaskSchedulerJobInfo } from "../server/scheduler";
 
 /**
@@ -49,6 +50,7 @@ export function TaskSchedulerCard({ initial }: { initial: TaskSchedulerJobInfo }
         ) : null
       }
       nextRunAt={nextRunAt}
+      nextRunNote={nextRunAt ? null : NO_UPCOMING_TASKS_NOTE}
       lastRunAt={status.lastTickAt}
       lastResult={status.lastSummary}
       failed={status.lastError != null}

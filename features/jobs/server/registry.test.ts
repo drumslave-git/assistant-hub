@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+import { idleJobNextRunNote, intervalJobActivity } from "@/components/jobs/job-status";
 import type { IdleJobStatus } from "@/server/jobs/idle-scheduler";
 import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
 
 import {
   analyticsJobView,
-  intervalActivity,
   memoryJobView,
   selfImprovementJobView,
   summaryJobView,
@@ -34,15 +34,34 @@ function idleStatus(over: Partial<IdleJobStatus> = {}): IdleJobStatus {
     lastError: null,
     nextRunAt: null,
     progress: null,
+    debounceMs: 45_000,
     ...over,
   };
 }
 
-describe("intervalActivity", () => {
+describe("intervalJobActivity", () => {
   it("maps ticking → running, armed → idle, unarmed → stopped", () => {
-    expect(intervalActivity(intervalStatus({ ticking: true }))).toBe("running");
-    expect(intervalActivity(intervalStatus({ running: true, ticking: false }))).toBe("idle");
-    expect(intervalActivity(intervalStatus({ running: false }))).toBe("stopped");
+    expect(intervalJobActivity(intervalStatus({ ticking: true }))).toBe("running");
+    expect(intervalJobActivity(intervalStatus({ running: true, ticking: false }))).toBe("idle");
+    expect(intervalJobActivity(intervalStatus({ running: false }))).toBe("stopped");
+  });
+});
+
+describe("idleJobNextRunNote", () => {
+  it("explains the empty next-run of an unarmed idle job, with its quiet window", () => {
+    expect(idleJobNextRunNote(idleStatus())).toContain("45s after its last activity");
+  });
+
+  it("says a running job re-arms after it settles", () => {
+    expect(idleJobNextRunNote(idleStatus({ phase: "running" }))).toContain("after this run settles");
+  });
+
+  it("is silent when a run is actually scheduled", () => {
+    expect(
+      idleJobNextRunNote(
+        idleStatus({ phase: "scheduled", nextRunAt: "2026-07-16T00:00:00.000Z" }),
+      ),
+    ).toBeNull();
   });
 });
 

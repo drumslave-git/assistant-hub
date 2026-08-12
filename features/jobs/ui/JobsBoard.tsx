@@ -54,6 +54,7 @@ export function JobsBoard({ jobs }: { jobs: JobView[] }) {
             }
             progress={job.progress ? <JobProgressBar progress={job.progress} /> : undefined}
             nextRunAt={job.nextRunAt}
+            nextRunNote={job.nextRunNote}
             lastRunAt={job.lastRunAt}
             lastResult={job.lastResult}
             failed={job.failed}

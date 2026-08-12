@@ -21,10 +21,14 @@ import {
 } from "@/features/self-improvement/server/scheduler";
 import { getVisionBackfillStatus } from "@/features/vision/server/backfill-scheduler";
 import { getPendingMediaCount } from "@/features/vision/server/service";
-import type { JobActivity } from "@/components/jobs/JobStatusCard";
+import {
+  DAILY_RUN_TIME_INVALID_NOTE,
+  idleJobNextRunNote,
+  intervalJobActivity,
+  NO_UPCOMING_TASKS_NOTE,
+} from "@/components/jobs/job-status";
 import { featureDebugHref } from "@/lib/features";
 import type { IdleJobStatus } from "@/server/jobs/idle-scheduler";
-import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
 
 import type { JobView } from "../types";
 
@@ -40,16 +44,10 @@ import type { JobView } from "../types";
  * derivation, last-run passthrough, backlog, progress) is unit-testable without
  * mocking every scheduler module. `getAllJobs` just fetches and composes them.
  *
- * `intervalActivity` is intentionally re-implemented here rather than imported
- * from the `JobStatusCard` Client Component: this module is server-only and must
- * not pull a client module's runtime into the RSC graph.
+ * The activity mapping and next-run notes come from the pure
+ * `@/components/jobs/job-status` module — shared with the Client card, safe to
+ * import here because it carries no client runtime.
  */
-
-/** A ticking job is running; an armed-but-quiet one is idle; an unarmed one is stopped. */
-export function intervalActivity(status: IntervalJobStatus): JobActivity {
-  if (status.ticking) return "running";
-  return status.running ? "idle" : "stopped";
-}
 
 /** A job whose status getter failed — shown as stopped rather than dropped from the board. */
 function errored(id: string, title: string, href: string): JobView {
@@ -64,6 +62,7 @@ function errored(id: string, title: string, href: string): JobView {
     notice: "Could not read this job's status.",
     backlog: null,
     nextRunAt: null,
+    nextRunNote: null,
     lastRunAt: null,
     lastResult: null,
     failed: true,
@@ -84,6 +83,7 @@ export function visionJobView(status: IdleJobStatus, pendingMedia: number): JobV
     notice: null,
     backlog: pendingMedia > 0 ? { label: "media pending", count: pendingMedia } : null,
     nextRunAt: status.nextRunAt,
+    nextRunNote: idleJobNextRunNote(status),
     lastRunAt: status.lastRunAt,
     lastResult: status.lastSummary,
     failed: status.lastError != null,
@@ -110,6 +110,7 @@ export function messageIndexJobView(status: IdleJobStatus, pending: number): Job
     notice: null,
     backlog: pending > 0 ? { label: "messages pending", count: pending } : null,
     nextRunAt: status.nextRunAt,
+    nextRunNote: idleJobNextRunNote(status),
     lastRunAt: status.lastRunAt,
     lastResult: status.lastSummary,
     failed: status.lastError != null,
@@ -124,7 +125,7 @@ export function taskJobView(info: TaskSchedulerJobInfo | null): JobView {
     id: "scheduled-tasks",
     title: "Task poller",
     description: "Fires scheduled tasks at their wall-clock time and delivers them to their chat.",
-    activity: info.paused ? "paused" : intervalActivity(info.status),
+    activity: info.paused ? "paused" : intervalJobActivity(info.status),
     href: "/scheduled-tasks",
     runEndpoint: "/api/scheduled-tasks/run",
     runDisabled: info.paused || info.overdue === 0,
@@ -133,6 +134,7 @@ export function taskJobView(info: TaskSchedulerJobInfo | null): JobView {
       : null,
     backlog: info.overdue > 0 ? { label: "overdue", count: info.overdue } : null,
     nextRunAt: info.nextRunAt,
+    nextRunNote: info.nextRunAt ? null : NO_UPCOMING_TASKS_NOTE,
     lastRunAt: info.status.lastTickAt,
     lastResult: info.status.lastSummary,
     failed: info.status.lastError != null,
@@ -147,13 +149,14 @@ export function summaryJobView(info: SummaryJobInfo | null): JobView {
     id: "history-summaries",
     title: "History summary",
     description: `Compresses each finished chat-day into searchable topic summaries, daily at ${info.runTime} (${info.timezone}).`,
-    activity: intervalActivity(info.status),
+    activity: intervalJobActivity(info.status),
     href: "/history",
     runEndpoint: "/api/history/summaries/run",
     runDisabled: info.pendingDays === 0,
     notice: null,
     backlog: info.pendingDays > 0 ? { label: "days pending", count: info.pendingDays } : null,
     nextRunAt: info.nextRunAt,
+    nextRunNote: info.nextRunAt ? null : DAILY_RUN_TIME_INVALID_NOTE,
     lastRunAt: info.lastResult?.at ?? null,
     lastResult: info.lastResult?.summary ?? null,
     failed: info.status.lastError != null,
@@ -168,7 +171,7 @@ export function memoryJobView(info: MemoryJobInfo | null): JobView {
     id: "memory",
     title: "Memory",
     description: `Reads each finished chat-day for durable facts and folds them into memory, daily at ${info.runTime} (${info.timezone}).`,
-    activity: intervalActivity(info.status),
+    activity: intervalJobActivity(info.status),
     href: "/memory",
     runEndpoint: "/api/memory/run",
     // The run does both passes, so it is only pointless when *both* backlogs are
@@ -185,6 +188,7 @@ export function memoryJobView(info: MemoryJobInfo | null): JobView {
           ? { label: "notes pending", count: info.pendingNotes }
           : null,
     nextRunAt: info.nextRunAt,
+    nextRunNote: info.nextRunAt ? null : DAILY_RUN_TIME_INVALID_NOTE,
     lastRunAt: info.lastResult?.at ?? null,
     lastResult: info.lastResult?.summary ?? null,
     failed: info.status.lastError != null,
@@ -199,7 +203,7 @@ export function analyticsJobView(info: AnalyticsJobInfo | null): JobView {
     id: "analytics-insights",
     title: "Analytics insights",
     description: `Scores each chat-hour's mood + top topic and rolls up period insights, daily at ${info.runTime} (${info.timezone}).`,
-    activity: intervalActivity(info.status),
+    activity: intervalJobActivity(info.status),
     href: "/analytics",
     runEndpoint: "/api/analytics/insights/run",
     runDisabled: !info.llmConfigured,
@@ -208,6 +212,7 @@ export function analyticsJobView(info: AnalyticsJobInfo | null): JobView {
       : "No LLM configured — set one in Settings for insights to compute.",
     backlog: info.pendingUnits > 0 ? { label: "hours pending", count: info.pendingUnits } : null,
     nextRunAt: info.nextRunAt,
+    nextRunNote: info.nextRunAt ? null : DAILY_RUN_TIME_INVALID_NOTE,
     lastRunAt: info.lastResult?.at ?? null,
     lastResult: info.lastResult?.summary ?? null,
     failed: info.status.lastError != null,
@@ -222,13 +227,14 @@ export function selfImprovementJobView(info: SelfImprovementJobInfo | null): Job
     id: "self-improvement",
     title: "Self-improvement",
     description: `Distills feedback into per-user preferences and global self-corrections, daily at ${info.runTime} (${info.timezone}).`,
-    activity: intervalActivity(info.status),
+    activity: intervalJobActivity(info.status),
     href: "/self-improvement",
     runEndpoint: "/api/self-improvement/run",
     runDisabled: false,
     notice: null,
     backlog: null,
     nextRunAt: info.nextRunAt,
+    nextRunNote: info.nextRunAt ? null : DAILY_RUN_TIME_INVALID_NOTE,
     lastRunAt: info.lastResult?.at ?? null,
     lastResult: info.lastResult?.summary ?? null,
     failed: info.status.lastError != null,
@@ -252,7 +258,7 @@ export function ytdlpJobView(info: YtDlpJobInfo | null): JobView {
     id: "ytdlp-updater",
     title: "yt-dlp updater",
     description: `Keeps the media downloader's yt-dlp current against upstream releases, daily at ${info.runTime} (${info.timezone}).`,
-    activity: intervalActivity(info.status),
+    activity: intervalJobActivity(info.status),
     href: featureDebugHref("ytdlp-updater"),
     runEndpoint: "/api/browser/ytdlp/run",
     runDisabled: false,
@@ -262,6 +268,7 @@ export function ytdlpJobView(info: YtDlpJobInfo | null): JobView {
         : null,
     backlog: null,
     nextRunAt: info.nextRunAt,
+    nextRunNote: info.nextRunAt ? null : DAILY_RUN_TIME_INVALID_NOTE,
     lastRunAt: info.lastResult?.at ?? null,
     lastResult: info.lastResult?.summary ?? null,
     failed: info.status.lastError != null,

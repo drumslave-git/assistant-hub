@@ -35,6 +35,12 @@ export interface IdleJobStatus {
   nextRunAt: string | null;
   /** What the job is doing right now, or null when it is not running. */
   progress: JobProgress | null;
+  /**
+   * The configured quiet period, so status consumers can *say* when an unarmed
+   * job would next run ("90s after the bot's last activity") instead of showing
+   * a bare empty next-run.
+   */
+  debounceMs: number;
 }
 
 /** Passed to the job body so it can stop cooperatively when live work resumes. */
@@ -85,7 +91,15 @@ export function createIdleScheduler(options: IdleSchedulerOptions): IdleSchedule
   let progress: JobProgress | null = null;
 
   function snapshot(): IdleJobStatus {
-    return { phase, lastRunAt, lastSummary, lastError, nextRunAt, progress };
+    return {
+      phase,
+      lastRunAt,
+      lastSummary,
+      lastError,
+      nextRunAt,
+      progress,
+      debounceMs: options.debounceMs,
+    };
   }
 
   function reportProgress(next: JobProgress | null): void {

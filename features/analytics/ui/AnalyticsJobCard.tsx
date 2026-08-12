@@ -1,6 +1,7 @@
 "use client";
 
 import { JobStatusCard, intervalJobActivity } from "@/components/jobs/JobStatusCard";
+import { DAILY_RUN_TIME_INVALID_NOTE } from "@/components/jobs/job-status";
 import { Badge } from "@/components/ui";
 
 import type { AnalyticsJobInfo } from "../types";
@@ -33,6 +34,7 @@ export function AnalyticsJobCard({ job }: { job: AnalyticsJobInfo }) {
         )
       }
       nextRunAt={job.nextRunAt}
+      nextRunNote={job.nextRunAt ? null : DAILY_RUN_TIME_INVALID_NOTE}
       lastRunAt={job.lastResult?.at ?? null}
       lastResult={job.lastResult?.summary ?? null}
     />

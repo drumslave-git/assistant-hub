@@ -1,6 +1,7 @@
 "use client";
 
 import { JobStatusCard } from "@/components/jobs/JobStatusCard";
+import { idleJobNextRunNote } from "@/components/jobs/job-status";
 import type { IdleJobStatus } from "@/server/jobs/idle-scheduler";
 
 /** The shape `GET/POST /api/vision/backfill` returns. */
@@ -29,6 +30,7 @@ export function VisionBackfillCard({ initial }: { initial: VisionBackfillView })
       runEndpoint="/api/vision/backfill"
       runDisabled={pending === 0}
       nextRunAt={status.nextRunAt}
+      nextRunNote={idleJobNextRunNote(status)}
       lastRunAt={status.lastRunAt}
       lastResult={status.lastSummary}
       failed={status.lastError != null}

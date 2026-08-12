@@ -5,7 +5,7 @@
  * are erased.
  */
 
-import type { JobActivity } from "@/components/jobs/JobStatusCard";
+import type { JobActivity } from "@/components/jobs/job-status";
 import type { JobProgress } from "@/server/jobs/progress";
 
 export type { JobProgress };
@@ -41,6 +41,8 @@ export interface JobView {
   backlog: JobBacklog | null;
   /** ISO time of the next run, or null when nothing is scheduled. */
   nextRunAt: string | null;
+  /** Why there is no next run (shown when `nextRunAt` is null), or null. */
+  nextRunNote: string | null;
   /** ISO time of the last actual run, or null when it never ran. */
   lastRunAt: string | null;
   /** One-line outcome of the last run. */

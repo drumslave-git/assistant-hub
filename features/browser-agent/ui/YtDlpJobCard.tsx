@@ -2,6 +2,7 @@
 
 import { Badge } from "@/components/ui";
 import { JobStatusCard, intervalJobActivity } from "@/components/jobs/JobStatusCard";
+import { DAILY_RUN_TIME_INVALID_NOTE } from "@/components/jobs/job-status";
 import type { YtDlpJobInfo } from "@/features/browser-agent/server/ytdlp-scheduler";
 
 /**
@@ -37,6 +38,7 @@ export function YtDlpJobCard({ initial }: { initial: YtDlpJobInfo }) {
           : "No yt-dlp on this machine — browser_download_media fails until a check installs one."
       }
       nextRunAt={nextRunAt}
+      nextRunNote={nextRunAt ? null : DAILY_RUN_TIME_INVALID_NOTE}
       lastRunAt={lastResult?.at ?? null}
       lastResult={lastResult?.summary ?? null}
       failed={status.lastError != null}
