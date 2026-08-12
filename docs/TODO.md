@@ -602,7 +602,19 @@ quiet ones. The card is not wrong about what it reports — it is a poor proxy f
 model speed, and it was read as one here. Worth a hint on the card saying so
 before it misleads someone again.
 
-### vLLM measured live (`blocked` on a deployment decision, 2026-08-12)
+### vLLM measured live (`done` pending live reply verification, 2026-08-12)
+
+**Resolved by the operator on 2026-08-12**: the vLLM config was changed and
+re-measured with raw curl against the endpoint. The default request (the reply
+path's shape) now thinks and comes back parsed — reasoning in the `reasoning`
+field (which the vllm adapter reads), `content` holding only the clean
+answer. The classifier shape (`chat_template_kwargs: {enable_thinking:false}`
++ `reasoning_effort`) stays properly off: 11 completion tokens, no reasoning.
+Two background traces (history-summaries, memory-extraction) errored with 502
+during the restart window — transient, they retry on schedule. Remaining
+proof wanted: one live bot reply trace showing reasoning in the response body
+and no transcript-marker echo. The original findings below are kept for the
+record.
 
 The operator switched chat to a live vLLM (0.26.0, `https://vllm.tcloud.monster`,
 `gemma4-12b`) on 2026-08-11 and reported two regressions the next day: replies
