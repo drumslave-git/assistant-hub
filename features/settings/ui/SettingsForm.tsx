@@ -157,8 +157,11 @@ export function SettingsForm({
 
   /**
    * Whether a role's selection is provably stale: its effective backend's list
-   * was successfully fetched and does not contain the stored model. Free-text
-   * roles (audio) are exempt — an absent listing proves nothing there.
+   * was successfully fetched and does not contain the stored model. Audio in
+   * `transcriptions` mode is exempt — whisper-class servers often list nothing,
+   * so an absent listing proves nothing there. In `chat` mode the audio model
+   * is an ordinary chat model the backend must list, so it is checked like the
+   * rest.
    */
   const roleStale = (role: RoleConfig) => {
     const models = roleModels(role);
@@ -189,7 +192,13 @@ export function SettingsForm({
       },
       { role: img, backendKey: "imageBackendId", modelKey: "imageModel", label: "image model", listed: true },
       { role: spc, backendKey: "speechBackendId", modelKey: "speechModel", label: "speech model", listed: true },
-      { role: aud, backendKey: "audioBackendId", modelKey: "audioModel", label: "audio model", listed: false },
+      {
+        role: aud,
+        backendKey: "audioBackendId",
+        modelKey: "audioModel",
+        label: "audio model",
+        listed: audioTranscriptionMode === "chat",
+      },
       { role: vis, backendKey: "visionBackendId", modelKey: "visionModel", label: "vision model", listed: true },
       {
         role: brw,
@@ -501,12 +510,14 @@ export function SettingsForm({
       }}
       models={roleModels(aud)}
       freeTextModel
+      modelWarning={
+        audioTranscriptionMode === "chat" && roleStale(aud) ? staleWarning(aud.model) : null
+      }
       probe={audioProbe.state}
       renderOk={(r) => <>{r.model} — endpoint responded</>}
       onTest={() =>
         void audioProbe.run({ ...roleProbeBody(aud), transcriptionMode: audioTranscriptionMode })
       }
-      testDisabled={aud.model.trim() === ""}
     >
       <Field
         id="audioTranscriptionMode"

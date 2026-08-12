@@ -264,6 +264,27 @@ async function toAudioRuntime(
 }
 
 /**
+ * The transcription connection the voice path actually uses when no dedicated
+ * STT model is configured: the chat (main) model carrying the audio as an
+ * `input_audio` chat-completion part. Null when chat itself is unconfigured.
+ */
+async function toChatFallbackTranscriptionRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<TranscriptionRuntime | null> {
+  if (!record?.chatBackendId || !record.model) return null;
+  const backend = await getBackendById(db, record.chatBackendId);
+  if (!backend) return null;
+  return {
+    baseUrl: backend.baseUrl,
+    apiKey: backend.apiKey,
+    backend: backend.type,
+    model: record.model,
+    mode: "chat",
+  };
+}
+
+/**
  * Server-only: the saved audio (STT) connection + model, or null when no
  * dedicated STT model is configured (voice then transcribes via the chat
  * model's `input_audio`). Read at call time so a change takes effect without a
@@ -387,12 +408,17 @@ const ROLE_FIELDS = [
 ] as const;
 
 /**
- * Model selections that are picked from a backend's `/v1/models` listing.
- * Audio is deliberately absent: whisper-class servers often expose no listing,
- * so absence from one proves nothing (the UI field allows free text for the
- * same reason) — an audio selection is never cleared on unverifiable evidence.
+ * Model selections that are picked from a backend's `/v1/models` listing and
+ * can therefore be verified against it. Audio counts only in `chat`
+ * transcription mode, where the STT model is an ordinary chat model the
+ * backend must list. In `transcriptions` mode whisper-class servers often
+ * expose no listing, so absence from one proves nothing (the UI field allows
+ * free text for the same reason) — there an audio selection is never cleared
+ * on unverifiable evidence.
  */
-const LISTED_MODEL_ROLES = ROLE_FIELDS.filter((r) => r.label !== "audio");
+function listedModelRoles(audioMode: "transcriptions" | "chat") {
+  return ROLE_FIELDS.filter((r) => r.label !== "audio" || audioMode === "chat");
+}
 
 type RoleBackendKey = (typeof ROLE_FIELDS)[number]["backendKey"];
 type RoleModelKey = (typeof ROLE_FIELDS)[number]["modelKey"];
@@ -514,7 +540,7 @@ function effective<K extends RoleBackendKey | RoleModelKey>(
  * - A model set in this very patch is trusted — the operator just chose it.
  * - When the new backend cannot be listed (down, slow, key rejected), nothing
  *   is cleared: absence is only acted on when it is proven.
- * - Audio is exempt (see {@link LISTED_MODEL_ROLES}).
+ * - Audio is exempt only in `transcriptions` mode (see {@link listedModelRoles}).
  *
  * Mutates `patch`; returns human labels of what was cleared.
  */
@@ -529,7 +555,9 @@ async function clearStaleModelSelections(
 
   const checks: Array<{ label: string; modelKey: RoleModelKey; model: string; backendId: string }> =
     [];
-  for (const role of LISTED_MODEL_ROLES) {
+  const audioMode =
+    patch.audioTranscriptionMode ?? before?.audioTranscriptionMode ?? "transcriptions";
+  for (const role of listedModelRoles(audioMode)) {
     if (patch[role.modelKey] !== undefined) continue;
     const model = before?.[role.modelKey] ?? null;
     if (!model) continue;
@@ -589,7 +617,8 @@ async function clearStaleModelSelections(
  * model verified against the new endpoint's listing, and verifiably unserved
  * ones are cleared in one settings write. Same doctrine as
  * {@link clearStaleModelSelections} — a failed listing clears nothing, audio is
- * exempt. Called by the backends service after a URL/key change.
+ * exempt only in `transcriptions` mode. Called by the backends service after a
+ * URL/key change.
  *
  * Returns human labels of what was cleared.
  */
@@ -601,7 +630,7 @@ export async function clearRoleModelsNotServed(
   const record = await getSettingsRecord(db);
   if (!record) return [];
 
-  const affected = LISTED_MODEL_ROLES.filter((role) => {
+  const affected = listedModelRoles(record.audioTranscriptionMode).filter((role) => {
     const eff = record[role.backendKey] ?? record.chatBackendId;
     return eff === backend.id && Boolean(record[role.modelKey]);
   });
@@ -869,19 +898,22 @@ export async function testAudio(
   if (input.transcriptionMode !== undefined) {
     merged.audioTranscriptionMode = input.transcriptionMode;
   }
-  const runtime = await toAudioRuntime(db, merged);
+  // No dedicated STT model: probe the exact fallback the voice path uses — the
+  // chat model taking the audio through an `input_audio` chat completion.
+  const runtime =
+    (await toAudioRuntime(db, merged)) ?? (await toChatFallbackTranscriptionRuntime(db, merged));
 
   return withTrace(
     {
       feature: FEATURE.id,
       action: "test-audio",
       trigger,
-      inputSummary: merged.audioModel ?? "(no model)",
+      inputSummary: merged.audioModel ?? merged.model ?? "(no model)",
     },
     async (trace) => {
       if (!runtime) {
         throw ApiError.badRequest(
-          "Choose an audio model (and a backend, unless the chat backend serves transcription).",
+          "Choose an audio model, or configure the chat role it falls back to.",
         );
       }
       await trace.event({

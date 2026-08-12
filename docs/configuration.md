@@ -123,8 +123,10 @@ it verifiably does not serve is **cleared in the same write** (recorded as warn
 events on the update trace, and named next to the Save button in the form).
 Two deliberate limits: a model sent in the same PATCH is trusted as an explicit
 choice, and when the new backend cannot be listed nothing is cleared — absence
-is only acted on when proven. The audio model is exempt (whisper-class servers
-often expose no listing; its field is free-text in the UI for the same reason).
+is only acted on when proven. The audio model is exempt only in
+`transcriptions` mode (whisper-class servers often expose no listing; its field
+is free-text in the UI for the same reason) — in `chat` mode it is an ordinary
+chat model and is verified like the rest.
 
 ### Telegram
 

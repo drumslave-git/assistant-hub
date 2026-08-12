@@ -102,6 +102,50 @@ restart to serve (done).
   — same "real probe" doctrine as before, now potentially against a paid
   provider.
 
+## Audio stale-clearing in chat mode + always-testable audio probe (`done`, 2026-08-12)
+
+User report, 2026-08-12: repointing the chat backend cleared the stale vision
+model but left a chat-mode audio model (`nemotron-…:free`) selected, and "Test
+audio" was disabled with an empty model even though empty means "chat-model
+fallback" — a real, testable path (vision's test works exactly that way).
+
+### What shipped
+
+- The audio exemption from stale-model clearing is now **conditional on the
+  transcription mode**: only `transcriptions` mode is exempt (whisper-class
+  servers list nothing); in `chat` mode the STT model is an ordinary chat model
+  and is verified/cleared like every listed role. Server:
+  `listedModelRoles(mode)` replaces the `LISTED_MODEL_ROLES` constant, applied
+  in both `clearStaleModelSelections` (post-patch mode) and
+  `clearRoleModelsNotServed` (stored mode). Client: the audio role's `listed`
+  flag follows the form's mode, and the Audio tab shows the stale warning in
+  chat mode.
+- "Test audio" is no longer gated on a model being set: with no audio model,
+  `testAudio` resolves `toChatFallbackTranscriptionRuntime` — the chat model
+  carrying the probe silence as `input_audio`, exactly what the voice path
+  uses — mirroring `testVision`'s fallback probing.
+
+### Proof
+
+Files: `features/settings/server/service.ts`,
+`features/settings/ui/SettingsForm.tsx`,
+`features/settings/server/settings.integration.test.ts`, docs
+(`configuration.md`, `features/{settings,backends}.md`).
+
+Lint clean; typecheck clean except the same three stale `.next/types` lines;
+settings integration suite 53/53 (new: chat-mode audio cleared on repoint,
+no-model `testAudio` probing the chat fallback with the `input_audio` shape,
+clean rejection when nothing resolves). Unit suite: same 21 pre-existing
+yt-dlp Windows failures only. Browser-verified against the live dev server:
+"Test audio" enabled with an empty model and returned
+"google/gemma-4-26b-a4b-it:free — endpoint responded" through real OpenRouter.
+
+### Remaining risks
+
+- Switching the mode select alone (no backend repoint) does not trigger a
+  server-side verify; the form's fetched-list warning + save-time clearing
+  covers it once the list is known.
+
 ## Backends catalog + per-role LLM configuration (`done` pending production deploy, 2026-08-12)
 
 User request, 2026-08-12: *"lets re-work our LLM backend"* — Backends as a CRUD

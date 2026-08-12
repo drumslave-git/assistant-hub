@@ -394,10 +394,33 @@ describe("stale model clearing on save", () => {
     expect(set.visionModel).toBeNull();
     // Served → kept.
     expect(set.embeddingModel).toBe("bge-m3");
-    // Audio is exempt: absence from a listing proves nothing for STT servers.
+    // Audio is exempt in `transcriptions` mode (the default here): whisper-class
+    // servers often list nothing, so absence from a listing proves nothing.
     expect(set.audioModel).toBe("whisper-1");
     // One listing for the one distinct backend.
     expect(listModelsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("in chat transcription mode the audio model is verified and cleared like any listed role", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://old.example/v1" });
+    await updateSettings(
+      {
+        chatBackendId: chatId,
+        model: "chat-model",
+        audioModel: "omni-model",
+        audioTranscriptionMode: "chat",
+      },
+      trigger,
+      ctx.db,
+    );
+    const newId = await seedBackend(ctx, { name: "New", baseUrl: "https://new.example/v1" });
+    // The new backend serves the chat model but not the audio one — and in chat
+    // mode the audio model is an ordinary chat model, so its absence is proof.
+    listModelsMock.mockResolvedValue(["chat-model"]);
+
+    const set = await updateSettings({ chatBackendId: newId }, trigger, ctx.db);
+    expect(set.model).toBe("chat-model");
+    expect(set.audioModel).toBeNull();
   });
 
   it("clears nothing when the new backend cannot be listed, and records why", async () => {
@@ -501,6 +524,34 @@ describe("connection probes", () => {
     expect(
       (user?.content as Array<{ type: string }>).some((part) => part.type === "input_audio"),
     ).toBe(true);
+  });
+
+  it("testAudio without a model probes the chat-model input_audio fallback", async () => {
+    const chatId = await seedBackend(ctx, {
+      name: "Main",
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+    });
+    // No audio model set: the probe must test the chat-model fallback, since
+    // that is exactly what the voice path will use.
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    chatCompletionMock.mockResolvedValue(completion("", "gemma"));
+
+    const probe = await testAudio({}, trigger, ctx.db);
+    expect(probe.model).toBe("gemma");
+
+    expect(chatCompletionMock).toHaveBeenCalledTimes(1);
+    const [conn, input] = chatCompletionMock.mock.calls[0];
+    expect(conn.baseUrl).toBe("https://llm.example/v1");
+    expect(input.model).toBe("gemma");
+    const user = input.messages.find((m) => m.role === "user");
+    expect(
+      (user?.content as Array<{ type: string }>).some((part) => part.type === "input_audio"),
+    ).toBe(true);
+  });
+
+  it("testAudio rejects cleanly when nothing resolves", async () => {
+    await expect(testAudio({}, trigger, ctx.db)).rejects.toThrow(/audio model/i);
   });
 
   it("testVision describes a generated image through the resolved runtime", async () => {

@@ -71,7 +71,9 @@ effective backend's models and clears any stored selection it verifiably does
 not serve, in the same write, with a warn event per cleared model on the update
 trace. A model sent in the same patch is trusted as an explicit choice; when
 the listing fails nothing is cleared (absence must be proven); the audio model
-is exempt because whisper-class servers often expose no listing.
+is exempt only in `transcriptions` mode, because whisper-class servers often
+expose no listing — in `chat` mode it is an ordinary chat model the backend
+must list, so it is verified like the rest.
 
 The form owns the case that check cannot see: a selection stale against the
 *unchanged* backend. Each role's model list is preloaded (and fetched live when
@@ -97,7 +99,7 @@ stored, and resolution goes through the same runtime resolver the feature uses.
 | `test-embeddings` | Embeds a short string | Proves the endpoint is reachable, the key is accepted, the model exists, **and** that its vectors fit the stored 1024-wide columns — none of which a model listing establishes |
 | `test-images` | Checks the configured model is served | A real generation costs time and money and proves nothing extra |
 | `test-speech` | Checks the configured model is served | Nothing about a voice reply can only be learned by rendering one |
-| `test-audio` | Transcribes a fraction of a second of generated silence | A model listing proves nothing here — whisper-class servers often serve `/v1/audio/transcriptions` without `/v1/models` |
+| `test-audio` | Transcribes a fraction of a second of generated silence | A model listing proves nothing here — whisper-class servers often serve `/v1/audio/transcriptions` without `/v1/models`. With no audio model set it probes the chat-model `input_audio` fallback, exactly what the voice path uses |
 
 ## Honest initial render
 

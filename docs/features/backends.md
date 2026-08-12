@@ -37,8 +37,9 @@ role whose effective backend is that row (a role with no backend of its own
 rides on the chat backend's row): the new endpoint is listed once and any model
 it verifiably does not serve is cleared in the same operation, with warn events
 on the update trace and the cleared roles reported back to the form. A failed
-listing clears nothing, and the audio model is exempt (whisper-class servers
-often list nothing) — the same doctrine as a settings save.
+listing clears nothing, and the audio model is exempt only in `transcriptions`
+mode (whisper-class servers often list nothing) — the same doctrine as a
+settings save.
 
 ## API
 
