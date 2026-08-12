@@ -42,33 +42,69 @@ import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
  */
 
 /**
+ * Named LLM backends — the operator's catalog of OpenAI-compatible endpoints.
+ * Each row is one server (URL + optional key + which inference server it is,
+ * see `@/lib/llm-backend`); the settings row's per-role columns reference these
+ * by id instead of carrying their own URL/key copies. Managed as a CRUD on the
+ * Backends page. Ids are app-generated UUIDs.
+ */
+export const backends = pgTable(
+  "backends",
+  {
+    id: text("id").primaryKey(),
+    /** Display name (unique case-insensitively, enforced in the service). */
+    name: text("name").notNull(),
+    /** Base URL of the OpenAI-compatible endpoint (e.g. `.../v1`). */
+    baseUrl: text("base_url").notNull(),
+    /** Optional API key for the endpoint. Secret — never returned in plaintext. */
+    apiKey: text("api_key"),
+    /**
+     * Which inference server answers at {@link baseUrl} — see `@/lib/llm-backend`.
+     *
+     * "OpenAI-compatible" describes the wire shape, not the behavior, and the
+     * behavioral gaps (whether a thinking model can be told to stop, whether an
+     * oversized prompt raises or is silently truncated) broke the bot on every
+     * backend switch. Declaring the server is what lets `server/llm/backends`
+     * normalize it in one place. Defaults to the generic adapter, which assumes
+     * nothing beyond the spec.
+     */
+    type: text("type").notNull().default("openai-compatible"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("backends_name_idx").on(t.name)],
+);
+
+export type BackendRow = typeof backends.$inferSelect;
+export type BackendInsert = typeof backends.$inferInsert;
+
+/**
  * Application settings. A single, typed row (`id = 'singleton'`) holding the
  * operator-configurable, DB-backed configuration (entered via the dashboard,
  * not env vars). New settings are added as typed columns (with a default) plus a
  * migration — the repository always reads/writes the one row.
+ *
+ * LLM configuration is per **role** — chat, embedding, audio (STT), vision,
+ * speech (TTS), image generation, browser agent — and each role points at a
+ * {@link backends} row instead of carrying its own URL/key. A null backend id
+ * means "use the chat backend"; for chat itself it means the bot is
+ * unconfigured. The FKs are `on delete restrict` so a backend still in use
+ * cannot be deleted out from under a role (the service names the roles in its
+ * error before the DB ever sees the delete).
  */
 export const settings = pgTable(
   "settings",
   {
     id: text("id").primaryKey().default("singleton"),
-    /** Base URL of the OpenAI-compatible LLM endpoint (e.g. `.../v1`). */
-    llmBaseUrl: text("llm_base_url"),
-    /** Optional API key for the LLM endpoint. Secret — never returned in plaintext. */
-    llmApiKey: text("llm_api_key"),
+    /** The chat (main) backend — the endpoint every reply runs on. */
+    chatBackendId: text("chat_backend_id").references(() => backends.id, {
+      onDelete: "restrict",
+    }),
     /**
-     * Which inference server serves {@link llmBaseUrl} — see `@/lib/llm-backend`.
-     *
-     * "OpenAI-compatible" describes the wire shape, not the behavior, and the
-     * behavioral gaps (whether a thinking model can be told to stop, whether an
-     * oversized prompt raises or is silently truncated) broke the bot on every
-     * backend switch. Declaring the server is what lets
-     * `server/llm/backends` normalize it in one place.
-     *
-     * Defaults to the generic adapter, which assumes nothing beyond the spec —
-     * so every row written before this column existed behaves exactly as it did.
+     * Selected chat model id (from the backend's `/v1/models`). The chat role
+     * is the one that must support thinking and tool calls — every other role
+     * either falls back to it or serves a narrower API.
      */
-    llmBackend: text("llm_backend").notNull().default("openai-compatible"),
-    /** Selected chat model id (from the endpoint's `/v1/models`). */
     model: text("model"),
     /**
      * The active personality (persona), chosen from the personalities list. Its
@@ -96,20 +132,10 @@ export const settings = pgTable(
     telegramBotToken: text("telegram_bot_token"),
     /** Tavily API key for the web-search MCP tool. Secret — never returned in plaintext. */
     tavilyApiKey: text("tavily_api_key"),
-    /**
-     * Base URL of the OpenAI-compatible endpoint serving `/v1/embeddings`. Blank
-     * means "reuse the LLM connection" — embeddings often run on the same host as
-     * chat, but may be served elsewhere.
-     */
-    embeddingBaseUrl: text("embedding_base_url"),
-    /**
-     * API key for the embedding endpoint. Secret — never returned in plaintext.
-     * Only consulted when {@link embeddingBaseUrl} is set; otherwise the LLM key
-     * is used along with the LLM base URL.
-     */
-    embeddingApiKey: text("embedding_api_key"),
-    /** Which inference server serves the embedding endpoint — see {@link llmBackend}. */
-    embeddingBackend: text("embedding_backend").notNull().default("openai-compatible"),
+    /** Embedding backend (`/v1/embeddings`); null means "use the chat backend". */
+    embeddingBackendId: text("embedding_backend_id").references(() => backends.id, {
+      onDelete: "restrict",
+    }),
     /**
      * Embedding model id (e.g. `bge-m3`). Must emit vectors of
      * {@link EMBEDDING_DIMENSIONS} components — the width the vector columns are
@@ -117,69 +143,59 @@ export const settings = pgTable(
      * summary search) rather than failing a reply.
      */
     embeddingModel: text("embedding_model"),
-    /**
-     * Base URL of the OpenAI-compatible endpoint serving `/v1/images/generations`.
-     * Blank means "reuse the LLM connection" — image generation is often served by
-     * a different host than chat (a diffusion model rarely lives beside the LLM),
-     * but need not be.
-     */
-    imageBaseUrl: text("image_base_url"),
-    /**
-     * API key for the image endpoint. Secret — never returned in plaintext. Only
-     * consulted when {@link imageBaseUrl} is set; otherwise the LLM key is used
-     * along with the LLM base URL.
-     */
-    imageApiKey: text("image_api_key"),
-    /** Which inference server serves the image endpoint — see {@link llmBackend}. */
-    imageBackend: text("image_backend").notNull().default("openai-compatible"),
+    /** Image-generation backend (`/v1/images/generations`); null → chat backend. */
+    imageBackendId: text("image_backend_id").references(() => backends.id, {
+      onDelete: "restrict",
+    }),
     /**
      * Image generation model id. Null disables the `image_generate` tool rather
      * than failing a reply — the same "degrade, don't guess a model id" rule
      * {@link embeddingModel} follows.
      */
     imageModel: text("image_model"),
-    /**
-     * Base URL of the OpenAI-compatible endpoint serving `/v1/audio/speech`
-     * (voice replies). Blank means "reuse the LLM connection".
-     */
-    speechBaseUrl: text("speech_base_url"),
-    /**
-     * API key for the speech endpoint. Secret — never returned in plaintext. Only
-     * consulted when {@link speechBaseUrl} is set; otherwise the LLM key is used
-     * along with the LLM base URL.
-     */
-    speechApiKey: text("speech_api_key"),
-    /** Which inference server serves the speech endpoint — see {@link llmBackend}. */
-    speechBackend: text("speech_backend").notNull().default("openai-compatible"),
+    /** Speech (TTS) backend (`/v1/audio/speech`); null → chat backend. */
+    speechBackendId: text("speech_backend_id").references(() => backends.id, {
+      onDelete: "restrict",
+    }),
     /**
      * Speech (TTS) model id. Null disables voice replies rather than failing a
      * reply — the same "degrade, don't guess a model id" rule
      * {@link embeddingModel} follows. Voice messages are still understood
-     * (transcription rides the chat model); only the spoken answer needs this.
+     * (transcription rides the audio role); only the spoken answer needs this.
      */
     speechModel: text("speech_model"),
     /** Voice name for the speech endpoint (e.g. `alloy`). Null → endpoint default. */
     speechVoice: text("speech_voice"),
+    /** Audio (STT) backend (`/v1/audio/transcriptions`); null → chat backend. */
+    audioBackendId: text("audio_backend_id").references(() => backends.id, {
+      onDelete: "restrict",
+    }),
     /**
-     * Base URL of the OpenAI-compatible endpoint serving `/v1/audio/transcriptions`
-     * (a whisper-class STT server). Blank means "reuse the LLM connection".
-     */
-    transcriptionBaseUrl: text("transcription_base_url"),
-    /**
-     * API key for the transcription endpoint. Secret — never returned in
-     * plaintext. Only consulted when {@link transcriptionBaseUrl} is set;
-     * otherwise the LLM key is used along with the LLM base URL.
-     */
-    transcriptionApiKey: text("transcription_api_key"),
-    /** Which inference server serves the transcription endpoint — see {@link llmBackend}. */
-    transcriptionBackend: text("transcription_backend").notNull().default("openai-compatible"),
-    /**
-     * Transcription (STT) model id. When set, voice messages are transcribed on
-     * the dedicated `/v1/audio/transcriptions` endpoint; when null, transcription
+     * Audio (STT) model id. When set, voice messages are transcribed on the
+     * dedicated `/v1/audio/transcriptions` endpoint; when null, transcription
      * falls back to the chat model via an `input_audio` content part (which then
-     * requires an audio-capable chat model).
+     * requires an audio-capable chat model) — the "main by default" behavior.
      */
-    transcriptionModel: text("transcription_model"),
+    audioModel: text("audio_model"),
+    /** Vision backend; null → chat backend ("main by default"). */
+    visionBackendId: text("vision_backend_id").references(() => backends.id, {
+      onDelete: "restrict",
+    }),
+    /**
+     * Vision (media description) model id. Null means the chat model describes
+     * media — which then must be vision-capable. Set both (or either) to run the
+     * describer on a dedicated multimodal model/host.
+     */
+    visionModel: text("vision_model"),
+    /** Browser-agent LLM backend; null → chat backend ("main by default"). */
+    browserBackendId: text("browser_backend_id").references(() => backends.id, {
+      onDelete: "restrict",
+    }),
+    /**
+     * Browser-agent model id. Null means browsing runs think on the chat model.
+     * Set to give the agent its own (e.g. larger-context) model.
+     */
+    browserModel: text("browser_model"),
     /** Bot owner's Telegram @username (normalized: lowercase, no leading `@`). */
     ownerUsername: text("owner_username"),
     /**

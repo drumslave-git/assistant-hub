@@ -12,14 +12,9 @@ import {
   PageHeader,
 } from "@/components/ui";
 import { featureDebugHref } from "@/lib/features";
-import {
-  getSettings,
-  listAvailableEmbeddingModels,
-  listAvailableImageModels,
-  listAvailableModels,
-  listAvailableSpeechModels,
-  listAvailableTranscriptionModels,
-} from "@/features/settings/server/service";
+import type { Backend } from "@/features/backends/server/schema";
+import { getBackends, preloadBackendModels } from "@/features/backends/server/service";
+import { getSettings } from "@/features/settings/server/service";
 import type { Settings } from "@/features/settings/server/schema";
 import { listUsers } from "@/features/known-users/server/service";
 import type { KnownUser } from "@/features/known-users/server/schema";
@@ -36,29 +31,17 @@ export const dynamic = "force-dynamic";
  */
 export default async function SettingsPage() {
   let settings: Settings | null = null;
-  let initialModels: string[] = [];
-  let initialEmbeddingModels: string[] = [];
-  let initialImageModels: string[] = [];
-  let initialSpeechModels: string[] = [];
-  let initialTranscriptionModels: string[] = [];
+  let backends: Backend[] = [];
+  let backendModels: Record<string, string[]> = {};
   let knownUsers: KnownUser[] = [];
   let dbError: string | null = null;
   try {
     settings = await getSettings();
-    // Preload every endpoint's models so the dropdowns are populated on open.
-    [
-      initialModels,
-      initialEmbeddingModels,
-      initialImageModels,
-      initialSpeechModels,
-      initialTranscriptionModels,
-    ] = await Promise.all([
-      listAvailableModels(),
-      listAvailableEmbeddingModels(),
-      listAvailableImageModels(),
-      listAvailableSpeechModels(),
-      listAvailableTranscriptionModels(),
-    ]);
+    backends = await getBackends();
+    // Preload every backend's model list so the role dropdowns are populated on
+    // open; an unreachable backend yields an empty list and the form fetches
+    // (and shows the error) when a role actually needs it.
+    backendModels = await preloadBackendModels();
     // Known users populate the owner dropdown.
     knownUsers = await listUsers();
   } catch (err) {
@@ -84,7 +67,8 @@ export default async function SettingsPage() {
           <div>
             <CardTitle>Bot configuration</CardTitle>
             <CardDescription>
-              Stored in the database and used for every reply. Changes are recorded as a trace.
+              Stored in the database and used for every reply. Each role picks a backend from the
+              shared catalog; changes are recorded as a trace.
             </CardDescription>
           </div>
         </CardHeader>
@@ -92,11 +76,8 @@ export default async function SettingsPage() {
           {settings ? (
             <SettingsForm
               initial={settings}
-              initialModels={initialModels}
-              initialEmbeddingModels={initialEmbeddingModels}
-              initialImageModels={initialImageModels}
-              initialSpeechModels={initialSpeechModels}
-              initialTranscriptionModels={initialTranscriptionModels}
+              backends={backends}
+              initialBackendModels={backendModels}
               knownUsers={knownUsers}
             />
           ) : (

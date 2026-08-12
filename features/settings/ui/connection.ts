@@ -1,25 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
-import type { ApiErrorBody } from "@/lib/api-error";
-import type { LlmBackendId } from "@/lib/llm-backend";
+import { readApiError } from "@/lib/api-error";
 
 /**
- * Shared state machines for the settings connection sections. The form used to
- * carry three hand-rolled copies of the probe flow and five of the write-only
- * secret input; these hooks are the single definition of each.
+ * Shared state machines for the settings form. The probe flow and the
+ * write-only secret input each have one definition here; the per-backend model
+ * cache is what feeds every role tab's searchable model select.
  */
 
-/** Read the error message out of a failed API response. */
-export async function readError(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as ApiErrorBody;
-    return body.error?.message ?? `Request failed (${res.status})`;
-  } catch {
-    return `Request failed (${res.status})`;
-  }
-}
+export { readApiError as readError };
 
 /** One connection probe: idle → testing → ok (with the probe's payload) | error. */
 export type ProbeState<T> =
@@ -30,8 +21,7 @@ export type ProbeState<T> =
 
 /**
  * A POST-JSON probe against one settings test endpoint. `run` resolves with the
- * endpoint's `data` payload on success (so a caller can also consume it — the
- * LLM probe feeds the model dropdowns) and null on failure; the state machine
+ * endpoint's `data` payload on success and null on failure; the state machine
  * is what the UI renders either way.
  */
 export function useProbe<T>(endpoint: string) {
@@ -49,7 +39,7 @@ export function useProbe<T>(endpoint: string) {
           body: JSON.stringify(body),
         });
         if (!res.ok) {
-          setState({ kind: "error", message: await readError(res) });
+          setState({ kind: "error", message: await readApiError(res) });
           return null;
         }
         const { data } = (await res.json()) as { data: T };
@@ -100,140 +90,89 @@ export function useSecretField(configured: boolean) {
 
 export type SecretField = ReturnType<typeof useSecretField>;
 
-/**
- * State for one optional separate backend (embeddings, images): URL, the
- * "separate backend" switch derived from it, and the model id. A stored URL *is*
- * the separate-backend flag — the two can never disagree, so the switch is
- * derived from it rather than persisted alongside it. `onChange` fires on any
- * edit so the section's probe result can be invalidated.
- */
-export function useBackendConnection(
-  initial: { baseUrl: string | null; model: string | null; backend: LlmBackendId },
-  onChange: () => void,
-) {
-  const [baseUrl, setBaseUrlState] = useState(initial.baseUrl ?? "");
-  const [separate, setSeparateState] = useState(Boolean(initial.baseUrl));
-  const [model, setModelState] = useState(initial.model ?? "");
-  const [backend, setBackendState] = useState<LlmBackendId>(initial.backend);
-  // The URL as last saved — what the server-preloaded model list describes.
-  // While the form's URL differs from it, that list is about the wrong host.
-  const [savedBaseUrl, setSavedBaseUrl] = useState(initial.baseUrl);
-
-  // The backend as configured right now: its own URL only when the operator
-  // asked for a separate backend, otherwise "reuse the LLM connection" (null).
-  // Used identically by the probe and the save, so a passing test is a test of
-  // what will actually be stored.
-  const resolvedUrl = separate && baseUrl.trim() !== "" ? baseUrl.trim() : null;
-  const urlMissing = separate && baseUrl.trim() === "";
-
-  return {
-    baseUrl,
-    separate,
-    model,
-    backend,
-    resolvedUrl,
-    urlMissing,
-    savedBaseUrl,
-    setBaseUrl(next: string) {
-      setBaseUrlState(next);
-      onChange();
-    },
-    setSeparate(next: boolean) {
-      setSeparateState(next);
-      onChange();
-    },
-    setModel(next: string) {
-      setModelState(next);
-      onChange();
-    },
-    setBackend(next: LlmBackendId) {
-      setBackendState(next);
-      onChange();
-    },
-    /** Re-seed from the saved record after a successful save. */
-    applySaved(saved: { baseUrl: string | null; model: string | null; backend: LlmBackendId }) {
-      setBaseUrlState(saved.baseUrl ?? "");
-      setSeparateState(Boolean(saved.baseUrl));
-      setModelState(saved.model ?? "");
-      setBackendState(saved.backend);
-      setSavedBaseUrl(saved.baseUrl);
-    },
-  };
-}
-
-export type BackendConnection = ReturnType<typeof useBackendConnection>;
-
-/** What one section's live model-list fetch knows about the form's current URL. */
-export type SectionModelsState =
-  /** On the saved endpoint (or reusing the LLM connection) — nothing to fetch. */
-  | { kind: "idle" }
-  | { kind: "loading"; url: string }
-  | { kind: "ok"; url: string; models: string[] }
-  | { kind: "error"; url: string; message: string };
+/** What is known about one backend's model list. */
+export type ModelsState =
+  | { kind: "loading" }
+  | { kind: "ok"; models: string[] }
+  | { kind: "error"; message: string };
 
 /**
- * Live model list for a section pointed at an endpoint that differs from the
- * saved one. The server preload only describes the *saved* URL, so without this
- * the dropdown kept offering the old host's models until the operator saved
- * blind (the reported bug). Debounced typing-tolerant fetch: fires only once
- * the URL parses and has been stable briefly; a typed key is sent along, an
- * untouched one falls back to the stored section key server-side.
+ * Per-backend model lists for the role dropdowns, seeded with the server
+ * preload and fetched on demand for any backend the operator points a role at
+ * afterwards. One cache for the whole form: several roles usually share one
+ * backend, and each list should be fetched once, not per tab.
+ *
+ * An empty preloaded list is treated as "unknown" rather than cached — the
+ * preload cannot distinguish an endpoint that serves nothing from one that was
+ * unreachable, and a client fetch turns that into a real answer (or a visible
+ * error) the moment a role actually needs the list.
  */
-export function useSectionModels(
-  section: "embedding" | "image" | "speech" | "transcription",
-  conn: BackendConnection,
-  secret: SecretField,
-): SectionModelsState {
-  const [state, setState] = useState<SectionModelsState>({ kind: "idle" });
-  const { separate, resolvedUrl, savedBaseUrl } = conn;
-  const { dirty: keyDirty, value: keyValue } = secret;
+export function useBackendModels(preloaded: Record<string, string[]>) {
+  const [cache, setCache] = useState<Record<string, ModelsState>>(() =>
+    Object.fromEntries(
+      Object.entries(preloaded)
+        .filter(([, models]) => models.length > 0)
+        .map(([id, models]) => [id, { kind: "ok", models } as ModelsState]),
+    ),
+  );
+  // Fetches already in flight; a ref so effects/renders cannot double-fire one.
+  const inFlight = useRef(new Set<string>());
 
-  useEffect(() => {
-    // Reusing the LLM connection, or back on the saved endpoint: the LLM list /
-    // server preload is authoritative here, so there is nothing to fetch. A
-    // stale result from a detour needs no reset — consumers only read a result
-    // whose `url` matches the URL currently in the form.
-    if (!separate || !resolvedUrl || resolvedUrl === savedBaseUrl) {
-      return;
-    }
+  const load = useCallback(async (backendId: string, force = false) => {
+    if (inFlight.current.has(backendId)) return;
+    inFlight.current.add(backendId);
+    setCache((prev) => ({ ...prev, [backendId]: { kind: "loading" } }));
     try {
-      new URL(resolvedUrl);
-    } catch {
-      return; // mid-typing — not yet a fetchable URL
-    }
-    const url = resolvedUrl;
-    const body = JSON.stringify({
-      section,
-      baseUrl: url,
-      ...(keyDirty ? { apiKey: keyValue.trim() === "" ? null : keyValue.trim() } : {}),
-    });
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      setState({ kind: "loading", url });
-      try {
-        const res = await fetch("/api/settings/list-models", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body,
-        });
-        if (cancelled) return;
-        if (!res.ok) {
-          setState({ kind: "error", url, message: await readError(res) });
-          return;
-        }
-        const { data } = (await res.json()) as { data: { models: string[] } };
-        if (!cancelled) setState({ kind: "ok", url, models: data.models });
-      } catch {
-        if (!cancelled) {
-          setState({ kind: "error", url, message: "Network error — could not reach the server" });
-        }
+      const res = await fetch(`/api/backends/${encodeURIComponent(backendId)}/models`);
+      if (!res.ok) {
+        const message = await readApiError(res);
+        setCache((prev) => ({ ...prev, [backendId]: { kind: "error", message } }));
+        return;
       }
-    }, 600);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [section, separate, resolvedUrl, savedBaseUrl, keyDirty, keyValue]);
+      const { data } = (await res.json()) as { data: { models: string[] } };
+      setCache((prev) => ({ ...prev, [backendId]: { kind: "ok", models: data.models } }));
+    } catch {
+      setCache((prev) => ({
+        ...prev,
+        [backendId]: { kind: "error", message: "Network error — could not reach the server" },
+      }));
+    } finally {
+      inFlight.current.delete(backendId);
+    }
+    void force;
+  }, []);
 
-  return state;
+  /** Ensure a backend's list is known (no-op when cached or loading). */
+  const ensure = useCallback(
+    (backendId: string | null) => {
+      if (!backendId) return;
+      if (cache[backendId]) return;
+      void load(backendId);
+    },
+    [cache, load],
+  );
+
+  /** Re-fetch a backend's list (after an explicit "refresh" action). */
+  const refresh = useCallback(
+    (backendId: string | null) => {
+      if (!backendId) return;
+      void load(backendId, true);
+    },
+    [load],
+  );
+
+  const get = useCallback(
+    (backendId: string | null): ModelsState | null => (backendId ? (cache[backendId] ?? null) : null),
+    [cache],
+  );
+
+  /** Feed a list obtained elsewhere (a passed "Test connection") into the cache. */
+  const prime = useCallback((backendId: string | null, models: string[]) => {
+    if (!backendId) return;
+    setCache((prev) => ({ ...prev, [backendId]: { kind: "ok", models } }));
+  }, []);
+
+  return { get, ensure, refresh, prime };
 }
+
+export type BackendModels = ReturnType<typeof useBackendModels>;

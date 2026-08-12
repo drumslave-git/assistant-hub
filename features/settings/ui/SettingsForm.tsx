@@ -1,54 +1,41 @@
 "use client";
 
-import { Check, Plug, Save } from "lucide-react";
+import { Check, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { Badge, Button, Field, Input, Select, Switch, Tabs, type TabItem } from "@/components/ui";
+import { Button, Field, Input, Select, Switch, Tabs, type TabItem } from "@/components/ui";
+import type { Backend } from "@/features/backends/server/schema";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import type { KnownUser } from "@/features/known-users/server/schema";
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
-import type { LlmBackendId } from "@/lib/llm-backend";
 import type { Settings } from "../server/schema";
-import {
-  readError,
-  useBackendConnection,
-  useProbe,
-  useSecretField,
-  useSectionModels,
-  type BackendConnection,
-  type SectionModelsState,
-} from "./connection";
-import { BackendField } from "./BackendField";
+import { readError, useBackendModels, useProbe, useSecretField } from "./connection";
 import { ChangePasswordSection } from "./ChangePasswordSection";
-import { ConnectionSection } from "./ConnectionSection";
+import { RoleSection } from "./RoleSection";
 
 /**
- * Bot settings editor. Client Component with nine tabs, one per concern: **LLM**
- * (the chat endpoint, key, backend and model), **Embeddings** (the endpoint
- * powering semantic recall over history summaries), **Images** (image
- * generation), **Speech** (voice replies), **Transcription** (speech-to-text for
- * voice messages, chat-model fallback), **Telegram** (bot token, owner,
- * maintenance mode), **General** (timezone, daily jobs, download limit),
- * **Integrations** (optional feature keys like Tavily for web search), and
- * **Security** (operator password change — its own endpoint and button, not part
- * of the settings patch). One Save button below the tabs persists every changed
- * field regardless of the active tab. Secret keys are write-only — shown as
- * "configured" but their values never leave the server.
+ * Bot settings editor. Client Component with one tab per concern. The LLM
+ * configuration is per **role** — Chat (the main model every reply runs on,
+ * which must support thinking and tool calls), Embeddings, Images, Speech,
+ * Audio (STT), Vision, and Browser agent — and every role picks a backend from
+ * the shared catalog (managed on the Backends page) plus a model through a
+ * searchable select fed by that backend's live model list. A role without its
+ * own backend uses the chat backend; audio/vision/browser additionally fall
+ * back to the chat model when none is picked ("main by default").
  *
- * Only changed fields are sent, which the server relies on: a model absent from
- * the patch is a *stored* selection, and when the same patch repoints the
- * endpoint serving it, the server verifies it against the new endpoint's model
- * list and clears it if it is not served (see `clearStaleModelSelections`).
- * The form covers the case that check cannot see — a selection stale against
- * the *unchanged* endpoint (e.g. left behind by a switch made before this
- * existed): a fresh "Test connection" flags it on its own tab, and the save
- * sends it as null. Either way, everything cleared is named next to the Save
- * button.
+ * One Save button below the tabs persists every changed field regardless of
+ * the active tab. Secrets are write-only — shown as "configured" but their
+ * values never leave the server.
  *
- * The repeated machinery lives in `connection.ts` (probe + secret-input + backend
- * state hooks) and `ConnectionSection.tsx` (the embeddings/images section shell);
- * this component is composition plus the save patch.
+ * Only changed fields are sent, which the server relies on: a model absent
+ * from the patch is a *stored* selection, and when the same patch repoints the
+ * backend serving it, the server verifies it against the new backend's model
+ * list and clears it if it is not served. The form covers the case that check
+ * cannot see — a selection stale against the *unchanged* backend: a
+ * successfully listed backend that does not serve the stored model flags it on
+ * its tab, and the save sends it as null. Either way, everything cleared is
+ * named next to the Save button.
  */
 
 type SaveState =
@@ -57,43 +44,52 @@ type SaveState =
   | { kind: "saved" }
   | { kind: "error"; message: string };
 
+/** One role's backend + model selection state. */
+function useRoleConfig(initial: { backendId: string | null; model: string | null }) {
+  const [backendId, setBackendId] = useState(initial.backendId);
+  const [model, setModel] = useState(initial.model ?? "");
+  return {
+    backendId,
+    model,
+    setBackendId,
+    setModel,
+    applySaved(saved: { backendId: string | null; model: string | null }) {
+      setBackendId(saved.backendId);
+      setModel(saved.model ?? "");
+    },
+  };
+}
+
+type RoleConfig = ReturnType<typeof useRoleConfig>;
+
 export function SettingsForm({
   initial,
-  initialModels = [],
-  initialEmbeddingModels = [],
-  initialImageModels = [],
-  initialSpeechModels = [],
-  initialTranscriptionModels = [],
+  backends = [],
+  initialBackendModels = {},
   knownUsers = [],
 }: {
   initial: Settings;
-  /** Models preloaded server-side for the saved endpoint, so the dropdown is
-   *  populated on open without a manual "Test connection". */
-  initialModels?: string[];
-  /** Models preloaded from the embedding endpoint (or the LLM one, when it serves both). */
-  initialEmbeddingModels?: string[];
-  /** Models preloaded from the image endpoint (or the LLM one, when it serves both). */
-  initialImageModels?: string[];
-  /** Models preloaded from the speech endpoint (or the LLM one, when it serves both). */
-  initialSpeechModels?: string[];
-  /** Models preloaded from the transcription endpoint (often empty — whisper servers rarely list). */
-  initialTranscriptionModels?: string[];
+  /** The saved backend catalog the role selects offer. */
+  backends?: Backend[];
+  /** Models preloaded server-side per backend id, so dropdowns work on open. */
+  initialBackendModels?: Record<string, string[]>;
   /** Users who have messaged the bot — the owner is chosen from this list. */
   knownUsers?: KnownUser[];
 }) {
   const router = useRouter();
 
-  // Core LLM connection.
-  const [llmBaseUrl, setLlmBaseUrl] = useState(initial.llmBaseUrl ?? "");
-  const [llmBackend, setLlmBackend] = useState<LlmBackendId>(initial.llmBackend);
-  const apiKey = useSecretField(initial.apiKeyConfigured);
-  const [model, setModel] = useState(initial.model ?? "");
-  // Seed with the server-preloaded list (falling back to just the saved model);
-  // a successful "Test connection" replaces this with a fresh list.
-  const [models, setModels] = useState<string[]>(
-    initialModels.length > 0 ? initialModels : initial.model ? [initial.model] : [],
-  );
-  const connProbe = useProbe<{ models: string[] }>("/api/settings/test-connection");
+  // Role configurations.
+  const chat = useRoleConfig({ backendId: initial.chatBackendId, model: initial.model });
+  const emb = useRoleConfig({
+    backendId: initial.embeddingBackendId,
+    model: initial.embeddingModel,
+  });
+  const img = useRoleConfig({ backendId: initial.imageBackendId, model: initial.imageModel });
+  const spc = useRoleConfig({ backendId: initial.speechBackendId, model: initial.speechModel });
+  const aud = useRoleConfig({ backendId: initial.audioBackendId, model: initial.audioModel });
+  const vis = useRoleConfig({ backendId: initial.visionBackendId, model: initial.visionModel });
+  const brw = useRoleConfig({ backendId: initial.browserBackendId, model: initial.browserModel });
+  const [speechVoice, setSpeechVoice] = useState(initial.speechVoice ?? "");
 
   // Core operational settings.
   const botToken = useSecretField(initial.telegramBotTokenConfigured);
@@ -106,139 +102,120 @@ export function SettingsForm({
     String(initial.browserDownloadLimitGb),
   );
 
-  // Optional backends. Editing a section invalidates its own probe result.
+  const [save, setSave] = useState<SaveState>({ kind: "idle" });
+  // Model selections cleared on the last save (client-flagged stale plus
+  // whatever the server cleared after a repoint) — shown next to the Save
+  // button, since the roles they belong to live on other tabs.
+  const [clearedOnSave, setClearedOnSave] = useState<string[]>([]);
+  // Controlled so the global Save row can step aside on the Security tab, whose
+  // password change has its own endpoint and button.
+  const [activeTab, setActiveTab] = useState("chat");
+
+  // Per-backend model lists, preloaded for saved backends and fetched on
+  // demand for any backend a role gets pointed at afterwards.
+  const modelCache = useBackendModels(initialBackendModels);
+
+  /** The backend a role actually talks to: its own, else the chat one. */
+  const effectiveBackendId = (role: RoleConfig) => role.backendId ?? chat.backendId;
+
+  const roleList = [chat, emb, img, spc, aud, vis, brw];
+  const effectiveIds = roleList.map(effectiveBackendId);
+  useEffect(() => {
+    for (const id of effectiveIds) modelCache.ensure(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveIds.join("|")]);
+
+  // Probes.
+  const chatProbe = useProbe<{ models: string[] }>("/api/backends/test");
   const embedProbe = useProbe<{ model: string; dimensions: number }>(
     "/api/settings/test-embeddings",
   );
-  const emb = useBackendConnection(
-    { baseUrl: initial.embeddingBaseUrl, model: initial.embeddingModel, backend: initial.embeddingBackend },
-    embedProbe.reset,
-  );
-  const embKey = useSecretField(initial.embeddingApiKeyConfigured);
   const imageProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-images");
-  const img = useBackendConnection(
-    { baseUrl: initial.imageBaseUrl, model: initial.imageModel, backend: initial.imageBackend },
-    imageProbe.reset,
-  );
-  const imgKey = useSecretField(initial.imageApiKeyConfigured);
   const speechProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-speech");
-  const spc = useBackendConnection(
-    { baseUrl: initial.speechBaseUrl, model: initial.speechModel, backend: initial.speechBackend },
-    speechProbe.reset,
-  );
-  const spcKey = useSecretField(initial.speechApiKeyConfigured);
-  const [speechVoice, setSpeechVoice] = useState(initial.speechVoice ?? "");
-  const transcriptionProbe = useProbe<{ model: string; text: string }>(
-    "/api/settings/test-transcription",
-  );
-  const stt = useBackendConnection(
-    { baseUrl: initial.transcriptionBaseUrl, model: initial.transcriptionModel, backend: initial.transcriptionBackend },
-    transcriptionProbe.reset,
-  );
-  const sttKey = useSecretField(initial.transcriptionApiKeyConfigured);
+  const audioProbe = useProbe<{ model: string; text: string }>("/api/settings/test-audio");
 
-  const [save, setSave] = useState<SaveState>({ kind: "idle" });
-  // Model selections the server cleared on the last save because the repointed
-  // endpoint verifiably does not serve them — shown next to the Save button,
-  // since the sections they belong to live on other tabs.
-  const [clearedOnSave, setClearedOnSave] = useState<string[]>([]);
-  // Controlled so the global Save row can step aside on the Security tab, whose
-  // password change has its own endpoint and button — two visible submit
-  // buttons for one visible form invite pressing the wrong one.
-  const [activeTab, setActiveTab] = useState("llm");
-
-  // Probe the LLM endpoint (a user action, not an effect); its model list also
-  // feeds the dropdowns below.
-  async function onTest(event: React.FormEvent) {
-    event.preventDefault();
-    if (llmBaseUrl.trim() === "") return;
-    const data = await connProbe.run({
-      llmBaseUrl,
-      // Only send the key when the operator typed one; otherwise the server
-      // tests with the stored key and the secret never round-trips.
-      ...(apiKey.dirty ? { apiKey: apiKey.value } : {}),
-    });
-    if (data) setModels(data.models);
+  async function onTestChat() {
+    if (!chat.backendId) return;
+    const data = await chatProbe.run({ backendId: chat.backendId });
+    if (data) modelCache.prime(chat.backendId, data.models);
   }
 
-  // Probe the embedding endpoint with a real embed call: it reports the vector
-  // width, which is the one thing a model listing cannot tell us and the one
-  // mismatch that would break every later write.
-  function onTestEmbeddings() {
-    if (emb.model.trim() === "" || emb.urlMissing) return;
-    void embedProbe.run({
-      embeddingBaseUrl: emb.resolvedUrl,
-      embeddingModel: emb.model,
-      ...(embKey.dirty ? { embeddingApiKey: embKey.value.trim() } : {}),
-    });
-  }
+  /** Probe body for one role: the form's current (possibly unsaved) values. */
+  const roleProbeBody = (role: RoleConfig) => ({
+    backendId: role.backendId,
+    model: role.model.trim() === "" ? null : role.model.trim(),
+  });
 
-  // Probe the image endpoint. Unlike embeddings this does not make a real
-  // generation — nothing about an image can only be learned by drawing it, and a
-  // diffusion model would keep the operator waiting minutes for the answer.
-  function onTestImages() {
-    if (img.model.trim() === "" || img.urlMissing) return;
-    void imageProbe.run({
-      imageBaseUrl: img.resolvedUrl,
-      imageModel: img.model,
-      ...(imgKey.dirty ? { imageApiKey: imgKey.value.trim() } : {}),
-    });
-  }
+  /** The model-list state a role's combobox renders from. */
+  const roleModels = (role: RoleConfig) => modelCache.get(effectiveBackendId(role));
 
-  // Probe the speech endpoint. Like images, this checks the model is served
-  // rather than synthesizing audio — the listing already proves the connection.
-  function onTestSpeech() {
-    if (spc.model.trim() === "" || spc.urlMissing) return;
-    void speechProbe.run({
-      speechBaseUrl: spc.resolvedUrl,
-      speechModel: spc.model,
-      ...(spcKey.dirty ? { speechApiKey: spcKey.value.trim() } : {}),
-    });
-  }
+  /**
+   * Whether a role's selection is provably stale: its effective backend's list
+   * was successfully fetched and does not contain the stored model. Free-text
+   * roles (audio) are exempt — an absent listing proves nothing there.
+   */
+  const roleStale = (role: RoleConfig) => {
+    const models = roleModels(role);
+    return (
+      models?.kind === "ok" && role.model.trim() !== "" && !models.models.includes(role.model.trim())
+    );
+  };
 
-  // Probe the transcription endpoint with a real call (it transcribes a
-  // fraction of a second of silence): whisper-class servers often have no
-  // model listing, so only a genuine transcription proves the connection.
-  function onTestTranscription() {
-    if (stt.model.trim() === "" || stt.urlMissing) return;
-    void transcriptionProbe.run({
-      transcriptionBaseUrl: stt.resolvedUrl,
-      transcriptionModel: stt.model,
-      ...(sttKey.dirty ? { transcriptionApiKey: sttKey.value.trim() } : {}),
-    });
-  }
+  const staleWarning = (m: string) =>
+    `"${m}" is not served by the configured backend — it will be cleared on save unless you pick another.`;
 
   async function onSave() {
     setSave({ kind: "saving" });
     setClearedOnSave([]);
+
     // Changed fields only. The server depends on that: a model missing from the
     // patch is a stored selection, which it verifies (and clears) when the same
-    // patch repoints the endpoint serving it.
-    const trimmedLlmUrl = llmBaseUrl.trim() === "" ? null : llmBaseUrl.trim();
-    const pickedModel = model === "" ? null : model;
-    const patch: Record<string, unknown> = {
-      ...(trimmedLlmUrl !== (initial.llmBaseUrl ?? null) ? { llmBaseUrl: trimmedLlmUrl } : {}),
-      ...(llmBackend !== initial.llmBackend ? { llmBackend } : {}),
-      ...(pickedModel !== (initial.model ?? null) ? { model: pickedModel } : {}),
-      // Sent only for a section that has its own host. One reusing the LLM
-      // connection inherits that endpoint's backend at read time, so persisting
-      // a value for it would be a second, silently-ignored source of truth.
-      ...(emb.separate && emb.backend !== initial.embeddingBackend
-        ? { embeddingBackend: emb.backend }
-        : {}),
-      ...(img.separate && img.backend !== initial.imageBackend
-        ? { imageBackend: img.backend }
-        : {}),
-      ...(spc.separate && spc.backend !== initial.speechBackend
-        ? { speechBackend: spc.backend }
-        : {}),
-      ...(stt.separate && stt.backend !== initial.transcriptionBackend
-        ? { transcriptionBackend: stt.backend }
-        : {}),
-    };
-    if (apiKey.dirty) patch.apiKey = apiKey.patchValue;
+    // patch repoints the backend serving it.
+    const patch: Record<string, unknown> = {};
+    const roleFields = [
+      { role: chat, backendKey: "chatBackendId", modelKey: "model", label: "chat model", listed: true },
+      {
+        role: emb,
+        backendKey: "embeddingBackendId",
+        modelKey: "embeddingModel",
+        label: "embedding model",
+        listed: true,
+      },
+      { role: img, backendKey: "imageBackendId", modelKey: "imageModel", label: "image model", listed: true },
+      { role: spc, backendKey: "speechBackendId", modelKey: "speechModel", label: "speech model", listed: true },
+      { role: aud, backendKey: "audioBackendId", modelKey: "audioModel", label: "audio model", listed: false },
+      { role: vis, backendKey: "visionBackendId", modelKey: "visionModel", label: "vision model", listed: true },
+      {
+        role: brw,
+        backendKey: "browserBackendId",
+        modelKey: "browserModel",
+        label: "browser model",
+        listed: true,
+      },
+    ] as const;
+
+    const staleCleared: string[] = [];
+    for (const { role, backendKey, modelKey, label, listed } of roleFields) {
+      const initialBackend = initial[backendKey];
+      const initialModel = initial[modelKey] ?? "";
+      if (role.backendId !== initialBackend) patch[backendKey] = role.backendId;
+      const trimmed = role.model.trim();
+      if (trimmed !== initialModel) patch[modelKey] = trimmed === "" ? null : trimmed;
+      // A selection the fetched list proves stale is cleared with the save,
+      // exactly as the warning on its tab promises — the server only verifies
+      // when the same patch repoints a backend, which a leftover stale against
+      // an unchanged backend never triggers.
+      else if (listed && roleStale(role)) {
+        patch[modelKey] = null;
+        staleCleared.push(label);
+      }
+    }
+
     if (botToken.dirty) patch.telegramBotToken = botToken.patchValue;
     if (tavilyKey.dirty) patch.tavilyApiKey = tavilyKey.patchValue;
+    if (speechVoice.trim() !== (initial.speechVoice ?? "")) {
+      patch.speechVoice = speechVoice.trim() === "" ? null : speechVoice.trim();
+    }
     if (ownerUserId !== (initial.ownerUserId ?? "")) {
       patch.ownerUserId = ownerUserId === "" ? null : ownerUserId;
     }
@@ -260,83 +237,6 @@ export function SettingsForm({
     ) {
       patch.browserDownloadLimitGb = limitGb;
     }
-    if (emb.resolvedUrl !== (initial.embeddingBaseUrl ?? null)) {
-      patch.embeddingBaseUrl = emb.resolvedUrl;
-    }
-    if (emb.model !== (initial.embeddingModel ?? "")) {
-      patch.embeddingModel = emb.model === "" ? null : emb.model;
-    }
-    // Turning the separate backend off clears its key too: it authenticated a host
-    // we are no longer calling, and leaving it behind would resurrect on re-enable.
-    if (!emb.separate && initial.embeddingApiKeyConfigured) {
-      patch.embeddingApiKey = null;
-    } else if (embKey.dirty) {
-      patch.embeddingApiKey = embKey.patchValue;
-    }
-    if (img.resolvedUrl !== (initial.imageBaseUrl ?? null)) {
-      patch.imageBaseUrl = img.resolvedUrl;
-    }
-    if (img.model !== (initial.imageModel ?? "")) {
-      patch.imageModel = img.model === "" ? null : img.model;
-    }
-    // Same rule as the embedding key above: dropping the separate backend drops
-    // the key that authenticated it.
-    if (!img.separate && initial.imageApiKeyConfigured) {
-      patch.imageApiKey = null;
-    } else if (imgKey.dirty) {
-      patch.imageApiKey = imgKey.patchValue;
-    }
-    if (spc.resolvedUrl !== (initial.speechBaseUrl ?? null)) {
-      patch.speechBaseUrl = spc.resolvedUrl;
-    }
-    if (spc.model !== (initial.speechModel ?? "")) {
-      patch.speechModel = spc.model === "" ? null : spc.model;
-    }
-    if (!spc.separate && initial.speechApiKeyConfigured) {
-      patch.speechApiKey = null;
-    } else if (spcKey.dirty) {
-      patch.speechApiKey = spcKey.patchValue;
-    }
-    if (speechVoice.trim() !== (initial.speechVoice ?? "")) {
-      patch.speechVoice = speechVoice.trim() === "" ? null : speechVoice.trim();
-    }
-    if (stt.resolvedUrl !== (initial.transcriptionBaseUrl ?? null)) {
-      patch.transcriptionBaseUrl = stt.resolvedUrl;
-    }
-    if (stt.model.trim() !== (initial.transcriptionModel ?? "")) {
-      patch.transcriptionModel = stt.model.trim() === "" ? null : stt.model.trim();
-    }
-    if (!stt.separate && initial.transcriptionApiKeyConfigured) {
-      patch.transcriptionApiKey = null;
-    } else if (sttKey.dirty) {
-      patch.transcriptionApiKey = sttKey.patchValue;
-    }
-
-    // A selection a fresh "Test connection" proved stale is cleared with the
-    // save, exactly as the warning on its tab promises. This is the client's
-    // half of the job: the server only verifies when the same patch moves an
-    // endpoint, which a leftover stale against the *unchanged* endpoint never
-    // triggers. The probe resets on any URL edit, so a fresh list always
-    // describes the endpoint currently in the form.
-    const staleCleared: string[] = [];
-    if (connProbe.state.kind === "ok") {
-      if (model !== "" && !models.includes(model)) {
-        patch.model = null;
-        staleCleared.push("chat model");
-      }
-      if (!emb.separate && emb.model !== "" && !models.includes(emb.model)) {
-        patch.embeddingModel = null;
-        staleCleared.push("embedding model");
-      }
-      if (!img.separate && img.model !== "" && !models.includes(img.model)) {
-        patch.imageModel = null;
-        staleCleared.push("image model");
-      }
-      if (!spc.separate && spc.model !== "" && !models.includes(spc.model)) {
-        patch.speechModel = null;
-        staleCleared.push("speech model");
-      }
-    }
 
     // With every field sent changed-only, an untouched form produces an empty
     // patch, which the API rightly rejects — there is simply nothing to do.
@@ -356,58 +256,32 @@ export function SettingsForm({
         return;
       }
       const { data } = (await res.json()) as { data: Settings };
-      // Everything cleared for staleness gets named next to the Save button —
-      // its own tab may not be the visible one. Two sources: what this client
-      // cleared from its own fresh probe, and a stored selection we did not
-      // send that came back null, which the server cleared after verifying it
-      // against the endpoint this same patch repointed.
+      // Everything cleared for staleness gets named next to the Save button.
+      // Two sources: what this client cleared from its fetched lists, and a
+      // stored selection we did not send that came back null (the server
+      // cleared it after verifying against a repointed backend).
       const cleared: string[] = [...staleCleared];
-      if (!("model" in patch) && model !== "" && data.model === null) cleared.push("chat model");
-      if (!("embeddingModel" in patch) && emb.model !== "" && data.embeddingModel === null) {
-        cleared.push("embedding model");
-      }
-      if (!("imageModel" in patch) && img.model !== "" && data.imageModel === null) {
-        cleared.push("image model");
-      }
-      if (!("speechModel" in patch) && spc.model !== "" && data.speechModel === null) {
-        cleared.push("speech model");
+      for (const { role, modelKey, label } of roleFields) {
+        if (!(modelKey in patch) && role.model !== "" && data[modelKey] === null) {
+          cleared.push(label);
+        }
       }
       setClearedOnSave(cleared);
-      apiKey.clear();
       botToken.clear();
       tavilyKey.clear();
-      embKey.clear();
-      imgKey.clear();
-      spcKey.clear();
-      sttKey.clear();
-      setModel(data.model ?? "");
+      chat.applySaved({ backendId: data.chatBackendId, model: data.model });
+      emb.applySaved({ backendId: data.embeddingBackendId, model: data.embeddingModel });
+      img.applySaved({ backendId: data.imageBackendId, model: data.imageModel });
+      spc.applySaved({ backendId: data.speechBackendId, model: data.speechModel });
+      aud.applySaved({ backendId: data.audioBackendId, model: data.audioModel });
+      vis.applySaved({ backendId: data.visionBackendId, model: data.visionModel });
+      brw.applySaved({ backendId: data.browserBackendId, model: data.browserModel });
+      setSpeechVoice(data.speechVoice ?? "");
       setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
       setDailyJobsRunTime(data.dailyJobsRunTime);
       setBrowserDownloadLimitGb(String(data.browserDownloadLimitGb));
-      setLlmBackend(data.llmBackend);
-      emb.applySaved({
-        baseUrl: data.embeddingBaseUrl,
-        model: data.embeddingModel,
-        backend: data.embeddingBackend,
-      });
-      img.applySaved({
-        baseUrl: data.imageBaseUrl,
-        model: data.imageModel,
-        backend: data.imageBackend,
-      });
-      spc.applySaved({
-        baseUrl: data.speechBaseUrl,
-        model: data.speechModel,
-        backend: data.speechBackend,
-      });
-      setSpeechVoice(data.speechVoice ?? "");
-      stt.applySaved({
-        baseUrl: data.transcriptionBaseUrl,
-        model: data.transcriptionModel,
-        backend: data.transcriptionBackend,
-      });
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
       router.refresh();
@@ -416,171 +290,257 @@ export function SettingsForm({
     }
   }
 
-  const canPickModel = models.length > 0;
+  const chatBackend = backends.find((b) => b.id === chat.backendId) ?? null;
+  const inheritLabel = chatBackend
+    ? `Same backend as chat (${chatBackend.name})`
+    : "Same backend as chat (not configured yet)";
 
-  // A successful "Test connection" makes the LLM endpoint's list authoritative
-  // for every section reusing that connection: a selection absent from it is
-  // provably stale (the exact state a backend switch leaves behind).
-  const llmListFresh = connProbe.state.kind === "ok";
-  const staleWarning = (m: string) =>
-    `"${m}" is not served by the tested endpoint — it will be cleared on save unless you pick another.`;
+  const noBackends = backends.length === 0;
+  const noBackendsNote = noBackends ? (
+    <p className="text-sm text-warning">
+      No backends yet — add one on the Backends page first; every role here picks from that list.
+    </p>
+  ) : null;
 
-  // Live model lists for sections pointed at an endpoint that differs from the
-  // saved one — the server preload cannot describe a URL the operator just
-  // typed, which used to leave the dropdown offering the old host's models
-  // until a blind save.
-  const embFetched = useSectionModels("embedding", emb, embKey);
-  const imgFetched = useSectionModels("image", img, imgKey);
-  const spcFetched = useSectionModels("speech", spc, spcKey);
-  const sttFetched = useSectionModels("transcription", stt, sttKey);
-
-  /** The fetched list, only when it describes the URL currently in the form. */
-  const fetchedModels = (conn: BackendConnection, fetched: SectionModelsState) =>
-    conn.separate && fetched.kind === "ok" && fetched.url === conn.resolvedUrl
-      ? fetched.models
-      : null;
-
-  // Options for one section's model select. When the section shares the LLM
-  // endpoint (the common case — no separate URL), the endpoint's own model list
-  // is authoritative, so a "Test connection" on the LLM tab refreshes the
-  // dropdown too. With a separate host, a live fetch from the URL currently in
-  // the form wins; the server preload (the saved host's list) is the fallback.
-  // The saved model is kept as an option — so an unreachable endpoint cannot
-  // silently blank out a working selection — unless it is provably stale, in
-  // which case keeping it would re-offer exactly the selection the save is
-  // about to clear.
-  function sectionModels(
-    conn: BackendConnection,
-    preloaded: string[],
-    fetched: SectionModelsState,
-  ) {
-    const fresh = fetchedModels(conn, fetched);
-    const listed = !conn.separate && models.length > 0 ? models : (fresh ?? preloaded);
-    const listFresh = conn.separate ? fresh !== null : llmListFresh;
-    const stale = listFresh && conn.model !== "" && !listed.includes(conn.model);
-    const options =
-      conn.model && !listed.includes(conn.model) && !stale ? [conn.model, ...listed] : listed;
-    const fetchError =
-      conn.separate && fetched.kind === "error" && fetched.url === conn.resolvedUrl
-        ? `Could not list models from this endpoint: ${fetched.message}`
-        : null;
-    return { options, warning: stale ? staleWarning(conn.model) : fetchError };
-  }
-
-  const embeddingModels = sectionModels(emb, initialEmbeddingModels, embFetched);
-  const imageModels = sectionModels(img, initialImageModels, imgFetched);
-  const speechModels = sectionModels(spc, initialSpeechModels, spcFetched);
-
-  // Transcription model suggestions (free-text field — whisper servers rarely list).
-  const transcriptionModels =
-    !stt.separate && models.length > 0
-      ? models
-      : (fetchedModels(stt, sttFetched) ?? initialTranscriptionModels);
-
-  const chatModelStale = llmListFresh && model !== "" && !models.includes(model);
-
-  const llmTab = (
+  const chatTab = (
     <div className="space-y-5">
-      <p className="text-sm text-muted">
-        The chat endpoint and model every reply runs on. The optional endpoints on the other tabs
-        reuse this connection unless given their own — so repointing it here repoints them too, and
-        any of their model selections the new endpoint does not serve is cleared on save.
-      </p>
-
-      <Field
-        id="llmBaseUrl"
-        label="OpenAI-compatible API URL"
-        hint="e.g. https://api.openai.com/v1 or http://localhost:11434/v1"
-      >
-        {({ id, describedBy }) => (
-          <Input
-            id={id}
-            aria-describedby={describedBy}
-            type="url"
-            inputMode="url"
-            value={llmBaseUrl}
-            onChange={(e) => {
-              setLlmBaseUrl(e.target.value);
-              connProbe.reset();
-            }}
-            placeholder="https://api.openai.com/v1"
-          />
-        )}
-      </Field>
-
-      <Field
-        id="apiKey"
-        label="API key"
-        hint="Optional — required by hosted providers, not by local ones. Stored securely; never shown again."
-      >
-        {({ id, describedBy }) => (
-          <Input
-            id={id}
-            aria-describedby={describedBy}
-            type="password"
-            autoComplete="off"
-            value={apiKey.value}
-            onChange={(e) => apiKey.set(e.target.value)}
-            placeholder={apiKey.placeholderFor("optional")}
-          />
-        )}
-      </Field>
-
-      <BackendField
-        idPrefix="llm"
-        value={llmBackend}
-        onChange={setLlmBackend}
-        baseUrl={llmBaseUrl.trim() === "" ? null : llmBaseUrl.trim()}
+      {noBackendsNote}
+      <RoleSection
+        idPrefix="chat"
+        labels={{
+          intro:
+            "The main backend and model every reply runs on. Pick a model that supports thinking and tool calls — replies reason before answering and drive every tool (history search, tasks, browsing). Roles on the other tabs use this backend unless given their own, so repointing it repoints them too, and any of their model selections the new backend does not serve is cleared on save.",
+          backendHint:
+            "The chat endpoint, from the shared catalog (managed on the Backends page).",
+          modelLabel: "Model",
+          modelHint: "The chat model used for replies. Type to search the backend's models.",
+          modelPlaceholder: "Select a model…",
+          testLabel: "Test connection",
+        }}
+        backends={backends}
+        backendId={chat.backendId}
+        onBackendChange={(next) => {
+          chat.setBackendId(next);
+          chatProbe.reset();
+        }}
+        inheritLabel={null}
+        model={chat.model}
+        onModelChange={chat.setModel}
+        models={roleModels(chat)}
+        modelWarning={roleStale(chat) ? staleWarning(chat.model) : null}
+        probe={chatProbe.state}
+        renderOk={(r) => <>Connected — {r.models.length} models</>}
+        onTest={() => void onTestChat()}
+        testDisabled={!chat.backendId}
       />
+    </div>
+  );
 
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          type="submit"
-          variant="outline"
-          disabled={connProbe.state.kind === "testing" || llmBaseUrl.trim() === ""}
-          leftIcon={<Plug className="h-4 w-4" />}
-        >
-          {connProbe.state.kind === "testing" ? "Testing…" : "Test connection"}
-        </Button>
-        {connProbe.state.kind === "ok" ? (
-          <Badge tone="success" dot>
-            Connected — {connProbe.state.result.models.length} models
-          </Badge>
-        ) : null}
-        {connProbe.state.kind === "error" ? (
-          <span className="text-sm text-danger">{connProbe.state.message}</span>
-        ) : null}
-      </div>
+  const embeddingsTab = (
+    <RoleSection
+      idPrefix="embedding"
+      labels={{
+        intro:
+          "Embeddings power semantic recall over older conversations: the daily job turns each chat-day into topic summaries and embeds them, so the bot can find what was discussed weeks ago even when the wording differs. Without an embedding model the summaries are still written and keyword-searchable — only the semantic half is off.",
+        backendHint: "The host serving /v1/embeddings.",
+        modelLabel: "Embedding model",
+        modelHint: `Must emit ${EMBEDDING_DIMENSIONS}-dimensional vectors (e.g. bge-m3) — the width this database stores. Test below to confirm.`,
+        modelPlaceholder: "No embedding model (semantic recall off)",
+        testLabel: "Test embeddings",
+      }}
+      backends={backends}
+      backendId={emb.backendId}
+      onBackendChange={(next) => {
+        emb.setBackendId(next);
+        embedProbe.reset();
+      }}
+      inheritLabel={inheritLabel}
+      model={emb.model}
+      onModelChange={(next) => {
+        emb.setModel(next);
+        embedProbe.reset();
+      }}
+      models={roleModels(emb)}
+      modelWarning={roleStale(emb) ? staleWarning(emb.model) : null}
+      probe={embedProbe.state}
+      renderOk={(r) => (
+        <>
+          {r.model} — {r.dimensions} dimensions
+        </>
+      )}
+      onTest={() => void embedProbe.run(roleProbeBody(emb))}
+      testDisabled={emb.model.trim() === ""}
+    />
+  );
 
+  const imagesTab = (
+    <RoleSection
+      idPrefix="image"
+      labels={{
+        intro:
+          "Image generation lets the bot draw a picture when someone asks it to, and send it to the chat. Each image it sends is then recognized like any received photo, so later replies know what it drew. Without an image model the tool is simply not offered — the bot says it cannot make images rather than pretending to.",
+        backendHint: "The host serving /v1/images/generations.",
+        modelLabel: "Image model",
+        modelHint: "The model asked to draw. Test below to confirm the backend actually serves it.",
+        modelPlaceholder: "No image model (image generation off)",
+        testLabel: "Test image endpoint",
+      }}
+      backends={backends}
+      backendId={img.backendId}
+      onBackendChange={(next) => {
+        img.setBackendId(next);
+        imageProbe.reset();
+      }}
+      inheritLabel={inheritLabel}
+      model={img.model}
+      onModelChange={(next) => {
+        img.setModel(next);
+        imageProbe.reset();
+      }}
+      models={roleModels(img)}
+      modelWarning={roleStale(img) ? staleWarning(img.model) : null}
+      probe={imageProbe.state}
+      renderOk={(r) => (
+        <>
+          {r.model} — served ({r.modelCount} models)
+        </>
+      )}
+      onTest={() => void imageProbe.run(roleProbeBody(img))}
+      testDisabled={img.model.trim() === ""}
+    />
+  );
+
+  const speechTab = (
+    <RoleSection
+      idPrefix="speech"
+      labels={{
+        intro:
+          "Speech lets the bot answer a voice message with a voice message: the reply text is synthesized on this endpoint and sent as a Telegram voice bubble. Without a speech model the bot still understands voice messages — it just always answers in text.",
+        backendHint: "The host serving /v1/audio/speech.",
+        modelLabel: "Speech model",
+        modelHint:
+          "The text-to-speech model voice replies use. Test below to confirm the backend actually serves it.",
+        modelPlaceholder: "No speech model (voice replies off)",
+        testLabel: "Test speech endpoint",
+      }}
+      backends={backends}
+      backendId={spc.backendId}
+      onBackendChange={(next) => {
+        spc.setBackendId(next);
+        speechProbe.reset();
+      }}
+      inheritLabel={inheritLabel}
+      model={spc.model}
+      onModelChange={(next) => {
+        spc.setModel(next);
+        speechProbe.reset();
+      }}
+      models={roleModels(spc)}
+      modelWarning={roleStale(spc) ? staleWarning(spc.model) : null}
+      probe={speechProbe.state}
+      renderOk={(r) => (
+        <>
+          {r.model} — served ({r.modelCount} models)
+        </>
+      )}
+      onTest={() => void speechProbe.run(roleProbeBody(spc))}
+      testDisabled={spc.model.trim() === ""}
+    >
       <Field
-        id="model"
-        label="Model"
-        hint={
-          canPickModel
-            ? "Select the chat model used for replies."
-            : "Test the connection to load available models."
-        }
+        id="speechVoice"
+        label="Voice"
+        hint="Voice name the endpoint should speak with (e.g. alloy). Leave blank for the endpoint's default."
       >
         {({ id, describedBy }) => (
-          <Select
+          <Input
             id={id}
             aria-describedby={describedBy}
-            value={model}
-            disabled={!canPickModel}
-            onChange={(e) => setModel(e.target.value)}
-          >
-            <option value="">Select a model…</option>
-            {models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </Select>
+            value={speechVoice}
+            onChange={(e) => setSpeechVoice(e.target.value)}
+            placeholder="alloy"
+          />
         )}
       </Field>
+    </RoleSection>
+  );
 
-      {chatModelStale ? <p className="text-sm text-warning">{staleWarning(model)}</p> : null}
-    </div>
+  const audioTab = (
+    <RoleSection
+      idPrefix="audio"
+      labels={{
+        intro:
+          "Audio turns incoming voice messages into text on a dedicated speech-to-text endpoint (whisper.cpp server, speaches, LocalAI…). When no audio model is set, voice messages are transcribed by the chat model instead — which then must be audio-capable (served with its mmproj).",
+        backendHint: "The host serving /v1/audio/transcriptions.",
+        modelLabel: "Audio (STT) model",
+        modelHint:
+          "Free text — whisper-class servers often don't list models (e.g. whisper-1, Systran/faster-whisper-large-v3). Empty: voice falls back to the chat model.",
+        modelPlaceholder: "No audio model (chat-model fallback)",
+        testLabel: "Test audio",
+      }}
+      backends={backends}
+      backendId={aud.backendId}
+      onBackendChange={(next) => {
+        aud.setBackendId(next);
+        audioProbe.reset();
+      }}
+      inheritLabel={inheritLabel}
+      model={aud.model}
+      onModelChange={(next) => {
+        aud.setModel(next);
+        audioProbe.reset();
+      }}
+      models={roleModels(aud)}
+      freeTextModel
+      probe={audioProbe.state}
+      renderOk={(r) => <>{r.model} — endpoint responded</>}
+      onTest={() => void audioProbe.run(roleProbeBody(aud))}
+      testDisabled={aud.model.trim() === ""}
+    />
+  );
+
+  const visionTab = (
+    <RoleSection
+      idPrefix="vision"
+      labels={{
+        intro:
+          "Vision describes every photo, video, GIF and sticker the bot receives, so replies and history search know what is in them. By default the chat model does the describing (it must then be vision-capable); give this role its own backend or model to run the describer elsewhere.",
+        backendHint: "The host serving the vision-capable chat completions.",
+        modelLabel: "Vision model",
+        modelHint:
+          "The multimodal model that describes media. Empty: the chat model is used.",
+        modelPlaceholder: "Use the chat model",
+      }}
+      backends={backends}
+      backendId={vis.backendId}
+      onBackendChange={vis.setBackendId}
+      inheritLabel={inheritLabel}
+      model={vis.model}
+      onModelChange={vis.setModel}
+      models={roleModels(vis)}
+      modelWarning={roleStale(vis) ? staleWarning(vis.model) : null}
+    />
+  );
+
+  const browserTab = (
+    <RoleSection
+      idPrefix="browser"
+      labels={{
+        intro:
+          "The browser agent drives a real browser to research pages and download files when a chat asks for it. By default it thinks on the chat backend and model; give it its own here — for example a larger-context model — without touching replies.",
+        backendHint: "The host serving the browsing agent's chat completions.",
+        modelLabel: "Browser agent model",
+        modelHint: "The model that plans browser actions. Empty: the chat model is used.",
+        modelPlaceholder: "Use the chat model",
+      }}
+      backends={backends}
+      backendId={brw.backendId}
+      onBackendChange={brw.setBackendId}
+      inheritLabel={inheritLabel}
+      model={brw.model}
+      onModelChange={brw.setModel}
+      models={roleModels(brw)}
+      modelWarning={roleStale(brw) ? staleWarning(brw.model) : null}
+    />
   );
 
   const telegramTab = (
@@ -658,7 +618,7 @@ export function SettingsForm({
   const generalTab = (
     <div className="space-y-5">
       <p className="text-sm text-muted">
-        Operational defaults that are not tied to any one endpoint or to Telegram.
+        Operational defaults that are not tied to any one backend or to Telegram.
       </p>
 
       <Field
@@ -714,156 +674,6 @@ export function SettingsForm({
     </div>
   );
 
-  const embeddingsTab = (
-    <ConnectionSection
-      idPrefix="embedding"
-      labels={{
-        intro:
-          "Embeddings power semantic recall over older conversations: the daily job turns each chat-day into topic summaries and embeds them, so the bot can find what was discussed weeks ago even when the wording differs. Without an embedding model the summaries are still written and keyword-searchable — only the semantic half is off.",
-        switchLabel: "Separate embedding backend",
-        switchHint:
-          "Off: embeddings are requested from the same backend as the LLM. On: they are served by a different host, which you give below.",
-        urlLabel: "Embedding API URL",
-        urlHint: "Required — the host serving /v1/embeddings.",
-        urlPlaceholder: "https://embeddings.example.com/v1",
-        urlMissingError: "An embedding API URL is required.",
-        keyLabel: "Embedding API key",
-        modelLabel: "Embedding model",
-        modelHint: `Must emit ${EMBEDDING_DIMENSIONS}-dimensional vectors (e.g. bge-m3) — the width this database stores. Test below to confirm.`,
-        modelEmptyOption: "No embedding model (semantic recall off)",
-        testLabel: "Test embeddings",
-        testingLabel: "Testing…",
-      }}
-      conn={emb}
-      secret={embKey}
-      models={embeddingModels.options}
-      modelWarning={embeddingModels.warning}
-      probe={embedProbe.state}
-      renderOk={(r) => (
-        <>
-          {r.model} — {r.dimensions} dimensions
-        </>
-      )}
-      onTest={onTestEmbeddings}
-    />
-  );
-
-  const imagesTab = (
-    <ConnectionSection
-      idPrefix="image"
-      labels={{
-        intro:
-          "Image generation lets the bot draw a picture when someone asks it to, and send it to the chat. Each image it sends is then recognized like any received photo, so later replies know what it drew. Without an image model the tool is simply not offered — the bot says it cannot make images rather than pretending to.",
-        switchLabel: "Separate image backend",
-        switchHint:
-          "Off: images are requested from the same backend as the LLM. On: they are served by a different host, which you give below.",
-        urlLabel: "Image API URL",
-        urlHint: "Required — the host serving /v1/images/generations.",
-        urlPlaceholder: "https://images.example.com/v1",
-        urlMissingError: "An image API URL is required.",
-        keyLabel: "Image API key",
-        modelLabel: "Image model",
-        modelHint: "The model asked to draw. Test below to confirm the endpoint actually serves it.",
-        modelEmptyOption: "No image model (image generation off)",
-        testLabel: "Test image endpoint",
-        testingLabel: "Testing…",
-      }}
-      conn={img}
-      secret={imgKey}
-      models={imageModels.options}
-      modelWarning={imageModels.warning}
-      probe={imageProbe.state}
-      renderOk={(r) => (
-        <>
-          {r.model} — served ({r.modelCount} models)
-        </>
-      )}
-      onTest={onTestImages}
-    />
-  );
-
-  const speechTab = (
-    <ConnectionSection
-      idPrefix="speech"
-      labels={{
-        intro:
-          "Speech lets the bot answer a voice message with a voice message: the reply text is synthesized on this endpoint and sent as a Telegram voice bubble. Without a speech model the bot still understands voice messages (they are transcribed by the chat model) — it just always answers in text.",
-        switchLabel: "Separate speech backend",
-        switchHint:
-          "Off: speech is requested from the same backend as the LLM. On: it is served by a different host, which you give below.",
-        urlLabel: "Speech API URL",
-        urlHint: "Required — the host serving /v1/audio/speech.",
-        urlPlaceholder: "https://speech.example.com/v1",
-        urlMissingError: "A speech API URL is required.",
-        keyLabel: "Speech API key",
-        modelLabel: "Speech model",
-        modelHint:
-          "The text-to-speech model voice replies use. Test below to confirm the endpoint actually serves it.",
-        modelEmptyOption: "No speech model (voice replies off)",
-        testLabel: "Test speech endpoint",
-        testingLabel: "Testing…",
-      }}
-      conn={spc}
-      secret={spcKey}
-      models={speechModels.options}
-      modelWarning={speechModels.warning}
-      probe={speechProbe.state}
-      renderOk={(r) => (
-        <>
-          {r.model} — served ({r.modelCount} models)
-        </>
-      )}
-      onTest={onTestSpeech}
-    >
-      <Field
-        id="speechVoice"
-        label="Voice"
-        hint="Voice name the endpoint should speak with (e.g. alloy). Leave blank for the endpoint's default."
-      >
-        {({ id, describedBy }) => (
-          <Input
-            id={id}
-            aria-describedby={describedBy}
-            value={speechVoice}
-            onChange={(e) => setSpeechVoice(e.target.value)}
-            placeholder="alloy"
-          />
-        )}
-      </Field>
-    </ConnectionSection>
-  );
-
-  const transcriptionTab = (
-    <ConnectionSection
-      idPrefix="transcription"
-      labels={{
-        intro:
-          "Transcription turns incoming voice messages into text on a dedicated speech-to-text endpoint (whisper.cpp server, speaches, LocalAI…). When no transcription model is set, voice messages are transcribed by the chat model instead — which then must be audio-capable (served with its mmproj).",
-        switchLabel: "Separate transcription backend",
-        switchHint:
-          "Off: transcription is requested from the same backend as the LLM. On: it is served by a different host, which you give below.",
-        urlLabel: "Transcription API URL",
-        urlHint: "Required — the host serving /v1/audio/transcriptions.",
-        urlPlaceholder: "https://whisper.example.com/v1",
-        urlMissingError: "A transcription API URL is required.",
-        keyLabel: "Transcription API key",
-        modelLabel: "Transcription model",
-        modelHint:
-          "Free text — whisper-class servers often don't list models (e.g. whisper-1, Systran/faster-whisper-large-v3). Empty: voice falls back to the chat model.",
-        modelEmptyOption: "No transcription model (chat-model fallback)",
-        testLabel: "Test transcription",
-        testingLabel: "Testing…",
-      }}
-      conn={stt}
-      secret={sttKey}
-      models={transcriptionModels}
-      probe={transcriptionProbe.state}
-      freeTextModel
-      renderOk={(r) => <>{r.model} — endpoint responded</>}
-      onTest={onTestTranscription}
-    />
-  );
-
   const integrationsTab = (
     <div className="space-y-5">
       <p className="text-sm text-muted">
@@ -891,11 +701,13 @@ export function SettingsForm({
   );
 
   const tabs: TabItem[] = [
-    { id: "llm", label: "LLM", content: llmTab },
+    { id: "chat", label: "Chat", content: chatTab },
     { id: "embeddings", label: "Embeddings", content: embeddingsTab },
     { id: "images", label: "Images", content: imagesTab },
     { id: "speech", label: "Speech", content: speechTab },
-    { id: "transcription", label: "Transcription", content: transcriptionTab },
+    { id: "audio", label: "Audio", content: audioTab },
+    { id: "vision", label: "Vision", content: visionTab },
+    { id: "browser", label: "Browser agent", content: browserTab },
     { id: "telegram", label: "Telegram", content: telegramTab },
     { id: "general", label: "General", content: generalTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },
@@ -903,7 +715,7 @@ export function SettingsForm({
   ];
 
   return (
-    <form onSubmit={onTest} className="space-y-6">
+    <form onSubmit={(e) => e.preventDefault()} className="space-y-6">
       <Tabs tabs={tabs} value={activeTab} onValueChange={setActiveTab} />
 
       {activeTab !== "security" ? (
@@ -923,7 +735,7 @@ export function SettingsForm({
           ) : null}
           {save.kind === "saved" && clearedOnSave.length > 0 ? (
             <span className="text-sm text-warning">
-              Cleared {clearedOnSave.join(", ")} — not served by the configured endpoint. Pick
+              Cleared {clearedOnSave.join(", ")} — not served by the configured backend. Pick
               replacements on their tabs when ready.
             </span>
           ) : null}

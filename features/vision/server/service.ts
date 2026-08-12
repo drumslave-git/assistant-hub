@@ -10,8 +10,9 @@ import { publishEvent } from "@/server/realtime/hub";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 
 import {
+  getAudioRuntime,
   getLlmRuntime,
-  getTranscriptionRuntime,
+  getVisionRuntime,
 } from "@/features/settings/server/service";
 import { buildTranscribeMessages, parseTranscript } from "@/features/voice/format";
 import { chatCompletion, type LlmPriority } from "@/server/llm/client";
@@ -332,20 +333,30 @@ export interface DescribeDeps {
   target?: { baseUrl: string; model: string };
   /**
    * Dedicated STT for voice rows (`/v1/audio/transcriptions`), present when the
-   * operator configured a transcription endpoint. When set, voice transcription
+   * operator configured an audio (STT) model. When set, voice transcription
    * uses it **instead of** the chat model's `input_audio` path (user decision:
    * support both, whisper preferred when configured).
    */
   transcribe?: (wav: Buffer) => Promise<TranscriptionResult>;
   /** Where `transcribe` sends the request, recorded like {@link target}. */
   transcribeTarget?: { baseUrl: string; model: string };
+  /**
+   * The `input_audio` transcription fallback's completion — the **chat** (main)
+   * connection, which may differ from `complete` when the operator gave the
+   * vision role its own backend/model. Absent means `complete` serves both
+   * (they resolved to the same connection).
+   */
+  completeAudio?: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  /** Where `completeAudio` sends the request, recorded like {@link target}. */
+  audioTarget?: { baseUrl: string; model: string };
 }
 
 /**
  * The real {@link DescribeDeps}, resolved from DB settings at call time: the
- * chat runtime for describes (and the `input_audio` transcription fallback),
- * plus the dedicated transcription endpoint when one is configured. Null when
- * the LLM is not configured. Shared by the live message path and the backfill
+ * vision runtime for describes (the chat connection unless the vision role is
+ * overridden), the chat runtime for the `input_audio` transcription fallback,
+ * plus the dedicated audio (STT) endpoint when one is configured. Null when
+ * nothing resolves. Shared by the live message path and the backfill
  * scheduler so the two can never resolve differently — only the dispatch
  * priority differs: a describe inside a live turn goes out interactive, the
  * backfill's passes wait for a quiet endpoint.
@@ -353,17 +364,32 @@ export interface DescribeDeps {
 export async function resolveDescribeDeps(
   priority: LlmPriority = "interactive",
 ): Promise<DescribeDeps | null> {
-  const runtime = await getLlmRuntime().catch(() => null);
-  if (!runtime) return null;
-  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
-  const stt = await getTranscriptionRuntime().catch(() => null);
+  const vision = await getVisionRuntime().catch(() => null);
+  if (!vision) return null;
+  const conn = { baseUrl: vision.baseUrl, apiKey: vision.apiKey, backend: vision.backend };
+  const stt = await getAudioRuntime().catch(() => null);
+  const chat = await getLlmRuntime().catch(() => null);
+  const chatDiffers =
+    chat && (chat.baseUrl !== vision.baseUrl || chat.model !== vision.model);
   return {
-    complete: (messages) => chatCompletion(conn, { model: runtime.model, messages, priority }),
-    target: { baseUrl: runtime.baseUrl, model: runtime.model },
+    complete: (messages) => chatCompletion(conn, { model: vision.model, messages, priority }),
+    target: { baseUrl: vision.baseUrl, model: vision.model },
     ...(stt
       ? {
           transcribe: (wav: Buffer) => transcribeAudio(stt, wav),
           transcribeTarget: { baseUrl: stt.baseUrl, model: stt.model },
+        }
+      : {}),
+    // The voice fallback belongs to the chat model ("audio: main by default"),
+    // so it is only split out when the vision role actually points elsewhere.
+    ...(chatDiffers
+      ? {
+          completeAudio: (messages) =>
+            chatCompletion(
+              { baseUrl: chat.baseUrl, apiKey: chat.apiKey, backend: chat.backend },
+              { model: chat.model, messages, priority },
+            ),
+          audioTarget: { baseUrl: chat.baseUrl, model: chat.model },
         }
       : {}),
   };
@@ -484,6 +510,10 @@ export async function describeAndStore(
         rawText = result.text;
       } else {
         // Fallback: the audio-capable chat model via an `input_audio` part.
+        // `completeAudio` (the chat connection) when the vision role points
+        // elsewhere; otherwise `complete` already is the chat connection.
+        const completeAudio = deps.completeAudio ?? deps.complete;
+        const audioTarget = deps.audioTarget ?? deps.target;
         const messages = buildTranscribeMessages(wav.toString("base64"), "wav");
         // The whole request as sent — endpoint, model, and the full
         // (byte-redacted) body — so a failing transcription names what was
@@ -492,12 +522,12 @@ export async function describeAndStore(
           type: "llm_request",
           message: "transcribe request",
           data: {
-            ...(deps.target ? { endpoint: deps.target.baseUrl, model: deps.target.model } : {}),
+            ...(audioTarget ? { endpoint: audioTarget.baseUrl, model: audioTarget.model } : {}),
             messages: sanitizeMessagesForTrace(messages),
           },
         });
 
-        const result = await deps.complete(messages);
+        const result = await completeAudio(messages);
         await trace.event({
           type: "llm_response",
           message: "transcribe response",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { testConnectionSchema, updateSettingsSchema } from "./schema";
+import { testRoleConnectionSchema, updateSettingsSchema } from "./schema";
 
 describe("updateSettingsSchema", () => {
   it("accepts a partial update", () => {
@@ -13,26 +13,34 @@ describe("updateSettingsSchema", () => {
     expect(updateSettingsSchema.safeParse({}).success).toBe(false);
   });
 
-  it("validates the base URL as a URL but allows null to clear it", () => {
-    expect(updateSettingsSchema.safeParse({ llmBaseUrl: "not a url" }).success).toBe(false);
-    expect(updateSettingsSchema.parse({ llmBaseUrl: null })).toEqual({ llmBaseUrl: null });
-    expect(updateSettingsSchema.parse({ llmBaseUrl: "https://api.openai.com/v1" })).toEqual({
-      llmBaseUrl: "https://api.openai.com/v1",
+  it("allows null backend ids (inherit chat) and rejects empty strings", () => {
+    expect(updateSettingsSchema.parse({ chatBackendId: null })).toEqual({ chatBackendId: null });
+    expect(updateSettingsSchema.parse({ visionBackendId: "some-id" })).toEqual({
+      visionBackendId: "some-id",
     });
+    expect(updateSettingsSchema.safeParse({ embeddingBackendId: "" }).success).toBe(false);
   });
 
-  it("allows an empty api key string (clears) and null", () => {
-    expect(updateSettingsSchema.parse({ apiKey: "" })).toEqual({ apiKey: "" });
-    expect(updateSettingsSchema.parse({ apiKey: null })).toEqual({ apiKey: null });
+  it("allows clearing role models with null and rejects empty model strings", () => {
+    expect(updateSettingsSchema.parse({ audioModel: null })).toEqual({ audioModel: null });
+    expect(updateSettingsSchema.safeParse({ browserModel: "" }).success).toBe(false);
+  });
+
+  it("allows an empty bot token string (clears) and null", () => {
+    expect(updateSettingsSchema.parse({ telegramBotToken: "" })).toEqual({ telegramBotToken: "" });
+    expect(updateSettingsSchema.parse({ telegramBotToken: null })).toEqual({
+      telegramBotToken: null,
+    });
   });
 });
 
-describe("testConnectionSchema", () => {
-  it("requires a valid base URL and allows an optional key", () => {
-    expect(testConnectionSchema.safeParse({}).success).toBe(false);
-    expect(testConnectionSchema.safeParse({ llmBaseUrl: "nope" }).success).toBe(false);
-    expect(testConnectionSchema.parse({ llmBaseUrl: "http://localhost:11434/v1" })).toEqual({
-      llmBaseUrl: "http://localhost:11434/v1",
+describe("testRoleConnectionSchema", () => {
+  it("accepts any subset — omitted fields fall back to stored values", () => {
+    expect(testRoleConnectionSchema.parse({})).toEqual({});
+    expect(testRoleConnectionSchema.parse({ backendId: null, model: "bge-m3" })).toEqual({
+      backendId: null,
+      model: "bge-m3",
     });
+    expect(testRoleConnectionSchema.safeParse({ model: "" }).success).toBe(false);
   });
 });

@@ -2,10 +2,14 @@ import "server-only";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
+import {
+  getBackendById,
+  type BackendRecord,
+} from "@/features/backends/server/repository";
 import { getKnownUser } from "@/features/known-users/server/repository";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
-import { DEFAULT_LLM_BACKEND, type LlmBackendId } from "@/lib/llm-backend";
+import type { LlmBackendId } from "@/lib/llm-backend";
 import type { TraceTrigger } from "@/lib/trace";
 import { listModels } from "@/server/llm/client";
 import {
@@ -21,9 +25,6 @@ import {
   type TranscriptionRuntime,
 } from "@/server/llm/transcription";
 import { tinySilenceWav } from "@/server/media/audio";
-
-/** Short timeout so opening the Settings page stays responsive against a dead endpoint. */
-const MODELS_PRELOAD_TIMEOUT_MS = 5_000;
 import { withTrace, type TraceRecorder } from "@/server/trace";
 import {
   getSettingsRecord,
@@ -32,52 +33,42 @@ import {
   type SettingsPatch,
   type SettingsRecord,
 } from "./repository";
-import type {
-  ListSectionModels,
-  Settings,
-  TestConnection,
-  TestEmbeddings,
-  TestImages,
-  TestSpeech,
-  TestTranscription,
-  UpdateSettings,
-} from "./schema";
+import type { Settings, TestRoleConnection, UpdateSettings } from "./schema";
 
 /**
  * Settings domain service — the boundary the Route Handlers and Server
- * Components call. Reads never expose the API key (only `apiKeyConfigured`).
- * Writes and connection tests are recorded as traces; the API key value is
- * redacted from trace data.
+ * Components call. LLM configuration is per **role** (chat, embedding, audio,
+ * vision, speech, image generation, browser agent): each role references a
+ * backend from the catalog (`features/backends`) and picks a model; a null
+ * backend id means "use the chat backend", and for the audio/vision/browser
+ * roles a null model additionally means "use the chat model" (main by default).
+ *
+ * Reads never expose secrets. Writes and connection tests are recorded as
+ * traces; secret values are redacted from trace data.
  */
 
 const FEATURE = FEATURES["settings"];
 
-/** Project an internal record to the client-safe shape (masking the secret). */
+/** Project an internal record to the client-safe shape (masking secrets). */
 function toClientSettings(record: SettingsRecord | null): Settings {
   return {
-    llmBaseUrl: record?.llmBaseUrl ?? null,
-    llmBackend: record?.llmBackend ?? DEFAULT_LLM_BACKEND,
+    chatBackendId: record?.chatBackendId ?? null,
     model: record?.model ?? null,
-    apiKeyConfigured: Boolean(record?.llmApiKey),
-    telegramBotTokenConfigured: Boolean(record?.telegramBotToken),
-    webSearchConfigured: Boolean(record?.tavilyApiKey),
-    embeddingBaseUrl: record?.embeddingBaseUrl ?? null,
-    embeddingBackend: record?.embeddingBackend ?? DEFAULT_LLM_BACKEND,
+    embeddingBackendId: record?.embeddingBackendId ?? null,
     embeddingModel: record?.embeddingModel ?? null,
-    embeddingApiKeyConfigured: Boolean(record?.embeddingApiKey),
-    imageBaseUrl: record?.imageBaseUrl ?? null,
-    imageBackend: record?.imageBackend ?? DEFAULT_LLM_BACKEND,
+    imageBackendId: record?.imageBackendId ?? null,
     imageModel: record?.imageModel ?? null,
-    imageApiKeyConfigured: Boolean(record?.imageApiKey),
-    speechBaseUrl: record?.speechBaseUrl ?? null,
-    speechBackend: record?.speechBackend ?? DEFAULT_LLM_BACKEND,
+    speechBackendId: record?.speechBackendId ?? null,
     speechModel: record?.speechModel ?? null,
     speechVoice: record?.speechVoice ?? null,
-    speechApiKeyConfigured: Boolean(record?.speechApiKey),
-    transcriptionBaseUrl: record?.transcriptionBaseUrl ?? null,
-    transcriptionBackend: record?.transcriptionBackend ?? DEFAULT_LLM_BACKEND,
-    transcriptionModel: record?.transcriptionModel ?? null,
-    transcriptionApiKeyConfigured: Boolean(record?.transcriptionApiKey),
+    audioBackendId: record?.audioBackendId ?? null,
+    audioModel: record?.audioModel ?? null,
+    visionBackendId: record?.visionBackendId ?? null,
+    visionModel: record?.visionModel ?? null,
+    browserBackendId: record?.browserBackendId ?? null,
+    browserModel: record?.browserModel ?? null,
+    telegramBotTokenConfigured: Boolean(record?.telegramBotToken),
+    webSearchConfigured: Boolean(record?.tavilyApiKey),
     ownerUsername: record?.ownerUsername ?? null,
     ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
@@ -91,25 +82,6 @@ function toClientSettings(record: SettingsRecord | null): Settings {
 /** Current settings (no secret values), or empty defaults when never configured. */
 export async function getSettings(db: DrizzleDb = getDb()): Promise<Settings> {
   return toClientSettings(await getSettingsRecord(db));
-}
-
-/**
- * Best-effort model list for the saved endpoint, so the Settings page can
- * populate the model dropdown on load without a manual "Test connection".
- * Returns an empty list (never throws) when unconfigured or unreachable — the
- * form still lets the operator test the connection explicitly.
- */
-export async function listAvailableModels(db: DrizzleDb = getDb()): Promise<string[]> {
-  const record = await getSettingsRecord(db);
-  if (!record?.llmBaseUrl) return [];
-  try {
-    return await listModels(
-      { baseUrl: record.llmBaseUrl, apiKey: record.llmApiKey },
-      MODELS_PRELOAD_TIMEOUT_MS,
-    );
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -129,47 +101,63 @@ export async function getWebSearchApiKey(db: DrizzleDb = getDb()): Promise<strin
   return (await getSettingsRecord(db))?.tavilyApiKey ?? null;
 }
 
-/**
- * Server-only: the saved LLM connection + model, or null when not fully
- * configured. Used by the conversation core to generate replies.
- */
-export async function getLlmRuntime(
-  db: DrizzleDb = getDb(),
-): Promise<{
+/** A fully resolved role runtime: where to call, with what, and which model. */
+export interface LlmRuntime {
   baseUrl: string;
   apiKey: string | null;
   model: string;
   backend: LlmBackendId;
-} | null> {
+}
+
+/**
+ * Resolve one role's backend row: its own selection, falling back to the chat
+ * backend when it has none. Null when neither is configured (or the referenced
+ * row is gone, which the FK prevents but a torn read could still see).
+ */
+async function resolveRoleBackend(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+  roleBackendId: string | null,
+): Promise<BackendRecord | null> {
+  const id = roleBackendId ?? record?.chatBackendId ?? null;
+  return id ? getBackendById(db, id) : null;
+}
+
+/**
+ * Server-only: the saved chat (main) connection + model, or null when not fully
+ * configured. Used by the conversation core to generate replies.
+ */
+export async function getLlmRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
   const record = await getSettingsRecord(db);
-  if (!record?.llmBaseUrl || !record.model) return null;
+  if (!record?.chatBackendId || !record.model) return null;
+  const backend = await getBackendById(db, record.chatBackendId);
+  if (!backend) return null;
   return {
-    baseUrl: record.llmBaseUrl,
-    apiKey: record.llmApiKey,
+    baseUrl: backend.baseUrl,
+    apiKey: backend.apiKey,
     model: record.model,
-    backend: record.llmBackend,
+    backend: backend.type,
   };
 }
 
 /**
- * Resolve the embedding connection from a settings record. The endpoint falls
- * back to the LLM connection when no embedding base URL is configured (the common
- * case: chat and embeddings served by the same host) — and with it the key, since
- * a key belongs to the host it authenticates. A model is mandatory: without one
- * there is nothing to call, and embedding-backed capabilities stay off rather
- * than guessing a model id.
+ * Resolve the embedding connection. The backend falls back to the chat backend
+ * when the role has none of its own (the common case: chat and embeddings
+ * served by the same host). A model is mandatory: without one there is nothing
+ * to call, and embedding-backed capabilities stay off rather than guessing a
+ * model id.
  */
-function toEmbeddingRuntime(record: SettingsRecord | null): EmbeddingRuntime | null {
+async function toEmbeddingRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<EmbeddingRuntime | null> {
   if (!record?.embeddingModel) return null;
-  const ownEndpoint = Boolean(record.embeddingBaseUrl);
-  const baseUrl = ownEndpoint ? record.embeddingBaseUrl : record.llmBaseUrl;
-  if (!baseUrl) return null;
+  const backend = await resolveRoleBackend(db, record, record.embeddingBackendId);
+  if (!backend) return null;
   return {
-    baseUrl,
-    apiKey: ownEndpoint ? record.embeddingApiKey : record.llmApiKey,
-    // The backend follows the host, exactly like the key above: falling back to
-    // the LLM endpoint means inheriting the server that answers there.
-    backend: ownEndpoint ? record.embeddingBackend : record.llmBackend,
+    baseUrl: backend.baseUrl,
+    apiKey: backend.apiKey,
+    backend: backend.type,
     model: record.embeddingModel,
   };
 }
@@ -183,24 +171,26 @@ function toEmbeddingRuntime(record: SettingsRecord | null): EmbeddingRuntime | n
 export async function getEmbeddingRuntime(
   db: DrizzleDb = getDb(),
 ): Promise<EmbeddingRuntime | null> {
-  return toEmbeddingRuntime(await getSettingsRecord(db));
+  return toEmbeddingRuntime(db, await getSettingsRecord(db));
 }
 
 /**
- * Resolve the image-generation connection from a settings record. Same shape as
- * {@link toEmbeddingRuntime}: the endpoint (and its key) fall back to the LLM
- * connection when no image base URL is set, and a model is mandatory — without
- * one the `image_generate` tool stays unavailable rather than guessing a model id.
+ * Resolve the image-generation connection. Same shape as
+ * {@link toEmbeddingRuntime}: the backend falls back to the chat one, and a
+ * model is mandatory — without one the `image_generate` tool stays unavailable
+ * rather than guessing a model id.
  */
-function toImageRuntime(record: SettingsRecord | null): ImageRuntime | null {
+async function toImageRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<ImageRuntime | null> {
   if (!record?.imageModel) return null;
-  const ownEndpoint = Boolean(record.imageBaseUrl);
-  const baseUrl = ownEndpoint ? record.imageBaseUrl : record.llmBaseUrl;
-  if (!baseUrl) return null;
+  const backend = await resolveRoleBackend(db, record, record.imageBackendId);
+  if (!backend) return null;
   return {
-    baseUrl,
-    apiKey: ownEndpoint ? record.imageApiKey : record.llmApiKey,
-    backend: ownEndpoint ? record.imageBackend : record.llmBackend,
+    baseUrl: backend.baseUrl,
+    apiKey: backend.apiKey,
+    backend: backend.type,
     model: record.imageModel,
   };
 }
@@ -212,24 +202,25 @@ function toImageRuntime(record: SettingsRecord | null): ImageRuntime | null {
  * unavailable" and degrade honestly — the tool is simply not offered.
  */
 export async function getImageRuntime(db: DrizzleDb = getDb()): Promise<ImageRuntime | null> {
-  return toImageRuntime(await getSettingsRecord(db));
+  return toImageRuntime(db, await getSettingsRecord(db));
 }
 
 /**
- * Resolve the speech (TTS) connection from a settings record. Same shape as
- * {@link toEmbeddingRuntime}: the endpoint (and its key) fall back to the LLM
- * connection when no speech base URL is set, and a model is mandatory — without
+ * Resolve the speech (TTS) connection. Same shape as {@link toEmbeddingRuntime}:
+ * the backend falls back to the chat one, and a model is mandatory — without
  * one voice replies stay off rather than guessing a model id.
  */
-function toSpeechRuntime(record: SettingsRecord | null): SpeechRuntime | null {
+async function toSpeechRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<SpeechRuntime | null> {
   if (!record?.speechModel) return null;
-  const ownEndpoint = Boolean(record.speechBaseUrl);
-  const baseUrl = ownEndpoint ? record.speechBaseUrl : record.llmBaseUrl;
-  if (!baseUrl) return null;
+  const backend = await resolveRoleBackend(db, record, record.speechBackendId);
+  if (!backend) return null;
   return {
-    baseUrl,
-    apiKey: ownEndpoint ? record.speechApiKey : record.llmApiKey,
-    backend: ownEndpoint ? record.speechBackend : record.llmBackend,
+    baseUrl: backend.baseUrl,
+    apiKey: backend.apiKey,
+    backend: backend.type,
     model: record.speechModel,
     voice: record.speechVoice,
   };
@@ -242,139 +233,69 @@ function toSpeechRuntime(record: SettingsRecord | null): SpeechRuntime | null {
  * replies are unavailable" and fall back to text — never throw.
  */
 export async function getSpeechRuntime(db: DrizzleDb = getDb()): Promise<SpeechRuntime | null> {
-  return toSpeechRuntime(await getSettingsRecord(db));
+  return toSpeechRuntime(db, await getSettingsRecord(db));
 }
 
 /**
- * Best-effort model list for the speech endpoint, so the Settings page can
- * populate its model dropdown. Uses the speech base URL when set, else the LLM
- * one. Never throws — an unreachable endpoint yields an empty list.
+ * Resolve the audio (STT) connection. The backend falls back to the chat one;
+ * the model is mandatory — a null audio model means voice messages are
+ * transcribed by the chat model via `input_audio` (the "main by default"
+ * behavior), never by calling `/v1/audio/transcriptions` with a guessed id.
  */
-export async function listAvailableSpeechModels(db: DrizzleDb = getDb()): Promise<string[]> {
-  const record = await getSettingsRecord(db);
-  const baseUrl = record?.speechBaseUrl || record?.llmBaseUrl;
-  if (!baseUrl) return [];
-  const apiKey = record?.speechBaseUrl ? record.speechApiKey : record?.llmApiKey;
-  try {
-    return await listModels({ baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Resolve the transcription (STT) connection from a settings record. Same shape
- * as {@link toEmbeddingRuntime}: the endpoint (and its key) fall back to the LLM
- * connection when no transcription base URL is set, and a model is mandatory —
- * without one, voice transcription falls back to the chat model's `input_audio`
- * path rather than calling `/v1/audio/transcriptions` with a guessed model id.
- */
-function toTranscriptionRuntime(record: SettingsRecord | null): TranscriptionRuntime | null {
-  if (!record?.transcriptionModel) return null;
-  const ownEndpoint = Boolean(record.transcriptionBaseUrl);
-  const baseUrl = ownEndpoint ? record.transcriptionBaseUrl : record.llmBaseUrl;
-  if (!baseUrl) return null;
+async function toAudioRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<TranscriptionRuntime | null> {
+  if (!record?.audioModel) return null;
+  const backend = await resolveRoleBackend(db, record, record.audioBackendId);
+  if (!backend) return null;
   return {
-    baseUrl,
-    apiKey: ownEndpoint ? record.transcriptionApiKey : record.llmApiKey,
-    backend: ownEndpoint ? record.transcriptionBackend : record.llmBackend,
-    model: record.transcriptionModel,
+    baseUrl: backend.baseUrl,
+    apiKey: backend.apiKey,
+    backend: backend.type,
+    model: record.audioModel,
   };
 }
 
 /**
- * Server-only: the saved transcription connection + model, or null when no
- * dedicated STT endpoint is configured (voice then transcribes via the chat
+ * Server-only: the saved audio (STT) connection + model, or null when no
+ * dedicated STT model is configured (voice then transcribes via the chat
  * model's `input_audio`). Read at call time so a change takes effect without a
  * restart.
  */
-export async function getTranscriptionRuntime(
+export async function getAudioRuntime(
   db: DrizzleDb = getDb(),
 ): Promise<TranscriptionRuntime | null> {
-  return toTranscriptionRuntime(await getSettingsRecord(db));
+  return toAudioRuntime(db, await getSettingsRecord(db));
 }
 
 /**
- * Best-effort model list for the transcription endpoint, so the Settings page
- * can suggest model ids. Whisper-class servers often serve
- * `/v1/audio/transcriptions` without `/v1/models`, so an empty list is normal —
- * the form falls back to free-text entry. Never throws.
+ * Server-only: the vision connection + model — the describer every photo,
+ * video frame, and sticker goes through. Falls back to the chat backend and
+ * chat model per unset half ("main by default"), so it is null only when
+ * nothing resolves to a full connection.
  */
-export async function listAvailableTranscriptionModels(
-  db: DrizzleDb = getDb(),
-): Promise<string[]> {
+export async function getVisionRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
   const record = await getSettingsRecord(db);
-  const baseUrl = record?.transcriptionBaseUrl || record?.llmBaseUrl;
-  if (!baseUrl) return [];
-  const apiKey = record?.transcriptionBaseUrl ? record.transcriptionApiKey : record?.llmApiKey;
-  try {
-    return await listModels({ baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
-  } catch {
-    return [];
-  }
+  const model = record?.visionModel ?? record?.model ?? null;
+  if (!record || !model) return null;
+  const backend = await resolveRoleBackend(db, record, record.visionBackendId);
+  if (!backend) return null;
+  return { baseUrl: backend.baseUrl, apiKey: backend.apiKey, model, backend: backend.type };
 }
 
 /**
- * Best-effort model list for the image endpoint, so the Settings page can populate
- * its model dropdown. Uses the image base URL when set, else the LLM one. Never
- * throws — an unreachable endpoint yields an empty list.
+ * Server-only: the browser-agent LLM connection + model. Falls back to the chat
+ * backend and chat model per unset half ("main by default"), so it is null only
+ * when nothing resolves to a full connection.
  */
-export async function listAvailableImageModels(db: DrizzleDb = getDb()): Promise<string[]> {
+export async function getBrowserLlmRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
   const record = await getSettingsRecord(db);
-  const baseUrl = record?.imageBaseUrl || record?.llmBaseUrl;
-  if (!baseUrl) return [];
-  const apiKey = record?.imageBaseUrl ? record.imageApiKey : record?.llmApiKey;
-  try {
-    return await listModels({ baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Best-effort model list for the embedding endpoint, so the Settings page can
- * populate its model dropdown. Uses the embedding base URL when set, else the LLM
- * one. Never throws — an unreachable endpoint yields an empty list.
- */
-export async function listAvailableEmbeddingModels(db: DrizzleDb = getDb()): Promise<string[]> {
-  const record = await getSettingsRecord(db);
-  const baseUrl = record?.embeddingBaseUrl || record?.llmBaseUrl;
-  if (!baseUrl) return [];
-  const apiKey = record?.embeddingBaseUrl ? record.embeddingApiKey : record?.llmApiKey;
-  try {
-    return await listModels({ baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
-  } catch {
-    return [];
-  }
-}
-
-/** Which stored key authenticates each optional section's own endpoint. */
-const SECTION_API_KEY_FIELD = {
-  embedding: "embeddingApiKey",
-  image: "imageApiKey",
-  speech: "speechApiKey",
-  transcription: "transcriptionApiKey",
-} as const satisfies Record<ListSectionModels["section"], keyof SettingsRecord>;
-
-/**
- * List the models served by a section endpoint *as currently entered in the
- * form* — the saved-state preloads above cannot answer for a URL the operator
- * just typed and has not saved yet (the gap that forced a save just to see the
- * new endpoint's models). `apiKey` omitted falls back to the section's stored
- * key, mirroring the probe routes, so the secret never round-trips. Throws a
- * clean `ApiError` on an unreachable endpoint — the form shows why the list is
- * empty instead of silently offering nothing.
- */
-export async function listSectionModels(
-  input: ListSectionModels,
-  db: DrizzleDb = getDb(),
-): Promise<{ models: string[] }> {
-  const apiKey =
-    input.apiKey !== undefined
-      ? input.apiKey
-      : ((await getSettingsRecord(db))?.[SECTION_API_KEY_FIELD[input.section]] ?? null);
-  const models = await listModels({ baseUrl: input.baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
-  return { models };
+  const model = record?.browserModel ?? record?.model ?? null;
+  if (!record || !model) return null;
+  const backend = await resolveRoleBackend(db, record, record.browserBackendId);
+  if (!backend) return null;
+  return { baseUrl: backend.baseUrl, apiKey: backend.apiKey, model, backend: backend.type };
 }
 
 /**
@@ -384,7 +305,6 @@ export async function listSectionModels(
 export async function getTimezone(db: DrizzleDb = getDb()): Promise<string> {
   return (await getSettingsRecord(db))?.timezone ?? "UTC";
 }
-
 
 /** Fallback run time for the daily jobs when settings have never been written. */
 export const DEFAULT_DAILY_JOBS_RUN_TIME = "04:00";
@@ -442,49 +362,43 @@ export async function getBotPolicy(db: DrizzleDb = getDb()): Promise<BotPolicy> 
   };
 }
 
-/** Translate a validated update into a column patch (empty key string clears it). */
+/** The role backend-id/model column pairs (audio included; see the exemption note). */
+const ROLE_FIELDS = [
+  { label: "chat", modelKey: "model", backendKey: "chatBackendId" },
+  { label: "embedding", modelKey: "embeddingModel", backendKey: "embeddingBackendId" },
+  { label: "image", modelKey: "imageModel", backendKey: "imageBackendId" },
+  { label: "speech", modelKey: "speechModel", backendKey: "speechBackendId" },
+  { label: "audio", modelKey: "audioModel", backendKey: "audioBackendId" },
+  { label: "vision", modelKey: "visionModel", backendKey: "visionBackendId" },
+  { label: "browser", modelKey: "browserModel", backendKey: "browserBackendId" },
+] as const;
+
+/**
+ * Model selections that are picked from a backend's `/v1/models` listing.
+ * Audio is deliberately absent: whisper-class servers often expose no listing,
+ * so absence from one proves nothing (the UI field allows free text for the
+ * same reason) — an audio selection is never cleared on unverifiable evidence.
+ */
+const LISTED_MODEL_ROLES = ROLE_FIELDS.filter((r) => r.label !== "audio");
+
+type RoleBackendKey = (typeof ROLE_FIELDS)[number]["backendKey"];
+type RoleModelKey = (typeof ROLE_FIELDS)[number]["modelKey"];
+
+/** Translate a validated update into a column patch (empty secret clears it). */
 function toPatch(input: UpdateSettings): SettingsPatch {
   const patch: SettingsPatch = {};
-  if (input.llmBaseUrl !== undefined) patch.llmBaseUrl = input.llmBaseUrl;
-  if (input.llmBackend !== undefined) patch.llmBackend = input.llmBackend;
-  if (input.model !== undefined) patch.model = input.model;
-  if (input.apiKey !== undefined) patch.llmApiKey = input.apiKey === "" ? null : input.apiKey;
+  for (const { modelKey, backendKey } of ROLE_FIELDS) {
+    if (input[backendKey] !== undefined) patch[backendKey] = input[backendKey];
+    if (input[modelKey] !== undefined) patch[modelKey] = input[modelKey];
+  }
+  if (input.speechVoice !== undefined) {
+    patch.speechVoice = input.speechVoice === "" ? null : input.speechVoice;
+  }
   if (input.telegramBotToken !== undefined) {
     patch.telegramBotToken = input.telegramBotToken === "" ? null : input.telegramBotToken;
   }
   if (input.tavilyApiKey !== undefined) {
     patch.tavilyApiKey = input.tavilyApiKey === "" ? null : input.tavilyApiKey;
-  }
-  if (input.embeddingBaseUrl !== undefined) patch.embeddingBaseUrl = input.embeddingBaseUrl;
-  if (input.embeddingBackend !== undefined) patch.embeddingBackend = input.embeddingBackend;
-  if (input.embeddingModel !== undefined) patch.embeddingModel = input.embeddingModel;
-  if (input.embeddingApiKey !== undefined) {
-    patch.embeddingApiKey = input.embeddingApiKey === "" ? null : input.embeddingApiKey;
-  }
-  if (input.imageBaseUrl !== undefined) patch.imageBaseUrl = input.imageBaseUrl;
-  if (input.imageBackend !== undefined) patch.imageBackend = input.imageBackend;
-  if (input.imageModel !== undefined) patch.imageModel = input.imageModel;
-  if (input.imageApiKey !== undefined) {
-    patch.imageApiKey = input.imageApiKey === "" ? null : input.imageApiKey;
-  }
-  if (input.speechBaseUrl !== undefined) patch.speechBaseUrl = input.speechBaseUrl;
-  if (input.speechBackend !== undefined) patch.speechBackend = input.speechBackend;
-  if (input.speechModel !== undefined) patch.speechModel = input.speechModel;
-  if (input.speechApiKey !== undefined) {
-    patch.speechApiKey = input.speechApiKey === "" ? null : input.speechApiKey;
-  }
-  if (input.speechVoice !== undefined) {
-    patch.speechVoice = input.speechVoice === "" ? null : input.speechVoice;
-  }
-  if (input.transcriptionBaseUrl !== undefined) {
-    patch.transcriptionBaseUrl = input.transcriptionBaseUrl;
-  }
-  if (input.transcriptionBackend !== undefined) patch.transcriptionBackend = input.transcriptionBackend;
-  if (input.transcriptionModel !== undefined) {
-    patch.transcriptionModel = input.transcriptionModel;
-  }
-  if (input.transcriptionApiKey !== undefined) {
-    patch.transcriptionApiKey = input.transcriptionApiKey === "" ? null : input.transcriptionApiKey;
   }
   if (input.maintenanceModeEnabled !== undefined) {
     patch.maintenanceModeEnabled = input.maintenanceModeEnabled;
@@ -515,6 +429,21 @@ function isValidIanaTimezone(timeZone: string): boolean {
 }
 
 /**
+ * Every backend id named in the patch must exist in the catalog — a typo'd or
+ * deleted id would otherwise surface later as an FK error (or, worse for the
+ * operator, a role silently resolving to nothing).
+ */
+async function validateBackendIds(db: DrizzleDb, patch: SettingsPatch): Promise<void> {
+  for (const { backendKey } of ROLE_FIELDS) {
+    const id = patch[backendKey];
+    if (id === undefined || id === null) continue;
+    if (!(await getBackendById(db, id))) {
+      throw ApiError.badRequest(`Unknown backend for ${backendKey}: ${id}`);
+    }
+  }
+}
+
+/**
  * Resolve the owner selection into a column patch. The owner is picked by id from
  * known users; we validate it exists and denormalize the @username for display.
  * A null id clears the owner.
@@ -531,139 +460,94 @@ async function ownerPatch(
 
 /** Redact secrets before they reach trace storage. */
 function redact(input: UpdateSettings): Record<string, unknown> {
-  const {
-    apiKey,
-    telegramBotToken,
-    tavilyApiKey,
-    embeddingApiKey,
-    imageApiKey,
-    speechApiKey,
-    transcriptionApiKey,
-    ...rest
-  } = input;
+  const { telegramBotToken, tavilyApiKey, ...rest } = input;
   const out: Record<string, unknown> = { ...rest };
-  if (apiKey !== undefined) out.apiKey = "«redacted»";
   if (telegramBotToken !== undefined) out.telegramBotToken = "«redacted»";
   if (tavilyApiKey !== undefined) out.tavilyApiKey = "«redacted»";
-  if (embeddingApiKey !== undefined) out.embeddingApiKey = "«redacted»";
-  if (imageApiKey !== undefined) out.imageApiKey = "«redacted»";
-  if (speechApiKey !== undefined) out.speechApiKey = "«redacted»";
-  if (transcriptionApiKey !== undefined) out.transcriptionApiKey = "«redacted»";
   return out;
 }
 
 /**
  * Bound on the model listing a save performs to verify stored selections
- * against a repointed endpoint. An explicit save can afford a little more than
- * a page load, but it must never hang the Save button on a dead host.
+ * against a repointed role. An explicit save can afford a little more than a
+ * page load, but it must never hang the Save button on a dead host.
  */
 const STALE_MODEL_CHECK_TIMEOUT_MS = 10_000;
 
-/**
- * Model selections that are picked from an endpoint's `/v1/models` listing, and
- * the connection fields resolving where each is served. Transcription is
- * deliberately absent: whisper-class servers often expose no listing, so
- * absence from one proves nothing (the UI field is free text for the same
- * reason) — a transcription selection is never cleared on unverifiable
- * evidence.
- */
-const LISTED_MODEL_SECTIONS = [
-  { label: "chat", modelKey: "model", baseUrlKey: "llmBaseUrl", apiKeyKey: "llmApiKey" },
-  {
-    label: "embedding",
-    modelKey: "embeddingModel",
-    baseUrlKey: "embeddingBaseUrl",
-    apiKeyKey: "embeddingApiKey",
-  },
-  { label: "image", modelKey: "imageModel", baseUrlKey: "imageBaseUrl", apiKeyKey: "imageApiKey" },
-  {
-    label: "speech",
-    modelKey: "speechModel",
-    baseUrlKey: "speechBaseUrl",
-    apiKeyKey: "speechApiKey",
-  },
-] as const;
-
-type ConnField =
-  | (typeof LISTED_MODEL_SECTIONS)[number]["modelKey"]
-  | (typeof LISTED_MODEL_SECTIONS)[number]["baseUrlKey"]
-  | (typeof LISTED_MODEL_SECTIONS)[number]["apiKeyKey"];
-
-/** A connection field's value once the patch is applied over the stored record. */
-function effective(
+/** A role field's value once the patch is applied over the stored record. */
+function effective<K extends RoleBackendKey | RoleModelKey>(
   before: SettingsRecord | null,
   patch: SettingsPatch,
-  key: ConnField,
+  key: K,
 ): string | null {
   const patched = patch[key];
   return patched !== undefined ? patched : (before?.[key] ?? null);
 }
 
 /**
- * Clear model selections that a connection change has made stale.
+ * Clear model selections that a backend change has made stale.
  *
- * A model id is only meaningful on the endpoint it was picked from. When a
- * patch repoints that endpoint — the LLM base URL changes and a section reuses
- * that connection, or a section's own URL changes (including falling back to
- * the LLM one) — the new endpoint is asked for its model list and any stored
- * selection it verifiably does not serve is cleared in the same write, instead
- * of failing later inside a background job against a backend that never had it.
+ * A model id is only meaningful on the backend it was picked from. When a patch
+ * repoints a role — its own backend id changes, or the chat backend changes and
+ * the role inherits it — the newly effective backend is asked for its model
+ * list and any stored selection it verifiably does not serve is cleared in the
+ * same write, instead of failing later inside a background job against a
+ * backend that never had it.
  *
  * Deliberate limits, all on the side of not destroying configuration:
  * - A model set in this very patch is trusted — the operator just chose it.
- * - When the new endpoint cannot be listed (down, slow, key rejected), nothing
+ * - When the new backend cannot be listed (down, slow, key rejected), nothing
  *   is cleared: absence is only acted on when it is proven.
- * - Transcription is exempt (see {@link LISTED_MODEL_SECTIONS}).
+ * - Audio is exempt (see {@link LISTED_MODEL_ROLES}).
  *
  * Mutates `patch`; returns human labels of what was cleared.
  */
 async function clearStaleModelSelections(
+  db: DrizzleDb,
   before: SettingsRecord | null,
   patch: SettingsPatch,
   trace: TraceRecorder,
 ): Promise<string[]> {
-  // Only a base-URL change can repoint where a model is served.
-  const urlKeys = ["llmBaseUrl", "embeddingBaseUrl", "imageBaseUrl", "speechBaseUrl"] as const;
-  if (urlKeys.every((key) => patch[key] === undefined)) return [];
+  // Only a backend-id change can repoint where a model is served.
+  if (ROLE_FIELDS.every(({ backendKey }) => patch[backendKey] === undefined)) return [];
 
-  const checks: Array<
-    (typeof LISTED_MODEL_SECTIONS)[number] & { model: string; url: string; apiKey: string | null }
-  > = [];
-  for (const section of LISTED_MODEL_SECTIONS) {
-    if (patch[section.modelKey] !== undefined) continue;
-    const model = before?.[section.modelKey] ?? null;
+  const checks: Array<{ label: string; modelKey: RoleModelKey; model: string; backendId: string }> =
+    [];
+  for (const role of LISTED_MODEL_ROLES) {
+    if (patch[role.modelKey] !== undefined) continue;
+    const model = before?.[role.modelKey] ?? null;
     if (!model) continue;
-    // The chat section's base URL *is* the LLM one, so its fallback is a no-op.
-    const urlBefore = before?.[section.baseUrlKey] ?? before?.llmBaseUrl ?? null;
-    const ownAfter = effective(before, patch, section.baseUrlKey);
-    const urlAfter = ownAfter ?? effective(before, patch, "llmBaseUrl");
-    if (!urlAfter || urlAfter === urlBefore) continue;
-    // The key follows the host, exactly as the runtime resolves it.
-    const apiKey = ownAfter
-      ? effective(before, patch, section.apiKeyKey)
-      : effective(before, patch, "llmApiKey");
-    checks.push({ ...section, model, url: urlAfter, apiKey });
+    // The chat role's own backend *is* the chat one, so its fallback is a no-op.
+    const ownBefore = before?.[role.backendKey] ?? null;
+    const ownAfter = effective(before, patch, role.backendKey);
+    const effBefore = ownBefore ?? before?.chatBackendId ?? null;
+    const effAfter = ownAfter ?? effective(before, patch, "chatBackendId");
+    if (!effAfter || effAfter === effBefore) continue;
+    checks.push({ label: role.label, modelKey: role.modelKey, model, backendId: effAfter });
   }
   if (checks.length === 0) return [];
 
-  // One listing per distinct endpoint, shared by every section now pointing at it.
-  const byEndpoint = new Map<string, typeof checks>();
+  // One listing per distinct backend, shared by every role now pointing at it.
+  const byBackend = new Map<string, typeof checks>();
   for (const check of checks) {
-    const key = `${check.url} ${check.apiKey ?? ""}`;
-    byEndpoint.set(key, [...(byEndpoint.get(key) ?? []), check]);
+    byBackend.set(check.backendId, [...(byBackend.get(check.backendId) ?? []), check]);
   }
 
   const cleared: string[] = [];
-  for (const group of byEndpoint.values()) {
-    const { url, apiKey } = group[0];
+  for (const [backendId, group] of byBackend) {
+    const backend = await getBackendById(db, backendId);
+    if (!backend) continue;
     let served: string[];
     try {
-      served = await listModels({ baseUrl: url, apiKey }, STALE_MODEL_CHECK_TIMEOUT_MS);
+      served = await listModels(
+        { baseUrl: backend.baseUrl, apiKey: backend.apiKey, backend: backend.type },
+        STALE_MODEL_CHECK_TIMEOUT_MS,
+      );
     } catch (err) {
       await trace.event({
         type: "step",
         level: "warn",
-        message: `Could not list models on ${url} — stored model selections left unchanged`,
+        message: `Could not list models on ${backend.baseUrl} — stored model selections left unchanged`,
         data: { error: err instanceof Error ? err.message : String(err) },
       });
       continue;
@@ -675,10 +559,71 @@ async function clearStaleModelSelections(
       await trace.event({
         type: "step",
         level: "warn",
-        message: `Cleared ${check.label} model — "${check.model}" is not served by ${url}`,
-        data: { model: check.model, endpoint: url },
+        message: `Cleared ${check.label} model — "${check.model}" is not served by ${backend.baseUrl}`,
+        data: { model: check.model, endpoint: backend.baseUrl },
       });
     }
+  }
+  return cleared;
+}
+
+/**
+ * Clear role model selections a **backend edit** has made stale: every role
+ * whose effective backend is the given (just-repointed) row gets its stored
+ * model verified against the new endpoint's listing, and verifiably unserved
+ * ones are cleared in one settings write. Same doctrine as
+ * {@link clearStaleModelSelections} — a failed listing clears nothing, audio is
+ * exempt. Called by the backends service after a URL/key change.
+ *
+ * Returns human labels of what was cleared.
+ */
+export async function clearRoleModelsNotServed(
+  backend: BackendRecord,
+  trace: TraceRecorder,
+  db: DrizzleDb = getDb(),
+): Promise<string[]> {
+  const record = await getSettingsRecord(db);
+  if (!record) return [];
+
+  const affected = LISTED_MODEL_ROLES.filter((role) => {
+    const eff = record[role.backendKey] ?? record.chatBackendId;
+    return eff === backend.id && Boolean(record[role.modelKey]);
+  });
+  if (affected.length === 0) return [];
+
+  let served: string[];
+  try {
+    served = await listModels(
+      { baseUrl: backend.baseUrl, apiKey: backend.apiKey, backend: backend.type },
+      STALE_MODEL_CHECK_TIMEOUT_MS,
+    );
+  } catch (err) {
+    await trace.event({
+      type: "step",
+      level: "warn",
+      message: `Could not list models on ${backend.baseUrl} — role model selections left unchanged`,
+      data: { error: err instanceof Error ? err.message : String(err) },
+    });
+    return [];
+  }
+
+  const patch: SettingsPatch = {};
+  const cleared: string[] = [];
+  for (const role of affected) {
+    const model = record[role.modelKey];
+    if (!model || served.includes(model)) continue;
+    patch[role.modelKey] = null;
+    cleared.push(`${role.label} model`);
+    await trace.event({
+      type: "step",
+      level: "warn",
+      message: `Cleared ${role.label} model — "${model}" is not served by ${backend.baseUrl}`,
+      data: { model, endpoint: backend.baseUrl },
+    });
+  }
+  if (cleared.length > 0) {
+    await upsertSettings(db, patch);
+    await trace.event({ type: "db", message: "stale role models cleared on settings row" });
   }
   return cleared;
 }
@@ -695,10 +640,16 @@ export async function updateSettings(
     async (trace) => {
       await trace.event({ type: "input", message: "settings update", data: redact(input) });
       const patch = toPatch(input);
+      await validateBackendIds(db, patch);
       if (input.ownerUserId !== undefined) {
         Object.assign(patch, await ownerPatch(db, input.ownerUserId));
       }
-      const cleared = await clearStaleModelSelections(await getSettingsRecord(db), patch, trace);
+      const cleared = await clearStaleModelSelections(
+        db,
+        await getSettingsRecord(db),
+        patch,
+        trace,
+      );
       const record = await upsertSettings(db, patch);
       await trace.event({ type: "db", message: "settings row upserted" });
       await trace.succeed({
@@ -714,27 +665,22 @@ export async function updateSettings(
 }
 
 /**
- * Probe an OpenAI-compatible endpoint and return its model ids. Uses the given
- * key, or falls back to the stored key when `apiKey` is omitted (so the URL can
- * be re-tested without resending the secret). Recorded as a trace.
+ * Merge a probe input over the stored record for one role, then resolve it
+ * exactly as the runtime does — so a passing test means the *runtime*
+ * connection works, not some test-only variant of it.
  */
-export async function testConnection(
-  input: TestConnection,
-  trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
-): Promise<{ models: string[] }> {
-  return withTrace(
-    { feature: FEATURE.id, action: "test-connection", trigger, inputSummary: input.llmBaseUrl },
-    async (trace) => {
-      const apiKey =
-        input.apiKey !== undefined ? input.apiKey : (await getSettingsRecord(db))?.llmApiKey ?? null;
-      await trace.event({ type: "external_call", message: `GET ${input.llmBaseUrl} /models` });
-      const models = await listModels({ baseUrl: input.llmBaseUrl, apiKey });
-      await trace.event({ type: "output", message: `${models.length} models returned` });
-      await trace.succeed({ outputSummary: `${models.length} models` });
-      return { models };
-    },
-  );
+function mergeRoleInput(
+  record: SettingsRecord | null,
+  input: TestRoleConnection,
+  keys: { backendKey: RoleBackendKey; modelKey: RoleModelKey },
+): SettingsRecord {
+  const base = record ?? EMPTY_RECORD;
+  return {
+    ...base,
+    [keys.backendKey]:
+      input.backendId !== undefined ? input.backendId : base[keys.backendKey],
+    [keys.modelKey]: input.model !== undefined ? input.model : base[keys.modelKey],
+  };
 }
 
 /**
@@ -746,44 +692,31 @@ export async function testConnection(
  * two numbers, since every later insert would fail deep inside a background job.
  *
  * Unsupplied fields fall back to what is stored, so the operator can test the
- * saved configuration without re-sending the secret.
+ * saved configuration without re-sending anything.
  */
 export async function testEmbeddings(
-  input: TestEmbeddings,
+  input: TestRoleConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<EmbeddingProbe> {
   const record = await getSettingsRecord(db);
-  // Merge the submitted (possibly unsaved) values over the stored record, then
-  // resolve exactly as the runtime does — so a passing test means the *runtime*
-  // connection works, not some test-only variant of it.
-  const runtime = toEmbeddingRuntime({
-    ...(record ?? EMPTY_RECORD),
-    embeddingBaseUrl:
-      input.embeddingBaseUrl !== undefined
-        ? input.embeddingBaseUrl
-        : (record?.embeddingBaseUrl ?? null),
-    embeddingApiKey:
-      input.embeddingApiKey !== undefined
-        ? input.embeddingApiKey || null
-        : (record?.embeddingApiKey ?? null),
-    embeddingModel:
-      input.embeddingModel !== undefined
-        ? input.embeddingModel
-        : (record?.embeddingModel ?? null),
+  const merged = mergeRoleInput(record, input, {
+    backendKey: "embeddingBackendId",
+    modelKey: "embeddingModel",
   });
+  const runtime = await toEmbeddingRuntime(db, merged);
 
   return withTrace(
     {
       feature: FEATURE.id,
       action: "test-embeddings",
       trigger,
-      inputSummary: input.embeddingModel ?? record?.embeddingModel ?? "(no model)",
+      inputSummary: merged.embeddingModel ?? "(no model)",
     },
     async (trace) => {
       if (!runtime) {
         throw ApiError.badRequest(
-          "Choose an embedding model (and a base URL, unless the LLM connection serves embeddings).",
+          "Choose an embedding model (and a backend, unless the chat backend serves embeddings).",
         );
       }
       await trace.event({
@@ -810,33 +743,28 @@ export async function testEmbeddings(
  * the `image_generate` tool will actually use works.
  */
 export async function testImages(
-  input: TestImages,
+  input: TestRoleConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<ImageProbe> {
   const record = await getSettingsRecord(db);
-  const runtime = toImageRuntime({
-    ...(record ?? EMPTY_RECORD),
-    imageBaseUrl:
-      input.imageBaseUrl !== undefined ? input.imageBaseUrl : (record?.imageBaseUrl ?? null),
-    imageApiKey:
-      input.imageApiKey !== undefined
-        ? input.imageApiKey || null
-        : (record?.imageApiKey ?? null),
-    imageModel: input.imageModel !== undefined ? input.imageModel : (record?.imageModel ?? null),
+  const merged = mergeRoleInput(record, input, {
+    backendKey: "imageBackendId",
+    modelKey: "imageModel",
   });
+  const runtime = await toImageRuntime(db, merged);
 
   return withTrace(
     {
       feature: FEATURE.id,
       action: "test-images",
       trigger,
-      inputSummary: input.imageModel ?? record?.imageModel ?? "(no model)",
+      inputSummary: merged.imageModel ?? "(no model)",
     },
     async (trace) => {
       if (!runtime) {
         throw ApiError.badRequest(
-          "Choose an image model (and a base URL, unless the LLM connection serves images).",
+          "Choose an image model (and a backend, unless the chat backend serves images).",
         );
       }
       await trace.event({
@@ -863,34 +791,28 @@ export async function testImages(
  * voice replies will actually use works.
  */
 export async function testSpeech(
-  input: TestSpeech,
+  input: TestRoleConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<SpeechProbe> {
   const record = await getSettingsRecord(db);
-  const runtime = toSpeechRuntime({
-    ...(record ?? EMPTY_RECORD),
-    speechBaseUrl:
-      input.speechBaseUrl !== undefined ? input.speechBaseUrl : (record?.speechBaseUrl ?? null),
-    speechApiKey:
-      input.speechApiKey !== undefined
-        ? input.speechApiKey || null
-        : (record?.speechApiKey ?? null),
-    speechModel:
-      input.speechModel !== undefined ? input.speechModel : (record?.speechModel ?? null),
+  const merged = mergeRoleInput(record, input, {
+    backendKey: "speechBackendId",
+    modelKey: "speechModel",
   });
+  const runtime = await toSpeechRuntime(db, merged);
 
   return withTrace(
     {
       feature: FEATURE.id,
       action: "test-speech",
       trigger,
-      inputSummary: input.speechModel ?? record?.speechModel ?? "(no model)",
+      inputSummary: merged.speechModel ?? "(no model)",
     },
     async (trace) => {
       if (!runtime) {
         throw ApiError.badRequest(
-          "Choose a speech model (and a base URL, unless the LLM connection serves speech).",
+          "Choose a speech model (and a backend, unless the chat backend serves speech).",
         );
       }
       await trace.event({
@@ -911,46 +833,36 @@ export async function testSpeech(
 }
 
 /**
- * Probe the transcription configuration by actually transcribing a fraction of a
+ * Probe the audio (STT) configuration by actually transcribing a fraction of a
  * second of generated silence — a **real** probe, like embeddings: whisper-class
  * servers often have no `/v1/models`, so only a genuine `/v1/audio/transcriptions`
  * call proves the endpoint, key, and model work. Recorded as a trace; submitted
  * values are merged over the stored record and resolved through the runtime
  * resolver, so a passing test means the voice path's connection works.
  */
-export async function testTranscription(
-  input: TestTranscription,
+export async function testAudio(
+  input: TestRoleConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<TranscriptionProbe> {
   const record = await getSettingsRecord(db);
-  const runtime = toTranscriptionRuntime({
-    ...(record ?? EMPTY_RECORD),
-    transcriptionBaseUrl:
-      input.transcriptionBaseUrl !== undefined
-        ? input.transcriptionBaseUrl
-        : (record?.transcriptionBaseUrl ?? null),
-    transcriptionApiKey:
-      input.transcriptionApiKey !== undefined
-        ? input.transcriptionApiKey || null
-        : (record?.transcriptionApiKey ?? null),
-    transcriptionModel:
-      input.transcriptionModel !== undefined
-        ? input.transcriptionModel
-        : (record?.transcriptionModel ?? null),
+  const merged = mergeRoleInput(record, input, {
+    backendKey: "audioBackendId",
+    modelKey: "audioModel",
   });
+  const runtime = await toAudioRuntime(db, merged);
 
   return withTrace(
     {
       feature: FEATURE.id,
-      action: "test-transcription",
+      action: "test-audio",
       trigger,
-      inputSummary: input.transcriptionModel ?? record?.transcriptionModel ?? "(no model)",
+      inputSummary: merged.audioModel ?? "(no model)",
     },
     async (trace) => {
       if (!runtime) {
         throw ApiError.badRequest(
-          "Choose a transcription model (and a base URL, unless the LLM connection serves transcription).",
+          "Choose an audio model (and a backend, unless the chat backend serves transcription).",
         );
       }
       await trace.event({
@@ -972,30 +884,24 @@ export async function testTranscription(
 
 /** Field defaults for merging a partial probe input onto a never-written settings row. */
 const EMPTY_RECORD: SettingsRecord = {
-  llmBaseUrl: null,
-  llmApiKey: null,
-  llmBackend: DEFAULT_LLM_BACKEND,
+  chatBackendId: null,
   model: null,
+  embeddingBackendId: null,
+  embeddingModel: null,
+  imageBackendId: null,
+  imageModel: null,
+  speechBackendId: null,
+  speechModel: null,
+  speechVoice: null,
+  audioBackendId: null,
+  audioModel: null,
+  visionBackendId: null,
+  visionModel: null,
+  browserBackendId: null,
+  browserModel: null,
   activePersonalityId: null,
   telegramBotToken: null,
   tavilyApiKey: null,
-  embeddingBaseUrl: null,
-  embeddingApiKey: null,
-  embeddingBackend: DEFAULT_LLM_BACKEND,
-  embeddingModel: null,
-  imageBaseUrl: null,
-  imageApiKey: null,
-  imageBackend: DEFAULT_LLM_BACKEND,
-  imageModel: null,
-  speechBaseUrl: null,
-  speechApiKey: null,
-  speechBackend: DEFAULT_LLM_BACKEND,
-  speechModel: null,
-  speechVoice: null,
-  transcriptionBaseUrl: null,
-  transcriptionApiKey: null,
-  transcriptionBackend: DEFAULT_LLM_BACKEND,
-  transcriptionModel: null,
   ownerUsername: null,
   ownerUserId: null,
   maintenanceModeEnabled: false,

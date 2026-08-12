@@ -9,7 +9,7 @@ import { getActivePersonalityPrompt } from "@/features/personalities/server/serv
 import {
   getBrowserDownloadLimitBytes,
   getBotPolicy,
-  getLlmRuntime,
+  getBrowserLlmRuntime,
 } from "@/features/settings/server/service";
 import { getGroupLanguage } from "@/features/known-groups/server/service";
 import { getUserLanguage } from "@/features/known-users/server/service";
@@ -285,7 +285,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
   let screenshotSeq = 0;
 
   try {
-    const runtime = await getLlmRuntime();
+    const runtime = await getBrowserLlmRuntime();
     if (!runtime) {
       await trace.skip("LLM not configured");
       await settleBrowserAgentRun(db, run.id, {

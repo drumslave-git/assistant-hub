@@ -124,6 +124,12 @@ export const FEATURES = {
     relatedIdsKey: "settings",
     path: "/settings",
   },
+  backends: {
+    id: "backends",
+    label: "Backends",
+    relatedIdsKey: "backends",
+    path: "/backends",
+  },
   /** Trace-store maintenance itself (the manual prune) — traced like any mutation. */
   traces: {
     id: "traces",

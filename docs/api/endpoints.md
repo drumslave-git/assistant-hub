@@ -60,20 +60,35 @@ both of those and still fails.
 
 ---
 
+## Backends
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `GET` | `/api/backends` | — | `Backend[]` (masked — the key appears only as `apiKeyConfigured`) |
+| `POST` | `/api/backends` | `{ name, baseUrl, apiKey?, type }` | The created `Backend` |
+| `PATCH` | `/api/backends/{id}` | Partial update, ≥1 field | `{ backend, clearedModels: string[] }` |
+| `DELETE` | `/api/backends/{id}` | — | `{ deleted: true }` (409 while a settings role uses it) |
+| `GET` | `/api/backends/{id}/models` | — | `{ models: string[] }` |
+| `POST` | `/api/backends/test` | `{ backendId? \| baseUrl?, apiKey? }` | `{ models: string[] }` |
+| `POST` | `/api/backends/detect` | `{ baseUrl }` | `{ backend: type \| null, detail }` |
+
+Omitting `apiKey` when testing a stored backend reuses the stored key, so a URL
+can be re-tested without resending the secret.
+
 ## Settings
 
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | `GET` | `/api/settings` | — | `Settings` (masked — secrets appear only as `…Configured`) |
 | `PATCH` | `/api/settings` | Partial `Settings` update, ≥1 field | The updated `Settings` |
-| `POST` | `/api/settings/test-connection` | `{ llmBaseUrl, apiKey? }` | `{ models: string[] }` |
-| `POST` | `/api/settings/test-embeddings` | `{ embeddingBaseUrl?, embeddingApiKey?, embeddingModel? }` | `{ model, dimensions }` |
-| `POST` | `/api/settings/test-images` | `{ imageBaseUrl?, imageApiKey?, imageModel? }` | `{ model, modelCount }` |
-| `POST` | `/api/settings/test-speech` | `{ speechBaseUrl?, speechApiKey?, speechModel? }` | `{ model, modelCount }` |
-| `POST` | `/api/settings/test-transcription` | `{ transcriptionBaseUrl?, transcriptionApiKey?, transcriptionModel? }` | `{ model, text }` |
+| `POST` | `/api/settings/test-embeddings` | `{ backendId?, model? }` | `{ model, dimensions }` |
+| `POST` | `/api/settings/test-images` | `{ backendId?, model? }` | `{ model, modelCount }` |
+| `POST` | `/api/settings/test-speech` | `{ backendId?, model? }` | `{ model, modelCount }` |
+| `POST` | `/api/settings/test-audio` | `{ backendId?, model? }` | `{ model, text }` |
 
-Omitting `apiKey` on `test-connection` reuses the stored key, so a URL can be
-re-tested without resending the secret. Every field's meaning is in
+Role probes merge the input over the stored configuration (omitted fields fall
+back; `backendId: null` means "use the chat backend") and resolve exactly as
+the runtime does. Every field's meaning is in
 [Configuration](../configuration.md#db-backed-settings).
 
 ## Telegram bot control
@@ -281,13 +296,20 @@ POST   /api/auth/logout                            public
 GET    /api/health                                 public
 GET    /api/events                                 SSE
 
+GET    /api/backends
+POST   /api/backends
+PATCH  /api/backends/{id}
+DELETE /api/backends/{id}
+GET    /api/backends/{id}/models
+POST   /api/backends/test
+POST   /api/backends/detect
+
 GET    /api/settings
 PATCH  /api/settings
-POST   /api/settings/test-connection
 POST   /api/settings/test-embeddings
 POST   /api/settings/test-images
 POST   /api/settings/test-speech
-POST   /api/settings/test-transcription
+POST   /api/settings/test-audio
 
 GET    /api/telegram/bot
 POST   /api/telegram/bot

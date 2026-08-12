@@ -7,12 +7,15 @@ import {
   getDownloadStorageHealth,
   type DownloadStorageHealth,
 } from "@/features/browser-agent/server/download";
+import { getBackendById } from "@/features/backends/server/repository";
 import { getSettingsRecord } from "@/features/settings/server/repository";
 import {
+  getAudioRuntime,
+  getBrowserLlmRuntime,
   getEmbeddingRuntime,
   getImageRuntime,
   getSpeechRuntime,
-  getTranscriptionRuntime,
+  getVisionRuntime,
 } from "@/features/settings/server/service";
 import { listModels } from "@/server/llm/client";
 import { probeTranscription } from "@/server/llm/transcription";
@@ -54,7 +57,7 @@ export interface ModelStatus {
  * its probe.
  */
 export interface EndpointStatus {
-  id: "embeddings" | "images" | "speech" | "transcription";
+  id: "embeddings" | "images" | "speech" | "audio" | "vision" | "browser";
   label: string;
   state: "off" | "ok" | "error";
   detail: string;
@@ -89,12 +92,12 @@ export interface ConfigReadiness {
 export async function getConfigReadiness(db: DrizzleDb = getDb()): Promise<ConfigReadiness> {
   try {
     const settings = await getSettingsRecord(db);
-    const configured = Boolean(settings?.llmBaseUrl && settings?.model);
+    const configured = Boolean(settings?.chatBackendId && settings?.model);
     return {
       configured,
       detail: configured
-        ? "LLM endpoint and model set — see Overview for live status."
-        : "Connect an LLM endpoint and choose a model.",
+        ? "Chat backend and model set — see Overview for live status."
+        : "Pick a chat backend and model in Settings.",
     };
   } catch {
     return { configured: false, detail: "Database unavailable." };
@@ -140,9 +143,9 @@ const TRANSCRIPTION_PROBE_TIMEOUT_MS = 6_000;
  * real call is the only honest check (same reasoning as the Settings probe).
  */
 async function probeTranscriptionEndpoint(db: DrizzleDb): Promise<EndpointStatus> {
-  const id = "transcription" as const;
-  const label = "Transcription";
-  const runtime = await getTranscriptionRuntime(db).catch(() => null);
+  const id = "audio" as const;
+  const label = "Audio (STT)";
+  const runtime = await getAudioRuntime(db).catch(() => null);
   if (!runtime) {
     return { id, label, state: "off", detail: "No STT model — voice uses the chat model" };
   }
@@ -169,6 +172,13 @@ async function probeTranscriptionEndpoint(db: DrizzleDb): Promise<EndpointStatus
 
 /** Every optional endpoint's live status, probed concurrently. */
 async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> {
+  // The chat-fallback roles (vision, browser agent) are probed only when the
+  // operator overrode either half — otherwise they resolve to exactly the chat
+  // connection the LLM card already probes, and a second identical probe would
+  // just double the noise.
+  const record = await getSettingsRecord(db).catch(() => null);
+  const visionOverridden = Boolean(record?.visionBackendId || record?.visionModel);
+  const browserOverridden = Boolean(record?.browserBackendId || record?.browserModel);
   return Promise.all([
     getEmbeddingRuntime(db)
       .catch(() => null)
@@ -191,6 +201,24 @@ async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> 
         probeModelEndpoint("speech", "Speech", "No speech model — voice replies text-only", runtime),
       ),
     probeTranscriptionEndpoint(db),
+    (visionOverridden ? getVisionRuntime(db).catch(() => null) : Promise.resolve(null)).then(
+      (runtime) =>
+        probeModelEndpoint(
+          "vision",
+          "Vision",
+          visionOverridden ? "Not fully configured" : "Follows the chat backend and model",
+          runtime,
+        ),
+    ),
+    (browserOverridden ? getBrowserLlmRuntime(db).catch(() => null) : Promise.resolve(null)).then(
+      (runtime) =>
+        probeModelEndpoint(
+          "browser",
+          "Browser agent",
+          browserOverridden ? "Not fully configured" : "Follows the chat backend and model",
+          runtime,
+        ),
+    ),
   ]);
 }
 
@@ -227,18 +255,20 @@ export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemSt
   // optional endpoints are probed concurrently with it; each is bounded, so the
   // page waits for the slowest single probe, not their sum.
   const settings = await getSettingsRecord(db);
-  const baseUrl = settings?.llmBaseUrl ?? null;
+  const chatBackend = settings?.chatBackendId
+    ? await getBackendById(db, settings.chatBackendId)
+    : null;
 
   const probeLlm = async (): Promise<LlmStatus> => {
-    if (!baseUrl) {
-      return { state: "unconfigured", detail: "No endpoint set — configure it in Settings" };
+    if (!chatBackend) {
+      return { state: "unconfigured", detail: "No chat backend set — configure it in Settings" };
     }
     try {
       const models = await listModels(
-        { baseUrl, apiKey: settings?.llmApiKey ?? null },
+        { baseUrl: chatBackend.baseUrl, apiKey: chatBackend.apiKey, backend: chatBackend.type },
         LLM_PROBE_TIMEOUT_MS,
       );
-      return { state: "connected", detail: baseUrl, modelCount: models.length };
+      return { state: "connected", detail: chatBackend.baseUrl, modelCount: models.length };
     } catch (err) {
       return { state: "error", detail: errorMessage(err) };
     }

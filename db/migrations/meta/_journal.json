@@ -344,6 +344,20 @@
       "when": 1786120370228,
       "tag": "0048_dazzling_chamber",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1786530606283,
+      "tag": "0049_slimy_hedge_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1786530655954,
+      "tag": "0050_faithful_wendell_vaughn",
+      "breakpoints": true
     }
   ]
 }

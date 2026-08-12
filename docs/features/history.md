@@ -216,7 +216,7 @@ imported hours are picked up by the next insight run.
 
 | Setting | Effect |
 | --- | --- |
-| `llmBaseUrl` + `model` | Required for the summarization job |
+| Chat backend + `model` | Required for the summarization job |
 | `embeddingBaseUrl`/`embeddingModel` | Without them, summaries are written but not embedded — no semantic recall |
 | `dailyJobsRunTime`, `timezone` | When the job runs, and where the chat-day boundaries fall |
 

@@ -28,6 +28,106 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Backends catalog + per-role LLM configuration (`done` pending production deploy, 2026-08-12)
+
+User request, 2026-08-12: *"lets re-work our LLM backend"* — Backends as a CRUD
+entity (`url`, optional `api key`, `type`; test connection + preview available
+models), roles selecting from the catalog instead of re-entering endpoints,
+search in model selection, and granular role configs: chat (aka main — must
+support thinking and tools), embedding, audio (main by default), vision (main
+by default), speech, image generation, browser agent (main by default).
+
+### What shipped
+
+- **`backends` table + CRUD feature** (`features/backends`, page `/backends`,
+  feature id `backends`, `/api/backends[...]`): name (unique
+  case-insensitively), URL, write-only key, server type (the existing
+  `LlmBackendId` normalization ids) with the Detect fingerprint moved to
+  `POST /api/backends/detect`. Per-backend **Test connection** = one
+  `/v1/models` call whose result doubles as the model preview. Delete is
+  refused (409) naming the settings roles pointing at the row; the FKs are
+  `ON DELETE RESTRICT` as backstop.
+- **Settings are role configs** (migrations `0049_slimy_hedge_knight` +
+  `0050_faithful_wendell_vaughn`, **applied to the dev DB**): per role a
+  `*_backend_id` FK (null = "use the chat backend") + model column. Roles:
+  chat (`chat_backend_id` + `model`), embedding, image, speech (+voice),
+  audio (renamed from transcription), vision (new), browser (new). 0049
+  carries a SQL data migration: legacy `*_base_url`/`*_api_key`/`*_backend`
+  columns become deduplicated backend rows and the role FKs are pointed at
+  them; 0050 drops the legacy columns. Verified against the live dev DB:
+  "Main" (vLLM) + "Embeddings" (Ollama) rows created, chat/embedding roles
+  attached, all others inheriting.
+  Note: drizzle-kit's rename prompt cannot run non-interactively, hence the
+  two-pass generate (adds, then drops) with the data migration hand-inserted.
+- **Runtime resolution**: `getLlmRuntime` (chat) keeps its shape;
+  embedding/image/speech require their model (off otherwise) and inherit the
+  chat backend when their own is null; `getAudioRuntime` (was
+  `getTranscriptionRuntime`) keeps the null → chat-model `input_audio`
+  fallback; new `getVisionRuntime`/`getBrowserLlmRuntime` fall back to the
+  chat backend *and* chat model per unset half. Vision describe runs on the
+  vision runtime (`resolveDescribeDeps`), with the voice `input_audio`
+  fallback split onto the chat connection when vision points elsewhere; the
+  browser-agent runner uses the browser runtime.
+- **Stale-model doctrine carried over** to backend-id semantics: a PATCH that
+  repoints a role (own backend id change, or chat backend change hitting
+  inheritors) lists the newly effective backend once and clears verifiably
+  unserved stored models in the same write; editing a backend's URL/key does
+  the same for every role riding on it (`clearRoleModelsNotServed`, reported
+  back to the Backends form). Failed listing clears nothing; audio exempt;
+  same-patch picks trusted.
+- **UI**: new shared searchable `Combobox` (components/ui) used for every
+  model select (type-to-filter; free-text mode for audio); `RoleSection`
+  replaces `ConnectionSection`; Settings tabs are now Chat / Embeddings /
+  Images / Speech / Audio / Vision / Browser agent / Telegram / General /
+  Integrations / Security; per-backend model lists preloaded server-side and
+  fetched on demand (`useBackendModels`). Backends page mirrors the
+  personalities CRUD pattern. `readApiError` extracted to `lib/api-error.ts`
+  (third copy was imminent).
+- Probe routes take `{ backendId?, model? }` (`test-audio` replaces
+  `test-transcription`; `test-connection`/`list-models`/`detect-backend`
+  removed in favor of the backends routes). Overview endpoint statuses now
+  include vision/browser (probed only when overridden — otherwise they'd
+  duplicate the LLM card's probe).
+
+### Proof
+
+Files: `db/schema.ts`, `db/migrations/0049+0050`, `features/backends/*` (new),
+`features/settings/server/{repository,schema,service}.ts`,
+`features/settings/ui/{SettingsForm,RoleSection,connection}.tsx|ts`,
+`components/ui/Combobox.tsx`, `server/status.ts`,
+`features/vision/server/service.ts`, `features/browser-agent/server/runner.ts`,
+`app/api/backends/*`, `app/(dashboard)/backends/page.tsx`, nav + features
+registry, docs (`configuration.md`, `features/{settings,backends}.md`,
+`api/{endpoints.md,openapi.yaml}`, `architecture/{data-model,security}.md`,
+feature docs, `getting-started.md`).
+
+`npm run lint` clean; `npm run typecheck` clean except three stale
+`.next/types/validator.ts` lines referencing the deleted routes (regenerates on
+next dev-server rebuild/build). Integration: settings (20) + backends (11) +
+status (4) suites rewritten/extended — 35/35 pass, exercising the new
+migrations in Testcontainers. `npm run test` 1081 passed / the same 21
+pre-existing yt-dlp Windows failures. `npm run build` **not run** (would kill
+the running dev server). Browser-verified against the live dev server:
+Backends page CRUD chrome + Test connection ("Connected — 1 models" from the
+live vLLM), Settings role tabs with the migrated selections, chat model
+combobox listing the served model, vision tab inherit labels, and a real
+"Test embeddings" through the new role resolution ("bge-m3:latest — 1024
+dimensions" from the live Ollama).
+
+### Remaining risks
+
+- Production deploy runs 0049+0050 against real data: the data migration is
+  exercised in tests and on the dev DB, but production is the first run with
+  its exact column contents. `backends` rows are created before any drop, so a
+  failed run cannot lose connection data silently.
+- Role probes resolve "inherit chat" against the **stored** chat backend, so
+  testing an inheriting role right after changing the chat backend in the form
+  (without saving) probes the saved one. Save first; the form's stale warnings
+  cover the rest.
+- The live-fetched model list is now authoritative per backend: a backend that
+  serves a model while omitting it from `/v1/models` would flag (and on save
+  clear) that selection — same accepted trade as before, now per backend row.
+
 ## Stale model selections survive an endpoint switch + Settings tab rework (`done` pending production deploy, 2026-08-09)
 
 User report, 2026-08-09: *"when I change main llm endpoint and for example embedding

@@ -76,7 +76,7 @@ Design constraints worth preserving:
 
 | Setting | Effect |
 | --- | --- |
-| `llmBaseUrl`, `model`, `apiKey` | Without a base URL and model there are no replies |
+| Chat backend + `model` | Without a chat backend and model there are no replies |
 | `telegramBotToken` | Without it the poller cannot start |
 | `ownerUserId` | Owner-gated behavior |
 | `maintenanceModeEnabled` | Above |

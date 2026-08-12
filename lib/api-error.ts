@@ -118,4 +118,18 @@ export function isApiError(value: unknown): value is ApiError {
   return value instanceof ApiError;
 }
 
+/**
+ * Read the human message out of a failed API response — the client half of the
+ * {@link ApiErrorBody} contract. Client-safe; every fetch-and-show-the-error UI
+ * uses this instead of keeping its own copy.
+ */
+export async function readApiError(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as ApiErrorBody;
+    return body.error?.message ?? `Request failed (${res.status})`;
+  } catch {
+    return `Request failed (${res.status})`;
+  }
+}
+
 export const statusForCode = (code: ApiErrorCode): number => STATUS_BY_CODE[code];

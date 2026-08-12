@@ -1,27 +1,26 @@
 import { z } from "zod";
 
-import { LLM_BACKEND_IDS } from "@/lib/llm-backend";
-
 /**
  * Settings validation contract — the single source of truth for the shape and
  * bounds of the DB-backed configuration. Shared by the service, the Route
  * Handlers, and the dashboard form.
  *
- * The LLM API key is a secret: it is accepted on input but never returned. The
- * client-facing {@link settingsSchema} exposes only `apiKeyConfigured`.
+ * LLM configuration is per **role** (chat, embedding, audio, vision, speech,
+ * image generation, browser agent): each role picks a backend from the
+ * catalog (`features/backends`) by id — null meaning "use the chat backend" —
+ * and a model. Endpoint URLs and API keys live on the backend rows.
+ *
+ * The bot token and integration keys are secrets: accepted on input but never
+ * returned. The client-facing {@link settingsSchema} exposes only
+ * `…Configured` booleans for them.
  */
 
-const baseUrl = z.string().trim().url().max(500);
 const model = z.string().trim().min(1).max(200);
 const apiKey = z.string().trim().max(500);
 const botToken = z.string().trim().max(200);
 
-/**
- * Which inference server sits behind an endpoint. Not a secret and not
- * nullable — every endpoint resolves to some backend, and an unnamed one
- * resolves to the conservative generic adapter (see `@/lib/llm-backend`).
- */
-const backend = z.enum(LLM_BACKEND_IDS);
+/** A backend id from the catalog; null = "use the chat backend". */
+const backendId = z.string().trim().min(1).max(100);
 
 /** Owner is chosen from known users; the id is Telegram's numeric user id. */
 const ownerUserId = z.string().trim().regex(/^\d+$/, "Invalid user id");
@@ -34,52 +33,40 @@ const timeOfDay = z
 
 /** Settings as returned to clients — no secret values. */
 export const settingsSchema = z.object({
-  /** OpenAI-compatible endpoint base URL, or null when unconfigured. */
-  llmBaseUrl: baseUrl.nullable(),
-  /** Which inference server serves the LLM endpoint. */
-  llmBackend: backend,
+  /** Chat (main) backend id, or null when the bot is unconfigured. */
+  chatBackendId: backendId.nullable(),
   /** Selected chat model id, or null when none picked. */
   model: model.nullable(),
-  /** Whether an API key is stored (the value itself is never exposed). */
-  apiKeyConfigured: z.boolean(),
-  /** Whether a Telegram bot token is stored (the value itself is never exposed). */
-  telegramBotTokenConfigured: z.boolean(),
-  /** Whether a Tavily API key is stored, enabling the browsing agent's search fallback (value never exposed). */
-  webSearchConfigured: z.boolean(),
-  /** Embedding endpoint base URL, or null to reuse the LLM connection. */
-  embeddingBaseUrl: baseUrl.nullable(),
-  /** Which inference server serves the embedding endpoint. */
-  embeddingBackend: backend,
+  /** Embedding backend id, or null to use the chat backend. */
+  embeddingBackendId: backendId.nullable(),
   /** Selected embedding model id, or null when none picked (semantic recall off). */
   embeddingModel: model.nullable(),
-  /** Whether an embedding API key is stored (the value itself is never exposed). */
-  embeddingApiKeyConfigured: z.boolean(),
-  /** Image endpoint base URL, or null to reuse the LLM connection. */
-  imageBaseUrl: baseUrl.nullable(),
-  /** Which inference server serves the image endpoint. */
-  imageBackend: backend,
+  /** Image backend id, or null to use the chat backend. */
+  imageBackendId: backendId.nullable(),
   /** Selected image model id, or null when none picked (image generation off). */
   imageModel: model.nullable(),
-  /** Whether an image API key is stored (the value itself is never exposed). */
-  imageApiKeyConfigured: z.boolean(),
-  /** Speech endpoint base URL, or null to reuse the LLM connection. */
-  speechBaseUrl: baseUrl.nullable(),
-  /** Which inference server serves the speech endpoint. */
-  speechBackend: backend,
+  /** Speech backend id, or null to use the chat backend. */
+  speechBackendId: backendId.nullable(),
   /** Selected speech (TTS) model id, or null when none picked (voice replies off). */
   speechModel: model.nullable(),
   /** Voice name for the speech endpoint, or null for the endpoint default. */
   speechVoice: z.string().nullable(),
-  /** Whether a speech API key is stored (the value itself is never exposed). */
-  speechApiKeyConfigured: z.boolean(),
-  /** Transcription endpoint base URL, or null to reuse the LLM connection. */
-  transcriptionBaseUrl: baseUrl.nullable(),
-  /** Which inference server serves the transcription endpoint. */
-  transcriptionBackend: backend,
-  /** Selected transcription model id, or null → voice falls back to the chat model. */
-  transcriptionModel: model.nullable(),
-  /** Whether a transcription API key is stored (the value itself is never exposed). */
-  transcriptionApiKeyConfigured: z.boolean(),
+  /** Audio (STT) backend id, or null to use the chat backend. */
+  audioBackendId: backendId.nullable(),
+  /** Selected audio (STT) model id, or null → voice falls back to the chat model. */
+  audioModel: model.nullable(),
+  /** Vision backend id, or null to use the chat backend. */
+  visionBackendId: backendId.nullable(),
+  /** Selected vision model id, or null → the chat model describes media. */
+  visionModel: model.nullable(),
+  /** Browser-agent backend id, or null to use the chat backend. */
+  browserBackendId: backendId.nullable(),
+  /** Selected browser-agent model id, or null → browsing runs on the chat model. */
+  browserModel: model.nullable(),
+  /** Whether a Telegram bot token is stored (the value itself is never exposed). */
+  telegramBotTokenConfigured: z.boolean(),
+  /** Whether a Tavily API key is stored, enabling the browsing agent's search fallback (value never exposed). */
+  webSearchConfigured: z.boolean(),
   /** Owner's numeric user id (chosen from known users), or null when unset. */
   ownerUserId: z.string().nullable(),
   /** Owner's @username, denormalized from the chosen known user (display only). */
@@ -100,34 +87,29 @@ export type Settings = z.infer<typeof settingsSchema>;
 
 /**
  * Partial update input. Any subset may be provided; at least one field is
- * required. `apiKey` is write-only: a non-empty string sets it, an empty string
- * or null clears it, and omitting it leaves the stored key untouched.
+ * required. Backend ids are validated against the catalog by the service.
+ * Secrets are write-only: a non-empty string sets one, an empty string or null
+ * clears it, and omitting it leaves the stored value untouched.
  */
 export const updateSettingsSchema = z
   .object({
-    llmBaseUrl: baseUrl.nullable(),
-    llmBackend: backend,
+    chatBackendId: backendId.nullable(),
     model: model.nullable(),
-    apiKey: apiKey.nullable(),
-    telegramBotToken: botToken.nullable(),
-    tavilyApiKey: apiKey.nullable(),
-    embeddingBaseUrl: baseUrl.nullable(),
-    embeddingApiKey: apiKey.nullable(),
-    embeddingBackend: backend,
+    embeddingBackendId: backendId.nullable(),
     embeddingModel: model.nullable(),
-    imageBaseUrl: baseUrl.nullable(),
-    imageApiKey: apiKey.nullable(),
-    imageBackend: backend,
+    imageBackendId: backendId.nullable(),
     imageModel: model.nullable(),
-    speechBaseUrl: baseUrl.nullable(),
-    speechApiKey: apiKey.nullable(),
-    speechBackend: backend,
+    speechBackendId: backendId.nullable(),
     speechModel: model.nullable(),
     speechVoice: z.string().trim().max(100).nullable(),
-    transcriptionBaseUrl: baseUrl.nullable(),
-    transcriptionApiKey: apiKey.nullable(),
-    transcriptionBackend: backend,
-    transcriptionModel: model.nullable(),
+    audioBackendId: backendId.nullable(),
+    audioModel: model.nullable(),
+    visionBackendId: backendId.nullable(),
+    visionModel: model.nullable(),
+    browserBackendId: backendId.nullable(),
+    browserModel: model.nullable(),
+    telegramBotToken: botToken.nullable(),
+    tavilyApiKey: apiKey.nullable(),
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
     timezone: z.string().trim().min(1).max(64),
@@ -143,93 +125,14 @@ export const updateSettingsSchema = z
 export type UpdateSettings = z.infer<typeof updateSettingsSchema>;
 
 /**
- * Input for the connection test. `apiKey` is optional: omit it to test with the
- * currently-stored key (useful when the URL changes but the key stays).
+ * Input for one role's connection probe (embeddings, images, speech, audio).
+ * Every field is optional: omitted ones fall back to what is stored, so the
+ * operator can test the saved configuration without re-entering it. A null
+ * `backendId` means "use the chat backend", exactly as at runtime.
  */
-export const testConnectionSchema = z.object({
-  llmBaseUrl: baseUrl,
-  apiKey: apiKey.nullable().optional(),
+export const testRoleConnectionSchema = z.object({
+  backendId: backendId.nullable().optional(),
+  model: model.nullable().optional(),
 });
 
-export type TestConnection = z.infer<typeof testConnectionSchema>;
-
-/**
- * Input for the embeddings probe. Every field is optional: omitted ones fall back
- * to what is stored, so the operator can test the saved configuration without
- * re-entering it (and without the secret ever leaving the server). A blank base
- * URL means "use the LLM connection", exactly as at runtime.
- */
-export const testEmbeddingsSchema = z.object({
-  embeddingBaseUrl: baseUrl.nullable().optional(),
-  embeddingApiKey: apiKey.nullable().optional(),
-  embeddingModel: model.nullable().optional(),
-});
-
-export type TestEmbeddings = z.infer<typeof testEmbeddingsSchema>;
-
-/**
- * Input for the image probe. Optional-everywhere for the same reason as
- * {@link testEmbeddingsSchema}: omitted fields fall back to what is stored, so the
- * saved configuration can be tested without re-entering the secret. A blank base
- * URL means "use the LLM connection", exactly as at runtime.
- */
-export const testImagesSchema = z.object({
-  imageBaseUrl: baseUrl.nullable().optional(),
-  imageApiKey: apiKey.nullable().optional(),
-  imageModel: model.nullable().optional(),
-});
-
-export type TestImages = z.infer<typeof testImagesSchema>;
-
-/**
- * Input for the speech probe. Optional-everywhere for the same reason as
- * {@link testEmbeddingsSchema}: omitted fields fall back to what is stored, so the
- * saved configuration can be tested without re-entering the secret. A blank base
- * URL means "use the LLM connection", exactly as at runtime.
- */
-export const testSpeechSchema = z.object({
-  speechBaseUrl: baseUrl.nullable().optional(),
-  speechApiKey: apiKey.nullable().optional(),
-  speechModel: model.nullable().optional(),
-});
-
-export type TestSpeech = z.infer<typeof testSpeechSchema>;
-
-/**
- * Input for the transcription probe. Optional-everywhere for the same reason as
- * {@link testEmbeddingsSchema}: omitted fields fall back to what is stored, so the
- * saved configuration can be tested without re-entering the secret. A blank base
- * URL means "use the LLM connection", exactly as at runtime.
- */
-export const testTranscriptionSchema = z.object({
-  transcriptionBaseUrl: baseUrl.nullable().optional(),
-  transcriptionApiKey: apiKey.nullable().optional(),
-  transcriptionModel: model.nullable().optional(),
-});
-
-export type TestTranscription = z.infer<typeof testTranscriptionSchema>;
-
-/**
- * Input for the section model listing: which optional section is asking, the
- * endpoint URL *as currently in the form* (not necessarily saved), and an
- * optional key. `apiKey` follows the probe convention: omitted falls back to
- * that section's stored key, so an unchanged secret never round-trips.
- */
-export const listSectionModelsSchema = z.object({
-  section: z.enum(["embedding", "image", "speech", "transcription"]),
-  baseUrl,
-  apiKey: apiKey.nullable().optional(),
-});
-
-export type ListSectionModels = z.infer<typeof listSectionModelsSchema>;
-
-/**
- * Input for the backend fingerprint probe: the URL to identify. Unauthenticated
- * native admin routes (`/api/version`, `/props`, `/version`) are what answer, so
- * no key is taken — nothing here reads or needs a secret.
- */
-export const detectBackendSchema = z.object({
-  baseUrl,
-});
-
-export type DetectBackend = z.infer<typeof detectBackendSchema>;
+export type TestRoleConnection = z.infer<typeof testRoleConnectionSchema>;

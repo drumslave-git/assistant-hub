@@ -21,6 +21,7 @@ export {
   CardTitle,
 } from "./Card";
 export { Checkbox } from "./Checkbox";
+export { Combobox } from "./Combobox";
 export { EmptyState } from "./EmptyState";
 export { Field } from "./Field";
 export { Input, fieldBase } from "./Input";

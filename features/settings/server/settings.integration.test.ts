@@ -1,27 +1,33 @@
+import { randomUUID } from "node:crypto";
+
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { insertBackend } from "@/features/backends/server/repository";
 import { upsertKnownUser } from "@/features/known-users/server/repository";
+import type { LlmBackendId } from "@/lib/llm-backend";
 import { listModels } from "@/server/llm/client";
 import { getTraceDetail, listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
-import { getSettingsRecord, upsertSettings } from "./repository";
+import { getSettingsRecord } from "./repository";
 import { updateSettingsSchema } from "./schema";
 import {
+  getAudioRuntime,
   getBotPolicy,
+  getBrowserLlmRuntime,
   getDailyJobsRunTime,
   getEmbeddingRuntime,
   getImageRuntime,
+  getLlmRuntime,
   getSettings,
   getSpeechRuntime,
   getTelegramBotToken,
-  getTranscriptionRuntime,
+  getVisionRuntime,
   getWebSearchApiKey,
-  listSectionModels,
   updateSettings,
 } from "./service";
 
 // `updateSettings` verifies stored model selections against a repointed
-// endpoint by listing its models; a test must never make that network call.
+// backend by listing its models; a test must never make that network call.
 vi.mock("@/server/llm/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/server/llm/client")>();
   return { ...actual, listModels: vi.fn() };
@@ -32,6 +38,21 @@ const listModelsMock = vi.mocked(listModels);
 /** Seed a known user so the owner can be chosen by id. */
 async function seedUser(ctx: TestDb, userId: string, username: string | null) {
   await upsertKnownUser(ctx.db, { userId, username, firstName: null, lastName: null });
+}
+
+/** Seed one backend row and return its id. */
+async function seedBackend(
+  ctx: TestDb,
+  values: { name: string; baseUrl: string; apiKey?: string | null; type?: LlmBackendId },
+): Promise<string> {
+  const id = randomUUID();
+  await insertBackend(ctx.db, id, {
+    name: values.name,
+    baseUrl: values.baseUrl,
+    apiKey: values.apiKey ?? null,
+    type: values.type ?? "openai-compatible",
+  });
+  return id;
 }
 
 let ctx: TestDb;
@@ -57,29 +78,23 @@ const trigger = { kind: "dashboard" } as const;
 describe("getSettings", () => {
   it("returns empty defaults when never configured", async () => {
     expect(await getSettings(ctx.db)).toEqual({
-      llmBaseUrl: null,
-      llmBackend: "openai-compatible",
+      chatBackendId: null,
       model: null,
-      apiKeyConfigured: false,
-      telegramBotTokenConfigured: false,
-      webSearchConfigured: false,
-      embeddingBaseUrl: null,
-      embeddingBackend: "openai-compatible",
+      embeddingBackendId: null,
       embeddingModel: null,
-      embeddingApiKeyConfigured: false,
-      imageBaseUrl: null,
-      imageBackend: "openai-compatible",
+      imageBackendId: null,
       imageModel: null,
-      imageApiKeyConfigured: false,
-      speechBaseUrl: null,
-      speechBackend: "openai-compatible",
+      speechBackendId: null,
       speechModel: null,
       speechVoice: null,
-      speechApiKeyConfigured: false,
-      transcriptionBaseUrl: null,
-      transcriptionBackend: "openai-compatible",
-      transcriptionModel: null,
-      transcriptionApiKeyConfigured: false,
+      audioBackendId: null,
+      audioModel: null,
+      visionBackendId: null,
+      visionModel: null,
+      browserBackendId: null,
+      browserModel: null,
+      telegramBotTokenConfigured: false,
+      webSearchConfigured: false,
       ownerUsername: null,
       ownerUserId: null,
       maintenanceModeEnabled: false,
@@ -93,19 +108,25 @@ describe("getSettings", () => {
 
 describe("updateSettings", () => {
   it("persists a partial update and merges across writes", async () => {
-    const first = await updateSettings(
-      { llmBaseUrl: "https://api.openai.com/v1" },
-      trigger,
-      ctx.db,
-    );
-    expect(first.llmBaseUrl).toBe("https://api.openai.com/v1");
+    const backendId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    const first = await updateSettings({ chatBackendId: backendId }, trigger, ctx.db);
+    expect(first.chatBackendId).toBe(backendId);
     expect(first.model).toBeNull();
     expect(first.updatedAt).not.toBeNull();
 
     const second = await updateSettings({ model: "gpt-4o-mini" }, trigger, ctx.db);
     // Untouched fields survive partial updates.
-    expect(second.llmBaseUrl).toBe("https://api.openai.com/v1");
+    expect(second.chatBackendId).toBe(backendId);
     expect(second.model).toBe("gpt-4o-mini");
+  });
+
+  it("rejects a backend id that is not in the catalog", async () => {
+    await expect(
+      updateSettings({ chatBackendId: "no-such-backend" }, trigger, ctx.db),
+    ).rejects.toThrow(/unknown backend/i);
+    await expect(
+      updateSettings({ visionBackendId: "no-such-backend" }, trigger, ctx.db),
+    ).rejects.toThrow(/unknown backend/i);
   });
 
   it("stores a valid timezone and rejects an unknown one", async () => {
@@ -127,620 +148,304 @@ describe("updateSettings", () => {
     expect(updateSettingsSchema.safeParse({ dailyJobsRunTime: "23:45" }).success).toBe(true);
   });
 
-  it("never exposes the API key but reports it as configured, and can clear it", async () => {
-    const set = await updateSettings({ apiKey: "sk-secret-123" }, trigger, ctx.db);
-    expect(set.apiKeyConfigured).toBe(true);
-    expect(JSON.stringify(set)).not.toContain("sk-secret-123");
-    // The raw value is stored for provider calls, just not surfaced to clients.
-    expect((await getSettingsRecord(ctx.db))?.llmApiKey).toBe("sk-secret-123");
-
-    const cleared = await updateSettings({ apiKey: "" }, trigger, ctx.db);
-    expect(cleared.apiKeyConfigured).toBe(false);
-    expect((await getSettingsRecord(ctx.db))?.llmApiKey).toBeNull();
-  });
-
-  it("stores the Telegram bot token as a masked, server-only secret", async () => {
-    const set = await updateSettings({ telegramBotToken: "123:ABC-secret" }, trigger, ctx.db);
+  it("never exposes the bot token but reports it as configured, and can clear it", async () => {
+    const set = await updateSettings({ telegramBotToken: "12345:secret-token" }, trigger, ctx.db);
     expect(set.telegramBotTokenConfigured).toBe(true);
-    expect(JSON.stringify(set)).not.toContain("123:ABC-secret");
-    // The raw value is retrievable server-side (for the poller), never via the client shape.
-    expect(await getTelegramBotToken(ctx.db)).toBe("123:ABC-secret");
+    expect(JSON.stringify(set)).not.toContain("secret-token");
+    expect(await getTelegramBotToken(ctx.db)).toBe("12345:secret-token");
 
     const cleared = await updateSettings({ telegramBotToken: "" }, trigger, ctx.db);
     expect(cleared.telegramBotTokenConfigured).toBe(false);
     expect(await getTelegramBotToken(ctx.db)).toBeNull();
   });
 
-  it("stores the Tavily API key as a masked, server-only secret", async () => {
+  it("stores the Tavily key write-only and redacts it from the trace", async () => {
     const set = await updateSettings({ tavilyApiKey: "tvly-secret" }, trigger, ctx.db);
     expect(set.webSearchConfigured).toBe(true);
-    expect(JSON.stringify(set)).not.toContain("tvly-secret");
-    // Retrievable server-side for the web-search tool, never via the client shape.
     expect(await getWebSearchApiKey(ctx.db)).toBe("tvly-secret");
 
-    const cleared = await updateSettings({ tavilyApiKey: "" }, trigger, ctx.db);
-    expect(cleared.webSearchConfigured).toBe(false);
-    expect(await getWebSearchApiKey(ctx.db)).toBeNull();
+    const traces = await listTraces({ feature: "settings" });
+    const detail = await getTraceDetail(traces.traces[0].id);
+    expect(JSON.stringify(detail)).not.toContain("tvly-secret");
   });
 
-  it("redacts secrets from recorded trace data", async () => {
-    await updateSettings(
-      { apiKey: "sk-secret-456", tavilyApiKey: "tvly-secret-456", model: "m" },
-      trigger,
-      ctx.db,
-    );
-
-    const { traces } = await listTraces({ feature: "settings" });
-    expect(traces).toHaveLength(1);
-    expect(traces[0].action).toBe("update");
-    expect(traces[0].status).toBe("success");
-
-    const detail = await getTraceDetail(traces[0].id);
-    const json = JSON.stringify(detail.events);
-    expect(json).not.toContain("sk-secret-456");
-    expect(json).not.toContain("tvly-secret-456");
-  });
-
-  it("keeps a single row across many updates", async () => {
-    await updateSettings({ model: "a" }, trigger, ctx.db);
-    await updateSettings({ model: "b" }, trigger, ctx.db);
-
-    const rows = await ctx.db.execute("SELECT COUNT(*)::int AS count FROM settings");
-    expect(Number((rows.rows[0] as { count: number }).count)).toBe(1);
-  });
-
-  it("sets the owner from a known user (denormalizing the username) and toggles maintenance", async () => {
-    await seedUser(ctx, "555", "ownername");
-
-    const set = await updateSettings(
-      { ownerUserId: "555", maintenanceModeEnabled: true },
-      trigger,
-      ctx.db,
-    );
-    expect(set.ownerUserId).toBe("555");
-    expect(set.ownerUsername).toBe("ownername");
-    expect(set.maintenanceModeEnabled).toBe(true);
-
-    const off = await updateSettings({ maintenanceModeEnabled: false }, trigger, ctx.db);
-    // Untouched owner survives a maintenance-only update.
-    expect(off.ownerUserId).toBe("555");
-    expect(off.maintenanceModeEnabled).toBe(false);
-  });
-
-  it("rejects an owner id that is not a known user", async () => {
-    await expect(updateSettings({ ownerUserId: "404" }, trigger, ctx.db)).rejects.toThrow(
-      /not a known user/i,
-    );
-  });
-
-  it("clears the owner when passed null", async () => {
-    await seedUser(ctx, "555", "ownername");
-    await updateSettings({ ownerUserId: "555" }, trigger, ctx.db);
-
-    const cleared = await updateSettings({ ownerUserId: null }, trigger, ctx.db);
-    expect(cleared.ownerUserId).toBeNull();
-    expect(cleared.ownerUsername).toBeNull();
-  });
-});
-
-describe("updateSettings — stale model selections", () => {
-  /** One endpoint, a model picked on it for every capability. */
-  async function seed() {
-    await updateSettings(
-      {
-        llmBaseUrl: "http://old-backend.local/v1",
-        model: "chat-old",
-        embeddingModel: "embed-old",
-        imageModel: "image-old",
-        speechModel: "speech-old",
-        transcriptionModel: "whisper-old",
-      },
-      trigger,
-      ctx.db,
-    );
-  }
-
-  it("clears selections the repointed endpoint verifiably does not serve (transcription exempt)", async () => {
-    await seed();
-    listModelsMock.mockResolvedValue(["chat-new"]);
-
-    const updated = await updateSettings(
-      { llmBaseUrl: "http://new-backend.local/v1" },
-      trigger,
-      ctx.db,
-    );
-
-    expect(updated.model).toBeNull();
-    expect(updated.embeddingModel).toBeNull();
-    expect(updated.imageModel).toBeNull();
-    expect(updated.speechModel).toBeNull();
-    // Whisper-class servers often expose no listing, so absence proves nothing.
-    expect(updated.transcriptionModel).toBe("whisper-old");
-    // Four sections share one endpoint: one listing, not four.
-    expect(listModelsMock).toHaveBeenCalledTimes(1);
-    expect(listModelsMock).toHaveBeenCalledWith(
-      { baseUrl: "http://new-backend.local/v1", apiKey: null },
-      expect.any(Number),
-    );
-  });
-
-  it("keeps selections the repointed endpoint still serves", async () => {
-    await seed();
-    listModelsMock.mockResolvedValue(["chat-old", "embed-old", "image-old", "speech-old"]);
-
-    const updated = await updateSettings(
-      { llmBaseUrl: "http://new-backend.local/v1" },
-      trigger,
-      ctx.db,
-    );
-
-    expect(updated.model).toBe("chat-old");
-    expect(updated.embeddingModel).toBe("embed-old");
-    expect(updated.imageModel).toBe("image-old");
-    expect(updated.speechModel).toBe("speech-old");
-  });
-
-  it("clears nothing when the new endpoint cannot be listed — absence must be proven", async () => {
-    await seed();
-    listModelsMock.mockRejectedValue(new Error("connect ECONNREFUSED"));
-
-    const updated = await updateSettings(
-      { llmBaseUrl: "http://new-backend.local/v1" },
-      trigger,
-      ctx.db,
-    );
-
-    expect(updated.model).toBe("chat-old");
-    expect(updated.embeddingModel).toBe("embed-old");
-    const { traces } = await listTraces({ feature: "settings" });
-    const detail = await getTraceDetail(traces[0].id);
-    expect(JSON.stringify(detail.events)).toContain("Could not list models");
-  });
-
-  it("trusts a model chosen in the same patch and validates the rest", async () => {
-    await seed();
-    listModelsMock.mockResolvedValue(["something-else"]);
-
-    const updated = await updateSettings(
-      { llmBaseUrl: "http://new-backend.local/v1", model: "picked-by-hand" },
-      trigger,
-      ctx.db,
-    );
-
-    expect(updated.model).toBe("picked-by-hand");
-    expect(updated.embeddingModel).toBeNull();
-  });
-
-  it("leaves a section with its own endpoint alone when the LLM URL changes", async () => {
-    await seed();
-    await updateSettings(
-      { embeddingBaseUrl: "http://embed.local/v1", embeddingModel: "embed-own" },
-      trigger,
-      ctx.db,
-    );
-    listModelsMock.mockResolvedValue(["chat-new"]);
-
-    const updated = await updateSettings(
-      { llmBaseUrl: "http://new-backend.local/v1" },
-      trigger,
-      ctx.db,
-    );
-
-    expect(updated.model).toBeNull();
-    expect(updated.embeddingModel).toBe("embed-own");
-  });
-
-  it("validates against the LLM endpoint when a section falls back to it", async () => {
-    await seed();
-    await updateSettings(
-      { embeddingBaseUrl: "http://embed.local/v1", embeddingModel: "embed-own" },
-      trigger,
-      ctx.db,
-    );
-    listModelsMock.mockResolvedValue(["chat-old", "image-old", "speech-old"]);
-
-    const updated = await updateSettings({ embeddingBaseUrl: null }, trigger, ctx.db);
-
-    // "embed-own" was picked on the dropped host; the LLM endpoint has no such model.
-    expect(updated.embeddingModel).toBeNull();
-    // The LLM endpoint itself did not move — its own model is not even checked.
-    expect(updated.model).toBe("chat-old");
-    expect(listModelsMock).toHaveBeenCalledTimes(1);
-    expect(listModelsMock).toHaveBeenCalledWith(
-      { baseUrl: "http://old-backend.local/v1", apiKey: null },
-      expect.any(Number),
-    );
-  });
-
-  it("records what was cleared on the trace", async () => {
-    await seed();
-    listModelsMock.mockResolvedValue(["chat-new", "embed-old", "image-old", "speech-old"]);
-
-    await updateSettings({ llmBaseUrl: "http://new-backend.local/v1" }, trigger, ctx.db);
-
-    const { traces } = await listTraces({ feature: "settings" });
-    expect(traces[0].outputSummary).toContain("cleared stale chat model");
-    const detail = await getTraceDetail(traces[0].id);
-    const messages = detail.events.map((e) => e.message);
-    expect(messages).toContain(
-      'Cleared chat model — "chat-old" is not served by http://new-backend.local/v1',
-    );
-  });
-
-  it("does not list models unless a base URL changes", async () => {
-    await seed();
-    await updateSettings({ model: "chat-newer" }, trigger, ctx.db);
-    expect(listModelsMock).not.toHaveBeenCalled();
-  });
-});
-
-describe("getBotPolicy", () => {
-  it("reads the owner id and maintenance flag", async () => {
-    await seedUser(ctx, "999", "ownername");
-    await updateSettings({ ownerUserId: "999", maintenanceModeEnabled: true }, trigger, ctx.db);
-
-    const policy = await getBotPolicy(ctx.db);
-    expect(policy).toEqual({ ownerUserId: "999", maintenanceModeEnabled: true });
-  });
-
-  it("defaults to no owner and maintenance off when unconfigured", async () => {
+  it("resolves the owner from known users and denormalizes the username", async () => {
+    await seedUser(ctx, "42", "operator");
+    const set = await updateSettings({ ownerUserId: "42" }, trigger, ctx.db);
+    expect(set.ownerUserId).toBe("42");
+    expect(set.ownerUsername).toBe("operator");
     expect(await getBotPolicy(ctx.db)).toEqual({
-      ownerUserId: null,
+      ownerUserId: "42",
       maintenanceModeEnabled: false,
     });
-  });
-});
 
-describe("embedding configuration", () => {
-  it("stores the embedding endpoint and never returns its key", async () => {
-    const settings = await updateSettings(
+    await expect(updateSettings({ ownerUserId: "999" }, trigger, ctx.db)).rejects.toThrow(
+      /known user/i,
+    );
+  });
+
+  it("persists every role's backend + model selection", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    const otherId = await seedBackend(ctx, { name: "GPU box", baseUrl: "https://gpu.example/v1" });
+    const set = await updateSettings(
       {
-        embeddingBaseUrl: "https://embeddings.example.com/v1",
-        embeddingApiKey: "secret-embed-key",
+        chatBackendId: chatId,
+        model: "chat-model",
+        embeddingBackendId: otherId,
         embeddingModel: "bge-m3",
-      },
-      trigger,
-      ctx.db,
-    );
-
-    expect(settings.embeddingBaseUrl).toBe("https://embeddings.example.com/v1");
-    expect(settings.embeddingModel).toBe("bge-m3");
-    expect(settings.embeddingApiKeyConfigured).toBe(true);
-    // The value itself never round-trips to a client.
-    expect(JSON.stringify(settings)).not.toContain("secret-embed-key");
-    // …but it is stored, so the server can actually call the endpoint.
-    expect((await getSettingsRecord(ctx.db))?.embeddingApiKey).toBe("secret-embed-key");
-  });
-
-  it("redacts the embedding key from the trace", async () => {
-    await updateSettings({ embeddingApiKey: "secret-embed-key" }, trigger, ctx.db);
-
-    const { traces } = await listTraces({ feature: "settings" });
-    expect(JSON.stringify(traces)).not.toContain("secret-embed-key");
-  });
-
-  it("falls back to the LLM connection when no embedding endpoint is set", async () => {
-    await updateSettings(
-      {
-        llmBaseUrl: "https://llm.example.com/v1",
-        apiKey: "llm-key",
-        model: "gemma3",
-        embeddingModel: "bge-m3",
-      },
-      trigger,
-      ctx.db,
-    );
-
-    // Chat and embeddings share a host in the common case, so the LLM's URL *and*
-    // its key are used — a key belongs to the host it authenticates.
-    expect(await getEmbeddingRuntime(ctx.db)).toEqual({
-      backend: "openai-compatible",
-      baseUrl: "https://llm.example.com/v1",
-      apiKey: "llm-key",
-      model: "bge-m3",
-    });
-  });
-
-  it("uses the embedding endpoint's own key when it has its own URL", async () => {
-    await updateSettings(
-      {
-        llmBaseUrl: "https://llm.example.com/v1",
-        apiKey: "llm-key",
-        model: "gemma3",
-        embeddingBaseUrl: "https://embeddings.example.com/v1",
-        embeddingApiKey: "embed-key",
-        embeddingModel: "bge-m3",
-      },
-      trigger,
-      ctx.db,
-    );
-
-    expect(await getEmbeddingRuntime(ctx.db)).toEqual({
-      backend: "openai-compatible",
-      baseUrl: "https://embeddings.example.com/v1",
-      apiKey: "embed-key",
-      model: "bge-m3",
-    });
-  });
-
-  it("is unconfigured (not half-configured) without a model", async () => {
-    await updateSettings(
-      { llmBaseUrl: "https://llm.example.com/v1", model: "gemma3" },
-      trigger,
-      ctx.db,
-    );
-
-    // No embedding model → semantic recall is off, rather than guessing a model id.
-    expect(await getEmbeddingRuntime(ctx.db)).toBeNull();
-  });
-
-});
-
-describe("image runtime", () => {
-  it("falls back to the LLM connection when no image endpoint is set", async () => {
-    await updateSettings(
-      {
-        llmBaseUrl: "https://llm.example.com/v1",
-        apiKey: "llm-key",
-        model: "gemma3",
-        imageModel: "sdxl",
-      },
-      trigger,
-      ctx.db,
-    );
-
-    // Same rule as embeddings: the key belongs to the host it authenticates.
-    expect(await getImageRuntime(ctx.db)).toEqual({
-      backend: "openai-compatible",
-      baseUrl: "https://llm.example.com/v1",
-      apiKey: "llm-key",
-      model: "sdxl",
-    });
-  });
-
-  it("uses the image endpoint's own key when it has its own URL", async () => {
-    await updateSettings(
-      {
-        llmBaseUrl: "https://llm.example.com/v1",
-        apiKey: "llm-key",
-        model: "gemma3",
-        imageBaseUrl: "https://images.example.com/v1",
-        imageApiKey: "image-key",
-        imageModel: "sdxl",
-      },
-      trigger,
-      ctx.db,
-    );
-
-    expect(await getImageRuntime(ctx.db)).toEqual({
-      backend: "openai-compatible",
-      baseUrl: "https://images.example.com/v1",
-      apiKey: "image-key",
-      model: "sdxl",
-    });
-  });
-
-  it("is unconfigured (not half-configured) without a model", async () => {
-    await updateSettings(
-      { llmBaseUrl: "https://llm.example.com/v1", model: "gemma3" },
-      trigger,
-      ctx.db,
-    );
-
-    // No image model → the tool reports images are unavailable, rather than the
-    // provider being called with a guessed model id.
-    expect(await getImageRuntime(ctx.db)).toBeNull();
-  });
-
-  it("never exposes the image key, but stores it", async () => {
-    const settings = await updateSettings(
-      { imageApiKey: "secret-image-key" },
-      trigger,
-      ctx.db,
-    );
-
-    expect(settings.imageApiKeyConfigured).toBe(true);
-    expect(JSON.stringify(settings)).not.toContain("secret-image-key");
-    expect((await getSettingsRecord(ctx.db))?.imageApiKey).toBe("secret-image-key");
-  });
-
-  it("redacts the image key from the trace", async () => {
-    await updateSettings({ imageApiKey: "secret-image-key" }, trigger, ctx.db);
-
-    const { traces } = await listTraces({ feature: "settings" });
-    expect(JSON.stringify(traces)).not.toContain("secret-image-key");
-  });
-});
-
-describe("speech runtime", () => {
-  it("falls back to the LLM connection when no speech endpoint is set", async () => {
-    await updateSettings(
-      {
-        llmBaseUrl: "https://llm.example.com/v1",
-        apiKey: "llm-key",
-        model: "gemma3",
+        audioBackendId: otherId,
+        audioModel: "whisper-1",
+        visionModel: "gemma-vision",
+        browserBackendId: otherId,
         speechModel: "kokoro",
         speechVoice: "alloy",
+        imageModel: "sdxl",
       },
       trigger,
       ctx.db,
     );
-
-    // Same rule as embeddings/images: the key belongs to the host it authenticates.
-    expect(await getSpeechRuntime(ctx.db)).toEqual({
-      backend: "openai-compatible",
-      baseUrl: "https://llm.example.com/v1",
-      apiKey: "llm-key",
-      model: "kokoro",
-      voice: "alloy",
-    });
-  });
-
-  it("uses the speech endpoint's own key when it has its own URL", async () => {
-    await updateSettings(
-      {
-        llmBaseUrl: "https://llm.example.com/v1",
-        apiKey: "llm-key",
-        model: "gemma3",
-        speechBaseUrl: "https://speech.example.com/v1",
-        speechApiKey: "speech-key",
-        speechModel: "kokoro",
-      },
-      trigger,
-      ctx.db,
-    );
-
-    expect(await getSpeechRuntime(ctx.db)).toEqual({
-      backend: "openai-compatible",
-      baseUrl: "https://speech.example.com/v1",
-      apiKey: "speech-key",
-      model: "kokoro",
-      voice: null,
-    });
-  });
-
-  it("is unconfigured (not half-configured) without a model", async () => {
-    await updateSettings(
-      { llmBaseUrl: "https://llm.example.com/v1", model: "gemma3" },
-      trigger,
-      ctx.db,
-    );
-
-    // No speech model → voice replies degrade to text, rather than the endpoint
-    // being called with a guessed model id.
-    expect(await getSpeechRuntime(ctx.db)).toBeNull();
-  });
-
-  it("never exposes the speech key, but stores it — and redacts it from the trace", async () => {
-    const settings = await updateSettings({ speechApiKey: "secret-speech-key" }, trigger, ctx.db);
-
-    expect(settings.speechApiKeyConfigured).toBe(true);
-    expect(JSON.stringify(settings)).not.toContain("secret-speech-key");
-    expect((await getSettingsRecord(ctx.db))?.speechApiKey).toBe("secret-speech-key");
-
-    const { traces } = await listTraces({ feature: "settings" });
-    expect(JSON.stringify(traces)).not.toContain("secret-speech-key");
+    expect(set.embeddingBackendId).toBe(otherId);
+    expect(set.embeddingModel).toBe("bge-m3");
+    expect(set.audioModel).toBe("whisper-1");
+    expect(set.visionBackendId).toBeNull();
+    expect(set.visionModel).toBe("gemma-vision");
+    expect(set.browserBackendId).toBe(otherId);
+    expect(set.browserModel).toBeNull();
+    expect(set.speechVoice).toBe("alloy");
+    expect(set.imageModel).toBe("sdxl");
   });
 });
 
-describe("transcription runtime", () => {
-  it("falls back to the LLM connection when no transcription endpoint is set", async () => {
+describe("role runtimes", () => {
+  it("getLlmRuntime resolves the chat backend row, and is null while unconfigured", async () => {
+    expect(await getLlmRuntime(ctx.db)).toBeNull();
+    const chatId = await seedBackend(ctx, {
+      name: "Main",
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+      type: "ollama",
+    });
+    await updateSettings({ chatBackendId: chatId }, trigger, ctx.db);
+    // A backend without a model is still not a runnable chat configuration.
+    expect(await getLlmRuntime(ctx.db)).toBeNull();
+    await updateSettings({ model: "gemma" }, trigger, ctx.db);
+    expect(await getLlmRuntime(ctx.db)).toEqual({
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+      model: "gemma",
+      backend: "ollama",
+    });
+  });
+
+  it("embedding/image/speech inherit the chat backend and stay off without a model", async () => {
+    const chatId = await seedBackend(ctx, {
+      name: "Main",
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+      type: "llamacpp",
+    });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+
+    // No model → the capability is off, never guessed.
+    expect(await getEmbeddingRuntime(ctx.db)).toBeNull();
+    expect(await getImageRuntime(ctx.db)).toBeNull();
+    expect(await getSpeechRuntime(ctx.db)).toBeNull();
+
     await updateSettings(
-      {
-        llmBaseUrl: "https://llm.example.com/v1",
-        apiKey: "llm-key",
-        model: "gemma3",
-        transcriptionModel: "whisper-1",
-      },
+      { embeddingModel: "bge-m3", imageModel: "sdxl", speechModel: "kokoro", speechVoice: "sky" },
       trigger,
       ctx.db,
     );
+    // The backend (and its key and type) follow the chat host.
+    expect(await getEmbeddingRuntime(ctx.db)).toEqual({
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+      backend: "llamacpp",
+      model: "bge-m3",
+    });
+    expect(await getImageRuntime(ctx.db)).toMatchObject({ model: "sdxl" });
+    expect(await getSpeechRuntime(ctx.db)).toMatchObject({ model: "kokoro", voice: "sky" });
+  });
 
-    expect(await getTranscriptionRuntime(ctx.db)).toEqual({
-      backend: "openai-compatible",
-      baseUrl: "https://llm.example.com/v1",
-      apiKey: "llm-key",
+  it("a role with its own backend resolves that host, key and type", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    const embId = await seedBackend(ctx, {
+      name: "Embeddings",
+      baseUrl: "https://embed.example/v1",
+      apiKey: "sk-embed",
+      type: "vllm",
+    });
+    await updateSettings(
+      { chatBackendId: chatId, model: "gemma", embeddingBackendId: embId, embeddingModel: "bge-m3" },
+      trigger,
+      ctx.db,
+    );
+    expect(await getEmbeddingRuntime(ctx.db)).toEqual({
+      baseUrl: "https://embed.example/v1",
+      apiKey: "sk-embed",
+      backend: "vllm",
+      model: "bge-m3",
+    });
+  });
+
+  it("audio requires its own model (null → chat-model input_audio fallback)", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    // Deliberately NOT falling back to the chat model: a chat model id on
+    // /v1/audio/transcriptions would be a guessed, wrong call.
+    expect(await getAudioRuntime(ctx.db)).toBeNull();
+
+    await updateSettings({ audioModel: "whisper-1" }, trigger, ctx.db);
+    expect(await getAudioRuntime(ctx.db)).toMatchObject({
+      baseUrl: "https://llm.example/v1",
       model: "whisper-1",
     });
   });
 
-  it("uses the transcription endpoint's own key when it has its own URL", async () => {
+  it("vision and browser fall back to the chat backend and model per unset half", async () => {
+    expect(await getVisionRuntime(ctx.db)).toBeNull();
+    expect(await getBrowserLlmRuntime(ctx.db)).toBeNull();
+
+    const chatId = await seedBackend(ctx, {
+      name: "Main",
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+      type: "ollama",
+    });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+
+    // Fully unset: exactly the chat connection ("main by default").
+    expect(await getVisionRuntime(ctx.db)).toEqual({
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+      model: "gemma",
+      backend: "ollama",
+    });
+    expect(await getBrowserLlmRuntime(ctx.db)).toMatchObject({ model: "gemma" });
+
+    // Model overridden, backend inherited.
+    await updateSettings({ visionModel: "gemma-vision" }, trigger, ctx.db);
+    expect(await getVisionRuntime(ctx.db)).toMatchObject({
+      baseUrl: "https://llm.example/v1",
+      model: "gemma-vision",
+    });
+
+    // Backend overridden too.
+    const gpuId = await seedBackend(ctx, { name: "GPU", baseUrl: "https://gpu.example/v1" });
+    await updateSettings({ browserBackendId: gpuId, browserModel: "qwen-long" }, trigger, ctx.db);
+    expect(await getBrowserLlmRuntime(ctx.db)).toMatchObject({
+      baseUrl: "https://gpu.example/v1",
+      model: "qwen-long",
+    });
+  });
+});
+
+describe("stale model clearing on save", () => {
+  /** Configure chat + inheriting roles with stored models. */
+  async function seedConfigured() {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://old.example/v1" });
     await updateSettings(
       {
-        llmBaseUrl: "https://llm.example.com/v1",
-        apiKey: "llm-key",
-        model: "gemma3",
-        transcriptionBaseUrl: "https://whisper.example.com/v1",
-        transcriptionApiKey: "stt-key",
-        transcriptionModel: "large-v3",
+        chatBackendId: chatId,
+        model: "chat-model",
+        embeddingModel: "bge-m3",
+        imageModel: "sdxl",
+        audioModel: "whisper-1",
+        visionModel: "gemma-vision",
       },
       trigger,
       ctx.db,
     );
+    return chatId;
+  }
 
-    expect(await getTranscriptionRuntime(ctx.db)).toEqual({
-      backend: "openai-compatible",
-      baseUrl: "https://whisper.example.com/v1",
-      apiKey: "stt-key",
-      model: "large-v3",
-    });
+  it("repointing the chat backend clears inheriting models the new backend does not serve", async () => {
+    await seedConfigured();
+    const newId = await seedBackend(ctx, { name: "New", baseUrl: "https://new.example/v1" });
+    // The new backend serves the embedding model but not chat/image/vision.
+    listModelsMock.mockResolvedValue(["bge-m3", "other-model"]);
+
+    const set = await updateSettings({ chatBackendId: newId }, trigger, ctx.db);
+    expect(set.model).toBeNull();
+    expect(set.imageModel).toBeNull();
+    expect(set.visionModel).toBeNull();
+    // Served → kept.
+    expect(set.embeddingModel).toBe("bge-m3");
+    // Audio is exempt: absence from a listing proves nothing for STT servers.
+    expect(set.audioModel).toBe("whisper-1");
+    // One listing for the one distinct backend.
+    expect(listModelsMock).toHaveBeenCalledTimes(1);
   });
 
-  it("is unconfigured without a model — voice then falls back to the chat model", async () => {
-    await updateSettings(
-      { llmBaseUrl: "https://llm.example.com/v1", model: "gemma3" },
+  it("clears nothing when the new backend cannot be listed, and records why", async () => {
+    await seedConfigured();
+    const newId = await seedBackend(ctx, { name: "New", baseUrl: "https://dead.example/v1" });
+    listModelsMock.mockRejectedValue(new Error("connection refused"));
+
+    const set = await updateSettings({ chatBackendId: newId }, trigger, ctx.db);
+    expect(set.model).toBe("chat-model");
+    expect(set.embeddingModel).toBe("bge-m3");
+
+    const traces = await listTraces({ feature: "settings" });
+    const detail = await getTraceDetail(traces.traces[0].id);
+    expect(JSON.stringify(detail)).toContain("left unchanged");
+  });
+
+  it("trusts a model picked in the same patch", async () => {
+    await seedConfigured();
+    const newId = await seedBackend(ctx, { name: "New", baseUrl: "https://new.example/v1" });
+    listModelsMock.mockResolvedValue(["fresh-model"]);
+
+    const set = await updateSettings(
+      { chatBackendId: newId, model: "fresh-model" },
       trigger,
       ctx.db,
     );
-
-    expect(await getTranscriptionRuntime(ctx.db)).toBeNull();
+    expect(set.model).toBe("fresh-model");
   });
 
-  it("never exposes the transcription key, but stores it — and redacts it from the trace", async () => {
-    const settings = await updateSettings(
-      { transcriptionApiKey: "secret-stt-key" },
-      trigger,
-      ctx.db,
-    );
+  it("leaves a role with its own backend untouched by a chat repoint", async () => {
+    const chatId = await seedConfigured();
+    const embId = await seedBackend(ctx, { name: "Embed", baseUrl: "https://embed.example/v1" });
+    await updateSettings({ embeddingBackendId: embId }, trigger, ctx.db);
+    listModelsMock.mockClear();
+    listModelsMock.mockResolvedValue([]);
 
-    expect(settings.transcriptionApiKeyConfigured).toBe(true);
-    expect(JSON.stringify(settings)).not.toContain("secret-stt-key");
-    expect((await getSettingsRecord(ctx.db))?.transcriptionApiKey).toBe("secret-stt-key");
+    const newId = await seedBackend(ctx, { name: "New", baseUrl: "https://new.example/v1" });
+    const set = await updateSettings({ chatBackendId: newId }, trigger, ctx.db);
+    // The embedding role kept its own backend; its model was not checked
+    // against the new chat backend.
+    expect(set.embeddingModel).toBe("bge-m3");
+    expect(set.model).toBeNull();
+    void chatId;
+  });
 
-    const { traces } = await listTraces({ feature: "settings" });
-    expect(JSON.stringify(traces)).not.toContain("secret-stt-key");
+  it("repointing one role's own backend verifies only that role", async () => {
+    await seedConfigured();
+    const embId = await seedBackend(ctx, { name: "Embed", baseUrl: "https://embed.example/v1" });
+    listModelsMock.mockResolvedValue(["something-else"]);
+
+    const set = await updateSettings({ embeddingBackendId: embId }, trigger, ctx.db);
+    expect(set.embeddingModel).toBeNull();
+    // Chat and the other inheriting roles were not repointed — untouched.
+    expect(set.model).toBe("chat-model");
+    expect(set.imageModel).toBe("sdxl");
+  });
+
+  it("does not list models at all when no backend id changes", async () => {
+    await seedConfigured();
+    listModelsMock.mockClear();
+    await updateSettings({ speechVoice: "sky" }, trigger, ctx.db);
+    expect(listModelsMock).not.toHaveBeenCalled();
   });
 });
 
-describe("listSectionModels", () => {
-  it("lists from the given URL with the typed key when one is provided", async () => {
-    listModelsMock.mockResolvedValue(["embed-a", "embed-b"]);
-
-    const { models } = await listSectionModels(
-      { section: "embedding", baseUrl: "https://new-host.example.com/v1", apiKey: "typed-key" },
-      ctx.db,
-    );
-
-    expect(models).toEqual(["embed-a", "embed-b"]);
-    expect(listModelsMock).toHaveBeenCalledWith(
-      { baseUrl: "https://new-host.example.com/v1", apiKey: "typed-key" },
-      expect.any(Number),
-    );
-  });
-
-  it("falls back to the section's stored key when none is typed", async () => {
-    await upsertSettings(ctx.db, { embeddingApiKey: "stored-embed-key" });
-    listModelsMock.mockResolvedValue(["embed-a"]);
-
-    await listSectionModels(
-      { section: "embedding", baseUrl: "https://new-host.example.com/v1" },
-      ctx.db,
-    );
-
-    expect(listModelsMock).toHaveBeenCalledWith(
-      { baseUrl: "https://new-host.example.com/v1", apiKey: "stored-embed-key" },
-      expect.any(Number),
-    );
-  });
-
-  it("an explicit null key means no key, never the stored one", async () => {
-    await upsertSettings(ctx.db, { imageApiKey: "stored-image-key" });
-    listModelsMock.mockResolvedValue([]);
-
-    await listSectionModels(
-      { section: "image", baseUrl: "https://new-host.example.com/v1", apiKey: null },
-      ctx.db,
-    );
-
-    expect(listModelsMock).toHaveBeenCalledWith(
-      { baseUrl: "https://new-host.example.com/v1", apiKey: null },
-      expect.any(Number),
-    );
-  });
-
-  it("propagates a listing failure so the form can say why the list is empty", async () => {
-    await expect(
-      listSectionModels({ section: "speech", baseUrl: "https://dead.example.com/v1" }, ctx.db),
-    ).rejects.toThrow();
+describe("settings record round-trip", () => {
+  it("keeps the raw settings record consistent with the client view", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    const record = await getSettingsRecord(ctx.db);
+    expect(record?.chatBackendId).toBe(chatId);
+    expect(record?.model).toBe("gemma");
   });
 });

@@ -52,16 +52,23 @@ reads and writes the one row.
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | text PK | Always `'singleton'` |
-| `llm_base_url`, `llm_api_key`, `model` | text | Core LLM connection. The key is a secret and never leaves the server |
+| `chat_backend_id`, `model` | text (`chat_backend_id` → `backends.id`) | The chat (main) role: which catalog backend replies run on, and the model |
 | `active_personality_id` | text → `personalities.id` | `ON DELETE SET NULL` — deleting the active persona clears the selection |
 | `operator_password_hash` | text | scrypt, self-describing format. Null → `/setup` is open |
 | `session_secret` | text | HMAC key for session cookies. Rotating it invalidates every session |
 | `telegram_bot_token` | text | Secret |
 | `tavily_api_key` | text | Secret; the browsing agent's search fallback |
-| `embedding_base_url`, `embedding_api_key`, `embedding_model` | text | Null base URL/key reuses the core connection |
-| `image_base_url`, `image_api_key`, `image_model` | text | Same fallback |
-| `speech_base_url`, `speech_api_key`, `speech_model`, `speech_voice` | text | Same fallback |
-| `transcription_base_url`, `transcription_api_key`, `transcription_model` | text | Same fallback; null model falls back to the chat model |
+| `embedding_backend_id`, `embedding_model` | text | Null backend id uses the chat backend; null model turns the capability off |
+| `image_backend_id`, `image_model` | text | Same shape |
+| `speech_backend_id`, `speech_model`, `speech_voice` | text | Same shape |
+| `audio_backend_id`, `audio_model` | text | Null model falls back to the chat model's `input_audio` path |
+| `vision_backend_id`, `vision_model` | text | Null halves fall back to the chat backend/model |
+| `browser_backend_id`, `browser_model` | text | Null halves fall back to the chat backend/model |
+
+All `*_backend_id` columns reference `backends.id` with `ON DELETE RESTRICT` —
+a backend in use cannot be deleted out from under a role. The `backends` table
+itself holds `id`, `name`, `base_url`, `api_key` (secret), `type` (inference
+server, see `lib/llm-backend.ts`), timestamps.
 | `owner_username`, `owner_user_id` | text | Owner is chosen from known users; username is denormalized for display |
 | `maintenance_mode_enabled` | boolean, default `false` | Closes the bot to everyone but the owner and pauses task fires |
 | `timezone` | text, default `UTC` | IANA name; the operator timezone |

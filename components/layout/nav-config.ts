@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   MessageSquare,
   Scale,
+  Server,
   Settings,
   Sparkles,
   Users,
@@ -79,6 +80,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "System",
     items: [
+      { href: "/backends", label: "Backends", icon: Server },
       { href: "/settings", label: "Settings", icon: Settings },
       { href: "/debug", label: "Debug", icon: Bug },
     ],

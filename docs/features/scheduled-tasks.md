@@ -141,7 +141,7 @@ they are in, authorless ones included (user decision, 2026-08-07).
 
 | Setting | Effect |
 | --- | --- |
-| `llmBaseUrl` + `model` | A tick with no LLM configured is a harmless no-op |
+| Chat backend + `model` | A tick with no LLM configured is a harmless no-op |
 | `timezone` | The zone every `timeOfDay` and `runDate` is interpreted in |
 | `maintenanceModeEnabled` | Pauses every fire |
 

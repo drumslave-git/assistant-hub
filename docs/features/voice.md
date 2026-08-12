@@ -43,7 +43,7 @@ system-ffmpeg runner.
 
 | Configured | Behavior |
 | --- | --- |
-| `transcriptionBaseUrl`/`transcriptionModel` set | A real `/v1/audio/transcriptions` call (whisper.cpp server, speaches/faster-whisper, LocalAI…) |
+| `audioModel` set (audio role) | A real `/v1/audio/transcriptions` call on the audio role's backend (whisper.cpp server, speaches/faster-whisper, LocalAI…) |
 | Unset | Falls back to transcribing with the **audio-capable chat model** |
 
 On the chat-model path, accuracy is governed entirely by the prompt
@@ -51,7 +51,7 @@ On the chat-model path, accuracy is governed entirely by the prompt
 spoken, with no commentary. The transcript is stored verbatim, so any commentary
 would end up in the history mirror as if it had been said.
 
-The Settings probe for transcription transcribes a fraction of a second of
+The Settings probe for the audio role transcribes a fraction of a second of
 generated silence rather than checking `/v1/models`, because whisper-class servers
 often serve the transcription route without a model listing.
 
@@ -72,11 +72,11 @@ Traced as `voice`/`synthesize`, correlated with the reply trace by
 
 | Setting | Effect when unset |
 | --- | --- |
-| `speechBaseUrl` | Reuses the core LLM connection |
+| `speechBackendId` | Uses the chat backend |
 | `speechModel` | **Voice replies are off** |
 | `speechVoice` | The endpoint's default voice |
-| `transcriptionBaseUrl` | Reuses the core LLM connection |
-| `transcriptionModel` | Falls back to the audio-capable chat model |
+| `audioBackendId` | Uses the chat backend |
+| `audioModel` | Falls back to the audio-capable chat model |
 
 Both have their own Settings tab and probe button.
 

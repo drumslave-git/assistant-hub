@@ -65,11 +65,31 @@ whole dependency manifest into the browser bundle).
 
 ---
 
+## Backends catalog
+
+LLM endpoints are first-class rows in the `backends` table, managed as a CRUD
+on the **Backends** page (`/api/backends`). Each backend is a named
+OpenAI-compatible server:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `name` | string (≤100) | Display name, unique case-insensitively |
+| `baseUrl` | URL (≤500) | The OpenAI-compatible endpoint (e.g. `…/v1`) |
+| `apiKey` | secret | Optional; write-only, exposed as `apiKeyConfigured` |
+| `type` | enum | Which inference server answers there (`ollama`, `llamacpp`, `vllm`, `openai-compatible`) — feeds the backend-normalization adapters. A **Detect** button fingerprints the endpoint as a suggestion; the operator picks |
+
+Each backend card has **Test connection** — one `/v1/models` call that proves
+the host answers and the key is accepted, and doubles as the model-list
+preview. A backend cannot be deleted while a settings role points at it (the
+error names the roles); repointing a backend's URL or key verifies every role
+model riding on it and clears what the new endpoint verifiably does not serve
+(same doctrine as a settings save, below).
+
 ## DB-backed Settings
 
 One typed row (`settings`, `id = 'singleton'`). Read with `GET /api/settings`,
-written with `PATCH /api/settings`; the dashboard form (Settings page) has nine
-tabs — one per concern — and one Save button that persists every changed field
+written with `PATCH /api/settings`; the dashboard form (Settings page) has one
+tab per concern and one Save button that persists every changed field
 regardless of which tab is open. The exception is the **Security** tab: the password change there
 posts to its own endpoint (`POST /api/auth/change-password`) with its own
 button, because it is an auth action, not a settings patch.
@@ -78,26 +98,33 @@ Secrets are **write-only**. They are accepted on input and never returned — th
 client-facing shape exposes only a `…Configured: boolean`. Omitting a secret key
 from a PATCH leaves the stored value alone; sending `null` clears it.
 
-### LLM
+### LLM roles
 
-| Field | Type | Effect when unset |
-| --- | --- | --- |
-| `llmBaseUrl` | URL (≤500 chars) | No replies, no background LLM job does work — every job settles as a no-op |
-| `model` | string (≤200) | Same: the reply path needs a chosen model |
-| `apiKey` | secret | Sent as the bearer token when present; many self-hosted endpoints need none |
+LLM configuration is per **role**. Every role stores a backend id from the
+catalog plus a model id; endpoint URLs and keys live on the backend rows only.
+A null backend id means "use the chat backend". Model dropdowns are searchable
+and fed by the selected backend's live `/v1/models` listing.
 
-A model id is only meaningful on the endpoint it was picked from, so a PATCH
-that repoints an endpoint verifies the stored selections now served by it: the
-new endpoint is asked for its `/v1/models` list and any stored model it
-verifiably does not serve is **cleared in the same write** (recorded as warn
+| Role | Backend field | Model field | Model unset means |
+| --- | --- | --- | --- |
+| Chat (main) | `chatBackendId` | `model` | Bot unconfigured: no replies, every background LLM job settles as a no-op. Pick a model that supports thinking and tool calls |
+| Embeddings | `embeddingBackendId` | `embeddingModel` | Semantic recall off |
+| Images | `imageBackendId` | `imageModel` | `image_generate` tool off |
+| Speech (TTS) | `speechBackendId` | `speechModel` (+ `speechVoice`) | Voice replies off (text only) |
+| Audio (STT) | `audioBackendId` | `audioModel` | Voice messages transcribed by the chat model via `input_audio` (main by default) |
+| Vision | `visionBackendId` | `visionModel` | The chat model describes media (main by default) |
+| Browser agent | `browserBackendId` | `browserModel` | Browsing thinks on the chat model (main by default) |
+
+A model id is only meaningful on the backend it was picked from, so a PATCH
+that repoints a role — its own backend id changes, or the chat backend changes
+and the role inherits it — verifies the stored selections now served there: the
+newly effective backend is asked for its `/v1/models` list and any stored model
+it verifiably does not serve is **cleared in the same write** (recorded as warn
 events on the update trace, and named next to the Save button in the form).
-This covers the chat model and the embedding/image/speech models of sections
-reusing the LLM connection — a selection made against the old backend cannot
-silently outlive it and fail later inside a background job. Two deliberate
-limits: a model sent in the same PATCH is trusted as an explicit choice, and
-when the new endpoint cannot be listed nothing is cleared — absence is only
-acted on when proven. The transcription model is exempt (whisper-class servers
-often expose no listing).
+Two deliberate limits: a model sent in the same PATCH is trusted as an explicit
+choice, and when the new backend cannot be listed nothing is cleared — absence
+is only acted on when proven. The audio model is exempt (whisper-class servers
+often expose no listing; its field is free-text in the UI for the same reason).
 
 ### Telegram
 
@@ -123,54 +150,25 @@ upload limit (`TELEGRAM_MAX_UPLOAD_MB` in `lib/telegram.ts`; user decision,
 2026-08-01 — the old `browserDownloadMaxMb` setting only ever restated a fact
 about Telegram).
 
-### Embeddings
+### Role probes
 
-Powers semantic recall over history summaries and semantic memory search.
+Every probe takes `{ backendId?, model? }` (omitted fields fall back to what is
+stored, a null `backendId` means "use the chat backend") and resolves through
+the same runtime resolver the feature uses — a passing test means the real
+connection works, not a test-only variant of it.
 
-| Field | Type | Notes |
-| --- | --- | --- |
-| `embeddingBaseUrl` | URL | Null reuses the LLM connection |
-| `embeddingApiKey` | secret | Null reuses the LLM key |
-| `embeddingModel` | string | Null turns semantic recall off — summaries are still written, just not embedded |
-
-Every stored vector must be **1024** wide (`lib/embeddings.ts`,
-`EMBEDDING_DIMENSIONS`). This is a code constant, not a setting: pgvector cannot
-index a vector of unspecified width, so the column type commits to a size. The
-**Test embeddings** button embeds a real string and reports the width it got
-back, so a mismatched model surfaces as a clear message instead of an opaque
-Postgres error inside a nightly job.
-
-### Images
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `imageBaseUrl` | URL | Null reuses the LLM connection |
-| `imageApiKey` | secret | Null reuses the LLM key |
-| `imageModel` | string | Null disables the `image_generate` tool (it returns a clear error result rather than silently doing nothing) |
-
-**Test image endpoint** checks the configured model is actually served rather
-than generating a picture.
-
-### Speech
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `speechBaseUrl` | URL | Null reuses the LLM connection |
-| `speechApiKey` | secret | Null reuses the LLM key |
-| `speechModel` | string | Null disables voice replies |
-| `speechVoice` | string (≤100) | Null uses the endpoint default |
-
-### Transcription
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `transcriptionBaseUrl` | URL | Null reuses the LLM connection |
-| `transcriptionApiKey` | secret | Null reuses the LLM key |
-| `transcriptionModel` | string | Null falls back to transcribing with the audio-capable chat model |
-
-**Test transcription** transcribes a fraction of a second of generated silence —
-a real `/v1/audio/transcriptions` call, because whisper-class servers often serve
-it without `/v1/models`.
+- **Test embeddings** embeds a real string and reports the vector width it got
+  back. Every stored vector must be **1024** wide (`lib/embeddings.ts`,
+  `EMBEDDING_DIMENSIONS` — a code constant, not a setting: pgvector cannot
+  index a vector of unspecified width), so a mismatched model surfaces as a
+  clear message instead of an opaque Postgres error inside a nightly job.
+- **Test image endpoint** / **Test speech endpoint** check the configured model
+  is actually served rather than generating anything.
+- **Test audio** transcribes a fraction of a second of generated silence — a
+  real `/v1/audio/transcriptions` call, because whisper-class servers often
+  serve it without `/v1/models`.
+- Vision and browser agent have no dedicated probe: they are chat-completion
+  roles, verified by the backend's model listing (and the Overview probes).
 
 ### Integrations
 
@@ -203,9 +201,9 @@ Nothing in this app reports "configured" from the presence of a variable.
   reported in the body but are deliberately *not* readiness gates: restart-looping on
   an unwritable trace volume would drop the settled traces still buffered in RAM, and
   an unwritable downloads mount breaks only the browser agent's downloads.
-- **Settings probes** (`test-connection`, `test-embeddings`, `test-images`,
-  `test-speech`, `test-transcription`) each make a real call and are recorded as
-  traces under the `settings` feature.
+- **Connection probes** (`POST /api/backends/test`, and the role probes
+  `test-embeddings`, `test-images`, `test-speech`, `test-audio`) each make a
+  real call and are recorded as traces (`backends` / `settings` features).
 
 ## Changing configuration
 

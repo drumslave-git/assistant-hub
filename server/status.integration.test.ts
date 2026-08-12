@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
+
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { insertBackend } from "@/features/backends/server/repository";
 import { updateSettings } from "@/features/settings/server/service";
 import { getHealth, getSystemStatus } from "@/server/status";
 import { startTestDb, type TestDb } from "@/test/db";
@@ -25,11 +28,14 @@ describe("getHealth", () => {
     expect(empty.database.ok).toBe(true);
     expect(empty.configuration.configured).toBe(false);
 
-    await updateSettings(
-      { llmBaseUrl: "http://localhost:11434/v1", model: "smollm2" },
-      { kind: "test" },
-      ctx.db,
-    );
+    const backendId = randomUUID();
+    await insertBackend(ctx.db, backendId, {
+      name: "Main",
+      baseUrl: "http://localhost:11434/v1",
+      apiKey: null,
+      type: "openai-compatible",
+    });
+    await updateSettings({ chatBackendId: backendId, model: "smollm2" }, { kind: "test" }, ctx.db);
 
     const configured = await getHealth(ctx.db);
     expect(configured.ready).toBe(true);
@@ -51,7 +57,9 @@ describe("getSystemStatus", () => {
       "embeddings",
       "images",
       "speech",
-      "transcription",
+      "audio",
+      "vision",
+      "browser",
     ]);
     for (const endpoint of status.endpoints) {
       expect(endpoint.state).toBe("off");

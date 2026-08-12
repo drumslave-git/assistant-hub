@@ -85,7 +85,7 @@ session is invalidated.
 
 | Secret | Stored | Exposure |
 | --- | --- | --- |
-| LLM / embedding / image / speech / transcription API keys | `settings` columns | **Write-only.** Accepted on input, never returned. The client-facing schema exposes only `apiKeyConfigured: boolean` |
+| Backend endpoint API keys | `backends.api_key` | **Write-only.** Accepted on input, never returned. The client-facing schema exposes only `apiKeyConfigured: boolean` |
 | Telegram bot token | `settings.telegram_bot_token` | Same |
 | Tavily API key | `settings.tavily_api_key` | Same |
 | Operator password | `settings.operator_password_hash` | Hash only |
@@ -99,8 +99,9 @@ Rules that keep it that way:
 - Omitting a secret field from a `PATCH` leaves the stored value alone; sending
   `null` clears it. The Settings form's secret inputs are write-only by
   construction.
-- `test-connection` falls back to the *stored* key when `apiKey` is omitted, so a
-  base URL can be re-tested without the browser resending the secret.
+- `POST /api/backends/test` falls back to the *stored* key when `apiKey` is
+  omitted, so a backend can be re-tested without the browser resending the
+  secret.
 - `ApiError.details` is documented as never containing secrets. Unexpected errors
   become a generic `internal_error` body and the real cause goes to the server log
   and the trace.

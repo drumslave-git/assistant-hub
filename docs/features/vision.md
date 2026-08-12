@@ -109,7 +109,7 @@ would bloat the log and make the Debug JSON unreadable.
 
 | Setting | Effect |
 | --- | --- |
-| `llmBaseUrl` + `model` | Must be a vision-capable model for descriptions to work |
+| Vision role (`visionBackendId`/`visionModel`, chat backend + model by default) | Must resolve to a vision-capable model for descriptions to work |
 | `telegramBotToken` | Needed to download files from the Telegram file API |
 
 `server/telegram-files.ts` downloads by `file_id` and is deliberately kept

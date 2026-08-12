@@ -107,15 +107,16 @@ are in [Deployment](operations/deployment.md).
 
 ## Optional capabilities
 
-Each of these is off until configured, and each has its own Settings tab with a
-real probe button:
+Endpoints live in the Backends catalog (add each server once on the Backends
+page); each capability below is off until its Settings role picks a backend and
+model, and each role tab has a real probe button:
 
 | Capability | Needs | Enables |
 | --- | --- | --- |
 | Embeddings | An endpoint serving `/v1/embeddings` and a model emitting 1024-wide vectors | Semantic recall over history summaries; semantic memory search |
 | Images | An endpoint serving `/v1/images/generations` | The `image_generate` tool |
 | Speech | An endpoint serving `/v1/audio/speech` | Voice replies |
-| Transcription | An endpoint serving `/v1/audio/transcriptions` | Voice-message transcription (falls back to the audio-capable chat model when unset) |
+| Audio (STT) | An endpoint serving `/v1/audio/transcriptions` | Voice-message transcription (falls back to the audio-capable chat model when unset) |
 | Web search fallback | A Tavily API key | Searching when no engine loads in the browser (optional — Bing works today) |
 
 ## Scripts

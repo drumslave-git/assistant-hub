@@ -182,7 +182,7 @@ no stored table.
 
 | Setting | Effect |
 | --- | --- |
-| `llmBaseUrl` + `model` | A run with no LLM configured is a harmless no-op; the numeric charts still work |
+| Chat backend + `model` | A run with no LLM configured is a harmless no-op; the numeric charts still work |
 | `timezone` | Every period boundary and bucket key |
 | `dailyJobsRunTime` | When the job runs |
 

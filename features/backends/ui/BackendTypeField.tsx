@@ -3,22 +3,16 @@
 import { useCallback, useState } from "react";
 
 import { Button, Field, Select } from "@/components/ui";
+import { readApiError } from "@/lib/api-error";
 import { LLM_BACKENDS, type LlmBackendId } from "@/lib/llm-backend";
 
-import { readError } from "./connection";
-
 /**
- * The backend selector: which inference server answers at this endpoint, plus a
- * Detect button that asks the endpoint to name itself.
- *
- * One definition for all five connection sections — the LLM one in
- * `SettingsForm` and the four optional backends in `ConnectionSection` — because
- * five hand-kept copies of a control this load-bearing is exactly how the two
- * halves of a setting drift apart.
+ * The backend-type selector: which inference server answers at this endpoint,
+ * plus a Detect button that asks the endpoint to name itself.
  *
  * Detection only ever *suggests*. The operator picks (user decision,
  * 2026-08-07): a control that silently changed how requests are built would be
- * the same class of bug this whole layer exists to prevent.
+ * the same class of bug the backend-normalization layer exists to prevent.
  */
 
 /** What the detect endpoint answers with. */
@@ -33,15 +27,15 @@ type DetectState =
   | { kind: "done"; detail: string; applied: boolean }
   | { kind: "error"; message: string };
 
-export function BackendField({
+export function BackendTypeField({
   idPrefix,
   value,
   onChange,
-  /** The URL to fingerprint. Null when this section reuses the LLM connection. */
+  /** The URL to fingerprint. Null while the form has no usable URL yet. */
   baseUrl,
   hint,
 }: {
-  /** Stable field-id prefix, e.g. "llm" → `llmBackend`. */
+  /** Stable field-id prefix, e.g. "new" → `newType`. */
   idPrefix: string;
   value: LlmBackendId;
   onChange: (next: LlmBackendId) => void;
@@ -55,13 +49,13 @@ export function BackendField({
     if (!baseUrl?.trim()) return;
     setState({ kind: "detecting" });
     try {
-      const res = await fetch("/api/settings/detect-backend", {
+      const res = await fetch("/api/backends/detect", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ baseUrl: baseUrl.trim() }),
       });
       if (!res.ok) {
-        setState({ kind: "error", message: await readError(res) });
+        setState({ kind: "error", message: await readApiError(res) });
         return;
       }
       const { data } = (await res.json()) as { data: Detection };
@@ -76,8 +70,8 @@ export function BackendField({
 
   return (
     <Field
-      id={`${idPrefix}Backend`}
-      label="Backend"
+      id={`${idPrefix}Type`}
+      label="Server type"
       hint={hint ?? selected?.hint ?? "Which inference server answers at this endpoint."}
     >
       {({ id, describedBy }) => (

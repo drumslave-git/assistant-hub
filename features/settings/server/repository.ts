@@ -4,63 +4,56 @@ import { eq } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { settings, type SettingsRow } from "@/db/schema";
-import { type LlmBackendId, toLlmBackendId } from "@/lib/llm-backend";
 
 /**
  * Typed persistence for the single settings row. Pure data access: no policy, no
  * validation, no masking (the service decides what to expose). Every function
  * takes a {@link DrizzleDb} so it runs against the pool or a test instance.
  *
- * The record includes the raw API key — callers must never return it to clients.
+ * LLM configuration is per **role** — chat, embedding, audio (STT), vision,
+ * speech (TTS), image generation, browser agent. Each role stores a backend id
+ * (referencing the `backends` catalog; null means "use the chat backend") and a
+ * model id. Endpoint URLs and keys live on the backend rows, not here.
  */
 
 /** Fixed primary key of the one settings row (enforced by a DB check constraint). */
 export const SETTINGS_ID = "singleton";
 
-/** Internal settings record, including the secret API key and bot token. */
+/** Internal settings record, including the secret bot token and keys. */
 export interface SettingsRecord {
-  llmBaseUrl: string | null;
-  llmApiKey: string | null;
-  /** Which inference server serves the LLM endpoint — see `@/lib/llm-backend`. */
-  llmBackend: LlmBackendId;
+  /** Chat (main) backend id; null means the bot is unconfigured. */
+  chatBackendId: string | null;
+  /** Selected chat model id; null when none picked. */
   model: string | null;
-  activePersonalityId: string | null;
-  telegramBotToken: string | null;
-  tavilyApiKey: string | null;
-  /** Embedding endpoint base URL; null means "reuse the LLM connection". */
-  embeddingBaseUrl: string | null;
-  /** Embedding endpoint API key (only used with `embeddingBaseUrl`). */
-  embeddingApiKey: string | null;
-  /** Which inference server serves the embedding endpoint. */
-  embeddingBackend: LlmBackendId;
+  /** Embedding backend id; null → the chat backend. */
+  embeddingBackendId: string | null;
   /** Embedding model id; null disables embedding-backed capabilities. */
   embeddingModel: string | null;
-  /** Image endpoint base URL; null means "reuse the LLM connection". */
-  imageBaseUrl: string | null;
-  /** Image endpoint API key (only used with `imageBaseUrl`). */
-  imageApiKey: string | null;
-  /** Which inference server serves the image endpoint. */
-  imageBackend: LlmBackendId;
+  /** Image-generation backend id; null → the chat backend. */
+  imageBackendId: string | null;
   /** Image model id; null disables image generation. */
   imageModel: string | null;
-  /** Speech endpoint base URL; null means "reuse the LLM connection". */
-  speechBaseUrl: string | null;
-  /** Speech endpoint API key (only used with `speechBaseUrl`). */
-  speechApiKey: string | null;
-  /** Which inference server serves the speech endpoint. */
-  speechBackend: LlmBackendId;
+  /** Speech (TTS) backend id; null → the chat backend. */
+  speechBackendId: string | null;
   /** Speech (TTS) model id; null disables voice replies. */
   speechModel: string | null;
   /** Voice name for the speech endpoint; null → endpoint default. */
   speechVoice: string | null;
-  /** Transcription endpoint base URL; null means "reuse the LLM connection". */
-  transcriptionBaseUrl: string | null;
-  /** Transcription endpoint API key (only used with `transcriptionBaseUrl`). */
-  transcriptionApiKey: string | null;
-  /** Which inference server serves the transcription endpoint. */
-  transcriptionBackend: LlmBackendId;
-  /** Transcription (STT) model id; null → voice falls back to the chat model. */
-  transcriptionModel: string | null;
+  /** Audio (STT) backend id; null → the chat backend. */
+  audioBackendId: string | null;
+  /** Audio (STT) model id; null → voice falls back to the chat model. */
+  audioModel: string | null;
+  /** Vision backend id; null → the chat backend. */
+  visionBackendId: string | null;
+  /** Vision model id; null → the chat model describes media. */
+  visionModel: string | null;
+  /** Browser-agent backend id; null → the chat backend. */
+  browserBackendId: string | null;
+  /** Browser-agent model id; null → the chat model drives browsing. */
+  browserModel: string | null;
+  activePersonalityId: string | null;
+  telegramBotToken: string | null;
+  tavilyApiKey: string | null;
   ownerUsername: string | null;
   ownerUserId: string | null;
   maintenanceModeEnabled: boolean;
@@ -79,30 +72,24 @@ export interface SettingsRecord {
 
 /** Columns a write may touch. Undefined = leave unchanged. */
 export interface SettingsPatch {
-  llmBaseUrl?: string | null;
-  llmApiKey?: string | null;
-  llmBackend?: LlmBackendId;
+  chatBackendId?: string | null;
   model?: string | null;
+  embeddingBackendId?: string | null;
+  embeddingModel?: string | null;
+  imageBackendId?: string | null;
+  imageModel?: string | null;
+  speechBackendId?: string | null;
+  speechModel?: string | null;
+  speechVoice?: string | null;
+  audioBackendId?: string | null;
+  audioModel?: string | null;
+  visionBackendId?: string | null;
+  visionModel?: string | null;
+  browserBackendId?: string | null;
+  browserModel?: string | null;
   activePersonalityId?: string | null;
   telegramBotToken?: string | null;
   tavilyApiKey?: string | null;
-  embeddingBaseUrl?: string | null;
-  embeddingApiKey?: string | null;
-  embeddingBackend?: LlmBackendId;
-  embeddingModel?: string | null;
-  imageBaseUrl?: string | null;
-  imageApiKey?: string | null;
-  imageBackend?: LlmBackendId;
-  imageModel?: string | null;
-  speechBaseUrl?: string | null;
-  speechApiKey?: string | null;
-  speechBackend?: LlmBackendId;
-  speechModel?: string | null;
-  speechVoice?: string | null;
-  transcriptionBaseUrl?: string | null;
-  transcriptionApiKey?: string | null;
-  transcriptionBackend?: LlmBackendId;
-  transcriptionModel?: string | null;
   ownerUsername?: string | null;
   ownerUserId?: string | null;
   maintenanceModeEnabled?: boolean;
@@ -133,33 +120,24 @@ const cache = new WeakMap<DrizzleDb, CacheEntry>();
 
 function mapRow(row: SettingsRow): SettingsRecord {
   return {
-    llmBaseUrl: row.llmBaseUrl,
-    llmApiKey: row.llmApiKey,
-    // Coerced, not cast: the column is plain text, so a hand-edited or
-    // future-version value must degrade to the conservative adapter rather than
-    // reach the adapter registry as an id it does not have.
-    llmBackend: toLlmBackendId(row.llmBackend),
+    chatBackendId: row.chatBackendId,
     model: row.model,
+    embeddingBackendId: row.embeddingBackendId,
+    embeddingModel: row.embeddingModel,
+    imageBackendId: row.imageBackendId,
+    imageModel: row.imageModel,
+    speechBackendId: row.speechBackendId,
+    speechModel: row.speechModel,
+    speechVoice: row.speechVoice,
+    audioBackendId: row.audioBackendId,
+    audioModel: row.audioModel,
+    visionBackendId: row.visionBackendId,
+    visionModel: row.visionModel,
+    browserBackendId: row.browserBackendId,
+    browserModel: row.browserModel,
     activePersonalityId: row.activePersonalityId,
     telegramBotToken: row.telegramBotToken,
     tavilyApiKey: row.tavilyApiKey,
-    embeddingBaseUrl: row.embeddingBaseUrl,
-    embeddingApiKey: row.embeddingApiKey,
-    embeddingBackend: toLlmBackendId(row.embeddingBackend),
-    embeddingModel: row.embeddingModel,
-    imageBaseUrl: row.imageBaseUrl,
-    imageApiKey: row.imageApiKey,
-    imageBackend: toLlmBackendId(row.imageBackend),
-    imageModel: row.imageModel,
-    speechBaseUrl: row.speechBaseUrl,
-    speechApiKey: row.speechApiKey,
-    speechBackend: toLlmBackendId(row.speechBackend),
-    speechModel: row.speechModel,
-    speechVoice: row.speechVoice,
-    transcriptionBaseUrl: row.transcriptionBaseUrl,
-    transcriptionApiKey: row.transcriptionApiKey,
-    transcriptionBackend: toLlmBackendId(row.transcriptionBackend),
-    transcriptionModel: row.transcriptionModel,
     ownerUsername: row.ownerUsername,
     ownerUserId: row.ownerUserId,
     maintenanceModeEnabled: row.maintenanceModeEnabled,

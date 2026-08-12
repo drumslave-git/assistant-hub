@@ -444,7 +444,7 @@ directly, mirroring the conversational tool without needing Telegram.
 
 | Setting | Effect |
 | --- | --- |
-| `llmBaseUrl` + `model` | Without them a run settles as a failure |
+| Browser role (`browserBackendId`/`browserModel`, chat backend + model by default) | Without a resolvable connection a run settles as a failure |
 | `ownerUserId` | Only runs with the owner's rights (their own, or lent by a standing rule) may download |
 | `browserDownloadLimitGb` | Hard ceiling on any single download (1–100, default 10) |
 

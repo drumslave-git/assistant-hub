@@ -1,11 +1,11 @@
-import { detectBackendSchema } from "@/features/settings/server/schema";
+import { detectBackendSchema } from "@/features/backends/server/schema";
 import { detectBackend } from "@/server/llm/backends";
 import { defineRoute, ok, parseJson } from "@/server/http";
 
 /**
  * Fingerprint the inference server behind a URL, so the operator does not have
  * to know that Ollama answers on `/api/version` while llama-server answers on
- * `/props`. Backs the "Detect" action beside each backend dropdown.
+ * `/props`. Backs the "Detect" action beside the backend-type dropdown.
  *
  * A suggestion, never an authority: the answer is offered to the operator, who
  * remains the one who picks (user decision, 2026-08-07). An unidentifiable

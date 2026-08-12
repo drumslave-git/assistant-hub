@@ -33,6 +33,7 @@ tags:
     description: Operator authentication (public)
   - name: system
     description: Health, realtime stream, bot control, tool registry
+  - name: backends
   - name: settings
     description: DB-backed runtime configuration and endpoint probes
   - name: directory
@@ -231,6 +232,209 @@ paths:
                             items: { $ref: "#/components/schemas/ToolView" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  # ─────────────────────────── backends ───────────────────────────
+  /api/backends:
+    get:
+      tags: [backends]
+      summary: List the backend catalog
+      responses:
+        "200":
+          description: Backends (masked)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Backend" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [backends]
+      summary: Create a backend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BackendCreate" }
+      responses:
+        "200":
+          description: The created backend
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Backend" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/backends/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [backends]
+      summary: Update a backend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BackendUpdate" }
+      responses:
+        "200":
+          description: The updated backend, plus role models cleared by a repoint
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [backend, clearedModels]
+                        properties:
+                          backend: { $ref: "#/components/schemas/Backend" }
+                          clearedModels:
+                            type: array
+                            items: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [backends]
+      summary: Delete a backend
+      description: Refused (409) while any settings role points at it; the error names the roles.
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [deleted]
+                        properties:
+                          deleted: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/backends/{id}/models:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [backends]
+      summary: List the models a stored backend serves
+      responses:
+        "200":
+          description: Models served by the backend
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [models]
+                        properties:
+                          models:
+                            type: array
+                            items: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /api/backends/test:
+    post:
+      tags: [backends]
+      summary: Test a backend connection (stored or as-typed)
+      description: |
+        Calls `/v1/models` — proves the host answers and the key is accepted, and
+        the returned ids are the model preview. Give `backendId` to test a stored
+        backend (omitting `apiKey` reuses the stored key) or `baseUrl` to test an
+        unsaved form.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                backendId: { type: string }
+                baseUrl: { type: string, format: uri, maxLength: 500 }
+                apiKey: { type: [string, "null"], maxLength: 500 }
+      responses:
+        "200":
+          description: Models served by the endpoint
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [models]
+                        properties:
+                          models:
+                            type: array
+                            items: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /api/backends/detect:
+    post:
+      tags: [backends]
+      summary: Fingerprint the inference server behind a URL
+      description: |
+        A suggestion, never an authority — the operator picks. An unidentifiable
+        endpoint answers with a null backend rather than an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [baseUrl]
+              properties:
+                baseUrl: { type: string, format: uri, maxLength: 500 }
+      responses:
+        "200":
+          description: Detection result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [backend, detail]
+                        properties:
+                          backend:
+                            oneOf:
+                              - $ref: "#/components/schemas/BackendType"
+                              - type: "null"
+                          detail: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
   # ─────────────────────────── settings ───────────────────────────
   /api/settings:
     get:
@@ -273,60 +477,19 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  /api/settings/test-connection:
-    post:
-      tags: [settings]
-      summary: Probe an OpenAI-compatible chat endpoint
-      description: Calls `/v1/models`. Omitting `apiKey` reuses the stored key.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [llmBaseUrl]
-              properties:
-                llmBaseUrl: { type: string, format: uri, maxLength: 500 }
-                apiKey:
-                  type: [string, "null"]
-                  maxLength: 500
-      responses:
-        "200":
-          description: Models served by the endpoint
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data:
-                        type: object
-                        required: [models]
-                        properties:
-                          models:
-                            type: array
-                            items: { type: string }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-        "503": { $ref: "#/components/responses/ServiceUnavailable" }
-
   /api/settings/test-embeddings:
     post:
       tags: [settings]
-      summary: Probe the embedding endpoint
+      summary: Probe the embedding role
       description: |
         Embeds a short string, so it also catches a model whose vector width does
-        not match the stored 1024-wide columns.
+        not match the stored 1024-wide columns. Omitted fields fall back to the
+        stored configuration; a null `backendId` means "use the chat backend".
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                embeddingBaseUrl: { type: [string, "null"], format: uri }
-                embeddingApiKey: { type: [string, "null"] }
-                embeddingModel: { type: [string, "null"] }
+            schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200":
           description: Probe result
@@ -349,18 +512,13 @@ paths:
   /api/settings/test-images:
     post:
       tags: [settings]
-      summary: Probe the image endpoint
+      summary: Probe the image role
       description: Checks the configured model is actually served, rather than generating a picture.
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                imageBaseUrl: { type: [string, "null"], format: uri }
-                imageApiKey: { type: [string, "null"] }
-                imageModel: { type: [string, "null"] }
+            schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200":
           description: Probe result
@@ -378,18 +536,13 @@ paths:
   /api/settings/test-speech:
     post:
       tags: [settings]
-      summary: Probe the speech endpoint
+      summary: Probe the speech role
       description: Checks the configured model is actually served, rather than synthesizing audio.
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                speechBaseUrl: { type: [string, "null"], format: uri }
-                speechApiKey: { type: [string, "null"] }
-                speechModel: { type: [string, "null"] }
+            schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200":
           description: Probe result
@@ -404,10 +557,10 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  /api/settings/test-transcription:
+  /api/settings/test-audio:
     post:
       tags: [settings]
-      summary: Probe the transcription endpoint
+      summary: Probe the audio (STT) role
       description: |
         Transcribes a fraction of a second of generated silence — a real
         `/v1/audio/transcriptions` call, since whisper-class servers often serve
@@ -416,12 +569,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                transcriptionBaseUrl: { type: [string, "null"], format: uri }
-                transcriptionApiKey: { type: [string, "null"] }
-                transcriptionModel: { type: [string, "null"] }
+            schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200":
           description: Probe result
@@ -1971,30 +2119,74 @@ components:
         description: { type: string }
         feature: { type: string, description: The feature that contributes the tool. }
 
+    # ── backends ──
+    Backend:
+      type: object
+      description: One catalog endpoint. The API key appears only as `apiKeyConfigured`.
+      required: [id, name, baseUrl, type, apiKeyConfigured, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string, maxLength: 100 }
+        baseUrl: { type: string, format: uri, maxLength: 500 }
+        type: { $ref: "#/components/schemas/BackendType" }
+        apiKeyConfigured: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    BackendType:
+      type: string
+      enum: [ollama, llamacpp, vllm, openai-compatible]
+      description: Which inference server answers at the endpoint (drives the backend-normalization adapters).
+
+    BackendCreate:
+      type: object
+      required: [name, baseUrl, type]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        baseUrl: { type: string, format: uri, maxLength: 500 }
+        apiKey: { type: [string, "null"], maxLength: 500 }
+        type: { $ref: "#/components/schemas/BackendType" }
+
+    BackendUpdate:
+      type: object
+      minProperties: 1
+      description: |
+        Partial update. The key is write-only: omit to keep, `null`/empty to
+        clear, a string to replace. Repointing the URL or key verifies every
+        settings-role model riding on this backend and clears the verifiably
+        unserved ones (reported as `clearedModels`).
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        baseUrl: { type: string, format: uri, maxLength: 500 }
+        apiKey: { type: [string, "null"], maxLength: 500 }
+        type: { $ref: "#/components/schemas/BackendType" }
+
     # ── settings ──
     Settings:
       type: object
-      description: Client-facing settings. Secrets appear only as `…Configured` booleans.
+      description: |
+        Client-facing settings. Secrets appear only as `…Configured` booleans.
+        LLM configuration is per role: each role references a backend from the
+        catalog (null = "use the chat backend") plus a model id.
       required:
         [
-          llmBaseUrl,
+          chatBackendId,
           model,
-          apiKeyConfigured,
-          telegramBotTokenConfigured,
-          webSearchConfigured,
-          embeddingBaseUrl,
+          embeddingBackendId,
           embeddingModel,
-          embeddingApiKeyConfigured,
-          imageBaseUrl,
+          imageBackendId,
           imageModel,
-          imageApiKeyConfigured,
-          speechBaseUrl,
+          speechBackendId,
           speechModel,
           speechVoice,
-          speechApiKeyConfigured,
-          transcriptionBaseUrl,
-          transcriptionModel,
-          transcriptionApiKeyConfigured,
+          audioBackendId,
+          audioModel,
+          visionBackendId,
+          visionModel,
+          browserBackendId,
+          browserModel,
+          telegramBotTokenConfigured,
+          webSearchConfigured,
           ownerUserId,
           ownerUsername,
           maintenanceModeEnabled,
@@ -2004,28 +2196,31 @@ components:
           updatedAt,
         ]
       properties:
-        llmBaseUrl: { type: [string, "null"], format: uri }
+        chatBackendId: { type: [string, "null"] }
         model: { type: [string, "null"] }
-        apiKeyConfigured: { type: boolean }
+        embeddingBackendId: { type: [string, "null"] }
+        embeddingModel: { type: [string, "null"] }
+        imageBackendId: { type: [string, "null"] }
+        imageModel: { type: [string, "null"] }
+        speechBackendId: { type: [string, "null"] }
+        speechModel: { type: [string, "null"] }
+        speechVoice: { type: [string, "null"] }
+        audioBackendId: { type: [string, "null"] }
+        audioModel:
+          type: [string, "null"]
+          description: Null → voice transcription falls back to the chat model.
+        visionBackendId: { type: [string, "null"] }
+        visionModel:
+          type: [string, "null"]
+          description: Null → the chat model describes media.
+        browserBackendId: { type: [string, "null"] }
+        browserModel:
+          type: [string, "null"]
+          description: Null → the browser agent thinks on the chat model.
         telegramBotTokenConfigured: { type: boolean }
         webSearchConfigured:
           type: boolean
           description: Whether a Tavily key is stored, enabling the browsing agent's search fallback.
-        embeddingBaseUrl: { type: [string, "null"], format: uri }
-        embeddingModel: { type: [string, "null"] }
-        embeddingApiKeyConfigured: { type: boolean }
-        imageBaseUrl: { type: [string, "null"], format: uri }
-        imageModel: { type: [string, "null"] }
-        imageApiKeyConfigured: { type: boolean }
-        speechBaseUrl: { type: [string, "null"], format: uri }
-        speechModel: { type: [string, "null"] }
-        speechVoice: { type: [string, "null"] }
-        speechApiKeyConfigured: { type: boolean }
-        transcriptionBaseUrl: { type: [string, "null"], format: uri }
-        transcriptionModel:
-          type: [string, "null"]
-          description: Null → voice transcription falls back to the chat model.
-        transcriptionApiKeyConfigured: { type: boolean }
         ownerUserId: { type: [string, "null"] }
         ownerUsername:
           type: [string, "null"]
@@ -2041,26 +2236,26 @@ components:
       minProperties: 1
       description: |
         Partial update. Secret fields are write-only: omit to keep, `null` to clear,
-        a string to replace.
+        a string to replace. Backend ids must exist in the catalog; null means
+        "use the chat backend".
       properties:
-        llmBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
+        chatBackendId: { type: [string, "null"], maxLength: 100 }
         model: { type: [string, "null"], maxLength: 200 }
-        apiKey: { type: [string, "null"], maxLength: 500 }
-        telegramBotToken: { type: [string, "null"], maxLength: 200 }
-        tavilyApiKey: { type: [string, "null"], maxLength: 500 }
-        embeddingBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
-        embeddingApiKey: { type: [string, "null"], maxLength: 500 }
+        embeddingBackendId: { type: [string, "null"], maxLength: 100 }
         embeddingModel: { type: [string, "null"], maxLength: 200 }
-        imageBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
-        imageApiKey: { type: [string, "null"], maxLength: 500 }
+        imageBackendId: { type: [string, "null"], maxLength: 100 }
         imageModel: { type: [string, "null"], maxLength: 200 }
-        speechBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
-        speechApiKey: { type: [string, "null"], maxLength: 500 }
+        speechBackendId: { type: [string, "null"], maxLength: 100 }
         speechModel: { type: [string, "null"], maxLength: 200 }
         speechVoice: { type: [string, "null"], maxLength: 100 }
-        transcriptionBaseUrl: { type: [string, "null"], format: uri, maxLength: 500 }
-        transcriptionApiKey: { type: [string, "null"], maxLength: 500 }
-        transcriptionModel: { type: [string, "null"], maxLength: 200 }
+        audioBackendId: { type: [string, "null"], maxLength: 100 }
+        audioModel: { type: [string, "null"], maxLength: 200 }
+        visionBackendId: { type: [string, "null"], maxLength: 100 }
+        visionModel: { type: [string, "null"], maxLength: 200 }
+        browserBackendId: { type: [string, "null"], maxLength: 100 }
+        browserModel: { type: [string, "null"], maxLength: 200 }
+        telegramBotToken: { type: [string, "null"], maxLength: 200 }
+        tavilyApiKey: { type: [string, "null"], maxLength: 500 }
         ownerUserId:
           type: [string, "null"]
           pattern: '^\d+$'
@@ -2072,6 +2267,15 @@ components:
           minimum: 1
           maximum: 100
           description: Hard ceiling on a single browser-agent download, for every download tool.
+
+    RoleProbeInput:
+      type: object
+      description: |
+        One role's probe input. Omitted fields fall back to the stored
+        configuration; a null `backendId` means "use the chat backend".
+      properties:
+        backendId: { type: [string, "null"], maxLength: 100 }
+        model: { type: [string, "null"], maxLength: 200 }
 
     ModelCountProbe:
       type: object
