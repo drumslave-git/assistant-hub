@@ -44,4 +44,18 @@ describe("getSystemStatus", () => {
     expect(status.llm.state).toBe("unconfigured");
     expect(status.model.selected).toBe(false);
   });
+
+  it("reports every optional endpoint as off before setup (no network probe)", async () => {
+    const status = await getSystemStatus(ctx.db);
+    expect(status.endpoints.map((endpoint) => endpoint.id)).toEqual([
+      "embeddings",
+      "images",
+      "speech",
+      "transcription",
+    ]);
+    for (const endpoint of status.endpoints) {
+      expect(endpoint.state).toBe("off");
+      expect(endpoint.detail).not.toBe("");
+    }
+  });
 });

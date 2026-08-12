@@ -8,7 +8,15 @@ import {
   type DownloadStorageHealth,
 } from "@/features/browser-agent/server/download";
 import { getSettingsRecord } from "@/features/settings/server/repository";
+import {
+  getEmbeddingRuntime,
+  getImageRuntime,
+  getSpeechRuntime,
+  getTranscriptionRuntime,
+} from "@/features/settings/server/service";
 import { listModels } from "@/server/llm/client";
+import { probeTranscription } from "@/server/llm/transcription";
+import { tinySilenceWav } from "@/server/media/audio";
 import { getTraceStorageHealth, type TraceStorageHealth } from "@/server/trace/store";
 
 /**
@@ -39,10 +47,25 @@ export interface ModelStatus {
   detail: string;
 }
 
+/**
+ * Live status of one optional endpoint (embeddings, images, speech,
+ * transcription). `off` is a configuration choice, not a fault — these features
+ * are optional — so it renders neutral, unlike a configured endpoint that fails
+ * its probe.
+ */
+export interface EndpointStatus {
+  id: "embeddings" | "images" | "speech" | "transcription";
+  label: string;
+  state: "off" | "ok" | "error";
+  detail: string;
+}
+
 export interface SystemStatus {
   db: DbStatus;
   llm: LlmStatus;
   model: ModelStatus;
+  /** Every optional endpoint, each behind a real probe (see {@link EndpointStatus}). */
+  endpoints: EndpointStatus[];
   /** Trace/debug log write path — a real append probe, not a config guess. */
   traces: TraceStorageHealth;
   /** Browser-agent download write path — a real create/unlink probe, same reasoning. */
@@ -79,8 +102,102 @@ export async function getConfigReadiness(db: DrizzleDb = getDb()): Promise<Confi
 }
 
 /**
- * Probe the database, the LLM endpoint, the model selection, and both filesystem
- * write paths (trace logs and browser-agent downloads).
+ * Probe one model-serving optional endpoint (embeddings, images, speech): list
+ * its models — bounded by the shared probe timeout so a dead host cannot stall
+ * the page — and verify the configured model is actually served. An endpoint
+ * that lists nothing cannot disprove the model, so it reports reachable rather
+ * than guessing.
+ */
+async function probeModelEndpoint(
+  id: EndpointStatus["id"],
+  label: string,
+  offDetail: string,
+  runtime: { baseUrl: string; apiKey?: string | null; model: string } | null,
+): Promise<EndpointStatus> {
+  if (!runtime) return { id, label, state: "off", detail: offDetail };
+  try {
+    const models = await listModels(runtime, LLM_PROBE_TIMEOUT_MS);
+    if (models.length > 0 && !models.includes(runtime.model)) {
+      return {
+        id,
+        label,
+        state: "error",
+        detail: `"${runtime.model}" is not served by ${runtime.baseUrl}`,
+      };
+    }
+    return { id, label, state: "ok", detail: `${runtime.model} @ ${runtime.baseUrl}` };
+  } catch (err) {
+    return { id, label, state: "error", detail: errorMessage(err) };
+  }
+}
+
+/** Bound on the transcription probe — its own default deadline is page-hostile. */
+const TRANSCRIPTION_PROBE_TIMEOUT_MS = 6_000;
+
+/**
+ * Probe the transcription endpoint by actually transcribing a fraction of a
+ * second of silence — whisper-class servers often expose no model listing, so a
+ * real call is the only honest check (same reasoning as the Settings probe).
+ */
+async function probeTranscriptionEndpoint(db: DrizzleDb): Promise<EndpointStatus> {
+  const id = "transcription" as const;
+  const label = "Transcription";
+  const runtime = await getTranscriptionRuntime(db).catch(() => null);
+  if (!runtime) {
+    return { id, label, state: "off", detail: "No STT model — voice uses the chat model" };
+  }
+  try {
+    await Promise.race([
+      probeTranscription(runtime, tinySilenceWav()),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                `No answer from ${runtime.baseUrl} within ${TRANSCRIPTION_PROBE_TIMEOUT_MS / 1000}s`,
+              ),
+            ),
+          TRANSCRIPTION_PROBE_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+    return { id, label, state: "ok", detail: `${runtime.model} @ ${runtime.baseUrl}` };
+  } catch (err) {
+    return { id, label, state: "error", detail: errorMessage(err) };
+  }
+}
+
+/** Every optional endpoint's live status, probed concurrently. */
+async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> {
+  return Promise.all([
+    getEmbeddingRuntime(db)
+      .catch(() => null)
+      .then((runtime) =>
+        probeModelEndpoint(
+          "embeddings",
+          "Embeddings",
+          "No embedding model — semantic recall off",
+          runtime,
+        ),
+      ),
+    getImageRuntime(db)
+      .catch(() => null)
+      .then((runtime) =>
+        probeModelEndpoint("images", "Images", "No image model — image generation off", runtime),
+      ),
+    getSpeechRuntime(db)
+      .catch(() => null)
+      .then((runtime) =>
+        probeModelEndpoint("speech", "Speech", "No speech model — voice replies text-only", runtime),
+      ),
+    probeTranscriptionEndpoint(db),
+  ]);
+}
+
+/**
+ * Probe the database, the LLM endpoint, the model selection, every optional
+ * endpoint, and both filesystem write paths (trace logs and browser-agent
+ * downloads).
  */
 export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemStatus> {
   // Both write paths are independent of the DB — probe them first so a DB outage
@@ -100,36 +217,40 @@ export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemSt
       db: { connected: false, detail },
       llm: { state: "unconfigured", detail: "Requires a database connection" },
       model: { selected: false, detail: "Requires a database connection" },
+      endpoints: [],
       traces,
       downloads,
     };
   }
 
-  // 2. LLM endpoint — probe only what is actually configured in the DB.
+  // 2. LLM endpoint — probe only what is actually configured in the DB. The
+  // optional endpoints are probed concurrently with it; each is bounded, so the
+  // page waits for the slowest single probe, not their sum.
   const settings = await getSettingsRecord(db);
   const baseUrl = settings?.llmBaseUrl ?? null;
 
-  let llm: LlmStatus;
-  if (!baseUrl) {
-    llm = { state: "unconfigured", detail: "No endpoint set — configure it in Settings" };
-  } else {
+  const probeLlm = async (): Promise<LlmStatus> => {
+    if (!baseUrl) {
+      return { state: "unconfigured", detail: "No endpoint set — configure it in Settings" };
+    }
     try {
       const models = await listModels(
         { baseUrl, apiKey: settings?.llmApiKey ?? null },
         LLM_PROBE_TIMEOUT_MS,
       );
-      llm = { state: "connected", detail: baseUrl, modelCount: models.length };
+      return { state: "connected", detail: baseUrl, modelCount: models.length };
     } catch (err) {
-      llm = { state: "error", detail: errorMessage(err) };
+      return { state: "error", detail: errorMessage(err) };
     }
-  }
+  };
+  const [llm, endpoints] = await Promise.all([probeLlm(), probeOptionalEndpoints(db)]);
 
   // 3. Model selection.
   const model: ModelStatus = settings?.model
     ? { selected: true, detail: settings.model }
     : { selected: false, detail: "No model selected" };
 
-  return { db: { connected: true, detail: "Connected" }, llm, model, traces, downloads };
+  return { db: { connected: true, detail: "Connected" }, llm, model, endpoints, traces, downloads };
 }
 
 export interface HealthReport {

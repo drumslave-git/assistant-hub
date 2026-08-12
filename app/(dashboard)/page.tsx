@@ -92,6 +92,16 @@ export default async function OverviewPage() {
         hint: `${status.downloads.detail} — browser-agent downloads will fail`,
       };
 
+  // The optional endpoints, one card each. "Off" is a choice, not a fault —
+  // rendered neutral so a deliberately-disabled feature does not read as a
+  // problem — while a configured endpoint that fails its probe is an error.
+  const endpointItems: StatusItem[] = status.endpoints.map((endpoint) => ({
+    label: endpoint.label,
+    tone: endpoint.state === "ok" ? "ok" : endpoint.state === "off" ? "neutral" : "error",
+    value: endpoint.state === "ok" ? "Connected" : endpoint.state === "off" ? "Off" : "Error",
+    hint: endpoint.detail,
+  }));
+
   const items: StatusItem[] = [
     {
       label: "Database",
@@ -107,6 +117,7 @@ export default async function OverviewPage() {
       hint: status.model.detail,
     },
     botItem,
+    ...endpointItems,
     tracesItem,
     downloadsItem,
   ];
@@ -115,6 +126,7 @@ export default async function OverviewPage() {
     status.db.connected &&
     status.llm.state === "connected" &&
     status.model.selected &&
+    status.endpoints.every((endpoint) => endpoint.state !== "error") &&
     status.traces.ok &&
     status.downloads.ok;
 
