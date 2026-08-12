@@ -68,8 +68,12 @@ export function registerImageGenMcpTools(server: McpServer): void {
           .describe(
             "Detailed visual description of the image to generate (English works best)",
           ),
+        // A plain 2-element array, not z.tuple: a tuple serializes to the
+        // positional `items: [...]` JSON Schema form, which Google's
+        // OpenAI-compat layer rejects ("items: missing field").
         size: z
-          .tuple([dimension, dimension])
+          .array(dimension)
+          .length(2)
           .optional()
           .describe(
             `Image size as [width, height] in pixels; defaults to [${DEFAULT_IMAGE_SIZE[0]}, ${DEFAULT_IMAGE_SIZE[1]}]`,

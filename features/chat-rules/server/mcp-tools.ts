@@ -245,10 +245,12 @@ export function registerChatRulesMcpTools(server: McpServer): void {
           .max(MAX_RULE_TEXT_LEN)
           .default("")
           .describe("New rule text, complete and self-contained (leave empty to keep it)"),
+        // Optional-by-omission, not an "" enum member: Google's OpenAI-compat
+        // layer rejects empty enum values ("enum[2]: cannot be empty").
         trigger: z
-          .enum(["on-reply", "always", ""])
-          .default("")
-          .describe("New trigger mode (optional)"),
+          .enum(["on-reply", "always"])
+          .optional()
+          .describe("New trigger mode (optional; omit to keep it)"),
         enabled: z
           .boolean()
           .nullable()

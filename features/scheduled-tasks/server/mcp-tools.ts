@@ -342,7 +342,12 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
               "gather it from the visible conversation or history search first. Replaces the " +
               "stored context entirely; '' leaves it unchanged.",
           ),
-        schedule_kind: z.enum(["once", "daily", "weekly", ""]).default("").describe("New schedule kind (optional)"),
+        // Optional-by-omission, not an "" enum member: Google's OpenAI-compat
+        // layer rejects empty enum values ("enum[3]: cannot be empty").
+        schedule_kind: z
+          .enum(["once", "daily", "weekly"])
+          .optional()
+          .describe("New schedule kind (optional; omit to keep it)"),
         time: z.string().default("").describe("New time HH:MM (optional)"),
         weekdays: z
           .array(z.number().int().min(0).max(6))

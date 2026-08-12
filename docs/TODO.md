@@ -76,6 +76,22 @@ vision" described the red probe square via the chat-model fallback; a 429 on
 the first vision attempt displayed the relayed detail ("(Google AI Studio)
 …temporarily rate-limited upstream…") proving the error-detail fix live.
 
+### Follow-up shipped the same day: Google-compatible tool schemas
+
+The surfaced detail immediately named the real reply failure on
+OpenRouter→Google (gemma-4): three MCP tool declarations violated Google's
+strict schema validation — `""` enum members (`tasks_update.schedule_kind`,
+`rules_update.trigger`; "optional" is now modeled by omitting the field) and
+`image_generate.size`'s `z.tuple` (positional `items: [...]`; now
+`z.array(dimension).length(2)`). One bad declaration 400s the whole reply
+call, so every tool-bearing reply failed on that provider.
+`server/mcp/schema-compat.test.ts` lint-checks every registered tool's
+serialized parameters against these rules so no future tool reintroduces
+them. Handlers already treated falsy as "unchanged" — no behavior change.
+Note: the MCP registry singleton survives dev hot-reload and its staleness
+check compares tool *names* only, so a schema-only change needs a dev-server
+restart to serve (done).
+
 ### Remaining risks
 
 - Production deploy runs 0051 (single additive column with default — low risk).
