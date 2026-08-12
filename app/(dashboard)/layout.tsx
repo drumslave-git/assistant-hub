@@ -8,6 +8,7 @@ import { getTimezone } from "@/features/settings/server/service";
 import { SESSION_COOKIE } from "@/lib/auth";
 import { judgeSessionToken } from "@/server/auth";
 import { getConfigReadiness } from "@/server/status";
+import { getBotStatus } from "@/server/telegram/bot-manager";
 
 /**
  * The authenticated dashboard shell. This layout is the *real* page-side auth
@@ -32,6 +33,11 @@ export default async function DashboardLayout({
   if (verdict === "invalid") redirect("/login");
 
   const readiness = await getConfigReadiness();
+  // The poller's live state (cheap, in-process) joins the config readiness so
+  // the shell's Bot status card says what the bot is *doing*, not merely that
+  // it was once configured. Re-read on every `status` event via the shell's
+  // live refresh, so a crash or reconnect shows up without a reload.
+  const bot = getBotStatus();
   // Every dashboard timestamp renders in this zone. Falls back to UTC when the
   // database is unreachable — the shell still renders its "database
   // unavailable" state rather than erroring on a formatting concern.
@@ -39,7 +45,7 @@ export default async function DashboardLayout({
 
   return (
     <TimezoneProvider timezone={timezone}>
-      <AppShell botStatus={readiness}>
+      <AppShell botStatus={{ ...readiness, bot }}>
         {/* Global data-loss alerts render above every page; see SystemAlerts. */}
         <SystemAlerts />
         {children}

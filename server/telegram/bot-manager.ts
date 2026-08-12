@@ -6,6 +6,7 @@ import { Bot, GrammyError, HttpError, InputFile, type Context } from "grammy";
 import { renderTelegramHtml } from "@/features/bot-messaging/telegram-html";
 import { getTelegramBotToken } from "@/features/settings/server/service";
 import { messageLinkBase, telegramFileKind, type TelegramFileKind } from "@/lib/telegram";
+import { publishEvent } from "@/server/realtime/hub";
 
 import { processCallbackUpdate } from "./process-callback";
 import { processReactionUpdate } from "./process-reaction";
@@ -109,6 +110,16 @@ function store(): ManagerStore {
 /** Current bot status. Cheap and synchronous — safe for status probes. */
 export function getBotStatus(): BotStatus {
   return { ...store().status };
+}
+
+/**
+ * Record a state change and publish it on the shared `status` topic, so the
+ * shell's Bot status card (and anything else watching) updates live — a poller
+ * that dies or reconnects must not need a page reload to be seen.
+ */
+function setStatus(s: ManagerStore, status: BotStatus): void {
+  s.status = status;
+  publishEvent("status");
 }
 
 /**
@@ -281,14 +292,14 @@ function failAndMaybeReconnect(s: ManagerStore, err: unknown, username: string |
       }`,
     );
   }
-  s.status = {
+  setStatus(s, {
     state: "error",
     username,
     since: null,
     error: reconnecting
       ? `${errorMessage(err)} — reconnecting automatically`
       : errorMessage(err),
-  };
+  });
   cancelReconnect(s);
   if (!reconnecting) return;
   s.reconnectTimer = setTimeout(() => {
@@ -480,7 +491,7 @@ export async function startBot(): Promise<BotStatus> {
       // Not an error — the bot simply isn't configured yet. Kept as `stopped`
       // so the dashboard doesn't show a stale "error" once a token is saved.
       s.desired = false;
-      s.status = { ...STOPPED };
+      setStatus(s, { ...STOPPED });
       return { ...s.status };
     }
 
@@ -513,18 +524,18 @@ export async function startBot(): Promise<BotStatus> {
     if (!s.desired) {
       // A Stop landed while the handshake was in flight — honour it rather than
       // bringing up a poller nobody asked for.
-      s.status = { ...STOPPED };
+      setStatus(s, { ...STOPPED });
       return { ...s.status };
     }
 
     const recovered = s.status.state === "error";
     s.bot = bot;
-    s.status = {
+    setStatus(s, {
       state: "running",
       username: bot.botInfo.username,
       since: new Date().toISOString(),
       error: null,
-    };
+    });
     if (recovered) console.log(`Telegram bot @${bot.botInfo.username} reconnected`);
 
     // Concurrent long-polling loop via the runner; not awaited (its task
@@ -576,7 +587,7 @@ async function stopBotInternal(s: ManagerStore): Promise<void> {
     s.runner = null;
   }
   s.bot = null;
-  s.status = { ...STOPPED };
+  setStatus(s, { ...STOPPED });
 }
 
 /** Stop the poller, cancelling any pending reconnect. Idempotent. */

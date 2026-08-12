@@ -7,12 +7,27 @@ import { buildInfo } from "@/lib/build-info";
 import { cn } from "@/lib/cn";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Timestamp } from "@/components/time/Timestamp";
 import { NAV_GROUPS, type NavItem } from "./nav-config";
 
-/** Cheap configuration readiness shown in the shell (live probe is on Overview). */
+/**
+ * What the shell's Bot status card shows: cheap configuration readiness plus
+ * the poller's live state. Once everything is configured, the runtime state is
+ * the part an operator actually watches — "Configured" alone says nothing about
+ * whether the bot is up right now. Re-read on every `status` event (the bot
+ * manager publishes each state change), so it stays live without a reload.
+ */
 export interface BotStatus {
   configured: boolean;
   detail: string;
+  bot: {
+    state: "stopped" | "running" | "error";
+    username: string | null;
+    /** ISO time the current run started, or null when not running. */
+    since: string | null;
+    /** Last error message when `state` is `error`, else null. */
+    error: string | null;
+  };
 }
 
 function isActive(pathname: string, href: string): boolean {
@@ -119,21 +134,60 @@ export function Sidebar({
         ))}
       </nav>
 
-      {/* Footer upsell/status card */}
+      {/* Footer status card: the poller's live state once configured. */}
       <div className="p-3">
         <div className="rounded-xl border border-primary/30 bg-primary-soft p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Sparkles className="h-4 w-4 text-primary" />
             Bot status
           </div>
-          <p className="mt-1 text-xs text-muted">{botStatus.detail}</p>
+          <p className="mt-1 text-xs text-muted">
+            {botStatus.bot.state === "running" ? (
+              <>
+                @{botStatus.bot.username ?? "bot"} — polling
+                {botStatus.bot.since ? (
+                  <>
+                    {" "}
+                    since <Timestamp iso={botStatus.bot.since} />
+                  </>
+                ) : null}
+              </>
+            ) : botStatus.bot.state === "error" ? (
+              (botStatus.bot.error ?? "Unknown error")
+            ) : botStatus.configured ? (
+              "The poller is stopped — start it from the Overview."
+            ) : (
+              botStatus.detail
+            )}
+          </p>
           <div className="mt-3 flex items-center justify-between">
-            <Badge tone={botStatus.configured ? "success" : "warning"} dot>
-              {botStatus.configured ? "Configured" : "Setup needed"}
+            <Badge
+              tone={
+                botStatus.bot.state === "running"
+                  ? "success"
+                  : botStatus.bot.state === "error"
+                    ? "danger"
+                    : "warning"
+              }
+              dot
+            >
+              {botStatus.bot.state === "running"
+                ? "Running"
+                : botStatus.bot.state === "error"
+                  ? "Error"
+                  : botStatus.configured
+                    ? "Stopped"
+                    : "Setup needed"}
             </Badge>
-            <Button asChild size="sm" variant="primary">
-              <Link href="/settings">Configure</Link>
-            </Button>
+            {botStatus.configured ? (
+              <Button asChild size="sm" variant="primary">
+                <Link href="/">Overview</Link>
+              </Button>
+            ) : (
+              <Button asChild size="sm" variant="primary">
+                <Link href="/settings">Configure</Link>
+              </Button>
+            )}
           </div>
         </div>
       </div>
