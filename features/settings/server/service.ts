@@ -33,6 +33,7 @@ import {
   type SettingsRecord,
 } from "./repository";
 import type {
+  ListSectionModels,
   Settings,
   TestConnection,
   TestEmbeddings,
@@ -345,6 +346,35 @@ export async function listAvailableEmbeddingModels(db: DrizzleDb = getDb()): Pro
   } catch {
     return [];
   }
+}
+
+/** Which stored key authenticates each optional section's own endpoint. */
+const SECTION_API_KEY_FIELD = {
+  embedding: "embeddingApiKey",
+  image: "imageApiKey",
+  speech: "speechApiKey",
+  transcription: "transcriptionApiKey",
+} as const satisfies Record<ListSectionModels["section"], keyof SettingsRecord>;
+
+/**
+ * List the models served by a section endpoint *as currently entered in the
+ * form* — the saved-state preloads above cannot answer for a URL the operator
+ * just typed and has not saved yet (the gap that forced a save just to see the
+ * new endpoint's models). `apiKey` omitted falls back to the section's stored
+ * key, mirroring the probe routes, so the secret never round-trips. Throws a
+ * clean `ApiError` on an unreachable endpoint — the form shows why the list is
+ * empty instead of silently offering nothing.
+ */
+export async function listSectionModels(
+  input: ListSectionModels,
+  db: DrizzleDb = getDb(),
+): Promise<{ models: string[] }> {
+  const apiKey =
+    input.apiKey !== undefined
+      ? input.apiKey
+      : ((await getSettingsRecord(db))?.[SECTION_API_KEY_FIELD[input.section]] ?? null);
+  const models = await listModels({ baseUrl: input.baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
+  return { models };
 }
 
 /**

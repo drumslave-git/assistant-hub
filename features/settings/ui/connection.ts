@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { ApiErrorBody } from "@/lib/api-error";
 import type { LlmBackendId } from "@/lib/llm-backend";
@@ -115,6 +115,9 @@ export function useBackendConnection(
   const [separate, setSeparateState] = useState(Boolean(initial.baseUrl));
   const [model, setModelState] = useState(initial.model ?? "");
   const [backend, setBackendState] = useState<LlmBackendId>(initial.backend);
+  // The URL as last saved — what the server-preloaded model list describes.
+  // While the form's URL differs from it, that list is about the wrong host.
+  const [savedBaseUrl, setSavedBaseUrl] = useState(initial.baseUrl);
 
   // The backend as configured right now: its own URL only when the operator
   // asked for a separate backend, otherwise "reuse the LLM connection" (null).
@@ -130,6 +133,7 @@ export function useBackendConnection(
     backend,
     resolvedUrl,
     urlMissing,
+    savedBaseUrl,
     setBaseUrl(next: string) {
       setBaseUrlState(next);
       onChange();
@@ -152,8 +156,84 @@ export function useBackendConnection(
       setSeparateState(Boolean(saved.baseUrl));
       setModelState(saved.model ?? "");
       setBackendState(saved.backend);
+      setSavedBaseUrl(saved.baseUrl);
     },
   };
 }
 
 export type BackendConnection = ReturnType<typeof useBackendConnection>;
+
+/** What one section's live model-list fetch knows about the form's current URL. */
+export type SectionModelsState =
+  /** On the saved endpoint (or reusing the LLM connection) — nothing to fetch. */
+  | { kind: "idle" }
+  | { kind: "loading"; url: string }
+  | { kind: "ok"; url: string; models: string[] }
+  | { kind: "error"; url: string; message: string };
+
+/**
+ * Live model list for a section pointed at an endpoint that differs from the
+ * saved one. The server preload only describes the *saved* URL, so without this
+ * the dropdown kept offering the old host's models until the operator saved
+ * blind (the reported bug). Debounced typing-tolerant fetch: fires only once
+ * the URL parses and has been stable briefly; a typed key is sent along, an
+ * untouched one falls back to the stored section key server-side.
+ */
+export function useSectionModels(
+  section: "embedding" | "image" | "speech" | "transcription",
+  conn: BackendConnection,
+  secret: SecretField,
+): SectionModelsState {
+  const [state, setState] = useState<SectionModelsState>({ kind: "idle" });
+  const { separate, resolvedUrl, savedBaseUrl } = conn;
+  const { dirty: keyDirty, value: keyValue } = secret;
+
+  useEffect(() => {
+    // Reusing the LLM connection, or back on the saved endpoint: the LLM list /
+    // server preload is authoritative here, so there is nothing to fetch. A
+    // stale result from a detour needs no reset — consumers only read a result
+    // whose `url` matches the URL currently in the form.
+    if (!separate || !resolvedUrl || resolvedUrl === savedBaseUrl) {
+      return;
+    }
+    try {
+      new URL(resolvedUrl);
+    } catch {
+      return; // mid-typing — not yet a fetchable URL
+    }
+    const url = resolvedUrl;
+    const body = JSON.stringify({
+      section,
+      baseUrl: url,
+      ...(keyDirty ? { apiKey: keyValue.trim() === "" ? null : keyValue.trim() } : {}),
+    });
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setState({ kind: "loading", url });
+      try {
+        const res = await fetch("/api/settings/list-models", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body,
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          setState({ kind: "error", url, message: await readError(res) });
+          return;
+        }
+        const { data } = (await res.json()) as { data: { models: string[] } };
+        if (!cancelled) setState({ kind: "ok", url, models: data.models });
+      } catch {
+        if (!cancelled) {
+          setState({ kind: "error", url, message: "Network error — could not reach the server" });
+        }
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [section, separate, resolvedUrl, savedBaseUrl, keyDirty, keyValue]);
+
+  return state;
+}

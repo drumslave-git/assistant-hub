@@ -210,6 +210,20 @@ export const testTranscriptionSchema = z.object({
 export type TestTranscription = z.infer<typeof testTranscriptionSchema>;
 
 /**
+ * Input for the section model listing: which optional section is asking, the
+ * endpoint URL *as currently in the form* (not necessarily saved), and an
+ * optional key. `apiKey` follows the probe convention: omitted falls back to
+ * that section's stored key, so an unchanged secret never round-trips.
+ */
+export const listSectionModelsSchema = z.object({
+  section: z.enum(["embedding", "image", "speech", "transcription"]),
+  baseUrl,
+  apiKey: apiKey.nullable().optional(),
+});
+
+export type ListSectionModels = z.infer<typeof listSectionModelsSchema>;
+
+/**
  * Input for the backend fingerprint probe: the URL to identify. Unauthenticated
  * native admin routes (`/api/version`, `/props`, `/version`) are what answer, so
  * no key is taken — nothing here reads or needs a secret.

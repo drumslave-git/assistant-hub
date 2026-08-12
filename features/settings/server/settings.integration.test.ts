@@ -4,7 +4,7 @@ import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { listModels } from "@/server/llm/client";
 import { getTraceDetail, listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
-import { getSettingsRecord } from "./repository";
+import { getSettingsRecord, upsertSettings } from "./repository";
 import { updateSettingsSchema } from "./schema";
 import {
   getBotPolicy,
@@ -16,6 +16,7 @@ import {
   getTelegramBotToken,
   getTranscriptionRuntime,
   getWebSearchApiKey,
+  listSectionModels,
   updateSettings,
 } from "./service";
 
@@ -688,5 +689,58 @@ describe("transcription runtime", () => {
 
     const { traces } = await listTraces({ feature: "settings" });
     expect(JSON.stringify(traces)).not.toContain("secret-stt-key");
+  });
+});
+
+describe("listSectionModels", () => {
+  it("lists from the given URL with the typed key when one is provided", async () => {
+    listModelsMock.mockResolvedValue(["embed-a", "embed-b"]);
+
+    const { models } = await listSectionModels(
+      { section: "embedding", baseUrl: "https://new-host.example.com/v1", apiKey: "typed-key" },
+      ctx.db,
+    );
+
+    expect(models).toEqual(["embed-a", "embed-b"]);
+    expect(listModelsMock).toHaveBeenCalledWith(
+      { baseUrl: "https://new-host.example.com/v1", apiKey: "typed-key" },
+      expect.any(Number),
+    );
+  });
+
+  it("falls back to the section's stored key when none is typed", async () => {
+    await upsertSettings(ctx.db, { embeddingApiKey: "stored-embed-key" });
+    listModelsMock.mockResolvedValue(["embed-a"]);
+
+    await listSectionModels(
+      { section: "embedding", baseUrl: "https://new-host.example.com/v1" },
+      ctx.db,
+    );
+
+    expect(listModelsMock).toHaveBeenCalledWith(
+      { baseUrl: "https://new-host.example.com/v1", apiKey: "stored-embed-key" },
+      expect.any(Number),
+    );
+  });
+
+  it("an explicit null key means no key, never the stored one", async () => {
+    await upsertSettings(ctx.db, { imageApiKey: "stored-image-key" });
+    listModelsMock.mockResolvedValue([]);
+
+    await listSectionModels(
+      { section: "image", baseUrl: "https://new-host.example.com/v1", apiKey: null },
+      ctx.db,
+    );
+
+    expect(listModelsMock).toHaveBeenCalledWith(
+      { baseUrl: "https://new-host.example.com/v1", apiKey: null },
+      expect.any(Number),
+    );
+  });
+
+  it("propagates a listing failure so the form can say why the list is empty", async () => {
+    await expect(
+      listSectionModels({ section: "speech", baseUrl: "https://dead.example.com/v1" }, ctx.db),
+    ).rejects.toThrow();
   });
 });

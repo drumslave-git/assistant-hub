@@ -15,7 +15,9 @@ import {
   useBackendConnection,
   useProbe,
   useSecretField,
+  useSectionModels,
   type BackendConnection,
+  type SectionModelsState,
 } from "./connection";
 import { BackendField } from "./BackendField";
 import { ChangePasswordSection } from "./ChangePasswordSection";
@@ -423,30 +425,57 @@ export function SettingsForm({
   const staleWarning = (m: string) =>
     `"${m}" is not served by the tested endpoint — it will be cleared on save unless you pick another.`;
 
+  // Live model lists for sections pointed at an endpoint that differs from the
+  // saved one — the server preload cannot describe a URL the operator just
+  // typed, which used to leave the dropdown offering the old host's models
+  // until a blind save.
+  const embFetched = useSectionModels("embedding", emb, embKey);
+  const imgFetched = useSectionModels("image", img, imgKey);
+  const spcFetched = useSectionModels("speech", spc, spcKey);
+  const sttFetched = useSectionModels("transcription", stt, sttKey);
+
+  /** The fetched list, only when it describes the URL currently in the form. */
+  const fetchedModels = (conn: BackendConnection, fetched: SectionModelsState) =>
+    conn.separate && fetched.kind === "ok" && fetched.url === conn.resolvedUrl
+      ? fetched.models
+      : null;
+
   // Options for one section's model select. When the section shares the LLM
   // endpoint (the common case — no separate URL), the endpoint's own model list
   // is authoritative, so a "Test connection" on the LLM tab refreshes the
-  // dropdown too; with a separate host we fall back to what the server
-  // preloaded from that host. The saved model is kept as an option — so an
-  // unreachable endpoint cannot silently blank out a working selection —
-  // unless it is provably stale, in which case keeping it would re-offer
-  // exactly the selection the save is about to clear.
-  function sectionModels(conn: BackendConnection, preloaded: string[]) {
-    const listed = !conn.separate && models.length > 0 ? models : preloaded;
-    const stale =
-      llmListFresh && !conn.separate && conn.model !== "" && !listed.includes(conn.model);
+  // dropdown too. With a separate host, a live fetch from the URL currently in
+  // the form wins; the server preload (the saved host's list) is the fallback.
+  // The saved model is kept as an option — so an unreachable endpoint cannot
+  // silently blank out a working selection — unless it is provably stale, in
+  // which case keeping it would re-offer exactly the selection the save is
+  // about to clear.
+  function sectionModels(
+    conn: BackendConnection,
+    preloaded: string[],
+    fetched: SectionModelsState,
+  ) {
+    const fresh = fetchedModels(conn, fetched);
+    const listed = !conn.separate && models.length > 0 ? models : (fresh ?? preloaded);
+    const listFresh = conn.separate ? fresh !== null : llmListFresh;
+    const stale = listFresh && conn.model !== "" && !listed.includes(conn.model);
     const options =
       conn.model && !listed.includes(conn.model) && !stale ? [conn.model, ...listed] : listed;
-    return { options, warning: stale ? staleWarning(conn.model) : null };
+    const fetchError =
+      conn.separate && fetched.kind === "error" && fetched.url === conn.resolvedUrl
+        ? `Could not list models from this endpoint: ${fetched.message}`
+        : null;
+    return { options, warning: stale ? staleWarning(conn.model) : fetchError };
   }
 
-  const embeddingModels = sectionModels(emb, initialEmbeddingModels);
-  const imageModels = sectionModels(img, initialImageModels);
-  const speechModels = sectionModels(spc, initialSpeechModels);
+  const embeddingModels = sectionModels(emb, initialEmbeddingModels, embFetched);
+  const imageModels = sectionModels(img, initialImageModels, imgFetched);
+  const speechModels = sectionModels(spc, initialSpeechModels, spcFetched);
 
   // Transcription model suggestions (free-text field — whisper servers rarely list).
   const transcriptionModels =
-    !stt.separate && models.length > 0 ? models : initialTranscriptionModels;
+    !stt.separate && models.length > 0
+      ? models
+      : (fetchedModels(stt, sttFetched) ?? initialTranscriptionModels);
 
   const chatModelStale = llmListFresh && model !== "" && !models.includes(model);
 
