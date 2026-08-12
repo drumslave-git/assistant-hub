@@ -656,6 +656,38 @@ input-only rule about the transcript format in `BASE_SYSTEM_PROMPT`'s Reply
 format block. The real fix for the leakage is restoring thinking (the blocker
 above).
 
+## Browser agent: failure verdict + download fallback (`done` pending live verification, 2026-08-12)
+
+User report, 2026-08-12: runs show "Done" despite the task having failed, and a
+yt-dlp failure ends the run with nothing else attempted.
+
+Two causes, two fixes:
+
+1. **Status**: the runner settled every report-producing run as `done`; `failed`
+   was only for thrown errors — while the agent is *instructed* to end an
+   unachievable goal with an honest failure report. New run-outcome verdict
+   (`features/browser-agent/server/outcome.ts`, wired in `runner.ts`): a small
+   classification call judges whether the report states the goal failed,
+   citation-required and verified in code, failing open to `done` (same doctrine
+   as the reply path's honesty gate). A confirmed failure settles the run
+   `failed` (report kept, error carries the quoted failure) and fails the trace
+   so it is findable on Debug.
+2. **Fallback**: the agent system prompt ordered "if the download fails, the run
+   has FAILED: stop" (the 2026-08-01 anti-substitution guard). Reworded: a
+   failed download tool must first exhaust the other routes to the SAME content
+   (retry with the verbatim URL, another official page, and outside big media
+   platforms a direct file link / network media URL via
+   browser_download_file/browser_download_stream); substitution stays forbidden
+   no matter how many attempts failed.
+
+Proof: outcome parser unit tests (8) pass; typecheck + lint clean; browser-agent
+suite shows only the pre-existing environment-dependent ytdlp-binary /
+media-download failures (identical on a stashed clean tree). **Pending live
+verification**: a real failed run (e.g. an impossible download) should settle
+`failed` with the quoted reason, and a yt-dlp failure on a non-platform site
+should show retry/fallback attempts in the run activity before any failure
+report.
+
 ## Reply latency (`todo`, 2026-08-07)
 
 From the production trace/analytics review, 2026-08-07 (1,939 traces,

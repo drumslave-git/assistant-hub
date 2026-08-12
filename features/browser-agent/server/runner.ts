@@ -16,15 +16,25 @@ import { getUserLanguage } from "@/features/known-users/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
 import { isGroupChatId, TELEGRAM_MAX_UPLOAD_MB } from "@/lib/telegram";
-import { sanitizeMessagesForTrace } from "@/server/llm/client";
+import {
+  chatCompletion,
+  llmUsageOf,
+  sanitizeMessagesForTrace,
+  type LlmConnection,
+} from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { publishEvent } from "@/server/realtime/hub";
 import { deleteChatMessage, sendChatFile, sendChatMessage } from "@/server/telegram/bot-manager";
-import { startTrace } from "@/server/trace";
+import { startTrace, type TraceRecorder } from "@/server/trace";
 
 import type { BrowserAgentRun, BrowserDownloadRecord } from "../types";
 import { takeRunAck } from "./ack";
 import { runBrowserAgent } from "./agent";
+import {
+  buildRunOutcomeMessages,
+  parseRunOutcomeVerdict,
+  type RunOutcomeVerdict,
+} from "./outcome";
 import { formatDownloadLine, formatRunReport } from "../format";
 import { getDownloadStorageHealth } from "./download";
 import { clearLiveState, setLiveAction, setLiveProgress } from "./live-state";
@@ -199,6 +209,58 @@ async function removeRunAck(runId: string): Promise<void> {
   }
 }
 
+/** Cap on the outcome verdict answer — a tiny JSON object, not an essay. */
+const OUTCOME_CHECK_MAX_TOKENS = 500;
+
+/**
+ * Ask the classifier whether the report states the goal failed, recording the
+ * exchange on the run trace. Never throws: a provider failure here abstains and
+ * the run settles `done` — the check reclassifies failures, it must not create
+ * a new way for successful runs to break.
+ */
+async function judgeRunOutcome(
+  conn: LlmConnection,
+  model: string,
+  goal: string,
+  report: string,
+  trace: TraceRecorder,
+): Promise<RunOutcomeVerdict> {
+  const messages = buildRunOutcomeMessages({ goal, report });
+  await trace.event({
+    type: "llm_request",
+    message: "run outcome check request",
+    data: { messages },
+  });
+  try {
+    const result = await chatCompletion(conn, {
+      model,
+      messages,
+      reasoning: "off",
+      maxTokens: OUTCOME_CHECK_MAX_TOKENS,
+    });
+    await trace.event({
+      type: "llm_response",
+      message: "run outcome check response",
+      data: result.responseBody ?? { content: result.content },
+      usage: { ...llmUsageOf(result), callKind: "run-outcome-check" },
+    });
+    return parseRunOutcomeVerdict(result.content, { report });
+  } catch (err) {
+    await trace.event({
+      type: "error",
+      level: "warn",
+      message: "run outcome check failed — run settles as done",
+      data: { error: err instanceof Error ? err.message : String(err) },
+    });
+    return {
+      goalFailed: false,
+      outcome: null,
+      quote: null,
+      reason: "outcome check call failed",
+    };
+  }
+}
+
 /** Execute one claimed run to completion. Never throws — always settles the run. */
 async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
   active = true;
@@ -333,10 +395,15 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
       },
     };
 
+    const conn: LlmConnection = {
+      baseUrl: runtime.baseUrl,
+      apiKey: runtime.apiKey,
+      backend: runtime.backend,
+    };
     const result = await runBrowserAgent({
       goal: run.goal,
       sourceUrls: run.sourceUrls,
-      conn: { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
+      conn,
       model: runtime.model,
       toolContext,
       requiredLanguage: resolveRequiredLanguage(storedLanguage) ?? null,
@@ -368,8 +435,17 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
 
     const report = result.report || "I browsed but couldn't find anything useful.";
 
+    // Outcome verdict — the report's own language decides done vs failed. The
+    // agent is instructed to end an unachievable goal with an honest failure
+    // report, and settling that as `done` is how failed runs sat green on the
+    // dashboard. The model judges the language; code records the enum and
+    // verifies the citation (see `outcome.ts`). Fails open: an unreadable or
+    // unbacked verdict settles `done`, exactly as before the check existed.
+    const verdict = await judgeRunOutcome(conn, runtime.model, run.goal, report, trace);
+
     // Deliver the outcome — file(s) + report, combined where possible — and
-    // mirror the report-bearing message into history (best-effort).
+    // mirror the report-bearing message into history (best-effort). A failed
+    // goal delivers the same way: the report IS the honest failure message.
     if (run.chatId) {
       const delivered = await deliverRunOutcome(run, report, staged, downloads);
       if (delivered != null) {
@@ -388,6 +464,22 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
       }
       // The run has spoken for itself — the silent "on it" ack can go.
       await removeRunAck(run.id);
+    }
+
+    if (verdict.goalFailed) {
+      await settleBrowserAgentRun(db, run.id, {
+        status: "failed",
+        report,
+        error: `The agent reported the goal failed: "${verdict.quote}"`,
+        downloads,
+      });
+      // Failed, not succeeded: a run that did not achieve its goal must be
+      // findable on the Debug page — a green trace over a failure report is
+      // exactly how these sat unnoticed.
+      await trace.fail(new Error(`goal not achieved — ${verdict.reason}`), {
+        relatedIds: { [FEATURE.relatedIdsKey!]: [run.id] },
+      });
+      return;
     }
 
     await settleBrowserAgentRun(db, run.id, {

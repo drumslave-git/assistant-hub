@@ -113,7 +113,11 @@ export interface BrowserAgentRun {
   sourceUrls: string[];
   goal: string;
   status: BrowserRunStatus;
-  /** The agent's final report, or null while unfinished/failed. */
+  /**
+   * The agent's final report, or null while unfinished. A run failed by the
+   * outcome verdict (the report itself said the goal failed) keeps its report;
+   * a run failed by a thrown error has none.
+   */
   report: string | null;
   /** Failure reason when `status = 'failed'`. */
   error: string | null;

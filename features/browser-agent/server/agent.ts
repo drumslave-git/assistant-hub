@@ -155,16 +155,29 @@ function buildAgentSystemPrompt(
         `- On a video or music site (YouTube, YouTube Music, SoundCloud, Vimeo, TikTok, ` +
         `Bandcamp, a podcast page …), download with browser_download_media and the page ` +
         `URL — use mode "audio" for a song/track/podcast and "video" for a video. Those ` +
-        `pages never expose a media file URL, so do not read the source or the network ` +
-        `looking for one, and do not conclude the download is impossible.\n` +
+        `pages never expose a media file URL, so do not START by reading the source or ` +
+        `the network looking for one, and do not conclude the download is impossible ` +
+        `without having called browser_download_media.\n` +
+        // One failed tool call is not a failed run (operator report, 2026-08-12:
+        // a yt-dlp failure ended the run with no other route even attempted).
+        // The escape hatch is scoped to the SAME content — the substitution
+        // guard below still forbids delivering anything else.
+        `- A failed download tool is not yet a failed run: before giving up, try the other ` +
+        `routes to the SAME content. If browser_download_media fails, re-check you gave it ` +
+        `the exact page URL (the verbatim URLs list wins over the goal text) and try once ` +
+        `more; look for another official page of the very same content and try that. ` +
+        `Outside the big media platforms, also open the page and look for a direct file ` +
+        `link to download with browser_download_file, or a media URL in ` +
+        `browser_get_network (browser_download_stream for a .m3u8). Only when those are ` +
+        `exhausted has the run failed — then stop and report exactly what you tried and ` +
+        `how each attempt failed.\n` +
         // Substitution guard (incident, 2026-08-01): a run that could not reach
         // the asked-for tweet searched up an unrelated music video and delivered
         // it as "similar". A failed goal must come back as a failure.
-        `- Download ONLY what the goal names. If it cannot be found or the download fails, ` +
-        `the run has FAILED: stop and report exactly what you tried and how it failed. ` +
-        `NEVER download different or "similar" content as a substitute — not even if the ` +
-        `goal seems to offer that option. A substitute file is a wrong result; an honest ` +
-        `failure report is the correct one.\n` +
+        `- Download ONLY what the goal names. NEVER download different or "similar" content ` +
+        `as a substitute — not even if the goal seems to offer that option, and no matter ` +
+        `how many attempts failed. A substitute file is a wrong result; an honest failure ` +
+        `report is the correct one.\n` +
         (urlFenced
           ? `- This run may only download from the user's own link(s), listed under "URLs" ` +
             `in the goal message. A file too large to send to the chat cannot be delivered ` +
