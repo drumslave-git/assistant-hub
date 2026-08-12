@@ -18,7 +18,6 @@ import {
 } from "@/server/llm/client";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 import { RULE_ENFORCEMENT_DIRECTIVE } from "@/features/chat-rules/format";
-import { stripTranscriptEcho } from "@/features/history/server/format";
 import { ADDRESSING_CHECK_EVENT } from "../addressing-trace";
 import {
   ACTION_CLAIM_ENFORCEMENT_DIRECTIVE,
@@ -1183,25 +1182,10 @@ export async function handleIncomingMessage(
         }
       }
 
-      // The transcript line format is input-only syntax, but the model
-      // sometimes echoes it back ("[reply to #560] …"). Stripped mechanically
-      // before delivery, and recorded when it fired — a reply that needed
-      // cleaning is a model drifting from the reply-format rules, which the
-      // operator should be able to see happening.
-      const cleaned = stripTranscriptEcho(reply.content);
-      if (cleaned !== reply.content) {
-        await trace.event({
-          type: "step",
-          level: "warn",
-          message: "transcript markers stripped from reply",
-          data: { original: reply.content, cleaned },
-        });
-      }
-
       // A long answer is split at natural boundaries and delivered as several
       // messages — Telegram caps one message at 4096 chars, and truncating
       // silently lost content.
-      const chunks = splitReply(cleaned);
+      const chunks = splitReply(reply.content);
       if (chunks.length === 0) chunks.push("");
       const outgoing = chunks.join("\n\n");
       // A voice turn delivers through the TTS path when wired (voice-to-voice,

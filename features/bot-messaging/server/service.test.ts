@@ -216,40 +216,6 @@ describe("handleIncomingMessage", () => {
     expect(stopTyping).toHaveBeenCalledOnce();
   });
 
-  it("strips echoed transcript markers before delivery and records the cleanup", async () => {
-    const d = deps({
-      generateReply: vi.fn().mockImplementation(async (messages, _t, onRequest, onRound) => {
-        await onRequest?.({ model: "m", messages });
-        const result = { content: "[reply to #7]\nhi back", model: "m", latencyMs: 5 };
-        await onRound?.({ index: 0, isFinal: true, ...result });
-        return result;
-      }),
-    });
-    const out = await handleIncomingMessage(incoming({ text: "hello there" }), d);
-    // Delivered and mirrored clean; the leak never reaches Telegram or history.
-    expect(out).toEqual({ status: "replied", text: "hi back" });
-    expect(d.sendReply).toHaveBeenCalledWith("hi back");
-    expect(d.recordReply).toHaveBeenCalledWith(
-      expect.objectContaining({ content: "hi back" }),
-    );
-    // The cleanup is a visible warn step carrying both full texts.
-    const step = recorder.event.mock.calls
-      .map((c) => c[0])
-      .find((e) => e.message === "transcript markers stripped from reply");
-    expect(step?.level).toBe("warn");
-    expect(step?.data).toEqual({ original: "[reply to #7]\nhi back", cleaned: "hi back" });
-  });
-
-  it("delivers a clean reply untouched, with no cleanup step", async () => {
-    const d = deps();
-    await handleIncomingMessage(incoming({ text: "hello there" }), d);
-    expect(d.sendReply).toHaveBeenCalledWith("hi back");
-    const step = recorder.event.mock.calls
-      .map((c) => c[0])
-      .find((e) => e.message === "transcript markers stripped from reply");
-    expect(step).toBeUndefined();
-  });
-
   it("injects the time context as a system message right before the current turn", async () => {
     const timeContext = "Current date and time: 2026-07-14 16:34 (Tuesday), timezone Europe/Kyiv.";
     const d = deps({ timeContext });

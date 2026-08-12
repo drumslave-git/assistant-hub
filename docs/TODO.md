@@ -634,15 +634,15 @@ Gemma thinking natively into `reasoning_content` — the 3-way benchmark already
 ranked it best for chat replies). Next decision needed: the operator picks
 which; nothing to change in this repo either way.
 
-Mitigation shipped meanwhile (2026-08-12): `stripTranscriptEcho`
-(`features/history/server/format.ts`) mechanically strips the app's own
-transcript syntax (`[#<id>]` anchors, `[reply to …]` markers, the bot's `You`
-label) off the head of a generated reply before delivery, recording a warn step
-with both texts on the reply trace when it fires; plus an explicit input-only
-rule in `BASE_SYSTEM_PROMPT`'s Reply format block. Proof: unit tests for the
-stripper (9 cases) and two service-level tests (leaked reply delivered clean +
-clean reply untouched); affected test files 152 passed; `npm run lint` and
-`npm run typecheck` clean.
+A code-side mitigation (`stripTranscriptEcho`, mechanically removing echoed
+transcript markers from reply text before delivery) was shipped and **reverted
+the same day (user decision, 2026-08-12): no code solutions to LLM output
+problems.** Model misbehavior is fixed at the LLM level — prompt, model choice,
+serving configuration — never by post-processing its text in code. Do not
+re-add a reply-text sanitizer. What stays is the LLM-level part: an explicit
+input-only rule about the transcript format in `BASE_SYSTEM_PROMPT`'s Reply
+format block. The real fix for the leakage is restoring thinking (the blocker
+above).
 
 ## Reply latency (`todo`, 2026-08-07)
 

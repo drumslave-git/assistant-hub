@@ -136,42 +136,6 @@ export function renderTranscript(
   return `${TRANSCRIPT_PREAMBLE}\n\n${lines.join("\n")}`;
 }
 
-/**
- * Leading tokens a model copies from the transcript format into its own reply:
- * an `[#<id>]` anchor, a `[reply to …]` marker (any of {@link renderReplyRef}'s
- * three shapes), or the bot's own speaker label (`You` / `You (@bot)`) when it
- * sits directly before one of those or before the line's colon. Sender labels in
- * general are NOT matched — an arbitrary `<word>:` opening is legitimate reply
- * text ("Fun fact: …").
- */
-const LEADING_TRANSCRIPT_TOKEN =
-  /^(?:\[#\d+\]|\[reply to [^\]]*\]|You(?: \(@\w+\))?(?=\s*(?:\[reply to |\[#\d+\]|:)))\s*/;
-
-/**
- * Strip the transcript line format out of a model reply that echoed it.
- *
- * The transcript is input-only syntax, but a model that reads a current turn
- * rendered as `[#563] Igor [reply to #560]: …` sometimes answers in kind —
- * delivered to Telegram, `[reply to #560]` is meaningless noise on top of the
- * real reply threading (observed live on vLLM/gemma4-12b, 2026-08-11). This is
- * a mechanical guard over the app's own known syntax: leading markers are
- * removed (with the colon that closes the prefix); anything past them — and any
- * marker-like text deeper in the reply — is left untouched. A reply that was
- * nothing but markers is returned as-is: delivering the echo beats delivering
- * an empty message.
- */
-export function stripTranscriptEcho(reply: string): string {
-  let out = reply.trimStart();
-  let stripped = false;
-  for (let m = LEADING_TRANSCRIPT_TOKEN.exec(out); m; m = LEADING_TRANSCRIPT_TOKEN.exec(out)) {
-    out = out.slice(m[0].length);
-    stripped = true;
-  }
-  if (!stripped) return reply;
-  out = out.replace(/^:\s*/, "").trimStart();
-  return out ? out : reply;
-}
-
 /** Distinct non-null sender ids across a set of rows (for batch label lookup). */
 export function collectUserIds(records: readonly ChatMessageRecord[]): string[] {
   const ids = new Set<string>();
