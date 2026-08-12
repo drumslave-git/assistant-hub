@@ -40,6 +40,11 @@ export function Combobox({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(value);
+  // Whether the operator has typed since the list opened. The filter keys off
+  // this, not off query-vs-value: in `freeText` mode every keystroke commits,
+  // so the query always equals the value and a value comparison could never
+  // distinguish "just opened" from "actively narrowing".
+  const [typed, setTyped] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -56,11 +61,11 @@ export function Combobox({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    // The committed value acts as "show everything": opening a filled control
-    // should offer the full list, not the one entry that matches itself.
-    if (!q || q === value.trim().toLowerCase()) return options;
+    // Opening a filled control offers the full list, not the one entry that
+    // matches itself; only text typed after opening narrows it.
+    if (!q || !typed) return options;
     return options.filter((option) => option.toLowerCase().includes(q));
-  }, [options, query, value]);
+  }, [options, query, typed]);
 
   // The highlight is clamped at read time so a shrinking filter can never
   // leave it pointing past the end.
@@ -80,6 +85,7 @@ export function Combobox({
 
   function close() {
     setOpen(false);
+    setTyped(false);
     if (!freeText) setQuery(value);
   }
 
@@ -87,6 +93,7 @@ export function Combobox({
     onChange(next);
     setQuery(next);
     setOpen(false);
+    setTyped(false);
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -135,6 +142,7 @@ export function Combobox({
           disabled={disabled}
           onChange={(e) => {
             setQuery(e.target.value);
+            setTyped(true);
             setHighlighted(0);
             setOpen(true);
             if (freeText) onChange(e.target.value);

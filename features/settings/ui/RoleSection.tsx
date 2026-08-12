@@ -76,9 +76,13 @@ export function RoleSection<T>({
   // Keep the saved selection pickable when the list does not (yet) contain it —
   // an unreachable endpoint must not blank out a working selection — unless it
   // is provably stale, in which case re-offering it would offer exactly the
-  // value the save is about to clear.
+  // value the save is about to clear. Free-text mode needs no such rescue (the
+  // input itself holds the value), and there the prepend would echo every
+  // keystroke back as a phantom suggestion.
   const options =
-    model && !modelOptions.includes(model) && !modelWarning ? [model, ...modelOptions] : modelOptions;
+    model && !freeTextModel && !modelOptions.includes(model) && !modelWarning
+      ? [model, ...modelOptions]
+      : modelOptions;
 
   return (
     <div className="space-y-5">
