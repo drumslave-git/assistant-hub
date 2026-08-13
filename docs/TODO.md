@@ -197,10 +197,23 @@ Browser-verified against the live dev server and the local vLLM `gemma4-26b`:
   model that returns "not addressed" for the probe message is reported as such
   and the operator decides; there is deliberately no pass/fail on classification
   quality.
-- A `.claude/worktrees/…` copy of `status.integration.test.ts` (another
-  session's worktree) is picked up by the integration glob and fails against the
-  new endpoint list. Not this repo's file; the vitest config not excluding
-  `.claude/worktrees` is a pre-existing gap worth closing.
+### Follow-up: vitest collected every test twice (fixed, 2026-08-13)
+
+Found while verifying the above — a `.claude/worktrees/…` copy of
+`status.integration.test.ts` failed against the new endpoint list, in a file the
+working tree does not contain. The cause was not that one file: an agent
+worktree is a **full checkout inside the repo**, and neither vitest config
+excluded it, so *half of every collected file was a duplicate* — 98 of 197 unit
+files and 38 of 76 integration files. The integration half ran at Testcontainers
+prices, and each duplicate tested whatever revision that worktree happened to
+hold, so it could fail (or pass) for reasons unrelated to this checkout.
+
+`**/.claude/worktrees/**` added to `exclude` in `vitest.config.ts` and
+`vitest.integration.config.ts`. Collection now lists exactly 99 unit and 38
+integration files — the previous totals minus precisely the duplicates, so
+nothing real was dropped. Full unit suite 1085 passed / the same 21 pre-existing
+yt-dlp + media-download Windows failures; full integration suite **27 passed /
+11 skipped, 375 tests, no failures** (it could not pass cleanly before this).
 
 ## Every probe exercises the real thing and shows the exchange (`done`, 2026-08-13)
 

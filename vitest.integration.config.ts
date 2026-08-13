@@ -11,7 +11,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["**/*.integration.test.ts"],
-    exclude: ["node_modules", ".next", "dist"],
+    // `.claude/worktrees` for the reason given in `vitest.config.ts`: a
+    // worktree is a full checkout inside the repo, so its copy of every
+    // integration file would run again — here at Testcontainers prices — and
+    // fail against whatever revision that worktree happens to hold.
+    exclude: ["node_modules", ".next", "dist", "**/.claude/worktrees/**"],
     // Isolate the file-backed trace store (temp directory + per-test reset) so
     // trace assertions stay isolated now that traces live off the database.
     setupFiles: ["./test/setup-trace-store.ts"],
