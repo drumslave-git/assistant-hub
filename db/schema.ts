@@ -1488,6 +1488,9 @@ export type SpecialistEntryInsert = typeof specialistEntries.$inferInsert;
  *    classification call per unaddressed message (see
  *    `features/chat-rules/matcher.ts`); a chat with none pays nothing.
  *
+ * `target_user_ids` is the second axis: a group rule applies to everyone there
+ * by default, or only to the senders it names.
+ *
  * The text is the model's contract, not code: rules are enforced through the
  * prompt and the existing toolset, never by bespoke per-rule handling.
  */
@@ -1503,6 +1506,15 @@ export const chatRules = pgTable(
     trigger: text("trigger").notNull().default("on-reply"),
     /** Disabled rules stay authored but are never composed into a prompt. */
     enabled: boolean("enabled").notNull().default(true),
+    /**
+     * Whose messages the rule applies to: empty means everyone in the chat, and
+     * a non-empty list restricts it to those senders (numeric Telegram user
+     * ids). Only a group-scoped rule may narrow this way — a DM has exactly one
+     * person in it, and a global rule spans chats whose rosters have nothing to
+     * do with each other (user decision, 2026-08-13), which the check below is
+     * what actually enforces.
+     */
+    targetUserIds: text("target_user_ids").array().notNull().default(sql`ARRAY[]::text[]`),
     /** Numeric Telegram user id of the author, or null (dashboard). */
     createdByUserId: text("created_by_user_id"),
     /** `chat` | `dashboard` — where the rule was authored, as provenance. */
@@ -1515,6 +1527,13 @@ export const chatRules = pgTable(
     index("chat_rules_chat_idx").on(t.chatId, t.enabled),
     check("chat_rules_trigger_check", sql`${t.trigger} in ('on-reply', 'always')`),
     check("chat_rules_source_check", sql`${t.source} in ('chat', 'dashboard')`),
+    // A global rule can never name senders. Group-only is narrower still, but a
+    // group id is a Telegram fact (negative), not a database one — the service
+    // owns that half.
+    check(
+      "chat_rules_targets_scope_check",
+      sql`${t.chatId} is not null or cardinality(${t.targetUserIds}) = 0`,
+    ),
   ],
 );
 

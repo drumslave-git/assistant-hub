@@ -37,6 +37,7 @@ function rule(over: Partial<ChatRule> = {}): ChatRule {
     text: "Answer briefly.",
     trigger: "on-reply",
     enabled: true,
+    targetUserIds: [],
     createdByUserId: "77",
     source: "chat",
     createdAt: "2026-07-29T00:00:00.000Z",
@@ -99,6 +100,17 @@ describe("rules_create description", () => {
     // The only evidence of stored state is a tool result.
     expect(RULES_CREATE_DESCRIPTION).toMatch(/call rules_list/);
   });
+
+  /**
+   * The audience default has to survive contact with a small model: everyone
+   * unless the instruction is about named people, and an id is copied from the
+   * roster rather than worked out from a name.
+   */
+  it("keeps the audience at everyone and forbids inventing an id", () => {
+    expect(RULES_CREATE_DESCRIPTION).toMatch(/applies to everyone in the chat/i);
+    expect(RULES_CREATE_DESCRIPTION).toMatch(/user_ids/);
+    expect(RULES_CREATE_DESCRIPTION).toMatch(/never invent one/i);
+  });
 });
 
 describe("rules_list", () => {
@@ -118,6 +130,15 @@ describe("rules_list", () => {
     expect(result.structuredContent).toMatchObject({ ok: true, count: 2 });
   });
 
+  it("says whose messages a rule limited to particular people applies to", async () => {
+    service.getRulesForChat.mockResolvedValue([rule({ targetUserIds: ["11", "22"] })]);
+    const handlers = toolHandlers();
+
+    const result = await inChat(() => handlers[RULES_LIST_TOOL]({}));
+
+    expect(result.content[0].text).toContain("only for user 11, 22");
+  });
+
   it("says so plainly when the chat has no rules", async () => {
     service.getRulesForChat.mockResolvedValue([]);
     const handlers = toolHandlers();
@@ -134,15 +155,60 @@ describe("rules_create", () => {
     const handlers = toolHandlers();
 
     const result = await inChat(() =>
-      handlers[RULES_CREATE_TOOL]({ text: "  Answer briefly.  ", trigger: "on-reply" }),
+      handlers[RULES_CREATE_TOOL]({ text: "  Answer briefly.  ", trigger: "on-reply", user_ids: [] }),
     );
 
     expect(service.createRuleFromChat).toHaveBeenCalledWith(
-      { chatId: "-1001", userId: "77", text: "Answer briefly.", trigger: "on-reply" },
+      {
+        chatId: "-1001",
+        userId: "77",
+        text: "Answer briefly.",
+        trigger: "on-reply",
+        targetUserIds: [],
+      },
       expect.objectContaining({ kind: "telegram", actor: "77", correlationId: "-1001" }),
     );
     expect(result.structuredContent).toMatchObject({ ok: true });
     expect(result.content[0].text).toContain("Answer briefly.");
+    expect(result.content[0].text).toMatch(/everyone here/i);
+  });
+
+  it("passes on the people a rule was limited to, and says who it covers", async () => {
+    service.createRuleFromChat.mockResolvedValue({
+      status: "created",
+      rule: rule({ targetUserIds: ["11"] }),
+    });
+    const handlers = toolHandlers();
+
+    const result = await inChat(() =>
+      handlers[RULES_CREATE_TOOL]({ text: "Answer briefly.", trigger: "on-reply", user_ids: ["11"] }),
+    );
+
+    expect(service.createRuleFromChat).toHaveBeenCalledWith(
+      expect.objectContaining({ targetUserIds: ["11"] }),
+      expect.anything(),
+    );
+    expect(result.content[0].text).toMatch(/only to messages from user 11/i);
+    expect(result.structuredContent).toMatchObject({ ok: true, rule: { applies_to: ["11"] } });
+  });
+
+  it("reports the audience change when the same rule is set again for other people", async () => {
+    service.createRuleFromChat.mockResolvedValue({
+      status: "updated",
+      rule: rule({ targetUserIds: ["11", "22"] }),
+    });
+    const handlers = toolHandlers();
+
+    const result = await inChat(() =>
+      handlers[RULES_CREATE_TOOL]({
+        text: "Answer briefly.",
+        trigger: "on-reply",
+        user_ids: ["11", "22"],
+      }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toMatch(/now applies only to messages from user 11, 22/i);
   });
 
   it("reports an already-present rule as success, not as an error", async () => {
@@ -204,6 +270,71 @@ describe("rules_update", () => {
 
     expect(result.isError).toBe(true);
     expect(service.updateRuleFromChat).not.toHaveBeenCalled();
+  });
+
+  /**
+   * An empty `user_ids` is what a model sends when it means "leave this alone",
+   * so it must never be read as "everyone" — that would quietly widen a rule
+   * written about one person. Clearing is its own explicit flag.
+   */
+  it("leaves the audience alone on an empty list, and clears it only when asked", async () => {
+    service.updateRuleFromChat.mockResolvedValue({ status: "updated", rule: rule() });
+    const handlers = toolHandlers();
+
+    await inChat(() =>
+      handlers[RULES_UPDATE_TOOL]({
+        id: "rule-1",
+        text: "New text.",
+        trigger: "",
+        enabled: null,
+        user_ids: [],
+        applies_to_everyone: null,
+      }),
+    );
+    expect(service.updateRuleFromChat).toHaveBeenCalledWith(
+      expect.objectContaining({ patch: { text: "New text." } }),
+      expect.anything(),
+    );
+
+    await inChat(() =>
+      handlers[RULES_UPDATE_TOOL]({
+        id: "rule-1",
+        text: "",
+        trigger: "",
+        enabled: null,
+        user_ids: [],
+        applies_to_everyone: true,
+      }),
+    );
+    expect(service.updateRuleFromChat).toHaveBeenLastCalledWith(
+      expect.objectContaining({ patch: { targetUserIds: [] } }),
+      expect.anything(),
+    );
+  });
+
+  it("replaces the audience with the people the model named", async () => {
+    service.updateRuleFromChat.mockResolvedValue({
+      status: "updated",
+      rule: rule({ targetUserIds: ["11"] }),
+    });
+    const handlers = toolHandlers();
+
+    const result = await inChat(() =>
+      handlers[RULES_UPDATE_TOOL]({
+        id: "rule-1",
+        text: "",
+        trigger: "",
+        enabled: null,
+        user_ids: ["11"],
+        applies_to_everyone: null,
+      }),
+    );
+
+    expect(service.updateRuleFromChat).toHaveBeenCalledWith(
+      expect.objectContaining({ patch: { targetUserIds: ["11"] } }),
+      expect.anything(),
+    );
+    expect(result.content[0].text).toMatch(/only to messages from user 11/i);
   });
 
   it("relays an unknown id as a usable message", async () => {

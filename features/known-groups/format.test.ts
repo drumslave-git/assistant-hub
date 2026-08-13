@@ -24,22 +24,37 @@ describe("formatGroupContext", () => {
       title: "Family",
       notes: null,
       members: [
-        { label: "Ada L (@testuser)", aliases: ["Cap", "Chief"] },
-        { label: "Bob", aliases: [] },
+        { userId: "11", label: "Ada L (@testuser)", aliases: ["Cap", "Chief"] },
+        { userId: "22", label: "Bob", aliases: [] },
       ],
     });
     expect(block).toContain('You are chatting in the Telegram group "Family".');
-    expect(block).toContain("- Ada L (@testuser) — also known as: Cap, Chief");
-    expect(block).toContain("- Bob");
+    expect(block).toContain("- Ada L (@testuser) [user id 11] — also known as: Cap, Chief");
+    expect(block).toContain("- Bob [user id 22]");
     // A member without aliases gets no "also known as" suffix.
-    expect(block).not.toContain("- Bob —");
+    expect(block).not.toContain("- Bob [user id 22] —");
+  });
+
+  /**
+   * The id is the only correct way to name a person where an id is asked for (a
+   * rule limited to particular people), and it is here so the model never has to
+   * work one out from a name.
+   */
+  it("carries each member's exact user id, and says not to guess one", () => {
+    const block = formatGroupContext({
+      title: "Family",
+      notes: null,
+      members: [{ userId: "12345", label: "Alice", aliases: [] }],
+    });
+    expect(block).toContain("[user id 12345]");
+    expect(block).toMatch(/never guess one/i);
   });
 
   it("includes operator notes and works without a title", () => {
     const block = formatGroupContext({
       title: null,
       notes: "Keep replies casual.",
-      members: [{ label: "Alice", aliases: [] }],
+      members: [{ userId: "11", label: "Alice", aliases: [] }],
     });
     expect(block).toContain("You are chatting in a Telegram group.");
     expect(block).toContain("About this group: Keep replies casual.");

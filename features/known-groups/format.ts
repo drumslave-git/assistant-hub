@@ -17,6 +17,8 @@ export function formatKnownGroupLabel(group: KnownGroupLabelParts): string {
 
 /** One participant, already reduced to a display label and their aliases. */
 export interface GroupContextMember {
+  /** Numeric Telegram user id — the exact form anything identifying a person takes. */
+  userId: string;
   label: string;
   aliases: string[];
 }
@@ -45,11 +47,11 @@ export function formatGroupContext(parts: GroupContextParts): string | null {
   if (notes) lines.push(`About this group: ${notes}`);
   if (parts.members.length > 0) {
     lines.push(
-      "Known participants of this group (people who have talked here). Use this to recognize who is who and who is being referred to — the same person may be addressed by any of their listed names:",
+      "Known participants of this group (people who have talked here). Use this to recognize who is who and who is being referred to — the same person may be addressed by any of their listed names. The number in brackets is that person's exact user id, and is the only correct way to identify them where an id is asked for; never guess one:",
     );
     for (const member of parts.members) {
       const also = member.aliases.length > 0 ? ` — also known as: ${member.aliases.join(", ")}` : "";
-      lines.push(`- ${member.label}${also}`);
+      lines.push(`- ${member.label} [user id ${member.userId}]${also}`);
     }
   }
   return lines.join("\n");

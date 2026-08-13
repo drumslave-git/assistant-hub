@@ -124,8 +124,9 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
     );
     // The chat's standing rules, resolved per task for the same reason. Only the
     // reply-shaping set applies: an `always` rule reacts to somebody's message,
-    // and a fire is nobody's message.
-    const chatRules = await getActiveRulesForChat(task.chatId, db)
+    // and a fire is nobody's message. Nobody's message is also why the sender is
+    // null: a rule that singles people out has no one to single out here.
+    const chatRules = await getActiveRulesForChat(task.chatId, null, db)
       .then((rules) => buildChatRulesBlock(rules.reply))
       .catch(() => null);
     const result = await fireScheduledTask(task, {

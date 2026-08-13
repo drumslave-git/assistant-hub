@@ -36,7 +36,7 @@ chat_hour_insights ──rolls up──► period_insights
 
 browser_agent_runs ──► browser_run_screenshots
 general_memories      self_corrections      scheduled_tasks
-chat_rules            (chat_id, or null = every chat)
+chat_rules            (chat_id, or null = every chat; target_user_ids = whose messages)
 ```
 
 ---
@@ -102,15 +102,18 @@ Standing instructions the bot follows in a chat — see
 | `text` | text NOT NULL | The rule in the author's words; composed into the system prompt |
 | `trigger` | text NOT NULL, default `'on-reply'` | `on-reply` \| `always` (CHECK). `always` may act on a message nobody addressed |
 | `enabled` | boolean NOT NULL, default true | A paused rule stays authored but is never composed into a prompt |
+| `target_user_ids` | text[] NOT NULL, default `{}` | Senders the rule is limited to; empty = everyone in the chat. CHECK: empty unless `chat_id` is set |
 | `created_by_user_id` | text NULL | Numeric Telegram user id of the author, null for the dashboard |
 | `source` | text NOT NULL, default `'dashboard'` | `chat` \| `dashboard` (CHECK) — provenance |
 | `created_at`, `updated_at` | timestamptz | |
 
 Index: `chat_rules_chat_idx (chat_id, enabled)` — every reply reads one chat's
 enabled rules plus the global ones. Bounds (32 rules per scope, 1 000-char text,
-no duplicate text within a scope) are enforced by the zod contract and the
-service, not the schema. Scope is not editable: a rule moves chats only by being
-deleted and recreated.
+16 named people, no duplicate text within a scope) are enforced by the zod
+contract and the service, not the schema. Scope is not editable: a rule moves
+chats only by being deleted and recreated. Who it applies to *is* editable, and
+is narrowed to group scope by the service (a group id is a Telegram fact, not a
+database one) and to people on the `group_members` roster.
 
 ### `known_users`
 

@@ -15,6 +15,7 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
+  Checkbox,
   EmptyState,
   Field,
   ScrollArea,
@@ -23,8 +24,9 @@ import {
 } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
 
-import { triggerLabel } from "../format";
+import { sameTargets, triggerLabel } from "../format";
 import {
+  MAX_RULE_TARGETS,
   MAX_RULE_TEXT_LEN,
   MAX_RULES_PER_SCOPE,
   RULE_TRIGGERS,
@@ -39,14 +41,24 @@ import {
  * the page live-updates over the shared SSE stream (`rules` topic).
  *
  * Scope is a filter *and* the create target — the one control that decides both,
- * so a rule can never be created into a scope other than the one on screen.
+ * so a rule can never be created into a scope other than the one on screen. Who
+ * a rule applies to is the second axis, offered only where there is a roster to
+ * choose from (a group), and defaulting to everyone.
  */
+
+/** Someone a group's rule can be limited to (they have spoken there). */
+export interface RuleChatMember {
+  userId: string;
+  label: string;
+}
 
 /** A chat rules can be scoped to (known groups + DM chats). */
 export interface RuleChat {
   chatId: string;
   label: string;
   kind: "group" | "dm";
+  /** The group's roster; empty for a DM, which is one person by definition. */
+  members: RuleChatMember[];
 }
 
 /** The global scope's sentinel value in the picker (a chat id is never empty). */
@@ -99,10 +111,108 @@ function TriggerSelect({
   );
 }
 
-function CreateForm({ scope, scopeLabel, atLimit }: { scope: string | null; scopeLabel: string; atLimit: boolean }) {
+/**
+ * Who a rule applies to, as one list rather than a mode switch plus a list:
+ * "Everyone" is the first row and simply means an empty selection, so there is no
+ * way to land in the half-set state of "specific people" with nobody picked.
+ * Renders nothing when the chat has no roster to choose from (a DM, a global
+ * rule, or a group where nobody has spoken yet) — there the rule is for everyone
+ * and the server refuses anything else.
+ */
+function AudienceField({
+  idPrefix,
+  members,
+  value,
+  onChange,
+  disabled,
+}: {
+  idPrefix: string;
+  members: RuleChatMember[];
+  value: string[];
+  onChange: (userIds: string[]) => void;
+  disabled?: boolean;
+}) {
+  if (members.length === 0) return null;
+  const everyone = value.length === 0;
+  const atLimit = value.length >= MAX_RULE_TARGETS;
+
+  return (
+    <Field
+      id={`${idPrefix}-audience`}
+      label="Applies to"
+      hint={
+        everyone
+          ? "Every message in this group. Pick people instead to limit the rule to their messages."
+          : "Only messages from the people ticked below — for everyone else the rule does not exist."
+      }
+    >
+      {({ id, describedBy }) => (
+        <div
+          id={id}
+          role="group"
+          aria-describedby={describedBy}
+          className="max-h-56 space-y-2 overflow-y-auto rounded-lg border border-border p-3"
+        >
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id={`${idPrefix}-audience-all`}
+              checked={everyone}
+              disabled={disabled}
+              onChange={() => onChange([])}
+            />
+            <label htmlFor={`${idPrefix}-audience-all`} className="cursor-pointer text-sm">
+              Everyone in this group
+            </label>
+          </div>
+          {members.map((member) => {
+            const checked = value.includes(member.userId);
+            const boxId = `${idPrefix}-audience-${member.userId}`;
+            return (
+              <div key={member.userId} className="flex items-center gap-2">
+                <Checkbox
+                  id={boxId}
+                  checked={checked}
+                  disabled={disabled || (atLimit && !checked)}
+                  onChange={(e) =>
+                    onChange(
+                      e.target.checked
+                        ? [...value, member.userId]
+                        : value.filter((id) => id !== member.userId),
+                    )
+                  }
+                />
+                <label htmlFor={boxId} className="cursor-pointer text-sm">
+                  {member.label}
+                </label>
+              </div>
+            );
+          })}
+          {atLimit ? (
+            <p className="text-xs text-muted">
+              A rule can name at most {MAX_RULE_TARGETS} people.
+            </p>
+          ) : null}
+        </div>
+      )}
+    </Field>
+  );
+}
+
+function CreateForm({
+  scope,
+  scopeLabel,
+  members,
+  atLimit,
+}: {
+  scope: string | null;
+  scopeLabel: string;
+  members: RuleChatMember[];
+  atLimit: boolean;
+}) {
   const router = useRouter();
   const [text, setText] = useState("");
   const [trigger, setTrigger] = useState<RuleTrigger>("on-reply");
+  const [targetUserIds, setTargetUserIds] = useState<string[]>([]);
   const [state, setState] = useState<"idle" | "saving" | { error: string }>("idle");
 
   async function create() {
@@ -111,7 +221,7 @@ function CreateForm({ scope, scopeLabel, atLimit }: { scope: string | null; scop
       const res = await fetch("/api/chat-rules", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chatId: scope, text: text.trim(), trigger }),
+        body: JSON.stringify({ chatId: scope, text: text.trim(), trigger, targetUserIds }),
       });
       if (!res.ok) {
         setState({ error: await readError(res) });
@@ -119,6 +229,7 @@ function CreateForm({ scope, scopeLabel, atLimit }: { scope: string | null; scop
       }
       setText("");
       setTrigger("on-reply");
+      setTargetUserIds([]);
       setState("idle");
       router.refresh();
     } catch {
@@ -159,6 +270,13 @@ function CreateForm({ scope, scopeLabel, atLimit }: { scope: string | null; scop
           onChange={setTrigger}
           disabled={atLimit}
         />
+        <AudienceField
+          idPrefix="new-rule"
+          members={members}
+          value={targetUserIds}
+          onChange={setTargetUserIds}
+          disabled={atLimit}
+        />
         <div className="flex items-center gap-3">
           <Button
             onClick={create}
@@ -181,17 +299,25 @@ function CreateForm({ scope, scopeLabel, atLimit }: { scope: string | null; scop
   );
 }
 
-function RuleCard({ rule }: { rule: ChatRule }) {
+function RuleCard({ rule, members }: { rule: ChatRule; members: RuleChatMember[] }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(rule.text);
   const [trigger, setTrigger] = useState<RuleTrigger>(rule.trigger);
+  const [targetUserIds, setTargetUserIds] = useState<string[]>(rule.targetUserIds);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Someone who has left the roster still has to be readable here, or the rule
+  // would show fewer people than it actually applies to.
+  const audience = rule.targetUserIds.map(
+    (userId) => members.find((m) => m.userId === userId)?.label ?? `User ${userId}`,
+  );
 
   function resetEdit() {
     setText(rule.text);
     setTrigger(rule.trigger);
+    setTargetUserIds(rule.targetUserIds);
     setError(null);
     setEditing(false);
   }
@@ -251,12 +377,30 @@ function RuleCard({ rule }: { rule: ChatRule }) {
             )}
           </Field>
           <TriggerSelect idPrefix={`edit-rule-${rule.id}`} value={trigger} onChange={setTrigger} />
+          <AudienceField
+            idPrefix={`edit-rule-${rule.id}`}
+            members={members}
+            value={targetUserIds}
+            onChange={setTargetUserIds}
+          />
           {error ? <p className="text-sm text-danger">{error}</p> : null}
         </CardContent>
         <CardFooter>
           <Button
             size="sm"
-            onClick={() => patch({ text: text.trim(), trigger }, () => setEditing(false))}
+            onClick={() =>
+              patch(
+                {
+                  text: text.trim(),
+                  trigger,
+                  // Only when it changed: a global rule has no audience control
+                  // at all, and sending its (empty) list back would be rejected
+                  // for a scope that may not name anyone.
+                  ...(sameTargets(targetUserIds, rule.targetUserIds) ? {} : { targetUserIds }),
+                },
+                () => setEditing(false),
+              )
+            }
             disabled={busy || text.trim() === ""}
             leftIcon={<Check className="h-4 w-4" />}
           >
@@ -286,6 +430,9 @@ function RuleCard({ rule }: { rule: ChatRule }) {
           <Badge tone={rule.enabled ? "success" : "warning"} dot>
             {rule.enabled ? "Active" : "Paused"}
           </Badge>
+          {audience.length > 0 ? (
+            <Badge tone="info">Only {audience.join(", ")}</Badge>
+          ) : null}
           {rule.source === "chat" ? <Badge tone="neutral">Set from chat</Badge> : null}
           <span className="text-xs text-faint">
             <Timestamp iso={rule.createdAt} />
@@ -333,10 +480,10 @@ export function ChatRulesManager({ rules, chats }: { rules: ChatRule[]; chats: R
   const [scope, setScope] = useState<string>(GLOBAL);
 
   const scopeChatId = scope === GLOBAL ? null : scope;
-  const scopeLabel =
-    scopeChatId === null
-      ? "every chat"
-      : (chats.find((c) => c.chatId === scopeChatId)?.label ?? `chat ${scopeChatId}`);
+  const scopeChat = scopeChatId === null ? null : chats.find((c) => c.chatId === scopeChatId);
+  const scopeLabel = scopeChatId === null ? "every chat" : (scopeChat?.label ?? `chat ${scopeChatId}`);
+  // Only a group rule may name people, so only a group offers a roster to pick from.
+  const scopeMembers = scopeChat?.kind === "group" ? scopeChat.members : [];
   const inScope = useMemo(
     () => rules.filter((rule) => rule.chatId === scopeChatId),
     [rules, scopeChatId],
@@ -376,6 +523,7 @@ export function ChatRulesManager({ rules, chats }: { rules: ChatRule[]; chats: R
       <CreateForm
         scope={scopeChatId}
         scopeLabel={scopeLabel}
+        members={scopeMembers}
         atLimit={inScope.length >= MAX_RULES_PER_SCOPE}
       />
 
@@ -388,7 +536,7 @@ export function ChatRulesManager({ rules, chats }: { rules: ChatRule[]; chats: R
       ) : (
         <ScrollArea className="space-y-4">
           {inScope.map((rule) => (
-            <RuleCard key={rule.id} rule={rule} />
+            <RuleCard key={rule.id} rule={rule} members={scopeMembers} />
           ))}
         </ScrollArea>
       )}
@@ -400,8 +548,9 @@ export function ChatRulesManager({ rules, chats }: { rules: ChatRule[]; chats: R
             {inherited.length === 1 ? "rule" : "rules"}
           </h2>
           <ScrollArea className="space-y-4">
+            {/* Global rules apply to everyone everywhere: no roster, no picker. */}
             {inherited.map((rule) => (
-              <RuleCard key={rule.id} rule={rule} />
+              <RuleCard key={rule.id} rule={rule} members={[]} />
             ))}
           </ScrollArea>
         </div>

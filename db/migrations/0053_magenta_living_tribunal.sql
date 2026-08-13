@@ -1,0 +1,2 @@
+ALTER TABLE "chat_rules" ADD COLUMN "target_user_ids" text[] DEFAULT ARRAY[]::text[] NOT NULL;--> statement-breakpoint
+ALTER TABLE "chat_rules" ADD CONSTRAINT "chat_rules_targets_scope_check" CHECK ("chat_rules"."chat_id" is not null or cardinality("chat_rules"."target_user_ids") = 0);

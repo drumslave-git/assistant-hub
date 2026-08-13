@@ -977,9 +977,14 @@ export async function processUpdate(
     // replacing it. Best-effort: an unreadable activation degrades to no role.
     getActiveSpecialistInstructions(chatId).catch(() => null),
     getLatestSelfCorrectionPrompt().catch(() => null),
-    // The chat's standing rules (its own + the global ones). Best-effort: an
-    // unreadable set degrades to no rules rather than failing the turn.
-    getActiveRulesForChat(chatId).catch(() => ({ reply: [], always: [] })),
+    // The chat's standing rules (its own + the global ones), narrowed to the
+    // ones this sender's messages can trigger — a rule naming other people is
+    // never composed into this turn at all. Best-effort: an unreadable set
+    // degrades to no rules rather than failing the turn.
+    getActiveRulesForChat(chatId, from?.id != null ? String(from.id) : null).catch(() => ({
+      reply: [],
+      always: [],
+    })),
     getTimezone().catch(() => "UTC"),
     (isGroup ? getGroupLanguage(chatId) : getUserLanguage(chatId)).catch(() => null),
   ]);

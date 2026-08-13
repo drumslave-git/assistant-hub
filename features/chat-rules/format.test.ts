@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   alwaysRules,
+  appliesToSender,
   buildChatRulesBlock,
   buildRuleTriggerDirective,
   replyRules,
   resolveRuleAuthority,
   RULE_ENFORCEMENT_DIRECTIVE,
+  rulesForSender,
+  sameTargets,
   triggerLabel,
 } from "./format";
 import type { ChatRule } from "./server/schema";
@@ -25,6 +28,7 @@ function rule(over: Partial<ChatRule> = {}): ChatRule {
     text: "Answer briefly.",
     trigger: "on-reply",
     enabled: true,
+    targetUserIds: [],
     createdByUserId: null,
     source: "dashboard",
     createdAt: "2026-07-29T00:00:00.000Z",
@@ -95,6 +99,53 @@ describe("rule selection", () => {
     ];
     expect(replyRules(rules).map((r) => r.id)).toEqual(["a", "c"]);
     expect(alwaysRules(rules).map((r) => r.id)).toEqual(["c"]);
+  });
+});
+
+/**
+ * Who a rule reaches. A rule naming people is filtered out of every other
+ * sender's turn before it can reach a prompt (user decision, 2026-08-13), so
+ * this selection *is* the feature — the model is never asked to judge whether a
+ * rule about somebody else applies to this message.
+ */
+describe("sender targeting", () => {
+  const ALICE = "11";
+  const BOB = "22";
+
+  it("applies a rule naming nobody to everyone, including a turn with no sender", () => {
+    expect(appliesToSender(rule(), ALICE)).toBe(true);
+    expect(appliesToSender(rule(), null)).toBe(true);
+  });
+
+  it("applies a rule naming people only to those senders", () => {
+    const targeted = rule({ targetUserIds: [ALICE] });
+    expect(appliesToSender(targeted, ALICE)).toBe(true);
+    expect(appliesToSender(targeted, BOB)).toBe(false);
+  });
+
+  it("drops a rule naming people from a turn nobody sent (a scheduled fire)", () => {
+    expect(appliesToSender(rule({ targetUserIds: [ALICE] }), null)).toBe(false);
+  });
+
+  it("keeps the untargeted rules and the ones naming this sender", () => {
+    const rules = [
+      rule({ id: "everyone" }),
+      rule({ id: "alice", targetUserIds: [ALICE] }),
+      rule({ id: "bob", targetUserIds: [BOB] }),
+      rule({ id: "both", targetUserIds: [ALICE, BOB] }),
+    ];
+
+    expect(rulesForSender(rules, ALICE).map((r) => r.id)).toEqual(["everyone", "alice", "both"]);
+    expect(rulesForSender(rules, null).map((r) => r.id)).toEqual(["everyone"]);
+  });
+});
+
+describe("sameTargets", () => {
+  it("compares the people named, not the order they were named in", () => {
+    expect(sameTargets([], [])).toBe(true);
+    expect(sameTargets(["11", "22"], ["22", "11"])).toBe(true);
+    expect(sameTargets(["11"], ["11", "22"])).toBe(false);
+    expect(sameTargets(["11"], [])).toBe(false);
   });
 });
 

@@ -93,6 +93,8 @@ describe.skipIf(!LIVE)("chat rules end to end against the real configured LLM", 
             "download the video from that link and send the file to this chat.",
           trigger: "always",
           enabled: true,
+          // Everyone in the group: the rule is about links, not about people.
+          targetUserIds: [],
         },
         { kind: "dashboard" },
       );
@@ -189,6 +191,8 @@ describe.skipIf(!LIVE)("chat rules end to end against the real configured LLM", 
             "download the video from that link and send the file to this chat.",
           trigger: "always",
           enabled: true,
+          // Everyone in the group: the rule is about links, not about people.
+          targetUserIds: [],
         },
         { kind: "dashboard" },
       ).catch(() => undefined); // may already exist from the first case

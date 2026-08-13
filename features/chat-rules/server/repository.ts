@@ -21,6 +21,8 @@ export interface ChatRuleRecord {
   text: string;
   trigger: RuleTrigger;
   enabled: boolean;
+  /** Senders the rule is limited to; empty means everyone in the chat. */
+  targetUserIds: string[];
   createdByUserId: string | null;
   source: RuleSource;
   createdAt: string;
@@ -33,6 +35,7 @@ export interface ChatRuleValues {
   text: string;
   trigger: RuleTrigger;
   enabled: boolean;
+  targetUserIds: string[];
   createdByUserId: string | null;
   source: RuleSource;
 }
@@ -44,6 +47,7 @@ function mapRow(row: ChatRuleRow): ChatRuleRecord {
     text: row.text,
     trigger: row.trigger as RuleTrigger,
     enabled: row.enabled,
+    targetUserIds: row.targetUserIds,
     createdByUserId: row.createdByUserId,
     source: row.source as RuleSource,
     createdAt: row.createdAt.toISOString(),
@@ -164,7 +168,7 @@ export async function insertRule(
 export async function updateRule(
   db: DrizzleDb,
   id: string,
-  patch: Partial<Pick<ChatRuleValues, "text" | "trigger" | "enabled">>,
+  patch: Partial<Pick<ChatRuleValues, "text" | "trigger" | "enabled" | "targetUserIds">>,
 ): Promise<ChatRuleRecord | null> {
   const [row] = await db
     .update(chatRules)

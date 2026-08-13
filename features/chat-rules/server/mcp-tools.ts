@@ -9,6 +9,7 @@ import { getToolContext } from "@/server/mcp/context";
 
 import { triggerLabel } from "../format";
 import {
+  MAX_RULE_TARGETS,
   MAX_RULE_TEXT_LEN,
   RULE_TRIGGERS,
   type ChatRule,
@@ -65,6 +66,9 @@ export const CHAT_RULES_TOOL_NAMES = [
  *    says a repeat is safe, that a repeated instruction is a signal the person
  *    does not believe you, and that the only way to know what is stored is
  *    `rules_list` — never your own past message.
+ * 5. Keep the audience at its default. Most rules are for everyone in the chat;
+ *    naming people is for an instruction that is explicitly about them, and the
+ *    ids must be copied from the roster rather than guessed from a name.
  */
 export const RULES_CREATE_DESCRIPTION =
   "Save a standing rule for THIS chat — an instruction about how you must behave here from now on, " +
@@ -78,6 +82,12 @@ export const RULES_CREATE_DESCRIPTION =
   "\"always\" when the rule must act on messages that were not sent to you — anything of the form " +
   "\"any time someone posts/sends X, do Y\"; use \"on-reply\" when the rule only shapes how you " +
   "answer when someone does talk to you. " +
+  "A rule applies to everyone in the chat, which is what almost every rule wants. In a group you " +
+  "can instead limit it to particular people with user_ids, and only when the instruction is " +
+  "explicitly about them — \"whenever <person> posts a link, do X\", \"never do X for <person>\". " +
+  "Then the rule acts on messages from those people and on nobody else's. Copy each id exactly " +
+  "from the group participant list you were given: never invent one, never work one out from a " +
+  "name, and if the person is not listed there, say so instead of guessing. " +
   "ALWAYS call this tool when a rule is set, even if the conversation already contains you saying " +
   "you would follow it: a message of yours agreeing to a rule is NOT the rule being saved, and a " +
   "rule that was never stored through this tool does not exist no matter how many times you " +
@@ -115,8 +125,21 @@ function ruleView(rule: ChatRule) {
     trigger: rule.trigger,
     enabled: rule.enabled,
     scope: rule.chatId === null ? "global" : "this_chat",
+    applies_to: rule.targetUserIds.length > 0 ? rule.targetUserIds : "everyone",
     created_at: rule.createdAt,
   };
+}
+
+/** How a rule's audience reads in a line the model relays, or "" for everyone. */
+function targetsFlag(rule: ChatRule): string {
+  if (rule.targetUserIds.length === 0) return "";
+  return `only for user ${rule.targetUserIds.join(", ")}`;
+}
+
+/** A rule's audience as a phrase that completes "it applies …". */
+function audienceText(rule: ChatRule): string {
+  if (rule.targetUserIds.length === 0) return "to everyone here";
+  return `only to messages from user ${rule.targetUserIds.join(", ")}`;
 }
 
 /** One rule as a compact line the model can read back to the chat. */
@@ -124,6 +147,8 @@ function ruleLine(rule: ChatRule): string {
   const flags = [triggerLabel(rule.trigger)];
   if (!rule.enabled) flags.push("disabled");
   if (rule.chatId === null) flags.push("every chat");
+  const targets = targetsFlag(rule);
+  if (targets) flags.push(targets);
   return `${rule.id} [${flags.join(", ")}]: ${rule.text}`;
 }
 
@@ -148,7 +173,8 @@ export function registerChatRulesMcpTools(server: McpServer): void {
         "List the standing rules currently in force in THIS chat, with their ids — the ones set " +
         "here, plus any the operator set for every chat. Use it when someone asks what rules you " +
         "have, what you were told to do, or before changing or removing a rule (you need its id). " +
-        "Rules marked as applying to every chat cannot be changed from here.",
+        "A rule limited to particular people says whose messages it applies to; the rest apply to " +
+        "everyone here. Rules marked as applying to every chat cannot be changed from here.",
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -186,6 +212,15 @@ export function registerChatRulesMcpTools(server: McpServer): void {
             "\"always\" when the rule must act on messages nobody addressed to you; \"on-reply\" " +
               "when it only shapes your answers to people talking to you",
           ),
+        user_ids: z
+          .array(z.string().min(1))
+          .max(MAX_RULE_TARGETS)
+          .default([])
+          .describe(
+            "Group chats only: the user ids, copied exactly from the participant list, of the " +
+              "people this rule is about — it then applies to their messages and no one else's. " +
+              "Leave empty for a rule that applies to everyone, which is the normal case",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -194,7 +229,7 @@ export function registerChatRulesMcpTools(server: McpServer): void {
         openWorldHint: false,
       },
     },
-    async ({ text, trigger }) => {
+    async ({ text, trigger, user_ids }) => {
       const ctx = getToolContext();
       try {
         const result = await createRuleFromChat(
@@ -203,6 +238,7 @@ export function registerChatRulesMcpTools(server: McpServer): void {
             userId: ctx.userId ?? null,
             text: text.trim(),
             trigger: trigger as RuleTrigger,
+            targetUserIds: user_ids,
           },
           toolTrigger(ctx.chatId, ctx.userId),
         );
@@ -216,9 +252,19 @@ export function registerChatRulesMcpTools(server: McpServer): void {
             { ok: true, rule: ruleView(result.rule), already_present: true },
           );
         }
+        // The same rule text asked for with a different set of people: the rule
+        // stays, its audience is what changed.
+        if (result.status === "updated") {
+          return textResult(
+            `That rule was already set here; it now applies ${audienceText(result.rule)}: ` +
+              `${result.rule.text}`,
+            { ok: true, rule: ruleView(result.rule) },
+          );
+        }
         if (result.status !== "created") return errorResult("The rule could not be saved.");
         return textResult(
-          `Rule saved for this chat (${triggerLabel(result.rule.trigger)}): ${result.rule.text}`,
+          `Rule saved for this chat (${triggerLabel(result.rule.trigger)}, applies ` +
+            `${audienceText(result.rule)}): ${result.rule.text}`,
           { ok: true, rule: ruleView(result.rule) },
         );
       } catch (err) {
@@ -234,10 +280,11 @@ export function registerChatRulesMcpTools(server: McpServer): void {
     {
       title: "Update chat rule",
       description:
-        "Change one of THIS chat's existing rules by its id — reword it, change when it fires, or " +
-        "switch it off without deleting it (set enabled to false to pause a rule, true to bring it " +
-        "back). Use it when someone amends a rule they already set rather than adding a new one. " +
-        "List the rules first to get the id; only the fields you pass are changed.",
+        "Change one of THIS chat's existing rules by its id — reword it, change when it fires, " +
+        "change who it applies to, or switch it off without deleting it (set enabled to false to " +
+        "pause a rule, true to bring it back). Use it when someone amends a rule they already set " +
+        "rather than adding a new one. List the rules first to get the id; only the fields you " +
+        "pass are changed.",
       inputSchema: {
         id: z.string().min(1).describe("Rule id to change"),
         text: z
@@ -256,6 +303,27 @@ export function registerChatRulesMcpTools(server: McpServer): void {
           .nullable()
           .default(null)
           .describe("false to pause the rule, true to reactivate it (optional)"),
+        // Two fields rather than one nullable list, for the same reason `text`
+        // keeps its value on "": an empty array is what a model sends when it
+        // means "leave this alone", and reading that as "everyone" would quietly
+        // widen a rule that was written about one person.
+        user_ids: z
+          .array(z.string().min(1))
+          .max(MAX_RULE_TARGETS)
+          .default([])
+          .describe(
+            "Group chats only: the complete new list of user ids the rule applies to, copied " +
+              "exactly from the participant list (it replaces the current list). Leave empty to " +
+              "leave the rule's audience exactly as it is",
+          ),
+        applies_to_everyone: z
+          .boolean()
+          .nullable()
+          .default(null)
+          .describe(
+            "true to drop any limit to particular people, so the rule applies to everyone in the " +
+              "chat again (optional)",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -264,16 +332,23 @@ export function registerChatRulesMcpTools(server: McpServer): void {
         openWorldHint: false,
       },
     },
-    async ({ id, text, trigger, enabled }) => {
+    async ({ id, text, trigger, enabled, user_ids, applies_to_everyone }) => {
       const ctx = getToolContext();
+      // Clearing the audience wins over naming people: asking for both is
+      // contradictory, and "everyone" is the request that cannot be a mistake.
+      const targets = applies_to_everyone === true ? [] : (user_ids ?? []);
       const patch = {
         ...(text.trim() ? { text: text.trim() } : {}),
         ...(trigger ? { trigger: trigger as RuleTrigger } : {}),
         ...(enabled === null ? {} : { enabled }),
+        ...(applies_to_everyone === true || targets.length > 0
+          ? { targetUserIds: targets }
+          : {}),
       };
       if (Object.keys(patch).length === 0) {
         return errorResult(
-          "Nothing to change — pass the new text, a new trigger mode, or enabled true/false.",
+          "Nothing to change — pass the new text, a new trigger mode, enabled true/false, or who " +
+            "the rule applies to.",
         );
       }
       try {
@@ -286,7 +361,8 @@ export function registerChatRulesMcpTools(server: McpServer): void {
         if (result.status !== "updated") return errorResult("The rule could not be changed.");
         const state = result.rule.enabled ? "active" : "paused";
         return textResult(
-          `Rule updated (${triggerLabel(result.rule.trigger)}, ${state}): ${result.rule.text}`,
+          `Rule updated (${triggerLabel(result.rule.trigger)}, ${state}, applies ` +
+            `${audienceText(result.rule)}): ${result.rule.text}`,
           { ok: true, rule: ruleView(result.rule) },
         );
       } catch (err) {

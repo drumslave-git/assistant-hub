@@ -15,6 +15,7 @@ Feature ids: `chat-rules` (CRUD and the match decision), `mcp-tools-chat-rules`
 | --- | --- | --- |
 | Who | The operator (the dashboard is operator-only) | Gated — see below |
 | Scope | Any chat, **and** the global set | Only the current chat |
+| Audience | Everyone, or people ticked off the group's roster | Everyone, or the user ids named in the call |
 | Global rules | Create, edit, delete | Visible, never editable |
 
 The chat-side gate mirrors `specialist_switch` exactly (user decision,
@@ -39,6 +40,41 @@ characters**: every enabled rule is in every prompt, so the budget is the real
 constraint. Duplicate text within a scope is rejected for the dashboard
 (409) and treated as already-satisfied from chat (see the Tools section) — the
 same instruction stored twice is noise in every request.
+
+## Who a rule applies to
+
+The second axis (user decision, 2026-08-13). A rule applies to **everyone in its
+chat** by default; a rule scoped to a **group** may instead name up to **16**
+people, and then applies to their messages and to nobody else's.
+
+It is a filter on the sender, not a hint to the model. `getActiveRulesForChat`
+takes the id of whoever sent the message and drops every rule that names someone
+else *before* anything is composed — so a rule about one member never reaches
+another member's prompt, never reaches the `always` matcher, and the model is
+never asked to work out that a rule about somebody else does not apply. Nothing
+in the prompt says a rule is targeted, because by the time the prompt exists,
+only rules that apply are in it.
+
+Consequences of that shape:
+
+- A **scheduled-task fire** has no sender, so only rules naming nobody apply
+  there — as with `always` rules, a fire is nobody's message.
+- A targeted `always` rule can only ever open a turn on its own people's
+  messages; for everyone else the extra classification call is not even offered
+  that rule.
+- Elevation is unchanged: a matched targeted rule lends its *author's* rights,
+  not its subject's (see *Whose rights a rule-driven action carries*).
+
+Only groups can narrow: a DM is one person already, and a global rule spans chats
+whose rosters have nothing to do with each other. A rule can only name people the
+bot has **seen speak in that group** (the `group_members` roster), checked in the
+service against a real row — a lurker cannot be named until they say something,
+and an invented id is refused rather than stored as a rule that silently never
+fires. Names are never resolved to ids in code; the group roster injected into
+every group prompt carries each participant's exact id, and the model copies one.
+
+Who a rule applies to **is** editable (unlike its scope): adding or dropping a
+person is an ordinary amendment within the chat that agreed to the rule.
 
 ## Trigger modes
 
@@ -195,10 +231,18 @@ no tool is untouched.
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `rules_list` | — | This chat's rules with their ids, plus the global ones (marked, and not editable here) |
-| `rules_create` | `text`, `trigger` | Save a standing rule for this chat |
-| `rules_update` | `id`, `text?`, `trigger?`, `enabled?` | Reword a rule, change its trigger, or pause/resume it |
+| `rules_list` | — | This chat's rules with their ids and whose messages each applies to, plus the global ones (marked, and not editable here) |
+| `rules_create` | `text`, `trigger`, `user_ids` | Save a standing rule for this chat, for everyone or for named people |
+| `rules_update` | `id`, `text?`, `trigger?`, `enabled?`, `user_ids?`, `applies_to_everyone?` | Reword a rule, change its trigger or audience, or pause/resume it |
 | `rules_delete` | `id` | Remove a rule for good |
+
+Changing the audience from chat is deliberately two fields rather than one list.
+An empty array is what a model sends when it means *leave this alone*, so
+`user_ids: []` keeps the current audience (the same convention as `text: ""`) and
+widening a rule back to everyone takes the explicit `applies_to_everyone` flag —
+otherwise a rule written about one person could be silently widened by a model
+filling in a blank. Creating the *same rule text* again with a different set of
+people is not "already in force": it amends the audience and says so.
 
 `rules_create`'s description is long by design and pinned in
 `mcp-tools.test.ts`: almost nobody says the word "rule" ("from now on…", "always
@@ -228,7 +272,7 @@ request — so it also covers the tools that have no idempotent repeat.
 
 ## Storage
 
-One table, `chat_rules` (migration `0044`):
+One table, `chat_rules` (migrations `0044`, `0053`):
 
 | Column | Notes |
 | --- | --- |
@@ -236,6 +280,7 @@ One table, `chat_rules` (migration `0044`):
 | `text` | The rule, in the author's words |
 | `trigger` | `on-reply` \| `always` (checked in the DB) |
 | `enabled` | A paused rule stays authored but is never composed into a prompt |
+| `target_user_ids` | Senders the rule is limited to; empty = everyone. A DB check keeps it empty for a global rule; group-only is enforced in the service |
 | `created_by_user_id`, `source` | Provenance: who wrote it, and whether from `chat` or the `dashboard` |
 
 Scope is **not** editable: moving a rule between chats is a delete plus a create,
@@ -258,9 +303,10 @@ injected directive, and the system-prompt step reports `chatRulesApplied`.
 
 | File | Covers |
 | --- | --- |
-| `features/chat-rules/format.test.ts` | Prompt block and rule-trigger directive; enabled/`always` selection; `resolveRuleAuthority` |
+| `features/chat-rules/format.test.ts` | Prompt block and rule-trigger directive; enabled/`always`/sender selection; `resolveRuleAuthority` |
 | `features/chat-rules/server/matcher.test.ts` | Match prompt, and every fail-closed path of the citation check |
 | `features/chat-rules/server/mcp-tools.test.ts` | Tool contract: bound chat, relayed refusals, partial updates; the `rules_create` description |
 | `features/browser-agent/server/mcp-tools.test.ts` | The download gate reads the turn's authority, and provenance stays the sender |
-| `features/chat-rules/server/chat-rules.integration.test.ts` | Scope resolution, caps, duplicates, the permission gate, traces |
+| `features/chat-rules/server/chat-rules.integration.test.ts` | Scope resolution, caps, duplicates, the permission gate, traces; sender targeting end to end (roster check, group-only, editing the audience) |
+| `features/known-groups/format.test.ts` | The roster carries each participant's exact user id |
 | `features/bot-messaging/server/service.test.ts` | The rule-opened turn: directive placement, silence on no match/failure, maintenance; the addressed-turn pass that binds authority |

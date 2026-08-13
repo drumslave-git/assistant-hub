@@ -130,6 +130,37 @@ export function resolveRuleAuthority(
   return privileged ? ownerUserId : null;
 }
 
+/**
+ * Whether a rule reaches a message sent by `userId`. A rule naming nobody
+ * applies to everyone in its chat; one naming people applies to those senders
+ * and no one else.
+ *
+ * This is the whole mechanism behind per-user rules (user decision, 2026-08-13):
+ * a rule the sender is not named in never enters the prompt, so the model is
+ * never asked to judge whether a rule about someone else applies to this
+ * message. `userId` is null where a turn has no sender at all — a scheduled-task
+ * fire — and a rule that singles people out has nobody to single out there.
+ */
+export function appliesToSender(
+  rule: Pick<ChatRule, "targetUserIds">,
+  userId: string | null,
+): boolean {
+  if (rule.targetUserIds.length === 0) return true;
+  return userId !== null && rule.targetUserIds.includes(userId);
+}
+
+/** The subset of `rules` that a message from `userId` can trigger. */
+export function rulesForSender(rules: readonly ChatRule[], userId: string | null): ChatRule[] {
+  return rules.filter((rule) => appliesToSender(rule, userId));
+}
+
+/** Whether two target lists name the same people, order aside. */
+export function sameTargets(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const named = new Set(a);
+  return b.every((id) => named.has(id));
+}
+
 /** Rules that shape an ordinary reply: everything enabled in scope. */
 export function replyRules(rules: readonly ChatRule[]): ChatRule[] {
   return rules.filter((rule) => rule.enabled);

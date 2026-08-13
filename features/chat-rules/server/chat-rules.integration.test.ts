@@ -1,5 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import {
+  recordGroupMembership,
+  upsertKnownGroup,
+} from "@/features/known-groups/server/repository";
+import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { upsertSettings } from "@/features/settings/server/repository";
 import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
@@ -48,10 +53,34 @@ const OTHER_USER = "200";
 
 function create(over: Partial<Parameters<typeof createChatRule>[0]> = {}) {
   return createChatRule(
-    { chatId: GROUP, text: "Answer briefly.", trigger: "on-reply", enabled: true, ...over },
+    {
+      chatId: GROUP,
+      text: "Answer briefly.",
+      trigger: "on-reply",
+      enabled: true,
+      targetUserIds: [],
+      ...over,
+    },
     trigger,
     ctx.db,
   );
+}
+
+/**
+ * A rule can only name people the bot has seen speak in the group, so a test
+ * about targeting has to put them on the roster first.
+ */
+async function joinGroup(chatId: string, ...userIds: string[]) {
+  await upsertKnownGroup(ctx.db, { chatId, title: "Test group", type: "supergroup" });
+  for (const userId of userIds) {
+    await upsertKnownUser(ctx.db, {
+      userId,
+      username: null,
+      firstName: `User ${userId}`,
+      lastName: null,
+    });
+    await recordGroupMembership(ctx.db, chatId, userId);
+  }
 }
 
 describe("scopes", () => {
@@ -71,7 +100,7 @@ describe("scopes", () => {
     await create({ text: "Paused rule.", enabled: false });
     await create({ text: "Paused always rule.", trigger: "always", enabled: false });
 
-    const { reply, always } = await getActiveRulesForChat(GROUP, ctx.db);
+    const { reply, always } = await getActiveRulesForChat(GROUP, DM_USER, ctx.db);
 
     expect(reply.map((r) => r.text)).toEqual(["Answer briefly.", "Download video links."]);
     expect(always.map((r) => r.text)).toEqual(["Download video links."]);
@@ -274,7 +303,104 @@ describe("chat-side permission gate", () => {
     );
 
     expect(paused).toMatchObject({ status: "updated" });
-    expect((await getActiveRulesForChat(DM_USER, ctx.db)).reply).toEqual([]);
+    expect((await getActiveRulesForChat(DM_USER, DM_USER, ctx.db)).reply).toEqual([]);
     expect(await getRulesForChat(DM_USER, ctx.db)).toHaveLength(1);
+  });
+});
+
+/**
+ * A group rule can apply to everyone there or only to the people it names (user
+ * decision, 2026-08-13). Naming people is a hard filter on the sender, applied
+ * before anything reaches a prompt — so the model is never handed a rule about
+ * somebody else and asked to work out that it does not apply.
+ */
+describe("who a rule applies to", () => {
+  const ALICE = "11";
+  const BOB = "22";
+
+  it("hands a targeted rule only to the people it names", async () => {
+    await joinGroup(GROUP, ALICE, BOB);
+    await create({ text: "Everyone's rule." });
+    await create({ text: "Alice's rule.", targetUserIds: [ALICE] });
+
+    const forAlice = await getActiveRulesForChat(GROUP, ALICE, ctx.db);
+    const forBob = await getActiveRulesForChat(GROUP, BOB, ctx.db);
+
+    expect(forAlice.reply.map((r) => r.text)).toEqual(["Everyone's rule.", "Alice's rule."]);
+    expect(forBob.reply.map((r) => r.text)).toEqual(["Everyone's rule."]);
+    // The full set is unchanged — targeting narrows the turn, not the chat's rules.
+    expect(await getRulesForChat(GROUP, ctx.db)).toHaveLength(2);
+  });
+
+  it("drops a targeted `always` rule for everyone else, so it can never open their turn", async () => {
+    await joinGroup(GROUP, ALICE, BOB);
+    await create({ text: "Download Alice's links.", trigger: "always", targetUserIds: [ALICE] });
+
+    expect((await getActiveRulesForChat(GROUP, ALICE, ctx.db)).always).toHaveLength(1);
+    expect((await getActiveRulesForChat(GROUP, BOB, ctx.db)).always).toEqual([]);
+  });
+
+  it("drops targeted rules from a turn with no sender (a scheduled-task fire)", async () => {
+    await joinGroup(GROUP, ALICE);
+    await create({ text: "Everyone's rule." });
+    await create({ text: "Alice's rule.", targetUserIds: [ALICE] });
+
+    const fired = await getActiveRulesForChat(GROUP, null, ctx.db);
+
+    expect(fired.reply.map((r) => r.text)).toEqual(["Everyone's rule."]);
+  });
+
+  it("refuses to name someone the bot has never seen speak in the group", async () => {
+    await joinGroup(GROUP, ALICE);
+
+    await expect(create({ targetUserIds: [BOB] })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("refuses to name anyone in a DM or in the global set", async () => {
+    await expect(
+      create({ chatId: DM_USER, targetUserIds: [DM_USER] }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(create({ chatId: null, targetUserIds: [DM_USER] })).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it("edits who a rule applies to, and can widen it back to everyone", async () => {
+    await joinGroup(GROUP, ALICE, BOB);
+    const rule = await create({ targetUserIds: [ALICE] });
+
+    await editChatRule(rule.id, { targetUserIds: [ALICE, BOB] }, trigger, ctx.db);
+    expect((await getActiveRulesForChat(GROUP, BOB, ctx.db)).reply).toHaveLength(1);
+
+    await editChatRule(rule.id, { targetUserIds: [] }, trigger, ctx.db);
+    expect((await getActiveRulesForChat(GROUP, "999", ctx.db)).reply).toHaveLength(1);
+  });
+
+  it("amends the audience when the same rule is set again from chat for other people", async () => {
+    // Not "already in force": the people are the one thing that differs, so
+    // reporting it unchanged would be a lie about exactly what was asked for.
+    await joinGroup(GROUP, ALICE, BOB);
+    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
+    const first = await createRuleFromChat(
+      { chatId: GROUP, userId: DM_USER, text: "Answer briefly.", trigger: "on-reply", targetUserIds: [ALICE] },
+      chatTrigger,
+      ctx.db,
+    );
+    const again = await createRuleFromChat(
+      { chatId: GROUP, userId: DM_USER, text: "Answer briefly.", trigger: "on-reply", targetUserIds: [ALICE, BOB] },
+      chatTrigger,
+      ctx.db,
+    );
+    const repeat = await createRuleFromChat(
+      { chatId: GROUP, userId: DM_USER, text: "Answer briefly.", trigger: "on-reply", targetUserIds: [BOB, ALICE] },
+      chatTrigger,
+      ctx.db,
+    );
+
+    expect(first.status).toBe("created");
+    expect(again).toMatchObject({ status: "updated", rule: { targetUserIds: [ALICE, BOB] } });
+    // The same people again, in another order, is the state already reached.
+    expect(repeat.status).toBe("exists");
+    expect(await getRulesForChat(GROUP, ctx.db)).toHaveLength(1);
   });
 });

@@ -28,6 +28,62 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Chat rules: for everyone, or for named people in a group (`done` pending production deploy, 2026-08-13)
+
+User decisions, 2026-08-13, answering "allow to specify for all or specific
+users in group":
+
+1. **Sender filter, not a prompt hint.** A rule naming people is dropped for
+   every other sender *before* composition, so the model never sees a rule about
+   somebody else and is never asked to judge whether it applies.
+2. **Group-scoped rules only.** A DM is one person; a global rule spans chats
+   with unrelated rosters.
+3. **Dashboard *and* chat.** `rules_create`/`rules_update` take user ids — which
+   required the group roster injected into every group prompt to carry each
+   participant's exact id, since names are never resolved to ids in code.
+
+### What shipped
+
+- `chat_rules.target_user_ids text[]` (migration `0053_magenta_living_tribunal`,
+  **applied to the dev DB**), empty = everyone, with a DB check keeping it empty
+  for a global rule. Group-only and roster membership are enforced in the service
+  (`assertTargetsAllowed`) — a group id is a Telegram fact, and an unknown id is
+  refused rather than stored as a rule that silently never fires.
+- `getActiveRulesForChat(chatId, senderUserId, db)` filters through
+  `rulesForSender`. `process-update` passes the sender; the scheduler passes null
+  (a fire is nobody's message, so only untargeted rules apply).
+- Dashboard `/rules`: an "Applies to" list on group scope — "Everyone in this
+  group" is simply the empty selection, so the half-set state cannot be reached —
+  plus an audience badge on each rule card and editing of the audience.
+- Chat tools: `user_ids` on create; `user_ids` + `applies_to_everyone` on update
+  (two fields so an empty array cannot silently widen a rule — same reason
+  `text: ""` keeps the text). The same rule text set again for different people
+  amends the audience instead of reporting "already in force".
+- Group roster lines now read `- <label> [user id <id>] — also known as: …`.
+
+### Proof
+
+Files: `db/schema.ts` + `db/migrations/0053`, `features/chat-rules/{format.ts,
+server/{schema,repository,service,mcp-tools}.ts, ui/ChatRulesManager.tsx}`,
+`app/(dashboard)/rules/page.tsx`, `features/known-groups/{format.ts,
+server/{repository,service}.ts}`, `server/telegram/process-update.ts`,
+`features/scheduled-tasks/server/scheduler.ts`, plus docs.
+
+Lint clean; typecheck clean; unit suite 1097 passing — the only failures are the
+pre-existing Windows-only `ytdlp-binary`/`media-download` ones (the fake binary
+fixture is a shell script that will not execute here), untouched by this work.
+`chat-rules.integration.test.ts` 24/24 against a real database.
+
+Browser pass on `/rules` (attached to the running dev server): audience picker
+appears only for a group, a rule created for one member shows an "Only <name>"
+badge, editing it back to everyone stores `targetUserIds: []`, and a global rule
+with targets is rejected 422 at the API boundary. Test rule deleted afterwards.
+
+Remaining risk: the live model has not yet been observed choosing `user_ids`
+from the roster in a real group turn — the tool description and the roster ids
+are pinned by tests, but the end-to-end behaviour is worth watching on the next
+live rule set from chat.
+
 ## Audio transcription modes + vision probe + relayed error detail (`done` pending production deploy, 2026-08-12)
 
 User decisions, 2026-08-12: the audio (STT) role must **support both**

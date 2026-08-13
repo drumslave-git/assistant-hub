@@ -190,6 +190,20 @@ export async function groupMembershipExists(
 }
 
 /**
+ * Every (group, member) pair, most-recently-active first. The rosters of all
+ * groups at once, for a dashboard view that already holds the user profiles and
+ * needs only to know who belongs where — one query instead of one per group.
+ */
+export async function listGroupMemberships(
+  db: DrizzleDb,
+): Promise<{ chatId: string; userId: string }[]> {
+  return db
+    .select({ chatId: groupMembers.chatId, userId: groupMembers.userId })
+    .from(groupMembers)
+    .orderBy(desc(groupMembers.lastSeenAt));
+}
+
+/**
  * Members of a group (known-user profiles joined with membership timestamps),
  * most-recently-active first. `limit` bounds the roster so context injection and
  * the dashboard stay bounded for busy groups.

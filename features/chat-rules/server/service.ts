@@ -3,6 +3,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 
 import { getDb, type DrizzleDb } from "@/db/drizzle";
+import { getGroupMembers } from "@/features/known-groups/server/repository";
 import { getSettingsRecord } from "@/features/settings/server/repository";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
@@ -11,7 +12,7 @@ import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { withTrace } from "@/server/trace";
 
-import { alwaysRules, replyRules } from "../format";
+import { alwaysRules, replyRules, rulesForSender, sameTargets } from "../format";
 import {
   countRulesInScope,
   deleteRule,
@@ -26,6 +27,7 @@ import {
 } from "./repository";
 import {
   MAX_RULES_PER_SCOPE,
+  TARGETS_SCOPE_MESSAGE,
   type ChatRule,
   type CreateChatRule,
   type RuleTrigger,
@@ -78,16 +80,50 @@ export async function getRulesForChat(
  * Server-only: the enabled rules composed into a chat's reply prompt, and the
  * subset that may open a turn nobody addressed. Read once per incoming message
  * by the Telegram runtime.
+ *
+ * `senderUserId` is who sent the message this set is being built for. Rules that
+ * name specific people are filtered against it here, before anything reaches a
+ * prompt or the matcher — so a rule about one member of a group is simply absent
+ * for everybody else. Pass null for a turn with no sender (a scheduled-task
+ * fire), which leaves exactly the rules that name nobody.
  */
 export async function getActiveRulesForChat(
   chatId: string,
+  senderUserId: string | null,
   db: DrizzleDb = getDb(),
 ): Promise<{ reply: ChatRule[]; always: ChatRule[] }> {
-  const rules = await getRulesForChat(chatId, db);
+  const rules = rulesForSender(await getRulesForChat(chatId, db), senderUserId);
   return { reply: replyRules(rules), always: alwaysRules(rules) };
 }
 
 /* ------------------------------ dashboard CRUD ----------------------------- */
+
+/**
+ * Guard who a rule may name: only a group rule can single people out, and only
+ * people the bot has actually seen in that group. Both are mechanical facts — a
+ * chat id's sign, and a row in the group roster — so a mistyped or invented id
+ * fails here rather than becoming a rule that silently never fires.
+ *
+ * A member is someone who has spoken in the group (that is how the roster is
+ * built), so a lurker cannot be named until they say something.
+ */
+async function assertTargetsAllowed(
+  db: DrizzleDb,
+  chatId: string | null,
+  targetUserIds: readonly string[],
+): Promise<void> {
+  if (targetUserIds.length === 0) return;
+  if (chatId === null || !isGroupChatId(chatId)) {
+    throw ApiError.badRequest(TARGETS_SCOPE_MESSAGE);
+  }
+  const members = new Set((await getGroupMembers(db, chatId)).map((member) => member.userId));
+  const unknown = targetUserIds.filter((id) => !members.has(id));
+  if (unknown.length > 0) {
+    throw ApiError.badRequest(
+      `Not known to have spoken in this group: ${unknown.join(", ")}. A rule can only name people the bot has seen here.`,
+    );
+  }
+}
 
 /** Guard the per-scope cap and duplicate text; throws {@link ApiError}. */
 async function assertWritable(
@@ -122,11 +158,13 @@ export async function createChatRule(
     async (trace) => {
       await trace.event({ type: "input", message: "create rule", data: { ...input } });
       await assertWritable(db, input.chatId, input.text);
+      await assertTargetsAllowed(db, input.chatId, input.targetUserIds);
       const record = await insertRule(db, randomUUID(), {
         chatId: input.chatId,
         text: input.text,
         trigger: input.trigger,
         enabled: input.enabled,
+        targetUserIds: input.targetUserIds,
         createdByUserId: input.createdByUserId ?? null,
         source: input.source ?? "dashboard",
       });
@@ -156,6 +194,11 @@ export async function editChatRule(
       if (!existing) throw ApiError.notFound("Unknown rule");
       if (input.text !== undefined) {
         await assertWritable(db, existing.chatId, input.text, id);
+      }
+      // Against the *stored* scope: a patch cannot move a rule between chats, so
+      // the chat it was agreed in is the one its people must belong to.
+      if (input.targetUserIds !== undefined) {
+        await assertTargetsAllowed(db, existing.chatId, input.targetUserIds);
       }
       const record = await updateRule(db, id, input);
       if (!record) throw ApiError.notFound("Unknown rule");
@@ -265,7 +308,13 @@ function resolveTarget(
 
 /** Create a rule for the current chat from a chat turn, gated and traced. */
 export async function createRuleFromChat(
-  input: { chatId: string; userId: string | null; text: string; trigger: RuleTrigger },
+  input: {
+    chatId: string;
+    userId: string | null;
+    text: string;
+    trigger: RuleTrigger;
+    targetUserIds?: string[];
+  },
   traceTrigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<RuleWriteResult> {
@@ -276,16 +325,27 @@ export async function createRuleFromChat(
   // store the "same" rule twice — the exact outcome the idempotence exists to
   // prevent. The API path is trimmed by zod; this covers every path.
   const text = input.text.trim();
+  const targetUserIds = [...new Set((input.targetUserIds ?? []).map((id) => id.trim()).filter(Boolean))];
   // Idempotent from chat (see `RuleWriteResult.exists`): the same rule again is
   // the state the caller asked for, so report it as reached rather than refused.
   const existing = await getRuleByText(db, input.chatId, text);
-  if (existing) return { status: "exists", rule: toClient(existing) };
+  if (existing) {
+    // …unless it is asked for with a different set of people. That is not the
+    // stored state, so reporting "already in force" would be a lie about the one
+    // thing that changed; amend it instead and say so.
+    if (sameTargets(existing.targetUserIds, targetUserIds)) {
+      return { status: "exists", rule: toClient(existing) };
+    }
+    const rule = await editChatRule(existing.id, { targetUserIds }, traceTrigger, db);
+    return { status: "updated", rule };
+  }
   const rule = await createChatRule(
     {
       chatId: input.chatId,
       text,
       trigger: input.trigger,
       enabled: true,
+      targetUserIds,
       createdByUserId: input.userId,
       source: "chat",
     },

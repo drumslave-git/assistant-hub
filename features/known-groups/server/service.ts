@@ -13,6 +13,7 @@ import {
   getGroupMembers,
   getKnownGroup,
   groupMembershipExists,
+  listGroupMemberships,
   listKnownGroups,
   recordGroupMembership,
   setKnownGroupLanguage,
@@ -60,6 +61,17 @@ function toClientMember(record: GroupMemberRecord): GroupMember {
 /** All known groups (with member counts), most-recently-seen first. */
 export async function listGroups(db: DrizzleDb = getDb()): Promise<KnownGroupSummary[]> {
   return (await listKnownGroups(db)).map(toClientSummary);
+}
+
+/**
+ * Who belongs to which group, across every group, for a view that already has
+ * the user profiles it needs to label them (the chat-rules page's per-group
+ * people picker).
+ */
+export async function listMemberships(
+  db: DrizzleDb = getDb(),
+): Promise<{ chatId: string; userId: string }[]> {
+  return listGroupMemberships(db);
 }
 
 /** One group with its resolved member list, or null if the group is unknown. */
@@ -260,6 +272,7 @@ export async function getGroupContext(
     title: group?.title ?? null,
     notes: group?.notes ?? null,
     members: members.map((member) => ({
+      userId: member.userId,
       label: formatKnownUserLabel(member),
       aliases: member.aliases,
     })),

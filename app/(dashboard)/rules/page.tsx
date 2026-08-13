@@ -6,7 +6,7 @@ import { Button, EmptyState, PageHeader } from "@/components/ui";
 import type { ChatRule } from "@/features/chat-rules/server/schema";
 import { getChatRulesView } from "@/features/chat-rules/server/service";
 import { ChatRulesManager, type RuleChat } from "@/features/chat-rules/ui/ChatRulesManager";
-import { listGroups } from "@/features/known-groups/server/service";
+import { listGroups, listMemberships } from "@/features/known-groups/server/service";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { listUsers } from "@/features/known-users/server/service";
 import { featureDebugHref } from "@/lib/features";
@@ -24,23 +24,35 @@ export default async function ChatRulesPage() {
   let chats: RuleChat[] = [];
   let dbError: string | null = null;
   try {
-    const [view, groups, users] = await Promise.all([
+    const [view, groups, users, memberships] = await Promise.all([
       getChatRulesView(),
       listGroups(),
       listUsers(),
+      listMemberships(),
     ]);
     rules = view;
+    // The people a group rule can be limited to: whoever has spoken there, in the
+    // roster's order (most recently active first), labelled like everywhere else.
+    const labels = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
+    const membersByChat = new Map<string, { userId: string; label: string }[]>();
+    for (const { chatId, userId } of memberships) {
+      const label = labels.get(userId);
+      if (!label) continue;
+      membersByChat.set(chatId, [...(membersByChat.get(chatId) ?? []), { userId, label }]);
+    }
     // A private chat's id equals the user id, so a DM is addressable by user.
     chats = [
       ...groups.map((g) => ({
         chatId: g.chatId,
         label: g.title ?? `Group ${g.chatId}`,
         kind: "group" as const,
+        members: membersByChat.get(g.chatId) ?? [],
       })),
       ...users.map((u) => ({
         chatId: u.userId,
         label: formatKnownUserLabel(u),
         kind: "dm" as const,
+        members: [],
       })),
     ];
   } catch (err) {

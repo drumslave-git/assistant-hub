@@ -358,13 +358,15 @@ one per call.
 
 Standing instructions for the current chat — see
 [chat-rules.md](../features/chat-rules.md). Writes are gated in the service
-(self-serve in a DM, owner-only in a group); global rules are read-only here.
+(self-serve in a DM, owner-only in a group); global rules are read-only here. A
+group rule may name the people it applies to, by ids copied from the roster in
+the group context — never resolved from a name in code.
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `rules_list` | — | This chat's rules with their ids, plus the global ones |
-| `rules_create` | `text`, `trigger` | Save a standing rule for this chat |
-| `rules_update` | `id`, `text?`, `trigger?`, `enabled?` | Reword, retrigger, or pause/resume a rule |
+| `rules_list` | — | This chat's rules with their ids and audience, plus the global ones |
+| `rules_create` | `text`, `trigger`, `user_ids` | Save a standing rule for this chat, for everyone or for named people |
+| `rules_update` | `id`, `text?`, `trigger?`, `enabled?`, `user_ids?`, `applies_to_everyone?` | Reword, retrigger, re-target, or pause/resume a rule |
 | `rules_delete` | `id` | Remove a rule for good |
 
 ### Scheduled tasks — `mcp-tools-scheduled-tasks`
