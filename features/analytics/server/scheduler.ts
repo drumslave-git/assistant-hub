@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getDb } from "@/db/drizzle";
-import { getLlmRuntime, getTimezone } from "@/features/settings/server/service";
+import { getBackgroundRuntime, getTimezone } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { createDailyScheduler } from "@/server/jobs/daily-scheduler";
 import type { IntervalRunContext } from "@/server/jobs/interval-scheduler";
@@ -58,7 +58,7 @@ async function runJob(ctx?: IntervalRunContext): Promise<string> {
   const regenerate = slot.pending;
   slot.pending = null;
 
-  const llm = await getLlmRuntime().catch(() => null);
+  const llm = await getBackgroundRuntime().catch(() => null);
   if (!llm) return "LLM not configured";
   const timeZone = await getTimezone().catch(() => "UTC");
   const conn = { baseUrl: llm.baseUrl, apiKey: llm.apiKey, backend: llm.backend };
@@ -144,7 +144,7 @@ export async function getRegenerateBuckets(): Promise<Record<Granularity, string
 export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
   const [base, llm] = await Promise.all([
     scheduler.getBaseInfo(),
-    getLlmRuntime().catch(() => null),
+    getBackgroundRuntime().catch(() => null),
   ]);
   const currentHour = bucketKeyOfInstant(new Date(), "hour", base.timezone);
   const [pendingUnits, regenerateBuckets] = await Promise.all([

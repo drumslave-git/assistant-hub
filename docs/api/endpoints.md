@@ -88,6 +88,8 @@ can be re-tested without resending the secret.
 | `POST` | `/api/settings/test-audio` | `{ backendId?, model?, transcriptionMode? }` | `ProbeReport` |
 | `POST` | `/api/settings/test-vision` | `{ backendId?, model? }` | `ProbeReport` |
 | `POST` | `/api/settings/test-browser` | `{ backendId?, model? }` | `ProbeReport` |
+| `POST` | `/api/settings/test-classifier` | `{ backendId?, model? }` | `ProbeReport` |
+| `POST` | `/api/settings/test-background` | `{ backendId?, model? }` | `ProbeReport` |
 
 Every role probe performs the role's real work and returns the same
 **`ProbeReport`**: `{ model, latencyMs, input[], output[] }`, where each part is
@@ -99,8 +101,8 @@ produced.
 
 Probes merge the input over the stored configuration (omitted fields fall
 back; `backendId: null` means "use the chat backend") and resolve exactly as
-the runtime does — including the chat-model fallback, so the audio, vision and
-browser probes work with no model of their own set. Every field's meaning is in
+the runtime does — including the chat-model fallback, so the audio, vision,
+browser, classifier and background probes work with no model of their own set. Every field's meaning is in
 [Configuration](../configuration.md#db-backed-settings).
 
 ## Telegram bot control
@@ -325,6 +327,8 @@ POST   /api/settings/test-speech
 POST   /api/settings/test-audio
 POST   /api/settings/test-vision
 POST   /api/settings/test-browser
+POST   /api/settings/test-classifier
+POST   /api/settings/test-background
 
 GET    /api/telegram/bot
 POST   /api/telegram/bot

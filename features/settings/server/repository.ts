@@ -11,7 +11,8 @@ import { settings, type SettingsRow } from "@/db/schema";
  * takes a {@link DrizzleDb} so it runs against the pool or a test instance.
  *
  * LLM configuration is per **role** — chat, embedding, audio (STT), vision,
- * speech (TTS), image generation, browser agent. Each role stores a backend id
+ * speech (TTS), image generation, browser agent, classifiers, background jobs.
+ * Each role stores a backend id
  * (referencing the `backends` catalog; null means "use the chat backend") and a
  * model id. Endpoint URLs and keys live on the backend rows, not here.
  */
@@ -49,6 +50,14 @@ export interface SettingsRecord {
   visionBackendId: string | null;
   /** Vision model id; null → the chat model describes media. */
   visionModel: string | null;
+  /** Classifier backend id; null → the chat backend. */
+  classifierBackendId: string | null;
+  /** Classifier model id; null → the chat model answers the per-message checks. */
+  classifierModel: string | null;
+  /** Background-jobs backend id; null → the chat backend. */
+  backgroundBackendId: string | null;
+  /** Background-jobs model id; null → the chat model runs the offline jobs. */
+  backgroundModel: string | null;
   /** Browser-agent backend id; null → the chat backend. */
   browserBackendId: string | null;
   /** Browser-agent model id; null → the chat model drives browsing. */
@@ -88,6 +97,10 @@ export interface SettingsPatch {
   audioTranscriptionMode?: "transcriptions" | "chat";
   visionBackendId?: string | null;
   visionModel?: string | null;
+  classifierBackendId?: string | null;
+  classifierModel?: string | null;
+  backgroundBackendId?: string | null;
+  backgroundModel?: string | null;
   browserBackendId?: string | null;
   browserModel?: string | null;
   activePersonalityId?: string | null;
@@ -137,6 +150,10 @@ function mapRow(row: SettingsRow): SettingsRecord {
     audioTranscriptionMode: row.audioTranscriptionMode,
     visionBackendId: row.visionBackendId,
     visionModel: row.visionModel,
+    classifierBackendId: row.classifierBackendId,
+    classifierModel: row.classifierModel,
+    backgroundBackendId: row.backgroundBackendId,
+    backgroundModel: row.backgroundModel,
     browserBackendId: row.browserBackendId,
     browserModel: row.browserModel,
     activePersonalityId: row.activePersonalityId,

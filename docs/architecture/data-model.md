@@ -64,6 +64,8 @@ reads and writes the one row.
 | `audio_backend_id`, `audio_model` | text | Null model falls back to the chat model's `input_audio` path |
 | `vision_backend_id`, `vision_model` | text | Null halves fall back to the chat backend/model |
 | `browser_backend_id`, `browser_model` | text | Null halves fall back to the chat backend/model |
+| `classifier_backend_id`, `classifier_model` | text | Same shape; the per-message checks (addressing, rule match, honesty gate) |
+| `background_backend_id`, `background_model` | text | Same shape; the offline jobs (summaries, memory, insights, reflection) |
 
 All `*_backend_id` columns reference `backends.id` with `ON DELETE RESTRICT` —
 a backend in use cannot be deleted out from under a role. The `backends` table

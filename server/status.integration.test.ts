@@ -60,6 +60,8 @@ describe("getSystemStatus", () => {
       "audio",
       "vision",
       "browser",
+      "classifier",
+      "background",
     ]);
     // Nothing configured at all: even the chat-fallback roles have nothing to
     // fall back to, so "off" is the honest answer for every one of them.
@@ -83,7 +85,7 @@ describe("getSystemStatus", () => {
     const byId = new Map(status.endpoints.map((endpoint) => [endpoint.id, endpoint]));
     // Voice transcription, media description and browsing all run on the chat
     // model when they have no model of their own — the feature is on.
-    for (const id of ["audio", "vision", "browser"] as const) {
+    for (const id of ["audio", "vision", "browser", "classifier", "background"] as const) {
       expect(byId.get(id)?.state).toBe("inherited");
       expect(byId.get(id)?.detail).toMatch(/chat model/i);
     }

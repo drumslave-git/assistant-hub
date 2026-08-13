@@ -2,8 +2,8 @@ import "server-only";
 
 import { getDb } from "@/db/drizzle";
 import {
+  getBackgroundRuntime,
   getEmbeddingRuntime,
-  getLlmRuntime,
   getTimezone,
 } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
@@ -40,7 +40,7 @@ import { runSummarization, type SummarizeDeps } from "./summarize";
  */
 async function resolveDeps(): Promise<SummarizeDeps | null> {
   const [llm, embedding, timeZone] = await Promise.all([
-    getLlmRuntime().catch(() => null),
+    getBackgroundRuntime().catch(() => null),
     getEmbeddingRuntime().catch(() => null),
     getTimezone().catch(() => "UTC"),
   ]);

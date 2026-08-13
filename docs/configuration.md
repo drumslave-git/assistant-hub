@@ -114,6 +114,31 @@ and fed by the selected backend's live `/v1/models` listing.
 | Audio (STT) | `audioBackendId` | `audioModel` | Voice messages transcribed by the chat model via `input_audio` (main by default) |
 | Vision | `visionBackendId` | `visionModel` | The chat model describes media (main by default) |
 | Browser agent | `browserBackendId` | `browserModel` | Browsing thinks on the chat model (main by default) |
+| Classifiers | `classifierBackendId` | `classifierModel` | The per-message checks run on the chat model (main by default) |
+| Background jobs | `backgroundBackendId` | `backgroundModel` | The nightly jobs run on the chat model (main by default) |
+
+The last two are the **auxiliary** roles: everything the bot asks a model that
+is not a reply. They are split because the two workloads pull in opposite
+directions, and one setting for both would force a bad trade.
+
+- **Classifiers** — the addressing analyzer, its verifier, the standing chat-rule
+  match, and the honesty gate over a drafted reply. One question about one piece
+  of text, answered as a small JSON verdict, with no tools, history or persona.
+  Every group message pays at least one of these before a reply is even
+  considered, so this is the reply path's latency floor: a small fast model here
+  is a direct speed win, and a wrong verdict costs a missed summons, not a bad
+  answer. Call bounds (thinking off, token cap) live in
+  `server/llm/classifier.ts` and are shared with the probe.
+- **Background jobs** — history summarization, memory extraction and
+  consolidation, analytics insights, and self-improvement reflection. Long
+  transcripts in, structured output out, at background priority. Nobody waits for
+  these, but what they write is what later replies recall, so quality outranks
+  latency and a long-context model belongs here.
+
+Deliberately **not** auxiliary: replies, and scheduled tasks — a task fires a
+real user-facing message through the tool loop, so it holds the same quality bar
+as an answer to a person and stays on the chat role. Vision, audio and browsing
+have their own roles already.
 
 A model id is only meaningful on the backend it was picked from, so a PATCH
 that repoints a role — its own backend id changes, or the chat backend changes

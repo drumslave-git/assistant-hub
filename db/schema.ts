@@ -200,6 +200,32 @@ export const settings = pgTable(
      * describer on a dedicated multimodal model/host.
      */
     visionModel: text("vision_model"),
+    /** Classifier (auxiliary, interactive) backend; null → chat backend. */
+    classifierBackendId: text("classifier_backend_id").references(() => backends.id, {
+      onDelete: "restrict",
+    }),
+    /**
+     * Model for the per-message classifications a turn runs before and after the
+     * reply: the addressing analyzer and its verifier, the honesty gate, and the
+     * standing-rule match. They answer with a small JSON verdict, need no tools,
+     * no history and no persona — and they run on *every* group message, so they
+     * are the reply path's latency floor. Null means they run on the chat model
+     * ("main by default"); set a small fast model here to take that floor down
+     * without touching reply quality.
+     */
+    classifierModel: text("classifier_model"),
+    /** Background-jobs (auxiliary, batch) backend; null → chat backend. */
+    backgroundBackendId: text("background_backend_id").references(() => backends.id, {
+      onDelete: "restrict",
+    }),
+    /**
+     * Model for the offline jobs that read long transcripts and write structured
+     * output: history summarization, memory extraction/consolidation, analytics
+     * insights, and self-improvement reflection. Nobody is waiting on these, but
+     * their quality is what later replies recall — so this is the role to give a
+     * long-context or more capable model. Null → the chat model.
+     */
+    backgroundModel: text("background_model"),
     /** Browser-agent LLM backend; null → chat backend ("main by default"). */
     browserBackendId: text("browser_backend_id").references(() => backends.id, {
       onDelete: "restrict",

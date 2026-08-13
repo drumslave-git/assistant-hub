@@ -3,7 +3,7 @@ import "server-only";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
-import { getLlmRuntime } from "@/features/settings/server/service";
+import { getBackgroundRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { chatCompletion, llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
@@ -180,7 +180,7 @@ export async function reflectOnFeedback(
  * (nothing to reflect with — the daily job retries once one is).
  */
 export async function resolveReflectionDeps(db?: DrizzleDb): Promise<ReflectionDeps | null> {
-  const runtime = await getLlmRuntime(db).catch(() => null);
+  const runtime = await getBackgroundRuntime(db).catch(() => null);
   if (!runtime) return null;
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
   const personalityPrompt = await getActivePersonalityPrompt().catch(() => null);

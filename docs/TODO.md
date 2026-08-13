@@ -102,6 +102,106 @@ restart to serve (done).
   — same "real probe" doctrine as before, now potentially against a paid
   provider.
 
+## Separate LLM configuration for auxiliary calls (`done` pending production deploy, 2026-08-13)
+
+User request, 2026-08-13: *"separate configuration for aux calls llm —
+adressing, honesty check, summarization, etc etc"*. Every non-reply call
+resolved `getLlmRuntime()`, so the whole app rode one model.
+
+Decisions taken with the user before implementing:
+
+- **Two aux roles, not one** — Classifiers (addressing analyzer + verifier,
+  chat-rule match, honesty gate) and Background jobs (history summaries, memory
+  extract/consolidate, analytics insights, self-improvement reflection). One
+  bucket would force a bad trade: the classifiers run on every group message and
+  want a small fast model, while the background jobs read long transcripts and
+  want a capable one. Splitting them lets both be right.
+- **Scheduled tasks stay on the chat role** — a fired task is a real
+  user-facing message through the tool loop, so it holds the reply quality bar.
+
+### What shipped
+
+- **Two roles** (migration `0052_brave_menace`, **applied to the dev DB**):
+  `classifier_backend_id`/`classifier_model` and
+  `background_backend_id`/`background_model`, both "main by default" — each
+  unset half falls back to the chat backend/model, so an installation that never
+  opens the new tabs behaves exactly as before.
+- **`toInheritingRuntime`** replaces what would have been the third and fourth
+  copy of the vision/browser resolver; `getClassifierRuntime` and
+  `getBackgroundRuntime` join them. Both roles are ordinary listed roles for
+  stale-model clearing (`ROLE_FIELDS`).
+- **`server/llm/classifier.ts`** — the classification call shape (thinking off,
+  `CLASSIFIER_MAX_TOKENS`, the honesty gate's tighter budget) lifted out of
+  `process-update.ts`, which held it as file-local constants. It had to move for
+  the probe to exercise the same call the bot makes; the win is that the reply
+  path's three call sites and the probe now cannot drift.
+- **Probes that run the real thing**, per the standing doctrine: `testClassifier`
+  runs the **actual addressing check** (real prompt builder, real verdict
+  parser) over a synthetic message naming a synthetic bot; `testBackground` runs
+  the **actual summarizer** (real system prompt, transcript format, topic
+  parser) over a tiny synthetic chat-day at background priority. Both report a
+  poor answer rather than throwing — and both catch a failure that is otherwise
+  silent in production: an unreadable verdict reads as "not addressed" (the bot
+  stops answering when called), and prose instead of topic JSON stores an empty
+  day while the job reports success.
+- Overview gained two cards, `inherited` ("Chat model") until overridden. The
+  status fallback detail is now per role rather than one sentence: the aux roles
+  are plain completions with no modality to require.
+
+### Proof
+
+Files: `db/schema.ts` + `db/migrations/0052`, `features/settings/server/{repository,schema,service}.ts`,
+`features/settings/ui/SettingsForm.tsx`, `server/llm/classifier.ts` (new),
+`server/telegram/process-update.ts`, `server/status.ts`,
+`features/{history/server/summary-scheduler,memory/server/scheduler,analytics/server/scheduler}.ts`,
+`features/self-improvement/server/{scheduler,reflect}.ts`,
+`app/api/settings/test-{classifier,background}/route.ts` (new), tests
+(`settings.integration`, `status.integration`, `server/llm/classifier.test.ts`
+new), docs (`configuration.md`, `features/settings.md`, `api/endpoints.md`,
+`api/openapi.yaml`, `operations/operator-guide.md`,
+`architecture/{data-model,llm-and-mcp}.md`).
+
+Lint clean; typecheck clean (the three stale `.next/types` lines are gone — the
+dev server rebuilt). Settings integration 69/69 (7 new: both roles inherit then
+override independently of chat and each other; classifier probe runs the real
+analyzer prompt with thinking off and a 3k cap; unreadable verdict reported not
+swallowed; background probe uses its own backend at background priority and
+parses topics; prose reported as zero topics; clean rejections). Status
+integration: the two new endpoints report `inherited`, not `off`, once a chat
+model is set. Integration: `server/` 5 files / 25 tests, `features/` 22 files /
+350 tests pass. Unit: `server/` 232/232 (incl. the new
+`server/llm/classifier.test.ts` 2/2), `features/` 818 passed / the same 21
+pre-existing yt-dlp + media-download Windows failures. `npm run build` **not
+run** (a dev server is live).
+
+Browser-verified against the live dev server and the local vLLM `gemma4-26b`:
+
+- **Classifier probe passed in 259 ms** — the real analyzer prompt, raw answer
+  `{"name_match": "exact", "matched_text": "Zylbot"}`, parsed as
+  `addressed — cited "Zylbot"`. That latency on a 26B model is the thinking-off
+  bound demonstrably reaching the wire.
+- **Background probe passed in 5.8 s**, distilling the three-line probe
+  transcript into two correctly-attributed topics with the right message ids —
+  and its raw answer came back inside a ```json fence, so the lenient parser was
+  exercised for real rather than in theory.
+- Overview shows both new cards as "Chat model" with their own detail, while
+  Images still reads "Off" — the `inherited`/`off` distinction survives.
+- Full save round-trip through the form: selecting a classifier model persisted
+  `classifierModel` and touched nothing else; the clear button then restored
+  `null`. The role model list is fed by the effective (inherited) backend.
+
+### Remaining risks
+
+- Production deploy runs 0052 (four additive nullable columns + two FKs).
+- **The classifier probe's expected verdict is a judgement, not a gate.** A
+  model that returns "not addressed" for the probe message is reported as such
+  and the operator decides; there is deliberately no pass/fail on classification
+  quality.
+- A `.claude/worktrees/…` copy of `status.integration.test.ts` (another
+  session's worktree) is picked up by the integration glob and fails against the
+  new endpoint list. Not this repo's file; the vitest config not excluding
+  `.claude/worktrees` is a pre-existing gap worth closing.
+
 ## Every probe exercises the real thing and shows the exchange (`done`, 2026-08-13)
 
 User requirement, 2026-08-13: *"every Test button have to test corresponding

@@ -53,10 +53,22 @@ searchable combobox fed by that backend's live `/v1/models` listing.
 | **Audio** (STT) | Voice transcribed by the chat model via `input_audio` (main by default) |
 | **Vision** | The chat model describes media (main by default) |
 | **Browser agent** | Browsing thinks on the chat model (main by default) |
+| **Classifiers** | The per-message checks run on the chat model (main by default) |
+| **Background jobs** | The nightly jobs run on the chat model (main by default) |
+
+The last two are the **auxiliary** roles — everything asked of a model that is
+not a reply — and they are two rather than one because the workloads pull
+opposite ways. Classifiers (addressing analyzer + verifier, chat-rule match,
+honesty gate) answer a fixed JSON question on *every* message, so they set how
+fast the bot reacts and want a small quick model. Background jobs (history
+summaries, memory, analytics insights, self-improvement reflection) read long
+transcripts at background priority and want a capable one; nobody waits, but
+what they write is what later replies recall. Replies and scheduled tasks stay
+on the chat role — a fired task is a real message to a person.
 
 ## The form
 
-`SettingsForm` is a Client Component with one tab per concern — the seven roles
+`SettingsForm` is a Client Component with one tab per concern — the nine roles
 above plus **Telegram** (bot token, owner, maintenance mode), **General**
 (timezone, daily run time, browser download cap), **Integrations** (Tavily) and
 **Security** (password change; its own endpoint and button) — and **one** Save
@@ -120,6 +132,8 @@ including the chat-model fallback for audio, vision and the browser agent.
 | `test-audio` | A fraction of a second of generated silence | The transcript |
 | `test-vision` | A generated PNG | The model's description of it |
 | `test-browser` | A prompt and one trivial tool | Whether the tool was called, and the answer |
+| `test-classifier` | The real addressing check over a synthetic message | The raw answer and the verdict parsed from it |
+| `test-background` | The real summarizer over a short synthetic transcript | The topics parsed from the answer, and the raw answer |
 
 The reason each is a real call rather than a model listing:
 
@@ -141,6 +155,21 @@ The reason each is a real call rather than a model listing:
   browsing is nothing but tool calls. A model that answers without calling the
   tool is reported, not failed — the connection demonstrably works, and how
   strictly a model obeys is the operator's judgement.
+- **Classifiers**: what this role must do is answer quickly *in a shape the
+  parser accepts*. A served, listed, reachable model still fails that by
+  thinking for ten seconds or wrapping its JSON in prose — and in production
+  that failure is silent, because an unreadable verdict reads as "not
+  addressed" and the bot simply stops answering when called. The probe runs the
+  real analyzer prompt and the real verdict parser.
+- **Background jobs**: same reasoning one level up — these must answer in the
+  JSON another job then *stores*. A model that writes a fine paragraph instead
+  produces empty summaries night after night while the job reports success (a
+  day that distils to nothing is a legitimate outcome). The probe runs the real
+  summarizer and shows the topics it parsed.
+
+Both aux probes **report** a poor answer rather than throwing: whether a model
+classifies or summarizes well is the operator's judgement to make from the
+evidence, and only a transport failure is a probe's to fail on.
 
 Results are rendered by one shared component (`ProbeReportView`) from one shared
 shape (`ProbeReport`: a model, a latency, and labelled input/output parts that
@@ -175,12 +204,14 @@ resolved runtime:
 
 | Consumer | Asks for |
 | --- | --- |
-| Reply pipeline | `getLlmRuntime()` (chat), active persona prompt, owner/maintenance policy, timezone |
+| Reply pipeline (and a fired scheduled task) | `getLlmRuntime()` (chat), active persona prompt, owner/maintenance policy, timezone |
 | Every daily scheduler | The run time, the timezone, and whether an LLM is configured |
 | Embedding/image/speech paths | Their role runtime (`getEmbeddingRuntime` …), chat-backend fallback applied |
 | Voice path | `getAudioRuntime()` (STT), chat-model `input_audio` fallback when null |
 | Vision describer | `getVisionRuntime()` — chat backend/model unless overridden |
 | Browser agent | `getBrowserLlmRuntime()` — chat backend/model unless overridden |
+| Addressing / rule match / honesty gate | `getClassifierRuntime()` — chat backend/model unless overridden |
+| Summaries, memory, insights, reflection | `getBackgroundRuntime()` — chat backend/model unless overridden |
 | Telegram bot manager | The bot token |
 | Search fallback | The Tavily key, read at call time |
 

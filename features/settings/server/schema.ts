@@ -6,8 +6,9 @@ import { z } from "zod";
  * Handlers, and the dashboard form.
  *
  * LLM configuration is per **role** (chat, embedding, audio, vision, speech,
- * image generation, browser agent): each role picks a backend from the
- * catalog (`features/backends`) by id — null meaning "use the chat backend" —
+ * image generation, browser agent, classifiers, background jobs): each role
+ * picks a backend from the catalog (`features/backends`) by id — null meaning
+ * "use the chat backend" —
  * and a model. Endpoint URLs and API keys live on the backend rows.
  *
  * The bot token and integration keys are secrets: accepted on input but never
@@ -69,6 +70,14 @@ export const settingsSchema = z.object({
   visionBackendId: backendId.nullable(),
   /** Selected vision model id, or null → the chat model describes media. */
   visionModel: model.nullable(),
+  /** Classifier backend id, or null to use the chat backend. */
+  classifierBackendId: backendId.nullable(),
+  /** Selected classifier model id, or null → the per-message checks run on the chat model. */
+  classifierModel: model.nullable(),
+  /** Background-jobs backend id, or null to use the chat backend. */
+  backgroundBackendId: backendId.nullable(),
+  /** Selected background-jobs model id, or null → the offline jobs run on the chat model. */
+  backgroundModel: model.nullable(),
   /** Browser-agent backend id, or null to use the chat backend. */
   browserBackendId: backendId.nullable(),
   /** Selected browser-agent model id, or null → browsing runs on the chat model. */
@@ -117,6 +126,10 @@ export const updateSettingsSchema = z
     audioTranscriptionMode: transcriptionModeSchema,
     visionBackendId: backendId.nullable(),
     visionModel: model.nullable(),
+    classifierBackendId: backendId.nullable(),
+    classifierModel: model.nullable(),
+    backgroundBackendId: backendId.nullable(),
+    backgroundModel: model.nullable(),
     browserBackendId: backendId.nullable(),
     browserModel: model.nullable(),
     telegramBotToken: botToken.nullable(),

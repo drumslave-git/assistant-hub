@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
-import { getLlmRuntime } from "@/features/settings/server/service";
+import { getBackgroundRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { chatCompletion } from "@/server/llm/client";
 import {
@@ -23,7 +23,7 @@ import { runSelfImprovement } from "./analyze";
 
 /** One incorporation run with the real collaborators, under the advisory lock. */
 async function runIncorporation(ctx?: IntervalRunContext): Promise<string> {
-  const runtime = await getLlmRuntime().catch(() => null);
+  const runtime = await getBackgroundRuntime().catch(() => null);
   if (!runtime) return "LLM not configured";
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
 

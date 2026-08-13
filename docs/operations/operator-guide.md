@@ -44,18 +44,20 @@ time, never an "is the variable set" guess:
 | Trace storage | Opening the current month's file for append — the same operation the flusher performs |
 | Downloads | Creating and removing a file in the downloads directory — the same thing a download does |
 
-Each optional role (embeddings, images, speech, audio, vision, browser agent)
-gets its own card, and a neutral card is **not** a warning:
+Each optional role (embeddings, images, speech, audio, vision, browser agent,
+classifiers, background jobs) gets its own card, and a neutral card is **not** a
+warning:
 
 | Card reads | Means |
 | --- | --- |
 | Connected | The role has its own model and its endpoint was probed |
-| Chat model | The role has no model of its own, so it runs on the chat model ("main by default") — the capability is on, and the chat model must accept that input (audio, images) |
+| Chat model | The role has no model of its own, so it runs on the chat model ("main by default") — the capability is on. For Audio, Vision and Browser agent the chat model must additionally accept that input (audio, images, tool calls); Classifiers and Background jobs are ordinary completions with nothing extra to require |
 | Off | The capability genuinely does not run — no model, and nothing to fall back to |
 | Error | A configured endpoint failed its probe |
 
-Only "Error" is a fault. "Chat model" on the Audio, Vision or Browser agent card
-is the normal state until you give that role a model of its own.
+Only "Error" is a fault. "Chat model" on the Audio, Vision, Browser agent,
+Classifiers or Background jobs card is the normal state until you give that role
+a model of its own.
 
 The two storage cards differ in severity, deliberately. An unwritable **trace**
 directory is an error: settled traces pile up in RAM and are lost on restart, so it
@@ -289,20 +291,33 @@ yt-dlp fails every media page at once, and **Run now** is the fix.
 
 ## Settings (`/settings`)
 
-Nine tabs — one per concern — and **one** Save button that persists every changed
-field regardless of which tab is open.
+One tab per concern, and **one** Save button that persists every changed field
+regardless of which tab is open. The first nine are LLM roles: each picks a
+backend from the catalog (managed on the Backends page) plus a model.
 
 | Tab | Contents |
 | --- | --- |
-| **LLM** | The chat endpoint, key, backend and model every reply runs on |
+| **Chat** | The main model every reply runs on. The one role that must support thinking and tool calls |
 | **Embeddings** | Semantic recall over history summaries and memory search |
 | **Images** | Image generation |
 | **Speech** | Voice replies |
-| **Transcription** | Voice-message speech-to-text (falls back to the chat model when unset) |
+| **Audio** | Voice-message speech-to-text, and how the endpoint takes audio |
+| **Vision** | The describer every photo, video, GIF and sticker goes through |
+| **Browser agent** | The model that plans browser actions |
+| **Classifiers** | The per-message checks: is the bot being addressed, does a standing rule apply, does the drafted reply claim something it did not do |
+| **Background jobs** | The nightly passes: history summaries, memory, analytics insights, self-improvement reflection |
 | **Telegram** | Bot token, owner, maintenance mode |
 | **General** | Timezone, daily jobs run time, browser download cap |
 | **Integrations** | Tavily key — the browsing agent's search fallback |
 | **Security** | Operator password change (its own button and endpoint) |
+
+The last two role tabs are where to spend tuning effort once the bot works.
+**Classifiers** run on every group message before a reply is even considered, so
+they set how quickly the bot reacts at all — a small fast model here is a direct
+speed win and costs nothing in reply quality. **Background jobs** are the
+opposite: nobody waits for them, but what they write is what later replies
+recall, so a slower, more capable or longer-context model belongs there. Both
+run on the chat model until you say otherwise.
 
 Every optional role reuses the chat backend unless given its own, so
 **repointing the chat backend repoints them too**. Saving a backend change
@@ -317,13 +332,17 @@ Every "Test …" button does the role's **real work** and shows you the exchange
 the prompt and the reply plus its reasoning, the phrase and the vector, the
 prompt and the actual picture, the phrase and audio you can play, the silence and
 its transcript, the test image and the description of it, the offered tool and
-whether the model called it. Each is recorded as a trace.
+whether the model called it, the addressing check and the verdict read back out
+of it, the short transcript and the topics distilled from it. Each is recorded as
+a trace.
 
 Use them. They catch what a config check cannot: an embedding model whose vector
 width does not fit the stored columns, a voice name the endpoint silently
 substitutes, an image model that answers with an empty payload, a chat model that
-returns no reasoning when it is supposed to think, or a model that cannot make a
-tool call at all — which breaks browsing and every other tool.
+returns no reasoning when it is supposed to think, a model that cannot make a
+tool call at all — which breaks browsing and every other tool — or one that
+answers a classification in prose, which in production reads as "nobody
+addressed me" and simply stops the bot from replying when called.
 
 Secret fields are write-only. They show as "configured" and their values never leave
 the server; leaving one untouched keeps the stored value.

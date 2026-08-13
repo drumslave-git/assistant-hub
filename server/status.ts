@@ -11,7 +11,9 @@ import { getBackendById } from "@/features/backends/server/repository";
 import { getSettingsRecord } from "@/features/settings/server/repository";
 import {
   getAudioRuntime,
+  getBackgroundRuntime,
   getBrowserLlmRuntime,
+  getClassifierRuntime,
   getEmbeddingRuntime,
   getImageRuntime,
   getSpeechRuntime,
@@ -63,7 +65,7 @@ export interface ModelStatus {
  *   would be a lie about a working feature.
  */
 export interface EndpointStatus {
-  id: "embeddings" | "images" | "speech" | "audio" | "vision" | "browser";
+  id: "embeddings" | "images" | "speech" | "audio" | "vision" | "browser" | "classifier" | "background";
   label: string;
   state: "off" | "inherited" | "ok" | "error";
   detail: string;
@@ -192,19 +194,29 @@ async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> 
   const record = await getSettingsRecord(db).catch(() => null);
   const visionOverridden = Boolean(record?.visionBackendId || record?.visionModel);
   const browserOverridden = Boolean(record?.browserBackendId || record?.browserModel);
+  const classifierOverridden = Boolean(record?.classifierBackendId || record?.classifierModel);
+  const backgroundOverridden = Boolean(record?.backgroundBackendId || record?.backgroundModel);
   const chatModelSet = Boolean(record?.chatBackendId && record?.model);
 
   /**
    * What a role with no dedicated model reports. Running on the chat model is
-   * the feature working as configured, so it is `inherited`, not `off` — but
-   * the modality is the operator's to get right, since a chat model that does
-   * not accept the input fails only when the feature is actually used. With no
+   * the feature working as configured, so it is `inherited`, not `off`. With no
    * chat model there is nothing to fall back to, and the role really is off.
+   *
+   * The inherited detail is per role rather than one sentence: for vision,
+   * audio and browsing it must name the modality the chat model has to accept
+   * (a model that does not fails only when the feature is used, so that is the
+   * operator's to get right), while the classifier and background roles are
+   * ordinary chat completions with nothing extra to require.
    */
-  const fallback = (modality: string, whenOff: string): UnprobedStatus =>
+  const fallback = (inheritedDetail: string, whenOff: string): UnprobedStatus =>
     chatModelSet
-      ? { state: "inherited", detail: `Runs on the chat model, which must accept ${modality}` }
+      ? { state: "inherited", detail: inheritedDetail }
       : { state: "off", detail: whenOff };
+
+  /** The inherited detail for a role that needs a capability of the chat model. */
+  const needsModality = (modality: string) =>
+    `Runs on the chat model, which must accept ${modality}`;
 
   return Promise.all([
     getEmbeddingRuntime(db)
@@ -233,7 +245,10 @@ async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> 
       ),
     probeTranscriptionEndpoint(
       db,
-      fallback("audio", "No STT model and no chat model — voice cannot be transcribed"),
+      fallback(
+        needsModality("audio"),
+        "No STT model and no chat model — voice cannot be transcribed",
+      ),
     ),
     (visionOverridden ? getVisionRuntime(db).catch(() => null) : Promise.resolve(null)).then(
       (runtime) =>
@@ -242,7 +257,10 @@ async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> 
           "Vision",
           visionOverridden
             ? { state: "off", detail: "Not fully configured" }
-            : fallback("images", "No vision model and no chat model — media cannot be described"),
+            : fallback(
+                needsModality("images"),
+                "No vision model and no chat model — media cannot be described",
+              ),
           runtime,
         ),
     ),
@@ -253,7 +271,38 @@ async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> 
           "Browser agent",
           browserOverridden
             ? { state: "off", detail: "Not fully configured" }
-            : fallback("tool calls", "No browser model and no chat model — browsing is off"),
+            : fallback(
+                needsModality("tool calls"),
+                "No browser model and no chat model — browsing is off",
+              ),
+          runtime,
+        ),
+    ),
+    (classifierOverridden ? getClassifierRuntime(db).catch(() => null) : Promise.resolve(null)).then(
+      (runtime) =>
+        probeModelEndpoint(
+          "classifier",
+          "Classifiers",
+          classifierOverridden
+            ? { state: "off", detail: "Not fully configured" }
+            : fallback(
+                "Runs on the chat model — the per-message checks share it",
+                "No classifier model and no chat model — the bot cannot decide it was addressed",
+              ),
+          runtime,
+        ),
+    ),
+    (backgroundOverridden ? getBackgroundRuntime(db).catch(() => null) : Promise.resolve(null)).then(
+      (runtime) =>
+        probeModelEndpoint(
+          "background",
+          "Background jobs",
+          backgroundOverridden
+            ? { state: "off", detail: "Not fully configured" }
+            : fallback(
+                "Runs on the chat model — summaries, memory and insights share it",
+                "No background model and no chat model — the nightly jobs cannot run",
+              ),
           runtime,
         ),
     ),

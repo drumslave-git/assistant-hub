@@ -4,6 +4,7 @@ import type { Message } from "@grammyjs/types";
 
 import {
   getBotPolicy,
+  getClassifierRuntime,
   getLlmRuntime,
   getTimezone,
 } from "@/features/settings/server/service";
@@ -76,7 +77,12 @@ import { VOICE_TURN_NOTE, VOICE_UNAVAILABLE_NOTE } from "@/features/voice/format
 import { synthesizeVoiceReply } from "@/features/voice/server/speak";
 import { ApiError } from "@/lib/api-error";
 import { resolveRequiredLanguage } from "@/lib/language";
-import type { ReasoningMode } from "@/server/llm/backends";
+import {
+  runClassifier,
+  HONESTY_GATE_MAX_TOKENS,
+  HONESTY_GATE_TIMEOUT_MS,
+  type ClassifierBudget,
+} from "@/server/llm/classifier";
 import {
   chatCompletion,
   llmUsageOf,
@@ -94,95 +100,24 @@ import type { TraceRecorder } from "@/server/trace";
 import type { IncomingUpdate, ReplyTransport } from "./transport";
 
 /**
- * Generation bounds for the per-message classification calls (addressing
- * analyzer, addressing verifier, chat rule match). Their answer is a small JSON
- * verdict, but the configured model may be a thinking model — measured on the
- * live bot, unbounded thinking cost up to ~1,000 tokens (14s) per verdict.
+ * Run one per-message classification on the **classifier role** — the addressing
+ * analyzer, its verifier, and the honesty gate below, plus the standing-rule
+ * match further down. The call shape (reasoning off, token budget) is shared
+ * with the settings probe in `server/llm/classifier.ts`; resolved here because
+ * the runtime is read per call, so a role change applies without a restart.
  *
- * The token cap is a hard stop against runaway generation, not the thinking
- * control — {@link CLASSIFIER_REASONING} is that. It stays roomy (3,000) on
- * purpose: a truncated verdict reads as "not addressed", i.e. a missed summons,
- * and a 1,000-token cap truncated 3 of 8 probe calls mid-think
- * (`finish_reason: "length"`, empty content) back when thinking could not be
- * switched off. With reasoning off a verdict costs ~17 tokens, so the cap
- * should now never be reached at all — it is there for the backend that ignores
- * the switch. User decision, 2026-08-01: same model for classifications,
- * thinking capped.
+ * The role falls back to the chat backend and chat model when the operator has
+ * given it neither, so an installation that never touches the Classifiers tab
+ * behaves exactly as it did before the role existed.
  */
-/**
- * What the classifiers ask of a thinking model: nothing.
- *
- * These calls answer with a small JSON verdict — `{"name_match": "absent",
- * "matched_text": null}` — and were measured spending ~180 reasoning tokens to
- * produce 15 tokens of it. Against the live Ollama, on one such prompt with an
- * identical verdict every time:
- *
- * | body                       | completion tokens | latency |
- * | -------------------------- | ----------------- | ------- |
- * | (nothing)                  | 135               | 2269 ms |
- * | `reasoning_effort: "low"`  | 94                | 1784 ms |
- * | `reasoning_effort: "none"` | **17**            | **802 ms** |
- *
- * "low" was what this sent before, on the assumption that it bounded the
- * thinking. It does not — it still thinks, which is why the two gates were 37%
- * of all LLM wall time while already asking for less.
- *
- * The adapter decides which field carries this (`server/llm/backends`), so an
- * endpoint left on the generic backend still gets the conservative "low" it
- * always did; only a named backend gets its measured off switch.
- */
-const CLASSIFIER_REASONING: ReasoningMode = "off";
-const CLASSIFIER_MAX_TOKENS = 3_000;
-
-/**
- * What the honesty gate is allowed to spend before it gives up.
- *
- * Deliberately far below {@link CLASSIFIER_MAX_TOKENS}, because the two
- * classifiers fail in opposite directions. A truncated addressing check is a
- * missed summons — the bot stays silent when it was called — so that one is
- * given room. A truncated honesty gate abstains, and abstaining is exactly the
- * behaviour the app had before the gate existed: the reply goes out as written.
- * Its worst case is therefore pure cost, and cost is what these bound.
- *
- * Sized from this endpoint's own traces: a classifier call of this shape answers
- * in 120–160 completion tokens in 3–5s. The cap is ~5x a normal verdict and the
- * timeout ~4x a normal call, so neither can bite a verdict that was going to
- * arrive; what they cut off is a model that has started circling. It did, on day
- * one (trace `ab4fc127…`, 2026-08-07): 3,000 tokens and 40 seconds on a
- * two-sentence reply, no verdict, on a turn that took 60s in total. The gate
- * abstained correctly and the user still waited for it.
- *
- * The timeout measures the wire, not the in-app queue (see `chatCompletion`), so
- * a busy endpoint does not spend it before the request is even sent.
- */
-const HONESTY_GATE_MAX_TOKENS = 800;
-const HONESTY_GATE_TIMEOUT_MS = 20_000;
-
-/**
- * One classification call against the configured model: no tools, no history, no
- * persona — a single question about a single piece of text, not a conversation.
- * Shared by every classifier the reply path runs (addressing, its verifier, the
- * honesty gate) so they cannot drift apart on model or reasoning effort. Only
- * the budget varies, and only where a caller has a reason — see above.
- */
-async function runClassifier(
-  messages: ChatMessage[],
-  budget?: { maxTokens?: number; timeoutMs?: number },
-) {
-  const runtime = await getLlmRuntime();
+async function classify(messages: ChatMessage[], budget?: ClassifierBudget) {
+  const runtime = await getClassifierRuntime();
   if (!runtime) {
     throw ApiError.serviceUnavailable(
       "LLM is not configured — set the endpoint and model in Settings",
     );
   }
-  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
-  return chatCompletion(conn, {
-    model: runtime.model,
-    messages,
-    maxTokens: budget?.maxTokens ?? CLASSIFIER_MAX_TOKENS,
-    ...(budget?.timeoutMs !== undefined ? { timeoutMs: budget.timeoutMs } : {}),
-    reasoning: CLASSIFIER_REASONING,
-  });
+  return runClassifier(runtime, messages, budget);
 }
 
 /**
@@ -643,14 +578,14 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
       }),
     // Settles a group message that named nobody recognizable but might still be
     // calling the bot by name in another alphabet or an inflected form.
-    analyzeAddressing: overrides?.analyzeAddressing ?? runClassifier,
+    analyzeAddressing: overrides?.analyzeAddressing ?? classify,
     // Checks a drafted reply that called no tool for a claim that something was
     // done (`features/bot-messaging/server/action-claim.ts`). Same call shape as
     // the analyzer above, over the answer instead of the incoming message, on a
     // much tighter budget — a gate that cannot decide quickly is one the user is
     // better off not waiting for.
     checkActionClaim: (messages: ChatMessage[]) =>
-      runClassifier(messages, {
+      classify(messages, {
         maxTokens: HONESTY_GATE_MAX_TOKENS,
         timeoutMs: HONESTY_GATE_TIMEOUT_MS,
       }),
@@ -676,7 +611,10 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             // alone without spending a call.
             const text = messageText.trim();
             if (!text) return null;
-            const runtime = await getLlmRuntime();
+            // Same role as the addressing checks above: one classification of
+            // one message, and the third such call an ordinary group message
+            // can pay for.
+            const runtime = await getClassifierRuntime();
             if (!runtime) return null;
 
             // Every enabled rule is offered, not only the `always` ones: an
@@ -694,15 +632,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
               message: "chat rule match request",
               data: { messages },
             });
-            const result = await chatCompletion(
-              { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
-              {
-                model: runtime.model,
-                messages,
-                maxTokens: CLASSIFIER_MAX_TOKENS,
-                reasoning: CLASSIFIER_REASONING,
-              },
-            );
+            const result = await runClassifier(runtime, messages);
             await replyTrace.event({
               type: "llm_response",
               message: "chat rule match response",

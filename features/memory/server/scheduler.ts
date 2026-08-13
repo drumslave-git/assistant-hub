@@ -2,8 +2,8 @@ import "server-only";
 
 import { getDb } from "@/db/drizzle";
 import {
+  getBackgroundRuntime,
   getEmbeddingRuntime,
-  getLlmRuntime,
   getTimezone,
 } from "@/features/settings/server/service";
 import { currentSummaryDate } from "@/features/history/summary";
@@ -54,7 +54,7 @@ import { countPendingNotes } from "./service";
  */
 async function resolveDeps(): Promise<(ConsolidateDeps & ExtractDeps) | null> {
   const [llm, embedding, timeZone] = await Promise.all([
-    getLlmRuntime().catch(() => null),
+    getBackgroundRuntime().catch(() => null),
     getEmbeddingRuntime().catch(() => null),
     getTimezone().catch(() => "UTC"),
   ]);

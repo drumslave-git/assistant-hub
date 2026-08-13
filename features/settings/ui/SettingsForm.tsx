@@ -24,11 +24,13 @@ import { RoleSection, type RoleSectionLabels } from "./RoleSection";
  * Bot settings editor. Client Component with one tab per concern. The LLM
  * configuration is per **role** — Chat (the main model every reply runs on,
  * which must support thinking and tool calls), Embeddings, Images, Speech,
- * Audio (STT), Vision, and Browser agent — and every role picks a backend from
+ * Audio (STT), Vision, Browser agent, Classifiers (the per-message checks) and
+ * Background jobs (the nightly passes) — and every role picks a backend from
  * the shared catalog (managed on the Backends page) plus a model through a
  * searchable select fed by that backend's live model list. A role without its
- * own backend uses the chat backend; audio/vision/browser additionally fall
- * back to the chat model when none is picked ("main by default").
+ * own backend uses the chat backend; audio/vision/browser/classifier/background
+ * additionally fall back to the chat model when none is picked ("main by
+ * default").
  *
  * One Save button below the tabs persists every changed field regardless of
  * the active tab. Secrets are write-only — shown as "configured" but their
@@ -129,6 +131,14 @@ export function SettingsForm({
   const aud = useRoleConfig({ backendId: initial.audioBackendId, model: initial.audioModel });
   const vis = useRoleConfig({ backendId: initial.visionBackendId, model: initial.visionModel });
   const brw = useRoleConfig({ backendId: initial.browserBackendId, model: initial.browserModel });
+  const cls = useRoleConfig({
+    backendId: initial.classifierBackendId,
+    model: initial.classifierModel,
+  });
+  const bgd = useRoleConfig({
+    backendId: initial.backgroundBackendId,
+    model: initial.backgroundModel,
+  });
   const [speechVoice, setSpeechVoice] = useState(initial.speechVoice ?? "");
   const [audioTranscriptionMode, setAudioTranscriptionMode] = useState(
     initial.audioTranscriptionMode,
@@ -176,6 +186,8 @@ export function SettingsForm({
   const audioProbe = useProbe<ProbeReport>("/api/settings/test-audio");
   const visionProbe = useProbe<ProbeReport>("/api/settings/test-vision");
   const browserProbe = useProbe<ProbeReport>("/api/settings/test-browser");
+  const classifierProbe = useProbe<ProbeReport>("/api/settings/test-classifier");
+  const backgroundProbe = useProbe<ProbeReport>("/api/settings/test-background");
 
   /** Probe body for one role: the form's current (possibly unsaved) values. */
   const roleProbeBody = (role: RoleConfig) => ({
@@ -236,6 +248,20 @@ export function SettingsForm({
         backendKey: "browserBackendId",
         modelKey: "browserModel",
         label: "browser model",
+        listed: true,
+      },
+      {
+        role: cls,
+        backendKey: "classifierBackendId",
+        modelKey: "classifierModel",
+        label: "classifier model",
+        listed: true,
+      },
+      {
+        role: bgd,
+        backendKey: "backgroundBackendId",
+        modelKey: "backgroundModel",
+        label: "background model",
         listed: true,
       },
     ] as const;
@@ -325,6 +351,8 @@ export function SettingsForm({
       aud.applySaved({ backendId: data.audioBackendId, model: data.audioModel });
       vis.applySaved({ backendId: data.visionBackendId, model: data.visionModel });
       brw.applySaved({ backendId: data.browserBackendId, model: data.browserModel });
+      cls.applySaved({ backendId: data.classifierBackendId, model: data.classifierModel });
+      bgd.applySaved({ backendId: data.backgroundBackendId, model: data.backgroundModel });
       setSpeechVoice(data.speechVoice ?? "");
       setAudioTranscriptionMode(data.audioTranscriptionMode);
       setOwnerUserId(data.ownerUserId ?? "");
@@ -605,6 +633,50 @@ export function SettingsForm({
     },
   });
 
+  const classifierTabItem = roleTab({
+    id: "classifier",
+    label: "Classifiers",
+    role: cls,
+    fallsBackToChat: true,
+    labels: {
+      intro:
+        "Classifiers are the small yes/no questions each message costs before and after a reply: is this group message calling the bot, does the word it used really name it, does a standing rule apply, and does the drafted reply claim to have done something it did not. Each answers with a short JSON verdict — no tools, no history, no persona — and they run on every message, so they set how quickly the bot reacts at all. By default they run on the chat model; a small fast model here cuts that delay without touching reply quality.",
+      backendHint: "The host serving the classifications.",
+      modelLabel: "Classifier model",
+      modelHint:
+        "A small, fast model is the right choice — it only has to answer a fixed JSON question, which the test below checks by running the real addressing check. Empty: the chat model is used.",
+      modelPlaceholder: "Use the chat model",
+      testLabel: "Test classifier model",
+    },
+    probe: {
+      state: classifierProbe.state,
+      reset: classifierProbe.reset,
+      run: () => void classifierProbe.run(roleProbeBody(cls)),
+    },
+  });
+
+  const backgroundTabItem = roleTab({
+    id: "background",
+    label: "Background jobs",
+    role: bgd,
+    fallsBackToChat: true,
+    labels: {
+      intro:
+        "Background jobs are the offline passes nobody waits for: the nightly history summaries, memory extraction and consolidation, analytics insights, and the bot's reflection on feedback. They read long transcripts and must answer in a structured shape that later replies read back, so this is the role for a capable or long-context model — it costs latency no one is waiting on. By default they run on the chat model.",
+      backendHint: "The host serving the background jobs' chat completions.",
+      modelLabel: "Background model",
+      modelHint:
+        "The model that summarizes and extracts. It must return the JSON these jobs store — the test below runs the real summarizer over a short transcript and shows the topics it produced. Empty: the chat model is used.",
+      modelPlaceholder: "Use the chat model",
+      testLabel: "Test background model",
+    },
+    probe: {
+      state: backgroundProbe.state,
+      reset: backgroundProbe.reset,
+      run: () => void backgroundProbe.run(roleProbeBody(bgd)),
+    },
+  });
+
   const telegramTab = (
     <div className="space-y-5">
       <p className="text-sm text-muted">
@@ -770,6 +842,8 @@ export function SettingsForm({
     audioTabItem,
     visionTabItem,
     browserTabItem,
+    classifierTabItem,
+    backgroundTabItem,
     { id: "telegram", label: "Telegram", content: telegramTab },
     { id: "general", label: "General", content: generalTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },

@@ -16,8 +16,10 @@ import { getSettingsRecord } from "./repository";
 import { updateSettingsSchema, type ProbeReport } from "./schema";
 import {
   getAudioRuntime,
+  getBackgroundRuntime,
   getBotPolicy,
   getBrowserLlmRuntime,
+  getClassifierRuntime,
   getDailyJobsRunTime,
   getEmbeddingRuntime,
   getImageRuntime,
@@ -28,8 +30,10 @@ import {
   getVisionRuntime,
   getWebSearchApiKey,
   testAudio,
+  testBackground,
   testBrowser,
   testChat,
+  testClassifier,
   testEmbeddings,
   testImages,
   testSpeech,
@@ -140,6 +144,10 @@ describe("getSettings", () => {
       audioTranscriptionMode: "transcriptions",
       visionBackendId: null,
       visionModel: null,
+      classifierBackendId: null,
+      classifierModel: null,
+      backgroundBackendId: null,
+      backgroundModel: null,
       browserBackendId: null,
       browserModel: null,
       telegramBotTokenConfigured: false,
@@ -400,6 +408,53 @@ describe("role runtimes", () => {
     const gpuId = await seedBackend(ctx, { name: "GPU", baseUrl: "https://gpu.example/v1" });
     await updateSettings({ browserBackendId: gpuId, browserModel: "qwen-long" }, trigger, ctx.db);
     expect(await getBrowserLlmRuntime(ctx.db)).toMatchObject({
+      baseUrl: "https://gpu.example/v1",
+      model: "qwen-long",
+    });
+  });
+
+  it("classifier and background roles fall back to chat, then take their own model", async () => {
+    // Unconfigured chat means neither aux role resolves either: they have
+    // nothing to inherit.
+    expect(await getClassifierRuntime(ctx.db)).toBeNull();
+    expect(await getBackgroundRuntime(ctx.db)).toBeNull();
+
+    const chatId = await seedBackend(ctx, {
+      name: "Main",
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+      type: "vllm",
+    });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+
+    // The whole point of the default: an installation that never opens these
+    // tabs behaves exactly as it did before the roles existed.
+    expect(await getClassifierRuntime(ctx.db)).toEqual({
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+      model: "gemma",
+      backend: "vllm",
+    });
+    expect(await getBackgroundRuntime(ctx.db)).toMatchObject({ model: "gemma" });
+
+    // A small fast model for the per-message checks, on the same host.
+    await updateSettings({ classifierModel: "qwen-0.5b" }, trigger, ctx.db);
+    expect(await getClassifierRuntime(ctx.db)).toMatchObject({
+      baseUrl: "https://llm.example/v1",
+      model: "qwen-0.5b",
+    });
+    // …which must not drag the background jobs (or replies) along with it.
+    expect(await getBackgroundRuntime(ctx.db)).toMatchObject({ model: "gemma" });
+    expect(await getLlmRuntime(ctx.db)).toMatchObject({ model: "gemma" });
+
+    // A long-context model on another host for the nightly work.
+    const gpuId = await seedBackend(ctx, { name: "GPU", baseUrl: "https://gpu.example/v1" });
+    await updateSettings(
+      { backgroundBackendId: gpuId, backgroundModel: "qwen-long" },
+      trigger,
+      ctx.db,
+    );
+    expect(await getBackgroundRuntime(ctx.db)).toMatchObject({
       baseUrl: "https://gpu.example/v1",
       model: "qwen-long",
     });
@@ -782,6 +837,97 @@ describe("connection probes", () => {
 
   it("testBrowser rejects cleanly when nothing resolves", async () => {
     await expect(testBrowser({}, trigger, ctx.db)).rejects.toThrow(/browser-agent model/i);
+  });
+
+  it("testClassifier runs the real addressing check and reports the parsed verdict", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    // No classifier model: the probe must exercise the chat-model fallback,
+    // since that is what the reply path will classify with.
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    chatCompletionMock.mockResolvedValue(
+      completion('{"name_match": "exact", "matched_text": "Zylbot"}', "gemma"),
+    );
+
+    const probe = await testClassifier({}, trigger, ctx.db);
+    expect(probe.model).toBe("gemma");
+    expect(partText(probe, "output", "Parsed verdict")).toMatch(/^addressed — cited "Zylbot"/);
+
+    // The prompt must be the analyzer's real one, not a probe-only imitation:
+    // that is what makes a pass mean the reply path will work.
+    const [, input] = chatCompletionMock.mock.calls[0];
+    expect(input.messages[0].content).toMatch(/name_match/);
+    expect(input.messages.at(-1)?.content).toMatch(/Zylbot, can you check the schedule/);
+    // Thinking off and a token cap — the shared classifier call bounds.
+    expect(input.reasoning).toBe("off");
+    expect(input.maxTokens).toBe(3_000);
+  });
+
+  it("testClassifier reports an unreadable verdict rather than passing it off", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    // Prose instead of JSON — the silent production failure this probe exists
+    // to surface (an unreadable verdict reads as "not addressed").
+    chatCompletionMock.mockResolvedValue(completion("Yes, they are talking to the bot.", "gemma"));
+
+    const probe = await testClassifier({}, trigger, ctx.db);
+    expect(partText(probe, "output", "Parsed verdict")).toMatch(
+      /not addressed — unreadable analyzer answer/,
+    );
+    expect(partText(probe, "output", "Raw answer")).toBe("Yes, they are talking to the bot.");
+  });
+
+  it("testClassifier rejects cleanly when nothing resolves", async () => {
+    await expect(testClassifier({}, trigger, ctx.db)).rejects.toThrow(/classifier model/i);
+  });
+
+  it("testBackground runs the real summarizer and reports the topics it parsed", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    const gpuId = await seedBackend(ctx, { name: "GPU", baseUrl: "https://gpu.example/v1" });
+    await updateSettings(
+      { chatBackendId: chatId, model: "gemma", backgroundBackendId: gpuId, backgroundModel: "qwen-long" },
+      trigger,
+      ctx.db,
+    );
+    chatCompletionMock.mockResolvedValue(
+      completion(
+        '{"topics": [{"content": "Ada and Bo debugged the staging deploy timeout.", "message_ids": [101, 102]}]}',
+        "qwen-long",
+      ),
+    );
+
+    const probe = await testBackground({}, trigger, ctx.db);
+    expect(probe.model).toBe("qwen-long");
+    expect(partText(probe, "output", "Topics parsed")).toBe(
+      "1. Ada and Bo debugged the staging deploy timeout. [#101, #102]",
+    );
+
+    const [conn, input] = chatCompletionMock.mock.calls[0];
+    // The role's own backend, not the chat one it could have inherited.
+    expect(conn.baseUrl).toBe("https://gpu.example/v1");
+    expect(input.model).toBe("qwen-long");
+    // The real summarizer prompt over the real transcript format, at the
+    // priority the nightly jobs run at.
+    expect(input.messages[0].content).toMatch(/compress one day of chat history/i);
+    expect(input.messages[1].content).toMatch(/\[#101\]/);
+    expect(input.priority).toBe("background");
+  });
+
+  it("testBackground reports zero topics rather than calling prose a pass", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    // A fine paragraph and no JSON — which the nightly job would store as an
+    // empty day, in silence.
+    chatCompletionMock.mockResolvedValue(
+      completion("They talked about a deploy and moved a meeting.", "gemma"),
+    );
+
+    const probe = await testBackground({}, trigger, ctx.db);
+    expect(partText(probe, "output", "Topics parsed")).toMatch(/none/i);
+    expect(partText(probe, "output", "Raw answer")).toMatch(/moved a meeting/);
+  });
+
+  it("testBackground rejects cleanly when nothing resolves", async () => {
+    await expect(testBackground({}, trigger, ctx.db)).rejects.toThrow(/background model/i);
   });
 });
 

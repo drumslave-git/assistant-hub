@@ -12,15 +12,24 @@ the same client serves both the Settings probe and the production path.
 
 | Client | Endpoint | Used by |
 | --- | --- | --- |
-| `client.ts` | `/v1/chat/completions`, `/v1/models` | Replies, addressing analyzer, every LLM background job, the browser agent |
+| `client.ts` | `/v1/chat/completions`, `/v1/models` | Replies, the per-message classifications, every LLM background job, the browser agent |
 | `embeddings.ts` | `/v1/embeddings` | History summary embeddings, user-memory embeddings |
 | `images.ts` | `/v1/images/generations` | The `image_generate` tool |
 | `speech.ts` | `/v1/audio/speech` | Voice replies |
 | `transcription.ts` | `/v1/audio/transcriptions` | Voice-message transcription |
 
-Each of the four non-chat clients falls back to the core LLM connection when its
-own base URL is unset — an embedding model usually comes from a different model
-and sometimes a different host, but often enough the same one serves both.
+Each of the four non-chat clients falls back to the chat role's backend when the
+role has none of its own — an embedding model usually comes from a different
+model and sometimes a different host, but often enough the same one serves both.
+
+`classifier.ts` is not a sixth client but a call *shape* over `client.ts`: the
+reasoning mode and token budget every per-message classification uses (addressing
+analyzer and verifier, chat-rule match, honesty gate). It lives on its own so the
+reply path and the Settings probe cannot drift apart on what a classification
+costs — and so the numbers, all of which were measured, are written down once.
+Which model answers them is the **classifier role** (see
+[Configuration](../configuration.md#llm-roles)); the shape is the same wherever
+it runs.
 
 Notable constraints, each learned the hard way:
 

@@ -614,6 +614,55 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /api/settings/test-classifier:
+    post:
+      tags: [settings]
+      summary: Probe the classifier role
+      description: |
+        Runs the real addressing check — the same prompt, call bounds and verdict
+        parser the bot uses on every undecided group message — over a synthetic
+        message naming a synthetic bot, and reports the verdict parsed from the
+        answer. A model listing cannot say whether a model answers a
+        classification quickly and in a shape the parser accepts, which is all
+        this role does; in production an unreadable verdict silently reads as
+        "not addressed". Resolves through the classifier runtime, including its
+        fallback to the chat model. A wrong or unreadable verdict is reported,
+        not an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleProbeInput" }
+      responses:
+        "200": { $ref: "#/components/responses/ProbeResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /api/settings/test-background:
+    post:
+      tags: [settings]
+      summary: Probe the background-jobs role
+      description: |
+        Runs the real history summarizer — the same system prompt, transcript
+        format and topic parser the nightly job uses — over a tiny synthetic
+        chat-day, at background priority, and reports the topics parsed from the
+        answer. A model listing cannot say whether a model returns the structured
+        output these jobs store; prose instead of JSON produces empty summaries
+        night after night while the job reports success. Resolves through the
+        background runtime, including its fallback to the chat model. Zero topics
+        is reported, not an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleProbeInput" }
+      responses:
+        "200": { $ref: "#/components/responses/ProbeResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   # ────────────────────────── directory ──────────────────────────
   /api/users:
     get:
@@ -2217,6 +2266,10 @@ components:
           visionModel,
           browserBackendId,
           browserModel,
+          classifierBackendId,
+          classifierModel,
+          backgroundBackendId,
+          backgroundModel,
           telegramBotTokenConfigured,
           webSearchConfigured,
           ownerUserId,
@@ -2249,6 +2302,18 @@ components:
         browserModel:
           type: [string, "null"]
           description: Null → the browser agent thinks on the chat model.
+        classifierBackendId: { type: [string, "null"] }
+        classifierModel:
+          type: [string, "null"]
+          description: >-
+            Null → the per-message checks (addressing analyzer and verifier,
+            chat-rule match, honesty gate) run on the chat model.
+        backgroundBackendId: { type: [string, "null"] }
+        backgroundModel:
+          type: [string, "null"]
+          description: >-
+            Null → the offline jobs (history summaries, memory, analytics
+            insights, self-improvement reflection) run on the chat model.
         telegramBotTokenConfigured: { type: boolean }
         webSearchConfigured:
           type: boolean
@@ -2286,6 +2351,10 @@ components:
         visionModel: { type: [string, "null"], maxLength: 200 }
         browserBackendId: { type: [string, "null"], maxLength: 100 }
         browserModel: { type: [string, "null"], maxLength: 200 }
+        classifierBackendId: { type: [string, "null"], maxLength: 100 }
+        classifierModel: { type: [string, "null"], maxLength: 200 }
+        backgroundBackendId: { type: [string, "null"], maxLength: 100 }
+        backgroundModel: { type: [string, "null"], maxLength: 200 }
         telegramBotToken: { type: [string, "null"], maxLength: 200 }
         tavilyApiKey: { type: [string, "null"], maxLength: 500 }
         ownerUserId:

@@ -11,6 +11,16 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { LlmBackendId } from "@/lib/llm-backend";
 import type { TraceTrigger } from "@/lib/trace";
+import {
+  buildAnalyzerMessages,
+  parseAnalyzerVerdict,
+} from "@/features/bot-messaging/server/address-analyzer";
+import {
+  buildSummaryPrompt,
+  parseSummaryTopics,
+  SUMMARY_SYSTEM,
+  type SummarizableMessage,
+} from "@/features/history/summary";
 import { buildDescribeMessages } from "@/features/vision/server/describe";
 import {
   chatCompletion,
@@ -19,6 +29,7 @@ import {
   type ChatMessage,
 } from "@/server/llm/client";
 import { readReasoningFor } from "@/server/llm/backends";
+import { runClassifier } from "@/server/llm/classifier";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import { probeEmbeddings, type EmbeddingRuntime } from "@/server/llm/embeddings";
 import { probeImages, type ImageRuntime } from "@/server/llm/images";
@@ -46,10 +57,11 @@ import type {
 /**
  * Settings domain service — the boundary the Route Handlers and Server
  * Components call. LLM configuration is per **role** (chat, embedding, audio,
- * vision, speech, image generation, browser agent): each role references a
- * backend from the catalog (`features/backends`) and picks a model; a null
- * backend id means "use the chat backend", and for the audio/vision/browser
- * roles a null model additionally means "use the chat model" (main by default).
+ * vision, speech, image generation, browser agent, classifiers, background
+ * jobs): each role references a backend from the catalog (`features/backends`)
+ * and picks a model; a null backend id means "use the chat backend", and for
+ * the audio/vision/browser/classifier/background roles a null model
+ * additionally means "use the chat model" (main by default).
  *
  * Reads never expose secrets. Writes and connection tests are recorded as
  * traces; secret values are redacted from trace data.
@@ -74,6 +86,10 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     audioTranscriptionMode: record?.audioTranscriptionMode ?? "transcriptions",
     visionBackendId: record?.visionBackendId ?? null,
     visionModel: record?.visionModel ?? null,
+    classifierBackendId: record?.classifierBackendId ?? null,
+    classifierModel: record?.classifierModel ?? null,
+    backgroundBackendId: record?.backgroundBackendId ?? null,
+    backgroundModel: record?.backgroundModel ?? null,
     browserBackendId: record?.browserBackendId ?? null,
     browserModel: record?.browserModel ?? null,
     telegramBotTokenConfigured: Boolean(record?.telegramBotToken),
@@ -310,10 +326,29 @@ export async function getAudioRuntime(
 }
 
 /**
+ * Resolve a **"main by default"** role: one that falls back to the chat backend
+ * and the chat model per unset half, so it is null only when nothing resolves
+ * to a full connection. Vision, browser agent, classifiers and background jobs
+ * all work this way — they are ordinary chat completions that the operator may
+ * want to run somewhere else, not capabilities that switch off without a model
+ * of their own (that shape is {@link toEmbeddingRuntime}'s).
+ */
+async function toInheritingRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+  modelKey: "visionModel" | "browserModel" | "classifierModel" | "backgroundModel",
+  backendKey: "visionBackendId" | "browserBackendId" | "classifierBackendId" | "backgroundBackendId",
+): Promise<LlmRuntime | null> {
+  const model = record?.[modelKey] ?? record?.model ?? null;
+  if (!record || !model) return null;
+  const backend = await resolveRoleBackend(db, record, record[backendKey]);
+  if (!backend) return null;
+  return { baseUrl: backend.baseUrl, apiKey: backend.apiKey, model, backend: backend.type };
+}
+
+/**
  * Server-only: the vision connection + model — the describer every photo,
- * video frame, and sticker goes through. Falls back to the chat backend and
- * chat model per unset half ("main by default"), so it is null only when
- * nothing resolves to a full connection.
+ * video frame, and sticker goes through.
  */
 export async function getVisionRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
   return toVisionRuntime(db, await getSettingsRecord(db));
@@ -324,18 +359,10 @@ async function toVisionRuntime(
   db: DrizzleDb,
   record: SettingsRecord | null,
 ): Promise<LlmRuntime | null> {
-  const model = record?.visionModel ?? record?.model ?? null;
-  if (!record || !model) return null;
-  const backend = await resolveRoleBackend(db, record, record.visionBackendId);
-  if (!backend) return null;
-  return { baseUrl: backend.baseUrl, apiKey: backend.apiKey, model, backend: backend.type };
+  return toInheritingRuntime(db, record, "visionModel", "visionBackendId");
 }
 
-/**
- * Server-only: the browser-agent LLM connection + model. Falls back to the chat
- * backend and chat model per unset half ("main by default"), so it is null only
- * when nothing resolves to a full connection.
- */
+/** Server-only: the browser-agent LLM connection + model. */
 export async function getBrowserLlmRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
   return toBrowserRuntime(db, await getSettingsRecord(db));
 }
@@ -345,11 +372,53 @@ async function toBrowserRuntime(
   db: DrizzleDb,
   record: SettingsRecord | null,
 ): Promise<LlmRuntime | null> {
-  const model = record?.browserModel ?? record?.model ?? null;
-  if (!record || !model) return null;
-  const backend = await resolveRoleBackend(db, record, record.browserBackendId);
-  if (!backend) return null;
-  return { baseUrl: backend.baseUrl, apiKey: backend.apiKey, model, backend: backend.type };
+  return toInheritingRuntime(db, record, "browserModel", "browserBackendId");
+}
+
+/**
+ * Server-only: the connection the **per-message classifications** run on — the
+ * addressing analyzer and its verifier, the honesty gate over a drafted reply,
+ * and the standing-rule match. One question about one piece of text, answered
+ * as a small JSON verdict, with no tools, history or persona
+ * (`server/llm/classifier.ts` owns the call bounds).
+ *
+ * These are the reply path's latency floor: every group message pays an
+ * addressing check plus a rule match before a reply is even considered, so this
+ * is the role to point at a small fast model. Null only when the chat role it
+ * falls back to is unconfigured too.
+ */
+export async function getClassifierRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
+  return toClassifierRuntime(db, await getSettingsRecord(db));
+}
+
+/** The classifier resolver behind {@link getClassifierRuntime}, shared with the probe. */
+async function toClassifierRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<LlmRuntime | null> {
+  return toInheritingRuntime(db, record, "classifierModel", "classifierBackendId");
+}
+
+/**
+ * Server-only: the connection the **offline jobs** run on — history
+ * summarization, memory extraction and consolidation, analytics insights, and
+ * self-improvement reflection. Long transcripts in, structured output out, at
+ * background priority: nobody is waiting, but what these write is what later
+ * replies recall, so quality matters more than latency here.
+ *
+ * Deliberately *not* used by anything a person is waiting on: a scheduled task
+ * fires a real chat reply and stays on the chat role.
+ */
+export async function getBackgroundRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
+  return toBackgroundRuntime(db, await getSettingsRecord(db));
+}
+
+/** The background resolver behind {@link getBackgroundRuntime}, shared with the probe. */
+async function toBackgroundRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<LlmRuntime | null> {
+  return toInheritingRuntime(db, record, "backgroundModel", "backgroundBackendId");
 }
 
 /**
@@ -425,6 +494,8 @@ const ROLE_FIELDS = [
   { label: "audio", modelKey: "audioModel", backendKey: "audioBackendId" },
   { label: "vision", modelKey: "visionModel", backendKey: "visionBackendId" },
   { label: "browser", modelKey: "browserModel", backendKey: "browserBackendId" },
+  { label: "classifier", modelKey: "classifierModel", backendKey: "classifierBackendId" },
+  { label: "background", modelKey: "backgroundModel", backendKey: "backgroundBackendId" },
 ] as const;
 
 /**
@@ -1344,6 +1415,249 @@ export async function testBrowser(
   );
 }
 
+/**
+ * Short bound for the classifier probe. Deliberately tight: this role exists to
+ * be fast, and a verdict that takes longer than this is a finding, not a wait
+ * worth extending.
+ */
+const CLASSIFIER_PROBE_TIMEOUT_MS = 30_000;
+
+/**
+ * The synthetic bot the classifier probe judges against. Not the operator's own
+ * identity: the probe must give the same answer on every installation, and the
+ * real display name may be a word that legitimately appears in ordinary
+ * sentences, which would make a correct verdict look wrong.
+ */
+const CLASSIFIER_PROBE_BOT = { id: 0, username: "probe_bot", displayName: "Zylbot" };
+
+/** A group message that plainly addresses {@link CLASSIFIER_PROBE_BOT} by name. */
+const CLASSIFIER_PROBE_MESSAGE = "Zylbot, can you check the schedule for tomorrow?";
+
+/**
+ * Probe the classifier role by running the **real addressing check** — the same
+ * prompt builder, call bounds and verdict parser the bot runs on every
+ * undecided group message — over a synthetic message that names a synthetic
+ * bot, and report the verdict it produced.
+ *
+ * A real classification rather than a model listing, for the reason this role
+ * exists: what it must do is answer a small JSON question quickly and in a
+ * shape the parser accepts. A model can be served, listed and reachable and
+ * still fail every one of those — by thinking for ten seconds, by wrapping the
+ * JSON in prose, or by emitting no verdict at all — and each of those failures
+ * is silent in production (an unreadable verdict reads as "not addressed", so
+ * the bot simply stops answering when called).
+ *
+ * The expected verdict is *addressed*. A different verdict is reported, not
+ * thrown: whether a model classifies well is the operator's judgement to make
+ * from the evidence, and only a transport failure is this probe's to fail on.
+ */
+export async function testClassifier(
+  input: TestRoleConnection,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<ProbeReport> {
+  const record = await getSettingsRecord(db);
+  const merged = mergeRoleInput(record, input, {
+    backendKey: "classifierBackendId",
+    modelKey: "classifierModel",
+  });
+  const runtime = await toClassifierRuntime(db, merged);
+
+  return withTrace(
+    {
+      feature: FEATURE.id,
+      action: "test-classifier",
+      trigger,
+      inputSummary: merged.classifierModel ?? merged.model ?? "(no model)",
+    },
+    async (trace) => {
+      if (!runtime) {
+        throw ApiError.badRequest(
+          "Choose a classifier model, or configure the chat role it falls back to.",
+        );
+      }
+      const startedAt = Date.now();
+      const messages = buildAnalyzerMessages({
+        bot: CLASSIFIER_PROBE_BOT,
+        chatType: "supergroup",
+        text: CLASSIFIER_PROBE_MESSAGE,
+      });
+      await trace.event({
+        type: "external_call",
+        message: `POST ${runtime.baseUrl} /chat/completions (classification)`,
+        data: { model: runtime.model, messages },
+      });
+      const completed = await runClassifier(runtime, messages, {
+        timeoutMs: CLASSIFIER_PROBE_TIMEOUT_MS,
+      });
+      await trace.event({
+        type: "output",
+        message: "classifier answered the addressing check",
+        // The provider's raw response body, verbatim (full-raw-bodies rule).
+        data: completed.responseBody ?? { content: completed.content },
+      });
+      const verdict = parseAnalyzerVerdict(completed.content, { text: CLASSIFIER_PROBE_MESSAGE });
+      const result = report(
+        runtime.model,
+        startedAt,
+        [
+          { kind: "text", label: "Bot display name", text: CLASSIFIER_PROBE_BOT.displayName },
+          { kind: "text", label: "Message to classify", text: CLASSIFIER_PROBE_MESSAGE },
+        ],
+        [
+          { kind: "text", label: "Raw answer", text: completed.content.trim() || "(empty)" },
+          {
+            kind: "text",
+            label: "Parsed verdict",
+            text: verdict.addressed
+              ? `addressed — cited "${verdict.matchedText}" (expected: addressed)`
+              : `not addressed — ${verdict.reason} (expected: addressed)`,
+          },
+        ],
+      );
+      await trace.succeed({
+        outputSummary: verdict.addressed
+          ? `${runtime.model} classified the probe message as addressed`
+          : `${runtime.model} answered, but the verdict was "${verdict.reason}"`,
+      });
+      return result;
+    },
+  );
+}
+
+/**
+ * Bound for the background probe. Wide, unlike every other probe here: this
+ * role's calls are the slow ones by design (long transcripts, structured
+ * output), and its model may well be a large one the operator accepts waiting
+ * for at night.
+ */
+const BACKGROUND_PROBE_TIMEOUT_MS = 120_000;
+
+/** A tiny synthetic chat-day for the background probe to distil. */
+const BACKGROUND_PROBE_TRANSCRIPT: SummarizableMessage[] = [
+  {
+    telegramMessageId: 101,
+    role: "user",
+    content: "The staging deploy is failing again — the migration step times out.",
+    label: "Ada",
+    userId: null,
+    sentAt: "2026-01-01T10:00:00.000Z",
+  },
+  {
+    telegramMessageId: 102,
+    role: "user",
+    content: "I'll raise the statement timeout and rerun it after lunch.",
+    label: "Bo",
+    userId: null,
+    sentAt: "2026-01-01T10:02:00.000Z",
+  },
+  {
+    telegramMessageId: 103,
+    role: "user",
+    content: "Also we agreed to move the weekly sync to Thursday.",
+    label: "Ada",
+    userId: null,
+    sentAt: "2026-01-01T10:05:00.000Z",
+  },
+];
+
+/**
+ * Probe the background role by running the **real summarizer** — the same
+ * system prompt, transcript format and topic parser the nightly history job
+ * uses — over a tiny synthetic chat-day, and report the topics it produced.
+ *
+ * A real pass rather than a listing, because what this role must do is not
+ * "answer" but "answer in a shape another job then stores": every topic here
+ * becomes a row that later replies recall. A model that writes a fine paragraph
+ * and no JSON, or invents message ids that were never in the transcript,
+ * produces empty or misleading summaries night after night in total silence —
+ * the job reports success either way, since a day that distils to nothing is a
+ * legitimate outcome.
+ *
+ * Reported, not thrown, on a poor answer — same reasoning as the classifier
+ * probe. Zero topics is a legible result, and the raw answer is shown next to
+ * it so the operator can see whether the model wrote prose instead of JSON.
+ */
+export async function testBackground(
+  input: TestRoleConnection,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<ProbeReport> {
+  const record = await getSettingsRecord(db);
+  const merged = mergeRoleInput(record, input, {
+    backendKey: "backgroundBackendId",
+    modelKey: "backgroundModel",
+  });
+  const runtime = await toBackgroundRuntime(db, merged);
+
+  return withTrace(
+    {
+      feature: FEATURE.id,
+      action: "test-background",
+      trigger,
+      inputSummary: merged.backgroundModel ?? merged.model ?? "(no model)",
+    },
+    async (trace) => {
+      if (!runtime) {
+        throw ApiError.badRequest(
+          "Choose a background model, or configure the chat role it falls back to.",
+        );
+      }
+      const startedAt = Date.now();
+      const prompt = buildSummaryPrompt("2026-01-01", BACKGROUND_PROBE_TRANSCRIPT);
+      const messages: ChatMessage[] = [
+        { role: "system", content: SUMMARY_SYSTEM },
+        { role: "user", content: prompt },
+      ];
+      await trace.event({
+        type: "external_call",
+        message: `POST ${runtime.baseUrl} /chat/completions (summarize)`,
+        data: { model: runtime.model, messages },
+      });
+      const completed = await chatCompletion(
+        { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
+        {
+          model: runtime.model,
+          messages,
+          timeoutMs: BACKGROUND_PROBE_TIMEOUT_MS,
+          // The priority the real jobs run at, so the probe queues behind live
+          // replies exactly as they do.
+          priority: "background",
+        },
+      );
+      await trace.event({
+        type: "output",
+        message: "background model summarized the probe transcript",
+        // The provider's raw response body, verbatim (full-raw-bodies rule).
+        data: completed.responseBody ?? { content: completed.content },
+      });
+      const topics = parseSummaryTopics(completed.content);
+      const result = report(
+        runtime.model,
+        startedAt,
+        [{ kind: "text", label: "Transcript", text: prompt }],
+        [
+          {
+            kind: "text",
+            label: "Topics parsed",
+            text:
+              topics.length > 0
+                ? topics
+                    .map((t, i) => `${i + 1}. ${t.content} [#${t.messageIds.join(", #")}]`)
+                    .join("\n")
+                : "(none — the answer held no usable topics)",
+          },
+          { kind: "text", label: "Raw answer", text: completed.content.trim() || "(empty)" },
+        ],
+      );
+      await trace.succeed({
+        outputSummary: `${runtime.model} produced ${topics.length} topic(s) from the probe transcript`,
+      });
+      return result;
+    },
+  );
+}
+
 /** Field defaults for merging a partial probe input onto a never-written settings row. */
 const EMPTY_RECORD: SettingsRecord = {
   chatBackendId: null,
@@ -1360,6 +1674,10 @@ const EMPTY_RECORD: SettingsRecord = {
   audioTranscriptionMode: "transcriptions",
   visionBackendId: null,
   visionModel: null,
+  classifierBackendId: null,
+  classifierModel: null,
+  backgroundBackendId: null,
+  backgroundModel: null,
   browserBackendId: null,
   browserModel: null,
   activePersonalityId: null,
