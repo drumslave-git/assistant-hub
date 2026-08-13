@@ -4,7 +4,7 @@ import { ApiError } from "@/lib/api-error";
 
 import { generateImage } from "ai";
 
-import { listModels, toLlmError, type LlmConnection } from "./client";
+import { toLlmError, type LlmConnection } from "./client";
 import { createProvider } from "./provider";
 
 /**
@@ -29,8 +29,18 @@ import { createProvider } from "./provider";
  */
 const IMAGE_TIMEOUT_MS = 300_000;
 
-/** Short timeout for the Settings probe, which only lists models. */
-const PROBE_TIMEOUT_MS = 15_000;
+/**
+ * Bound on the Settings probe. Generous, because it now renders a real image
+ * and a diffusion model legitimately takes tens of seconds — but far short of
+ * the tool path's deadline, since an operator is watching this one.
+ */
+const PROBE_TIMEOUT_MS = 120_000;
+
+/** The probe renders at this size: the smallest square every endpoint accepts. */
+const PROBE_IMAGE_SIZE: ImageSize = [512, 512];
+
+/** What the probe asks for — short, unambiguous, and cheap to render. */
+const PROBE_PROMPT = "A single red circle centered on a white background.";
 
 /** Image dimensions as [width, height] in pixels. */
 export type ImageSize = [number, number];
@@ -46,6 +56,8 @@ export interface ImageRuntime extends LlmConnection {
 export interface GenerateImagesInput {
   prompt: string;
   size?: ImageSize;
+  /** Wire deadline; defaults to the generous tool-path bound. */
+  timeoutMs?: number;
 }
 
 /**
@@ -69,7 +81,7 @@ export async function generateImages(
       // tool call rather than a page render — so the deadline is generous, and
       // the retry is the caller's to decide, not a silent second render.
       maxRetries: 0,
-      abortSignal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
+      abortSignal: AbortSignal.timeout(input.timeoutMs ?? IMAGE_TIMEOUT_MS),
     });
     // `base64` is what the callers store and send; the SDK exposes the same
     // bytes as `uint8Array`, so no `response_format` needs requesting — it
@@ -84,33 +96,31 @@ export async function generateImages(
   }
 }
 
-/** What a connection test learned about the configured image endpoint. */
+/** What the image probe asked for and what came back. */
 export interface ImageProbe {
   model: string;
-  /** How many models the endpoint advertises (context for the operator). */
-  modelCount: number;
+  /** The prompt the probe sent, so the operator can judge the result against it. */
+  prompt: string;
+  /** The generated image, base64-encoded. */
+  imageBase64: string;
 }
 
 /**
- * Real probe of the image configuration: calls the endpoint's model listing and
- * checks the configured model is actually served by it. Proves the host is
- * reachable, the key is accepted, and the model id is not a typo.
+ * Real probe of the image configuration: actually generates a small image from
+ * a fixed prompt and hands back the bytes.
  *
- * Deliberately does **not** generate an image. Unlike the embedding probe — where
- * a real call is the only way to learn the vector width, which silently corrupts
- * inserts if wrong — nothing about a generated image can only be learned by
- * generating one, and a diffusion model can spend minutes on it. A Settings
- * button that hangs for two minutes teaches the operator to stop pressing it.
+ * It used to only list models, on the reasoning that nothing about a generated
+ * image can *only* be learned by generating one. That was wrong in the way that
+ * matters: a listed model still fails on the size it is asked for, returns a URL
+ * the provider then 404s, or answers with an empty payload — all of which the
+ * listing happily calls fine and the chat only discovers when a user asks for a
+ * picture. The operator asked to see the picture; seeing it is the proof.
  */
 export async function probeImages(runtime: ImageRuntime): Promise<ImageProbe> {
-  const models = await listModels(runtime, PROBE_TIMEOUT_MS);
-  if (!models.includes(runtime.model)) {
-    throw ApiError.badRequest(
-      `Image model "${runtime.model}" is not served by ${runtime.baseUrl}. ` +
-        (models.length > 0
-          ? `Available models: ${models.slice(0, 10).join(", ")}${models.length > 10 ? ", …" : ""}.`
-          : "The endpoint advertises no models."),
-    );
-  }
-  return { model: runtime.model, modelCount: models.length };
+  const [imageBase64] = await generateImages(runtime, {
+    prompt: PROBE_PROMPT,
+    size: PROBE_IMAGE_SIZE,
+    timeoutMs: PROBE_TIMEOUT_MS,
+  });
+  return { model: runtime.model, prompt: PROBE_PROMPT, imageBase64 };
 }

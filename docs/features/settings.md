@@ -93,29 +93,64 @@ share is decided once and cannot drift:
 
 | Shared behaviour | Rule |
 | --- | --- |
-| Probe invalidation | Changing the backend clears that role's probe result; so does changing the model, except for chat, whose probe lists the backend and stays valid across model changes |
-| Test availability | A role whose empty model means "use the chat model" (audio, vision, browser) is testable without one; a role whose empty model means "off" (embeddings, images, speech) is not. Chat needs a backend selected |
+| Probe invalidation | Changing the backend or the model clears that role's probe result — every probe now tests a specific model, so neither survives a change |
+| Test availability | A role whose empty model means "use the chat model" (audio, vision, browser) is testable without one; a role whose empty model means "off" (embeddings, images, speech) is not. Chat needs both a backend and a model, having no fallback of its own |
 | Stale warning | Comes from the fetched model list, for every role whose model is listable |
+| Result rendering | One shared `ProbeReport` view for all seven |
 
-Only genuine differences are per-role data: wording, the probe endpoint and how
-its result reads, free-text entry (audio), extra fields (speech's voice, audio's
-transcription mode), and whether the role inherits the chat backend.
+Only genuine differences are per-role data: wording, the probe endpoint,
+free-text entry (audio), extra fields (speech's voice, audio's transcription
+mode), and whether the role inherits the chat backend. How a probe's *result*
+looks is not among them — every probe reports the same shape (see below).
 
-## Probes are real calls
+## Probes exercise the real thing, and show it
 
-Every "Test …" button makes an actual request, and each is recorded as a trace.
+Every "Test …" button performs the role's actual work and reports the exchange —
+what was sent, what came back — not a green tick. Each is recorded as a trace.
 Probe inputs are `{ backendId?, model? }`; omitted fields fall back to what is
-stored, and resolution goes through the same runtime resolver the feature uses.
+stored, and resolution goes through the same runtime resolver the feature uses,
+including the chat-model fallback for audio, vision and the browser agent.
 
-| Probe | What it actually does | Why that probe |
+| Probe | Sends | Receives |
 | --- | --- | --- |
-| `POST /api/backends/test` (Chat tab / Backends page) | `GET /v1/models` | Returns the model list the form then offers |
-| `test-embeddings` | Embeds a short string | Proves the endpoint is reachable, the key is accepted, the model exists, **and** that its vectors fit the stored 1024-wide columns — none of which a model listing establishes |
-| `test-images` | Checks the configured model is served | A real generation costs time and money and proves nothing extra |
-| `test-speech` | Checks the configured model is served | Nothing about a voice reply can only be learned by rendering one |
-| `test-audio` | Transcribes a fraction of a second of generated silence | A model listing proves nothing here — whisper-class servers often serve `/v1/audio/transcriptions` without `/v1/models`. With no audio model set it probes the chat-model `input_audio` fallback, exactly what the voice path uses |
-| `test-vision` | Describes a tiny generated PNG | A listing cannot reveal a missing image-input modality; with no vision model set it probes the chat-model fallback |
-| `test-browser` | Runs one tool round with a single trivial tool | A listing cannot reveal missing tool-call support, and browsing is nothing but tool calls; with no browser model set it probes the chat-model fallback. A model that answers without calling the tool is reported, not failed |
+| `test-chat` | A short question | The reply **and** the hidden reasoning behind it |
+| `test-embeddings` | A phrase | The vector, with its width |
+| `test-images` | A prompt | The generated image |
+| `test-speech` | A phrase and the configured voice | The synthesized audio, playable |
+| `test-audio` | A fraction of a second of generated silence | The transcript |
+| `test-vision` | A generated PNG | The model's description of it |
+| `test-browser` | A prompt and one trivial tool | Whether the tool was called, and the answer |
+
+The reason each is a real call rather than a model listing:
+
+- **Chat**: a listing says nothing about whether the *selected* model answers.
+  The reasoning matters as much as the reply — this role must support thinking,
+  those tokens are invisible in the answer, and a model that returns no
+  reasoning when it should is otherwise only caught by reading a live trace.
+- **Embeddings**: only a real call reveals the vector width, which must match
+  the stored 1024-wide columns or every later insert fails inside a background job.
+- **Images**: a listed model still fails on the size it is asked for, returns a
+  URL the provider then 404s, or answers with an empty payload. Seeing the
+  picture settles all three.
+- **Speech**: the *voice* is the half a listing cannot check — an endpoint that
+  serves the model still rejects or silently substitutes an unknown voice.
+- **Audio**: whisper-class servers often serve `/v1/audio/transcriptions`
+  without `/v1/models` at all.
+- **Vision**: a listing cannot reveal a missing image-input modality.
+- **Browser agent**: a listing cannot reveal missing tool-call support, and
+  browsing is nothing but tool calls. A model that answers without calling the
+  tool is reported, not failed — the connection demonstrably works, and how
+  strictly a model obeys is the operator's judgement.
+
+Results are rendered by one shared component (`ProbeReportView`) from one shared
+shape (`ProbeReport`: a model, a latency, and labelled input/output parts that
+are text, an image, audio or a vector). That is what keeps seven very different
+exchanges legible in the same way — and why adding a probe means describing what
+it exchanged, not writing another result panel.
+
+Image and audio bytes are replaced by their size in **trace** bodies, the same
+convention the vision describer follows; the dashboard renders the real artifact
+from the API response instead.
 
 ## Honest initial render
 

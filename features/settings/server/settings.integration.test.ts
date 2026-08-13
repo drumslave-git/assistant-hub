@@ -6,11 +6,14 @@ import { insertBackend } from "@/features/backends/server/repository";
 import { upsertKnownUser } from "@/features/known-users/server/repository";
 import type { LlmBackendId } from "@/lib/llm-backend";
 import { chatCompletion, listModels } from "@/server/llm/client";
+import { probeEmbeddings } from "@/server/llm/embeddings";
+import { probeImages } from "@/server/llm/images";
+import { probeSpeech } from "@/server/llm/speech";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import { getTraceDetail, listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "./repository";
-import { updateSettingsSchema } from "./schema";
+import { updateSettingsSchema, type ProbeReport } from "./schema";
 import {
   getAudioRuntime,
   getBotPolicy,
@@ -26,6 +29,10 @@ import {
   getWebSearchApiKey,
   testAudio,
   testBrowser,
+  testChat,
+  testEmbeddings,
+  testImages,
+  testSpeech,
   testVision,
   updateSettings,
 } from "./service";
@@ -43,9 +50,28 @@ vi.mock("@/server/llm/tool-loop", async (importOriginal) => {
   return { ...actual, chatCompletionWithTools: vi.fn() };
 });
 
+// The embedding/image/speech probes now do real work through the AI SDK. What
+// belongs here is how the service turns their result into a report, so the
+// probe calls themselves are stubbed and the mapping is what gets asserted.
+vi.mock("@/server/llm/embeddings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/llm/embeddings")>();
+  return { ...actual, probeEmbeddings: vi.fn() };
+});
+vi.mock("@/server/llm/images", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/llm/images")>();
+  return { ...actual, probeImages: vi.fn() };
+});
+vi.mock("@/server/llm/speech", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/llm/speech")>();
+  return { ...actual, probeSpeech: vi.fn() };
+});
+
 const listModelsMock = vi.mocked(listModels);
 const chatCompletionMock = vi.mocked(chatCompletion);
 const chatCompletionWithToolsMock = vi.mocked(chatCompletionWithTools);
+const probeEmbeddingsMock = vi.mocked(probeEmbeddings);
+const probeImagesMock = vi.mocked(probeImages);
+const probeSpeechMock = vi.mocked(probeSpeech);
 
 /** Seed a known user so the owner can be chosen by id. */
 async function seedUser(ctx: TestDb, userId: string, username: string | null) {
@@ -89,6 +115,10 @@ beforeEach(async () => {
   chatCompletionWithToolsMock.mockRejectedValue(
     new Error("tool completion unavailable in this test"),
   );
+  for (const mock of [probeEmbeddingsMock, probeImagesMock, probeSpeechMock]) {
+    mock.mockReset();
+    mock.mockRejectedValue(new Error("probe unavailable in this test"));
+  }
 });
 
 const trigger = { kind: "dashboard" } as const;
@@ -501,15 +531,129 @@ describe("stale model clearing on save", () => {
 
 describe("connection probes", () => {
   /** A minimal successful completion, shaped like the real client returns. */
-  function completion(content: string, model: string) {
+  function completion(content: string, model: string, reasoning?: string) {
+    const message = reasoning ? { content, reasoning_content: reasoning } : { content };
     return {
       content,
       model,
       latencyMs: 5,
       requestBody: {},
-      responseBody: { choices: [{ message: { content } }] },
+      responseBody: { choices: [{ message }] },
     };
   }
+
+  /** The text a probe reported under one label, on the sent or received side. */
+  function partText(report: ProbeReport, side: "input" | "output", label: string): string {
+    const part = report[side].find((p) => p.label === label);
+    if (!part) throw new Error(`report has no ${side} part labelled "${label}"`);
+    if (part.kind !== "text") throw new Error(`part "${label}" is a ${part.kind}, not text`);
+    return part.text;
+  }
+
+  /** The part a probe reported under one label, whatever its kind. */
+  function part(report: ProbeReport, side: "input" | "output", label: string) {
+    const found = report[side].find((p) => p.label === label);
+    if (!found) throw new Error(`report has no ${side} part labelled "${label}"`);
+    return found;
+  }
+
+  it("testChat completes a prompt and reports the answer with its reasoning", async () => {
+    const chatId = await seedBackend(ctx, {
+      name: "Main",
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+      type: "vllm",
+    });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    chatCompletionMock.mockResolvedValue(
+      completion("Paris, on the Seine.", "gemma", "thinking about France"),
+    );
+
+    const probe = await testChat({}, trigger, ctx.db);
+    expect(probe.model).toBe("gemma");
+    expect(partText(probe, "output", "Message")).toBe("Paris, on the Seine.");
+    // The hidden channel is the half a listing could never show.
+    expect(partText(probe, "output", "Reasoning")).toBe("thinking about France");
+    // A real completion, against the chat connection.
+    const [conn, input] = chatCompletionMock.mock.calls[0];
+    expect(conn.baseUrl).toBe("https://llm.example/v1");
+    expect(input.model).toBe("gemma");
+  });
+
+  it("testChat names an absent reasoning channel instead of hiding it", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    chatCompletionMock.mockResolvedValue(completion("Paris.", "gemma"));
+
+    const probe = await testChat({}, trigger, ctx.db);
+    // A model that should think and did not is a finding, not a blank.
+    expect(partText(probe, "output", "Reasoning")).toMatch(/none returned/i);
+  });
+
+  it("testChat rejects cleanly when the chat role is unconfigured", async () => {
+    await expect(testChat({}, trigger, ctx.db)).rejects.toThrow(/chat backend and model/i);
+  });
+
+  it("testImages generates a picture and reports the prompt beside it", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    await updateSettings({ chatBackendId: chatId, model: "gemma", imageModel: "sdxl" }, trigger, ctx.db);
+    probeImagesMock.mockResolvedValue({
+      model: "sdxl",
+      prompt: "A single red circle centered on a white background.",
+      imageBase64: "aW1hZ2VieXRlcw==",
+    });
+
+    const probe = await testImages({}, trigger, ctx.db);
+    expect(partText(probe, "input", "Prompt")).toMatch(/red circle/i);
+    const image = part(probe, "output", "Generated image");
+    expect(image.kind).toBe("image");
+    // The real bytes reach the dashboard, which is the point of the probe.
+    expect(image.kind === "image" && image.dataUrl).toBe("data:image/png;base64,aW1hZ2VieXRlcw==");
+  });
+
+  it("testSpeech synthesizes the phrase and reports the voice it used", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    await updateSettings(
+      { chatBackendId: chatId, model: "gemma", speechModel: "tts-1", speechVoice: "sky" },
+      trigger,
+      ctx.db,
+    );
+    probeSpeechMock.mockResolvedValue({
+      model: "tts-1",
+      phrase: "This is a voice test.",
+      voice: "sky",
+      audioBase64: "YXVkaW8=",
+    });
+
+    const probe = await testSpeech({}, trigger, ctx.db);
+    // The voice is the half a model listing cannot check, so it is reported.
+    expect(partText(probe, "input", "Voice")).toBe("sky");
+    const audio = part(probe, "output", "Synthesized audio");
+    expect(audio.kind === "audio" && audio.dataUrl).toBe("data:audio/mpeg;base64,YXVkaW8=");
+  });
+
+  it("testEmbeddings reports the phrase and the vector it produced", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    await updateSettings(
+      { chatBackendId: chatId, model: "gemma", embeddingModel: "bge-m3" },
+      trigger,
+      ctx.db,
+    );
+    const vector = Array.from({ length: 1024 }, (_, i) => i / 1024);
+    probeEmbeddingsMock.mockResolvedValue({
+      model: "bge-m3",
+      phrase: "The quick brown fox jumps over the lazy dog.",
+      dimensions: vector.length,
+      vector,
+    });
+
+    const probe = await testEmbeddings({}, trigger, ctx.db);
+    const reported = part(probe, "output", "Vector");
+    expect(reported.kind).toBe("vector");
+    expect(reported.kind === "vector" && reported.dimensions).toBe(1024);
+    // A preview, not 1024 numbers shipped to the browser and into the trace.
+    expect(reported.kind === "vector" && reported.preview.length).toBe(8);
+  });
 
   it("testAudio in chat mode probes through an input_audio completion", async () => {
     const chatId = await seedBackend(ctx, {
@@ -525,7 +669,11 @@ describe("connection probes", () => {
       trigger,
       ctx.db,
     );
-    expect(probe).toEqual({ model: "omni-model", text: "hello there" });
+    expect(probe.model).toBe("omni-model");
+    expect(partText(probe, "output", "Transcript")).toBe("hello there");
+    expect(partText(probe, "input", "Mode")).toMatch(/input_audio/);
+    // The audio actually sent is reported, not just described.
+    expect(part(probe, "input", "Sent audio (generated silence)").kind).toBe("audio");
 
     expect(chatCompletionMock).toHaveBeenCalledTimes(1);
     const [conn, input] = chatCompletionMock.mock.calls[0];
@@ -578,7 +726,10 @@ describe("connection probes", () => {
     chatCompletionMock.mockResolvedValue(completion("a red square", "gemma"));
 
     const probe = await testVision({}, trigger, ctx.db);
-    expect(probe).toEqual({ model: "gemma", description: "a red square" });
+    expect(probe.model).toBe("gemma");
+    expect(partText(probe, "output", "Description")).toBe("a red square");
+    // The operator sees the same image the model was shown.
+    expect(part(probe, "input", "Sent image").kind).toBe("image");
 
     const [, input] = chatCompletionMock.mock.calls[0];
     const user = input.messages.find((m) => m.role === "user");
@@ -607,7 +758,9 @@ describe("connection probes", () => {
     });
 
     const probe = await testBrowser({}, trigger, ctx.db);
-    expect(probe).toEqual({ model: "gemma", calledTool: true, answer: "ready" });
+    expect(probe.model).toBe("gemma");
+    expect(partText(probe, "output", "Tool call")).toMatch(/probe_echo was called/);
+    expect(partText(probe, "output", "Answer")).toBe("ready");
 
     const [conn, input] = chatCompletionWithToolsMock.mock.calls[0];
     expect(conn.baseUrl).toBe("https://llm.example/v1");
@@ -623,7 +776,8 @@ describe("connection probes", () => {
     chatCompletionWithToolsMock.mockResolvedValue(completion("ready", "gemma"));
 
     const probe = await testBrowser({}, trigger, ctx.db);
-    expect(probe).toMatchObject({ model: "gemma", calledTool: false });
+    expect(probe.model).toBe("gemma");
+    expect(partText(probe, "output", "Tool call")).toMatch(/none/i);
   });
 
   it("testBrowser rejects cleanly when nothing resolves", async () => {

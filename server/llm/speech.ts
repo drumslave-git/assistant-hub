@@ -2,12 +2,7 @@ import "server-only";
 
 import { ApiError } from "@/lib/api-error";
 
-import {
-  createOpenAiClient,
-  listModels,
-  toLlmError,
-  type LlmConnection,
-} from "./client";
+import { createOpenAiClient, toLlmError, type LlmConnection } from "./client";
 
 /**
  * Speech synthesis on an OpenAI-compatible `/v1/audio/speech` endpoint. Server-only.
@@ -20,8 +15,11 @@ import {
 /** Synthesis is slower than chat token streaming but bounded by reply length. */
 const SPEECH_TIMEOUT_MS = 120_000;
 
-/** Short timeout for the Settings probe, which only lists models. */
-const PROBE_TIMEOUT_MS = 15_000;
+/** Bound on the Settings probe, which synthesizes one short phrase. */
+const PROBE_TIMEOUT_MS = 30_000;
+
+/** What the probe speaks — short, so the render is quick and the audio is checkable. */
+const PROBE_PHRASE = "This is a voice test.";
 
 /**
  * Fallback voice name when none is configured: OpenAI's default, which
@@ -42,7 +40,11 @@ export interface SpeechRuntime extends LlmConnection {
  * OGG/Opus for Telegram). Throws a clean {@link ApiError} on provider/network
  * failure or an empty payload.
  */
-export async function synthesizeSpeech(runtime: SpeechRuntime, input: string): Promise<Buffer> {
+export async function synthesizeSpeech(
+  runtime: SpeechRuntime,
+  input: string,
+  timeoutMs: number = SPEECH_TIMEOUT_MS,
+): Promise<Buffer> {
   try {
     const response = await createOpenAiClient(runtime).audio.speech.create(
       {
@@ -51,7 +53,7 @@ export async function synthesizeSpeech(runtime: SpeechRuntime, input: string): P
         input,
         response_format: "mp3",
       },
-      { timeout: SPEECH_TIMEOUT_MS },
+      { timeout: timeoutMs },
     );
     const bytes = Buffer.from(await response.arrayBuffer());
     if (bytes.length === 0) {
@@ -63,29 +65,31 @@ export async function synthesizeSpeech(runtime: SpeechRuntime, input: string): P
   }
 }
 
-/** What a connection test learned about the configured speech endpoint. */
+/** What the speech probe said and what came back. */
 export interface SpeechProbe {
   model: string;
-  /** How many models the endpoint advertises (context for the operator). */
-  modelCount: number;
+  /** The phrase the probe asked for, and the voice it asked for it in. */
+  phrase: string;
+  voice: string;
+  /** The synthesized MP3, base64-encoded, so the operator can play it. */
+  audioBase64: string;
 }
 
 /**
- * Real probe of the speech configuration: calls the endpoint's model listing and
- * checks the configured model is actually served by it. Like the image probe it
- * deliberately does **not** synthesize — nothing about a voice reply can only be
- * learned by rendering one, and the model-listing check already proves the host
- * is reachable, the key is accepted, and the model id is not a typo.
+ * Real probe of the speech configuration: actually synthesizes a short phrase
+ * and hands back the audio.
+ *
+ * It used to only list models. But the voice name is the half a listing cannot
+ * check — an endpoint that serves the model still rejects or silently
+ * substitutes an unknown voice, and the first time anyone notices is a voice
+ * reply in the wrong voice, or none at all. Hearing the clip settles both.
  */
 export async function probeSpeech(runtime: SpeechRuntime): Promise<SpeechProbe> {
-  const models = await listModels(runtime, PROBE_TIMEOUT_MS);
-  if (!models.includes(runtime.model)) {
-    throw ApiError.badRequest(
-      `Speech model "${runtime.model}" is not served by ${runtime.baseUrl}. ` +
-        (models.length > 0
-          ? `Available models: ${models.slice(0, 10).join(", ")}${models.length > 10 ? ", …" : ""}.`
-          : "The endpoint advertises no models."),
-    );
-  }
-  return { model: runtime.model, modelCount: models.length };
+  const audio = await synthesizeSpeech(runtime, PROBE_PHRASE, PROBE_TIMEOUT_MS);
+  return {
+    model: runtime.model,
+    phrase: PROBE_PHRASE,
+    voice: runtime.voice?.trim() || DEFAULT_SPEECH_VOICE,
+    audioBase64: audio.toString("base64"),
+  };
 }

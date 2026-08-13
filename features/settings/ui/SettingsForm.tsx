@@ -9,7 +9,7 @@ import type { Backend } from "@/features/backends/server/schema";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import type { KnownUser } from "@/features/known-users/server/schema";
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
-import type { Settings } from "../server/schema";
+import type { ProbeReport, Settings } from "../server/schema";
 import {
   readError,
   useBackendModels,
@@ -55,7 +55,7 @@ type SaveState =
  * roles; anything not listed is shared behaviour and is decided once in
  * {@link SettingsForm.roleTab}, so the tabs cannot drift apart.
  */
-interface RoleTabSpec<T> {
+interface RoleTabSpec {
   /** Tab id, also the field-id prefix ("embedding" → `embeddingModel`). */
   id: string;
   label: string;
@@ -74,16 +74,9 @@ interface RoleTabSpec<T> {
   /** Chat has no "same backend as chat" option; every other role does. */
   inherit?: boolean;
   probe: {
-    state: ProbeState<T>;
+    state: ProbeState<ProbeReport>;
     reset: () => void;
     run: () => void;
-    renderOk: (result: T) => ReactNode;
-    /**
-     * Whether the probe's result depends on the selected model. True for every
-     * role that tests a model; false for chat, whose probe lists the backend
-     * and stays valid across model changes.
-     */
-    dependsOnModel?: boolean;
     /** Extra condition blocking the test (chat needs a backend selected). */
     disabled?: boolean;
   };
@@ -175,26 +168,14 @@ export function SettingsForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveIds.join("|")]);
 
-  // Probes — one per role, all through the same state machine.
-  const chatProbe = useProbe<{ models: string[] }>("/api/backends/test");
-  const embedProbe = useProbe<{ model: string; dimensions: number }>(
-    "/api/settings/test-embeddings",
-  );
-  const imageProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-images");
-  const speechProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-speech");
-  const audioProbe = useProbe<{ model: string; text: string }>("/api/settings/test-audio");
-  const visionProbe = useProbe<{ model: string; description: string }>(
-    "/api/settings/test-vision",
-  );
-  const browserProbe = useProbe<{ model: string; calledTool: boolean; answer: string }>(
-    "/api/settings/test-browser",
-  );
-
-  async function onTestChat() {
-    if (!chat.backendId) return;
-    const data = await chatProbe.run({ backendId: chat.backendId });
-    if (data) modelCache.prime(chat.backendId, data.models);
-  }
+  // Probes — one per role, every one reporting the same {@link ProbeReport}.
+  const chatProbe = useProbe<ProbeReport>("/api/settings/test-chat");
+  const embedProbe = useProbe<ProbeReport>("/api/settings/test-embeddings");
+  const imageProbe = useProbe<ProbeReport>("/api/settings/test-images");
+  const speechProbe = useProbe<ProbeReport>("/api/settings/test-speech");
+  const audioProbe = useProbe<ProbeReport>("/api/settings/test-audio");
+  const visionProbe = useProbe<ProbeReport>("/api/settings/test-vision");
+  const browserProbe = useProbe<ProbeReport>("/api/settings/test-browser");
 
   /** Probe body for one role: the form's current (possibly unsaved) values. */
   const roleProbeBody = (role: RoleConfig) => ({
@@ -378,9 +359,8 @@ export function SettingsForm({
    * warning, and a role whose empty model means "use the chat model" stays
    * testable without one. Per-role differences arrive as {@link RoleTabSpec}.
    */
-  function roleTab<T>(spec: RoleTabSpec<T>): TabItem {
+  function roleTab(spec: RoleTabSpec): TabItem {
     const { role, probe } = spec;
-    const dependsOnModel = probe.dependsOnModel ?? true;
     const listed = spec.listed ?? true;
     return {
       id: spec.id,
@@ -399,13 +379,12 @@ export function SettingsForm({
           model={role.model}
           onModelChange={(next) => {
             role.setModel(next);
-            if (dependsOnModel) probe.reset();
+            probe.reset();
           }}
           models={roleModels(role)}
           freeTextModel={spec.freeText}
           modelWarning={listed && roleStale(role) ? staleWarning(role.model) : null}
           probe={probe.state}
-          renderOk={probe.renderOk}
           onTest={probe.run}
           testDisabled={
             probe.disabled ?? (!spec.fallsBackToChat && role.model.trim() === "")
@@ -427,19 +406,18 @@ export function SettingsForm({
         "The main backend and model every reply runs on. Pick a model that supports thinking and tool calls — replies reason before answering and drive every tool (history search, tasks, browsing). Roles on the other tabs use this backend unless given their own, so repointing it repoints them too, and any of their model selections the new backend does not serve is cleared on save.",
       backendHint: "The chat endpoint, from the shared catalog (managed on the Backends page).",
       modelLabel: "Model",
-      modelHint: "The chat model used for replies. Type to search the backend's models.",
+      modelHint:
+        "The chat model used for replies. It must support thinking and tool calls — the test below asks it a question and shows both the answer and the reasoning behind it.",
       modelPlaceholder: "Select a model…",
-      testLabel: "Test connection",
+      testLabel: "Test chat",
     },
     probe: {
       state: chatProbe.state,
       reset: chatProbe.reset,
-      run: () => void onTestChat(),
-      renderOk: (r) => <>Connected — {r.models.length} models</>,
-      // Lists the backend's models: a different model selection does not make
-      // that answer wrong, so it survives one.
-      dependsOnModel: false,
-      disabled: !chat.backendId,
+      run: () => void chatProbe.run(roleProbeBody(chat)),
+      // Chat is the one role with no fallback: without a model there is
+      // nothing to ask, and without a backend nowhere to ask it.
+      disabled: !chat.backendId || chat.model.trim() === "",
     },
   });
 
@@ -464,7 +442,7 @@ export function SettingsForm({
         "Embeddings power semantic recall over older conversations: the daily job turns each chat-day into topic summaries and embeds them, so the bot can find what was discussed weeks ago even when the wording differs. Without an embedding model the summaries are still written and keyword-searchable — only the semantic half is off.",
       backendHint: "The host serving /v1/embeddings.",
       modelLabel: "Embedding model",
-      modelHint: `Must emit ${EMBEDDING_DIMENSIONS}-dimensional vectors (e.g. bge-m3) — the width this database stores. Test below to confirm.`,
+      modelHint: `Must emit ${EMBEDDING_DIMENSIONS}-dimensional vectors (e.g. bge-m3) — the width this database stores. The test below embeds a phrase and shows the vector it produced.`,
       modelPlaceholder: "No embedding model (semantic recall off)",
       testLabel: "Test embeddings",
     },
@@ -472,11 +450,6 @@ export function SettingsForm({
       state: embedProbe.state,
       reset: embedProbe.reset,
       run: () => void embedProbe.run(roleProbeBody(emb)),
-      renderOk: (r) => (
-        <>
-          {r.model} — {r.dimensions} dimensions
-        </>
-      ),
     },
   });
 
@@ -489,19 +462,15 @@ export function SettingsForm({
         "Image generation lets the bot draw a picture when someone asks it to, and send it to the chat. Each image it sends is then recognized like any received photo, so later replies know what it drew. Without an image model the tool is simply not offered — the bot says it cannot make images rather than pretending to.",
       backendHint: "The host serving /v1/images/generations.",
       modelLabel: "Image model",
-      modelHint: "The model asked to draw. Test below to confirm the backend actually serves it.",
+      modelHint:
+        "The model asked to draw. The test below actually generates a small picture and shows it — a diffusion model can take a while.",
       modelPlaceholder: "No image model (image generation off)",
-      testLabel: "Test image endpoint",
+      testLabel: "Test image generation",
     },
     probe: {
       state: imageProbe.state,
       reset: imageProbe.reset,
       run: () => void imageProbe.run(roleProbeBody(img)),
-      renderOk: (r) => (
-        <>
-          {r.model} — served ({r.modelCount} models)
-        </>
-      ),
     },
   });
 
@@ -515,19 +484,14 @@ export function SettingsForm({
       backendHint: "The host serving /v1/audio/speech.",
       modelLabel: "Speech model",
       modelHint:
-        "The text-to-speech model voice replies use. Test below to confirm the backend actually serves it.",
+        "The text-to-speech model voice replies use. The test below speaks a phrase in the voice below, so you can hear both before a chat does.",
       modelPlaceholder: "No speech model (voice replies off)",
-      testLabel: "Test speech endpoint",
+      testLabel: "Test speech",
     },
     probe: {
       state: speechProbe.state,
       reset: speechProbe.reset,
       run: () => void speechProbe.run(roleProbeBody(spc)),
-      renderOk: (r) => (
-        <>
-          {r.model} — served ({r.modelCount} models)
-        </>
-      ),
     },
     children: (
       <Field
@@ -573,7 +537,6 @@ export function SettingsForm({
       reset: audioProbe.reset,
       run: () =>
         void audioProbe.run({ ...roleProbeBody(aud), transcriptionMode: audioTranscriptionMode }),
-      renderOk: (r) => <>{r.model} — endpoint responded</>,
     },
     children: (
       <Field
@@ -617,7 +580,6 @@ export function SettingsForm({
       state: visionProbe.state,
       reset: visionProbe.reset,
       run: () => void visionProbe.run(roleProbeBody(vis)),
-      renderOk: (r) => <>{r.model} — described the test image</>,
     },
   });
 
@@ -640,12 +602,6 @@ export function SettingsForm({
       state: browserProbe.state,
       reset: browserProbe.reset,
       run: () => void browserProbe.run(roleProbeBody(brw)),
-      renderOk: (r) =>
-        r.calledTool ? (
-          <>{r.model} — completed a tool call</>
-        ) : (
-          <>{r.model} — answered, but made no tool call</>
-        ),
     },
   });
 

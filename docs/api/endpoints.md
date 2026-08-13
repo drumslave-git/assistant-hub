@@ -81,14 +81,23 @@ can be re-tested without resending the secret.
 | --- | --- | --- | --- |
 | `GET` | `/api/settings` | — | `Settings` (masked — secrets appear only as `…Configured`) |
 | `PATCH` | `/api/settings` | Partial `Settings` update, ≥1 field | The updated `Settings` |
-| `POST` | `/api/settings/test-embeddings` | `{ backendId?, model? }` | `{ model, dimensions }` |
-| `POST` | `/api/settings/test-images` | `{ backendId?, model? }` | `{ model, modelCount }` |
-| `POST` | `/api/settings/test-speech` | `{ backendId?, model? }` | `{ model, modelCount }` |
-| `POST` | `/api/settings/test-audio` | `{ backendId?, model?, transcriptionMode? }` | `{ model, text }` |
-| `POST` | `/api/settings/test-vision` | `{ backendId?, model? }` | `{ model, description }` |
-| `POST` | `/api/settings/test-browser` | `{ backendId?, model? }` | `{ model, calledTool, answer }` |
+| `POST` | `/api/settings/test-chat` | `{ backendId?, model? }` | `ProbeReport` |
+| `POST` | `/api/settings/test-embeddings` | `{ backendId?, model? }` | `ProbeReport` |
+| `POST` | `/api/settings/test-images` | `{ backendId?, model? }` | `ProbeReport` |
+| `POST` | `/api/settings/test-speech` | `{ backendId?, model? }` | `ProbeReport` |
+| `POST` | `/api/settings/test-audio` | `{ backendId?, model?, transcriptionMode? }` | `ProbeReport` |
+| `POST` | `/api/settings/test-vision` | `{ backendId?, model? }` | `ProbeReport` |
+| `POST` | `/api/settings/test-browser` | `{ backendId?, model? }` | `ProbeReport` |
 
-Role probes merge the input over the stored configuration (omitted fields fall
+Every role probe performs the role's real work and returns the same
+**`ProbeReport`**: `{ model, latencyMs, input[], output[] }`, where each part is
+one of `{ kind: "text", label, text }`, `{ kind: "image", label, dataUrl }`,
+`{ kind: "audio", label, dataUrl }`, or
+`{ kind: "vector", label, dimensions, preview[] }`. Image and audio parts carry
+the actual bytes as `data:` URLs, so a caller can render what the endpoint
+produced.
+
+Probes merge the input over the stored configuration (omitted fields fall
 back; `backendId: null` means "use the chat backend") and resolve exactly as
 the runtime does — including the chat-model fallback, so the audio, vision and
 browser probes work with no model of their own set. Every field's meaning is in
@@ -311,6 +320,7 @@ GET    /api/settings
 PATCH  /api/settings
 POST   /api/settings/test-embeddings
 POST   /api/settings/test-images
+POST   /api/settings/test-chat
 POST   /api/settings/test-speech
 POST   /api/settings/test-audio
 POST   /api/settings/test-vision

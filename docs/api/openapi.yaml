@@ -477,34 +477,42 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  /api/settings/test-embeddings:
+  # Every role probe performs the role's real work and answers with the same
+  # ProbeReport. Omitted input fields fall back to the stored configuration; a
+  # null `backendId` means "use the chat backend".
+  /api/settings/test-chat:
     post:
       tags: [settings]
-      summary: Probe the embedding role
+      summary: Probe the chat (main) role
       description: |
-        Embeds a short string, so it also catches a model whose vector width does
-        not match the stored 1024-wide columns. Omitted fields fall back to the
-        stored configuration; a null `backendId` means "use the chat backend".
+        Completes a short prompt and reports the reply together with the hidden
+        reasoning behind it. A model listing says nothing about whether the
+        selected model answers, or thinks.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
-        "200":
-          description: Probe result
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data:
-                        type: object
-                        required: [model, dimensions]
-                        properties:
-                          model: { type: string }
-                          dimensions: { type: integer }
+        "200": { $ref: "#/components/responses/ProbeResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /api/settings/test-embeddings:
+    post:
+      tags: [settings]
+      summary: Probe the embedding role
+      description: |
+        Embeds a phrase and reports the vector, so it also catches a model whose
+        width does not match the stored 1024-wide columns.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleProbeInput" }
+      responses:
+        "200": { $ref: "#/components/responses/ProbeResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
@@ -513,22 +521,17 @@ paths:
     post:
       tags: [settings]
       summary: Probe the image role
-      description: Checks the configured model is actually served, rather than generating a picture.
+      description: |
+        Generates a small picture from a fixed prompt and returns it. A listed
+        model still fails on the size it is asked for, returns a URL the provider
+        then 404s, or answers with an empty payload.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
-        "200":
-          description: Probe result
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data: { $ref: "#/components/schemas/ModelCountProbe" }
+        "200": { $ref: "#/components/responses/ProbeResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
@@ -537,22 +540,16 @@ paths:
     post:
       tags: [settings]
       summary: Probe the speech role
-      description: Checks the configured model is actually served, rather than synthesizing audio.
+      description: |
+        Synthesizes a short phrase in the configured voice and returns the audio.
+        The voice is the half a model listing cannot check.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
-        "200":
-          description: Probe result
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data: { $ref: "#/components/schemas/ModelCountProbe" }
+        "200": { $ref: "#/components/responses/ProbeResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
@@ -564,29 +561,15 @@ paths:
       description: |
         Transcribes a fraction of a second of generated silence — a real
         `/v1/audio/transcriptions` call, since whisper-class servers often serve
-        it without `/v1/models`.
+        it without `/v1/models`. Resolves through the audio runtime, including
+        its fallback to the chat model.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
-        "200":
-          description: Probe result
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data:
-                        type: object
-                        required: [model, text]
-                        properties:
-                          model: { type: string }
-                          text:
-                            type: string
-                            description: What the endpoint transcribed the silence as — usually empty.
+        "200": { $ref: "#/components/responses/ProbeResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
@@ -596,8 +579,8 @@ paths:
       tags: [settings]
       summary: Probe the vision role
       description: |
-        Describes a tiny generated PNG — a real vision completion, since a model
-        listing cannot say whether a model accepts image input. Resolves through
+        Describes a generated PNG — a real vision completion, since a model
+        listing cannot reveal a missing image-input modality. Resolves through
         the vision runtime, including its fallback to the chat model.
       requestBody:
         required: true
@@ -605,22 +588,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
-        "200":
-          description: Probe result
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data:
-                        type: object
-                        required: [model, description]
-                        properties:
-                          model: { type: string }
-                          description:
-                            type: string
-                            description: How the model described the test image.
+        "200": { $ref: "#/components/responses/ProbeResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
@@ -641,25 +609,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
-        "200":
-          description: Probe result
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data:
-                        type: object
-                        required: [model, calledTool, answer]
-                        properties:
-                          model: { type: string }
-                          calledTool:
-                            type: boolean
-                            description: Whether the model answered by calling the offered tool.
-                          answer:
-                            type: string
-                            description: The model's final answer.
+        "200": { $ref: "#/components/responses/ProbeResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
@@ -2030,6 +1980,15 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
+    ProbeResult:
+      description: What the probe exercised, and what it exchanged
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ApiOk"
+              - properties:
+                  data: { $ref: "#/components/schemas/ProbeReport" }
 
   schemas:
     # ── envelopes ──
@@ -2350,14 +2309,43 @@ components:
         backendId: { type: [string, "null"], maxLength: 100 }
         model: { type: [string, "null"], maxLength: 200 }
 
-    ModelCountProbe:
+    ProbePart:
       type: object
-      required: [model, modelCount]
+      description: |
+        One labelled piece of what a probe sent or received. Image and audio
+        parts carry the actual bytes as a `data:` URL, so a caller can render
+        what the endpoint produced.
+      required: [kind, label]
+      properties:
+        kind: { type: string, enum: [text, image, audio, vector] }
+        label: { type: string }
+        text: { type: string, description: Present when kind is "text". }
+        dataUrl:
+          type: string
+          description: Present when kind is "image" or "audio".
+        dimensions:
+          type: integer
+          description: Present when kind is "vector" — the full vector width.
+        preview:
+          type: array
+          items: { type: number }
+          description: Present when kind is "vector" — its leading components.
+
+    ProbeReport:
+      type: object
+      description: |
+        What a role probe exercised: the model it ran on, how long it took, and
+        the exchange itself. Every `test-*` endpoint returns this shape.
+      required: [model, input, output, latencyMs]
       properties:
         model: { type: string }
-        modelCount:
-          type: integer
-          description: How many models the endpoint advertises.
+        latencyMs: { type: integer }
+        input:
+          type: array
+          items: { $ref: "#/components/schemas/ProbePart" }
+        output:
+          type: array
+          items: { $ref: "#/components/schemas/ProbePart" }
 
     # ── directory ──
     KnownUser:

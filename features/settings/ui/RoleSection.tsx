@@ -5,7 +5,9 @@ import type { ReactNode } from "react";
 
 import { Badge, Button, Combobox, Field, Select } from "@/components/ui";
 import type { Backend } from "@/features/backends/server/schema";
+import type { ProbeReport } from "../server/schema";
 import type { ModelsState, ProbeState } from "./connection";
+import { ProbeReportView } from "./ProbeReportView";
 
 /** All the wording one role section differs by. */
 export interface RoleSectionLabels {
@@ -28,7 +30,7 @@ export interface RoleSectionLabels {
  * fed from that backend's model list, and the optional probe row. One shell for
  * every tab so the seven cannot drift apart.
  */
-export function RoleSection<T>({
+export function RoleSection({
   idPrefix,
   labels,
   backends,
@@ -42,7 +44,6 @@ export function RoleSection<T>({
   freeTextModel,
   modelWarning,
   probe,
-  renderOk,
   onTest,
   testDisabled,
   children,
@@ -64,9 +65,8 @@ export function RoleSection<T>({
   freeTextModel?: boolean;
   /** Rendered under the model control when the current selection is known stale. */
   modelWarning?: string | null;
-  /** Probe row (omit all three for roles verified by the model list alone). */
-  probe?: ProbeState<T>;
-  renderOk?: (result: T) => ReactNode;
+  /** Probe state; its passing result is rendered by the shared report view. */
+  probe?: ProbeState<ProbeReport>;
   onTest?: () => void;
   testDisabled?: boolean;
   /** Extra role-specific fields, rendered between the model select and the probe row. */
@@ -138,26 +138,29 @@ export function RoleSection<T>({
       {children}
 
       {probe && onTest ? (
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onTest}
-            disabled={probe.kind === "testing" || testDisabled}
-            leftIcon={<Plug className="h-4 w-4" />}
-          >
-            {probe.kind === "testing"
-              ? (labels.testingLabel ?? "Testing…")
-              : (labels.testLabel ?? "Test connection")}
-          </Button>
-          {probe.kind === "ok" && renderOk ? (
-            <Badge tone="success" dot>
-              {renderOk(probe.result)}
-            </Badge>
-          ) : null}
-          {probe.kind === "error" ? (
-            <span className="text-sm text-danger">{probe.message}</span>
-          ) : null}
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onTest}
+              disabled={probe.kind === "testing" || testDisabled}
+              leftIcon={<Plug className="h-4 w-4" />}
+            >
+              {probe.kind === "testing"
+                ? (labels.testingLabel ?? "Testing…")
+                : (labels.testLabel ?? "Test connection")}
+            </Button>
+            {probe.kind === "ok" ? (
+              <Badge tone="success" dot>
+                Passed
+              </Badge>
+            ) : null}
+            {probe.kind === "error" ? (
+              <span className="text-sm text-danger">{probe.message}</span>
+            ) : null}
+          </div>
+          {probe.kind === "ok" ? <ProbeReportView report={probe.result} /> : null}
         </div>
       ) : null}
     </div>

@@ -18,19 +18,12 @@ import {
   sanitizeMessagesForTrace,
   type ChatMessage,
 } from "@/server/llm/client";
+import { readReasoningFor } from "@/server/llm/backends";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
-import {
-  probeEmbeddings,
-  type EmbeddingProbe,
-  type EmbeddingRuntime,
-} from "@/server/llm/embeddings";
-import { probeImages, type ImageProbe, type ImageRuntime } from "@/server/llm/images";
-import { probeSpeech, type SpeechProbe, type SpeechRuntime } from "@/server/llm/speech";
-import {
-  probeTranscription,
-  type TranscriptionProbe,
-  type TranscriptionRuntime,
-} from "@/server/llm/transcription";
+import { probeEmbeddings, type EmbeddingRuntime } from "@/server/llm/embeddings";
+import { probeImages, type ImageRuntime } from "@/server/llm/images";
+import { probeSpeech, type SpeechRuntime } from "@/server/llm/speech";
+import { probeTranscription, type TranscriptionRuntime } from "@/server/llm/transcription";
 import { tinySilenceWav } from "@/server/media/audio";
 import { tinyProbePng } from "@/server/media/image";
 import { withTrace, type TraceRecorder } from "@/server/trace";
@@ -41,7 +34,14 @@ import {
   type SettingsPatch,
   type SettingsRecord,
 } from "./repository";
-import type { Settings, TestAudioConnection, TestRoleConnection, UpdateSettings } from "./schema";
+import type {
+  ProbePart,
+  ProbeReport,
+  Settings,
+  TestAudioConnection,
+  TestRoleConnection,
+  UpdateSettings,
+} from "./schema";
 
 /**
  * Settings domain service — the boundary the Route Handlers and Server
@@ -137,7 +137,14 @@ async function resolveRoleBackend(
  * configured. Used by the conversation core to generate replies.
  */
 export async function getLlmRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
-  const record = await getSettingsRecord(db);
+  return toChatRuntime(db, await getSettingsRecord(db));
+}
+
+/** The chat resolver behind {@link getLlmRuntime}, shared with the probe. */
+async function toChatRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<LlmRuntime | null> {
   if (!record?.chatBackendId || !record.model) return null;
   const backend = await getBackendById(db, record.chatBackendId);
   if (!backend) return null;
@@ -742,8 +749,142 @@ function mergeRoleInput(
 }
 
 /**
- * Probe the embedding configuration by actually embedding a short string, and
- * report the vector width it produced. A real probe, not a config-presence check:
+ * Every "Test …" button exercises the role for real and reports the exchange:
+ * what was sent, and what came back. The helpers below are what keep the seven
+ * probes reporting it the same way.
+ */
+
+/** Short bound for the chat probe — one tiny completion, an operator is waiting. */
+const CHAT_PROBE_TIMEOUT_MS = 60_000;
+
+/**
+ * What the chat probe asks. Short enough to answer in a sentence, but a real
+ * question rather than "say OK": a model that is thinking should have something
+ * to think about, so the reasoning channel below is exercised too.
+ */
+const CHAT_PROBE_PROMPT = "In one short sentence, what is the capital of France and why is it there?";
+
+/**
+ * Probe the chat (main) configuration by actually completing a prompt, and
+ * report both the reply and the hidden reasoning behind it.
+ *
+ * It used to list the backend's models, which says nothing about whether the
+ * *selected* model answers — the failure the operator actually cares about.
+ * Showing the reasoning matters as much as the reply: this role must support
+ * thinking, the tokens it costs are invisible in the answer, and an empty
+ * reasoning channel on a model that should think is exactly the misconfiguration
+ * that is otherwise only discovered by reading a live reply's trace.
+ */
+export async function testChat(
+  input: TestRoleConnection,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<ProbeReport> {
+  const record = await getSettingsRecord(db);
+  const merged = mergeRoleInput(record, input, {
+    backendKey: "chatBackendId",
+    modelKey: "model",
+  });
+  const runtime = await toChatRuntime(db, merged);
+
+  return withTrace(
+    {
+      feature: FEATURE.id,
+      action: "test-chat",
+      trigger,
+      inputSummary: merged.model ?? "(no model)",
+    },
+    async (trace) => {
+      if (!runtime) {
+        throw ApiError.badRequest("Choose a chat backend and model first.");
+      }
+      const startedAt = Date.now();
+      const messages: ChatMessage[] = [{ role: "user", content: CHAT_PROBE_PROMPT }];
+      await trace.event({
+        type: "external_call",
+        message: `POST ${runtime.baseUrl} /chat/completions`,
+        data: { model: runtime.model, messages },
+      });
+      const completed = await chatCompletion(
+        { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
+        { model: runtime.model, messages, timeoutMs: CHAT_PROBE_TIMEOUT_MS },
+      );
+      await trace.event({
+        type: "output",
+        message: "chat endpoint answered",
+        // The provider's raw response body, verbatim (full-raw-bodies rule).
+        data: completed.responseBody ?? { content: completed.content },
+      });
+      const reasoning = readReasoningFor(runtime.backend, completed.responseBody);
+      const result = report(
+        runtime.model,
+        startedAt,
+        [{ kind: "text", label: "Prompt", text: CHAT_PROBE_PROMPT }],
+        [
+          { kind: "text", label: "Message", text: completed.content.trim() },
+          {
+            kind: "text",
+            label: "Reasoning",
+            // Named as absent rather than omitted: "this model returned no
+            // thinking" is a finding for a role that is supposed to think.
+            text: reasoning?.trim() || "(none returned — this model did not think out loud)",
+          },
+        ],
+      );
+      await trace.succeed({ outputSummary: `${runtime.model} answered the probe prompt` });
+      return result;
+    },
+  );
+}
+
+/** Assemble one probe's report, timing it from the moment the call started. */
+function report(
+  model: string,
+  startedAt: number,
+  input: ProbePart[],
+  output: ProbePart[],
+): ProbeReport {
+  return { model, input, output, latencyMs: Date.now() - startedAt };
+}
+
+/** How many leading components of a vector are worth showing. */
+const VECTOR_PREVIEW_LENGTH = 8;
+
+/** A vector part: the width, plus enough of the head to see it is a real embedding. */
+function vectorPart(label: string, vector: number[]): ProbePart {
+  return {
+    kind: "vector",
+    label,
+    dimensions: vector.length,
+    preview: vector.slice(0, VECTOR_PREVIEW_LENGTH),
+  };
+}
+
+/**
+ * A report as it goes into a trace: image and audio bytes are replaced with
+ * their size. Same convention as the vision describer — a trace records that an
+ * artifact was exchanged and how big it was, never megabytes of base64 (the
+ * dashboard renders the real thing from the API response instead).
+ */
+function sanitizeReportForTrace(probe: ProbeReport): unknown {
+  const strip = (parts: ProbePart[]) =>
+    parts.map((part) =>
+      part.kind === "image" || part.kind === "audio"
+        ? { kind: part.kind, label: part.label, bytes: dataUrlByteLength(part.dataUrl) }
+        : part,
+    );
+  return { ...probe, input: strip(probe.input), output: strip(probe.output) };
+}
+
+/** Decoded byte length of a `data:` URL's payload. */
+function dataUrlByteLength(dataUrl: string): number {
+  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  return Math.floor((base64.length * 3) / 4);
+}
+
+/**
+ * Probe the embedding configuration by actually embedding a short phrase, and
+ * report the vector it produced. A real probe, not a config-presence check:
  * it proves the endpoint answers, the key is accepted, the model exists, and — the
  * failure this catches that nothing else would — that the model's width matches
  * the `vector` columns. A mismatched model is reported as a bad request with the
@@ -756,7 +897,7 @@ export async function testEmbeddings(
   input: TestRoleConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
-): Promise<EmbeddingProbe> {
+): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
     backendKey: "embeddingBackendId",
@@ -777,34 +918,42 @@ export async function testEmbeddings(
           "Choose an embedding model (and a backend, unless the chat backend serves embeddings).",
         );
       }
+      const startedAt = Date.now();
       await trace.event({
         type: "external_call",
         message: `POST ${runtime.baseUrl} /embeddings`,
         data: { model: runtime.model },
       });
       const probe = await probeEmbeddings(runtime);
+      const result = report(
+        probe.model,
+        startedAt,
+        [{ kind: "text", label: "Phrase", text: probe.phrase }],
+        [vectorPart("Vector", probe.vector)],
+      );
       await trace.event({
         type: "output",
         message: `${probe.dimensions}-dimensional vector returned`,
-        data: probe,
+        data: sanitizeReportForTrace(result),
       });
       await trace.succeed({ outputSummary: `${probe.model} → ${probe.dimensions} dimensions` });
-      return probe;
+      return result;
     },
   );
 }
 
 /**
- * Probe the image configuration, recording the attempt as a trace. Same contract
- * as {@link testEmbeddings}: submitted values are merged over the stored record and
- * resolved through the *runtime* resolver, so a passing test means the connection
- * the `image_generate` tool will actually use works.
+ * Probe the image configuration by actually drawing a small picture, recording
+ * the attempt as a trace. Same contract as {@link testEmbeddings}: submitted
+ * values are merged over the stored record and resolved through the *runtime*
+ * resolver, so a passing test means the connection the `image_generate` tool
+ * will actually use works — and the operator sees what it drew.
  */
 export async function testImages(
   input: TestRoleConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
-): Promise<ImageProbe> {
+): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
     backendKey: "imageBackendId",
@@ -825,34 +974,47 @@ export async function testImages(
           "Choose an image model (and a backend, unless the chat backend serves images).",
         );
       }
+      const startedAt = Date.now();
       await trace.event({
         type: "external_call",
-        message: `GET ${runtime.baseUrl} /models`,
+        message: `POST ${runtime.baseUrl} /images/generations`,
         data: { model: runtime.model },
       });
       const probe = await probeImages(runtime);
+      const result = report(
+        probe.model,
+        startedAt,
+        [{ kind: "text", label: "Prompt", text: probe.prompt }],
+        [{ kind: "image", label: "Generated image", dataUrl: pngDataUrl(probe.imageBase64) }],
+      );
       await trace.event({
         type: "output",
-        message: `image model "${probe.model}" is served by the endpoint`,
-        data: probe,
+        message: `image model "${probe.model}" generated an image`,
+        data: sanitizeReportForTrace(result),
       });
-      await trace.succeed({ outputSummary: `${probe.model} served (${probe.modelCount} models)` });
-      return probe;
+      await trace.succeed({ outputSummary: `${probe.model} drew the test prompt` });
+      return result;
     },
   );
 }
 
+/** A `data:` URL for generated PNG bytes — what the dashboard renders. */
+function pngDataUrl(base64: string): string {
+  return `data:image/png;base64,${base64}`;
+}
+
 /**
- * Probe the speech configuration, recording the attempt as a trace. Same contract
- * as {@link testImages}: submitted values are merged over the stored record and
- * resolved through the *runtime* resolver, so a passing test means the connection
- * voice replies will actually use works.
+ * Probe the speech configuration by actually synthesizing a short phrase,
+ * recording the attempt as a trace. Same contract as {@link testImages}:
+ * submitted values are merged over the stored record and resolved through the
+ * *runtime* resolver, so a passing test means the connection voice replies will
+ * actually use works — in the voice they will actually use.
  */
 export async function testSpeech(
   input: TestRoleConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
-): Promise<SpeechProbe> {
+): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
     backendKey: "speechBackendId",
@@ -873,19 +1035,35 @@ export async function testSpeech(
           "Choose a speech model (and a backend, unless the chat backend serves speech).",
         );
       }
+      const startedAt = Date.now();
       await trace.event({
         type: "external_call",
-        message: `GET ${runtime.baseUrl} /models`,
-        data: { model: runtime.model },
+        message: `POST ${runtime.baseUrl} /audio/speech`,
+        data: { model: runtime.model, voice: runtime.voice },
       });
       const probe = await probeSpeech(runtime);
+      const result = report(
+        probe.model,
+        startedAt,
+        [
+          { kind: "text", label: "Phrase", text: probe.phrase },
+          { kind: "text", label: "Voice", text: probe.voice },
+        ],
+        [
+          {
+            kind: "audio",
+            label: "Synthesized audio",
+            dataUrl: `data:audio/mpeg;base64,${probe.audioBase64}`,
+          },
+        ],
+      );
       await trace.event({
         type: "output",
-        message: `speech model "${probe.model}" is served by the endpoint`,
-        data: probe,
+        message: `speech model "${probe.model}" synthesized the test phrase`,
+        data: sanitizeReportForTrace(result),
       });
-      await trace.succeed({ outputSummary: `${probe.model} served (${probe.modelCount} models)` });
-      return probe;
+      await trace.succeed({ outputSummary: `${probe.model} spoke in "${probe.voice}"` });
+      return result;
     },
   );
 }
@@ -902,7 +1080,7 @@ export async function testAudio(
   input: TestAudioConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
-): Promise<TranscriptionProbe> {
+): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
     backendKey: "audioBackendId",
@@ -937,23 +1115,46 @@ export async function testAudio(
             : `POST ${runtime.baseUrl} /audio/transcriptions`,
         data: { model: runtime.model, mode: runtime.mode },
       });
-      const probe = await probeTranscription(runtime, tinySilenceWav());
+      const startedAt = Date.now();
+      const wav = tinySilenceWav();
+      const probe = await probeTranscription(runtime, wav);
+      const result = report(
+        probe.model,
+        startedAt,
+        [
+          {
+            kind: "audio",
+            label: "Sent audio (generated silence)",
+            dataUrl: `data:audio/wav;base64,${wav.toString("base64")}`,
+          },
+          { kind: "text", label: "Mode", text: TRANSCRIPTION_MODE_LABELS[runtime.mode] },
+        ],
+        [
+          {
+            kind: "text",
+            label: "Transcript",
+            // Silence usually transcribes to nothing, which is a pass, not a
+            // blank the operator should be left to interpret.
+            text: probe.text || "(empty — expected, the probe audio is silence)",
+          },
+        ],
+      );
       await trace.event({
         type: "output",
         message: `transcription endpoint responded`,
-        data: probe,
+        data: sanitizeReportForTrace(result),
       });
       await trace.succeed({ outputSummary: `${probe.model} transcribed the probe audio` });
-      return probe;
+      return result;
     },
   );
 }
 
-/** What the vision probe learned: the model, and how it described the test image. */
-export interface VisionProbe {
-  model: string;
-  description: string;
-}
+/** How each transcription mode reads on a probe report. */
+const TRANSCRIPTION_MODE_LABELS: Record<"transcriptions" | "chat", string> = {
+  transcriptions: "/v1/audio/transcriptions",
+  chat: "chat completion with an input_audio part",
+};
 
 /**
  * Probe the vision configuration by actually describing a tiny generated image
@@ -968,7 +1169,7 @@ export async function testVision(
   input: TestRoleConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
-): Promise<VisionProbe> {
+): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
     backendKey: "visionBackendId",
@@ -989,17 +1190,16 @@ export async function testVision(
           "Choose a vision model, or configure the chat role it falls back to.",
         );
       }
+      const startedAt = Date.now();
       const image = await tinyProbePng();
-      const messages = buildDescribeMessages(
-        [{ base64: image.toString("base64"), mimeHint: "image/png" }],
-        null,
-      );
+      const imageBase64 = image.toString("base64");
+      const messages = buildDescribeMessages([{ base64: imageBase64, mimeHint: "image/png" }], null);
       await trace.event({
         type: "external_call",
         message: `POST ${runtime.baseUrl} /chat/completions (vision)`,
         data: { model: runtime.model, messages: sanitizeMessagesForTrace(messages) },
       });
-      const result = await chatCompletion(
+      const completed = await chatCompletion(
         { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
         { model: runtime.model, messages, timeoutMs: VISION_PROBE_TIMEOUT_MS },
       );
@@ -1007,26 +1207,22 @@ export async function testVision(
         type: "output",
         message: "vision endpoint described the test image",
         // The provider's raw response body, verbatim (full-raw-bodies rule).
-        data: result.responseBody ?? { content: result.content },
+        data: completed.responseBody ?? { content: completed.content },
       });
-      const probe: VisionProbe = { model: runtime.model, description: result.content.trim() };
-      await trace.succeed({ outputSummary: `${probe.model} described the test image` });
-      return probe;
+      const result = report(
+        runtime.model,
+        startedAt,
+        [{ kind: "image", label: "Sent image", dataUrl: pngDataUrl(imageBase64) }],
+        [{ kind: "text", label: "Description", text: completed.content.trim() }],
+      );
+      await trace.succeed({ outputSummary: `${runtime.model} described the test image` });
+      return result;
     },
   );
 }
 
 /** Short bound for the vision probe — one tiny image, an operator is waiting. */
 const VISION_PROBE_TIMEOUT_MS = 20_000;
-
-/** What the browser probe learned: the model, and whether it called the tool. */
-export interface BrowserProbe {
-  model: string;
-  /** True when the model answered by calling the offered tool. */
-  calledTool: boolean;
-  /** The model's final answer, for the operator to eyeball. */
-  answer: string;
-}
 
 /** Short bound for the browser probe — one trivial tool round, same reasoning. */
 const BROWSER_PROBE_TIMEOUT_MS = 30_000;
@@ -1068,7 +1264,7 @@ export async function testBrowser(
   input: TestRoleConnection,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
-): Promise<BrowserProbe> {
+): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
     backendKey: "browserBackendId",
@@ -1089,19 +1285,16 @@ export async function testBrowser(
           "Choose a browser-agent model, or configure the chat role it falls back to.",
         );
       }
-      const messages: ChatMessage[] = [
-        {
-          role: "user",
-          content: 'Call the probe_echo tool with the text "ready", then reply with its result.',
-        },
-      ];
+      const startedAt = Date.now();
+      const prompt = 'Call the probe_echo tool with the text "ready", then reply with its result.';
+      const messages: ChatMessage[] = [{ role: "user", content: prompt }];
       await trace.event({
         type: "external_call",
         message: `POST ${runtime.baseUrl} /chat/completions (tools)`,
         data: { model: runtime.model, messages, tools: [BROWSER_PROBE_TOOL] },
       });
       let calledTool = false;
-      const result = await chatCompletionWithTools(
+      const completed = await chatCompletionWithTools(
         { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
         {
           model: runtime.model,
@@ -1121,19 +1314,32 @@ export async function testBrowser(
           ? "browser model called the probe tool"
           : "browser model answered without calling the tool",
         // The provider's raw response body, verbatim (full-raw-bodies rule).
-        data: result.responseBody ?? { content: result.content },
+        data: completed.responseBody ?? { content: completed.content },
       });
-      const probe: BrowserProbe = {
-        model: runtime.model,
-        calledTool,
-        answer: result.content.trim(),
-      };
+      const result = report(
+        runtime.model,
+        startedAt,
+        [
+          { kind: "text", label: "Prompt", text: prompt },
+          { kind: "text", label: "Tool offered", text: BROWSER_PROBE_TOOL.function.name },
+        ],
+        [
+          {
+            kind: "text",
+            label: "Tool call",
+            text: calledTool
+              ? `${BROWSER_PROBE_TOOL.function.name} was called`
+              : "none — the model answered without using the tool",
+          },
+          { kind: "text", label: "Answer", text: completed.content.trim() },
+        ],
+      );
       await trace.succeed({
         outputSummary: calledTool
-          ? `${probe.model} completed a tool call`
-          : `${probe.model} answered but made no tool call`,
+          ? `${runtime.model} completed a tool call`
+          : `${runtime.model} answered but made no tool call`,
       });
-      return probe;
+      return result;
     },
   );
 }

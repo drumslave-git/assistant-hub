@@ -93,19 +93,31 @@ export async function embedOne(
   return vector;
 }
 
-/** What a connection test learned about the configured embedding model. */
+/** What the embedding probe sent and what came back. */
 export interface EmbeddingProbe {
   model: string;
+  /** The phrase that was embedded. */
+  phrase: string;
   dimensions: number;
+  /** The vector itself — the leading components are enough to see it is real. */
+  vector: number[];
 }
 
+/** What the probe embeds: an ordinary phrase, not a magic token. */
+const PROBE_PHRASE = "The quick brown fox jumps over the lazy dog.";
+
 /**
- * Real probe of the embedding configuration: actually embeds a short string and
- * reports the width it got back. Proves the endpoint is reachable, the key is
+ * Real probe of the embedding configuration: actually embeds a short phrase and
+ * reports the vector it got back. Proves the endpoint is reachable, the key is
  * accepted, the model exists, *and* that its vectors fit the stored columns —
  * none of which a `/v1/models` listing establishes.
  */
 export async function probeEmbeddings(runtime: EmbeddingRuntime): Promise<EmbeddingProbe> {
-  const vector = await embedOne(runtime, "connection test");
-  return { model: runtime.model, dimensions: vector.length };
+  const vector = await embedOne(runtime, PROBE_PHRASE);
+  return {
+    model: runtime.model,
+    phrase: PROBE_PHRASE,
+    dimensions: vector.length,
+    vector,
+  };
 }

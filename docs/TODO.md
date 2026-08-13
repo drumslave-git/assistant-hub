@@ -102,6 +102,76 @@ restart to serve (done).
   — same "real probe" doctrine as before, now potentially against a paid
   provider.
 
+## Every probe exercises the real thing and shows the exchange (`done`, 2026-08-13)
+
+User requirement, 2026-08-13: *"every Test button have to test corresponding
+functionality with detailed input and output"* — chat: prompt → message +
+reasoning; embedding: phrase → vector; images: prompt → image; speech: prompt →
+audio; audio: silent audio → result; vision: red square → result.
+
+### What shipped
+
+- **One shape for every probe**: `ProbeReport` (`{ model, latencyMs, input[],
+  output[] }`) whose parts are labelled text, image, audio or vector
+  (`features/settings/server/schema.ts`), rendered by one shared
+  `ProbeReportView`. This removed the seven bespoke `renderOk` badges and the
+  generic from `roleTab` — a probe now describes what it exchanged, and how
+  that looks is not its business.
+- **Images and speech stopped faking it.** Both only listed models before. The
+  image probe generates a 512×512 picture from a fixed prompt and returns it;
+  the speech probe synthesizes a phrase in the configured voice and returns
+  playable audio. A listing cannot catch a model that fails on the requested
+  size, answers with an empty payload, or an endpoint that silently substitutes
+  an unknown voice.
+- **New chat probe** (`testChat` + `POST /api/settings/test-chat`): a real
+  completion reporting the reply **and** the hidden reasoning (via
+  `readReasoningFor`). The Chat tab's old "Test connection" listed the
+  backend's models, which says nothing about whether the selected model
+  answers, or thinks.
+- Embeddings now report the vector (width + an 8-component preview) rather than
+  just a width; audio reports the silence it sent and the transcript; vision the
+  image it sent and the description; browser the tool offered, whether it was
+  called, and the answer.
+- Image/audio bytes are replaced by their size in **trace** bodies (the vision
+  describer's convention); the dashboard renders the real artifact from the API
+  response.
+
+### Proof
+
+Files: `features/settings/server/{schema,service}.ts`,
+`features/settings/ui/{ProbeReportView.tsx,RoleSection.tsx,SettingsForm.tsx}`,
+`server/llm/{embeddings,images,speech}.ts`,
+`app/api/settings/test-chat/route.ts` (new),
+`features/settings/server/settings.integration.test.ts`, docs
+(`features/settings.md`, `api/endpoints.md`, `api/openapi.yaml`,
+`operations/operator-guide.md`).
+
+Lint and typecheck clean; settings integration 62/62 and status 7/7 (new: chat
+reports reasoning, names an absent reasoning channel, rejects unconfigured;
+images/speech/embeddings report their artifact); `openapi.yaml` re-parsed to
+confirm the seven probe paths and the new `ProbeReport`/`ProbePart` schemas.
+
+Browser-verified against the live dev server: **chat** on vLLM `gemma4-26b`
+returned the answer (95 chars) plus 1036 characters of separate reasoning in
+5.1s; **vision** rendered the red probe square inline next to the model's
+description of it; **audio** rendered a playable clip of the sent silence with
+the transcript beside it. The vector rendering is covered by the integration
+test but was **not** seen live — the embedding endpoint currently 404s (below).
+
+### Remaining risks
+
+- **vLLM now returns `reasoning_content`.** The earlier entry recording that
+  Gemma thinking is never populated on vLLM (and that the fix was in the vLLM
+  launch) is out of date: the chat probe reads a full reasoning channel from
+  `gemma4-26b` today. Re-check that entry before acting on it.
+- **The embeddings backend 404s.** `POST /v1/embeddings` on the Ollama backend
+  returns "404 page not found", so semantic recall is off and the Overview
+  shows Embeddings as an error. It worked on 2026-08-12; unrelated to this
+  change, but it needs the operator's attention.
+- The image and speech probes now cost a real generation. Both are bounded
+  (120s / 30s) and only run when the operator presses the button, but on a paid
+  provider they are no longer free.
+
 ## Unified LLM role tabs + clearable model select + honest fallback status (`done`, 2026-08-13)
 
 User reports, 2026-08-13: a selected model could not be cleared; the Overview

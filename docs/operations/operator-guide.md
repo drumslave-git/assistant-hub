@@ -313,9 +313,17 @@ listed. The audio model is spared only in `transcriptions` mode (whisper-class
 servers often expose no model listing); in `chat` mode it is an ordinary chat
 model and is verified like the rest.
 
-Every "Test …" button makes a **real call** and is recorded as a trace. Use them: they
-catch things a config check cannot, such as an embedding model whose vector width does
-not fit the stored columns.
+Every "Test …" button does the role's **real work** and shows you the exchange —
+the prompt and the reply plus its reasoning, the phrase and the vector, the
+prompt and the actual picture, the phrase and audio you can play, the silence and
+its transcript, the test image and the description of it, the offered tool and
+whether the model called it. Each is recorded as a trace.
+
+Use them. They catch what a config check cannot: an embedding model whose vector
+width does not fit the stored columns, a voice name the endpoint silently
+substitutes, an image model that answers with an empty payload, a chat model that
+returns no reasoning when it is supposed to think, or a model that cannot make a
+tool call at all — which breaks browsing and every other tool.
 
 Secret fields are write-only. They show as "configured" and their values never leave
 the server; leaving one untouched keeps the stored value.

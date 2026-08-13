@@ -158,3 +158,40 @@ export const testAudioConnectionSchema = testRoleConnectionSchema.extend({
 });
 
 export type TestAudioConnection = z.infer<typeof testAudioConnectionSchema>;
+
+/**
+ * One labelled piece of what a probe sent or got back, in the few shapes the
+ * dashboard knows how to render. Roles differ in what they exchange — a phrase
+ * and a vector, a prompt and an image, silence and a transcript — but not in
+ * how that is reported, so every probe speaks in these parts and one component
+ * renders all of them.
+ */
+export const probePartSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("text"), label: z.string(), text: z.string() }),
+  /** A `data:` URL — the actual bytes, so the operator sees the real artifact. */
+  z.object({ kind: z.literal("image"), label: z.string(), dataUrl: z.string() }),
+  z.object({ kind: z.literal("audio"), label: z.string(), dataUrl: z.string() }),
+  z.object({
+    kind: z.literal("vector"),
+    label: z.string(),
+    dimensions: z.number().int(),
+    /** The leading components, enough to see it is a real embedding. */
+    preview: z.array(z.number()),
+  }),
+]);
+
+export type ProbePart = z.infer<typeof probePartSchema>;
+
+/**
+ * What a role probe actually exercised: the model it ran on, what went in, and
+ * what came out. Every "Test …" button reports this, so a passing test is
+ * legible as the real exchange rather than a green tick.
+ */
+export const probeReportSchema = z.object({
+  model: z.string(),
+  input: z.array(probePartSchema),
+  output: z.array(probePartSchema),
+  latencyMs: z.number().int(),
+});
+
+export type ProbeReport = z.infer<typeof probeReportSchema>;
