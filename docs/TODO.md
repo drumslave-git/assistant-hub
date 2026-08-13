@@ -102,7 +102,7 @@ restart to serve (done).
   — same "real probe" doctrine as before, now potentially against a paid
   provider.
 
-## Unified LLM role tabs + clearable model select + honest fallback status (`in-progress` — needs a browser pass, 2026-08-13)
+## Unified LLM role tabs + clearable model select + honest fallback status (`done`, 2026-08-13)
 
 User reports, 2026-08-13: a selected model could not be cleared; the Overview
 called Browser agent and Audio (STT) "Off" when both actually run on the chat
@@ -148,14 +148,28 @@ roles report `inherited`, not `off`, once a chat model is set). Full
 integration suite 54 files / 714 tests pass; unit suite unchanged (same 21
 pre-existing yt-dlp Windows failures).
 
-### Next
+Browser-verified against the live dev server (the operator signed the preview
+in): Overview reads "Chat model" for Audio (STT) / Vision / Browser agent and
+still "Off" for Images / Speech; the chat model's clear button emptied the
+field and then disappeared, leaving the value restored on reload since nothing
+was saved; "Test browser model" ran a real tool round against the local vLLM
+backend and returned `{ model: "gemma4-26b", calledTool: true, answer: "ready" }`.
+A DOM sweep over all seven role panels confirmed the unified contract: every
+one has a backend select, a model select and a Test button; the test is
+disabled only where an empty model means "off" (images, speech); the clear
+button shows exactly where a value is committed (chat, embeddings).
 
-**Browser verification is not done** — the preview browser lost its session
-cookie when the dev server restarted, and signing in needs the operator
-password, which is the user's to enter. Once signed in at `/settings`, check:
-the X on a filled model select clears it; the Browser agent tab's new "Test
-browser model" button; and the Overview cards reading "Chat model" instead of
-"Off".
+### Remaining risks
+
+- OpenRouter's `google/gemma-4-26b-a4b-it:free` — the configured chat model —
+  returned HTTP 200 and then aborted mid-response for **every** probe on
+  2026-08-13 (vision and browser alike), ~10s in, while the same probes pass
+  against the local vLLM backend. An upstream availability problem, not a code
+  path: it worked on 2026-08-12. Worth re-checking before blaming the app for
+  a failed reply.
+- The resulting message, `LLM endpoint error (200): The operation was
+  aborted`, reads like our own timeout rather than a provider drop. Left as-is
+  here; see the follow-up task on `toLlmError`.
 
 ## Audio stale-clearing in chat mode + always-testable audio probe (`done`, 2026-08-12)
 
