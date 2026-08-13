@@ -47,6 +47,7 @@ import {
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import {
   getUserContext,
+  getUserLabels,
   getUserLanguage,
   rememberUser,
 } from "@/features/known-users/server/service";
@@ -621,11 +622,26 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             // `on-reply` rule cannot open a turn but still lends its author's
             // rights to what it asks for on a turn the bot was addressed in.
             const offered = addressed ? replyRules : alwaysRules;
-            const rules = offered.map((rule) => ({ id: rule.id, text: rule.text }));
+            // Names for the people involved: the sender, and anyone a rule is
+            // limited to. A rule whose condition is *who is speaking* is
+            // unjudgeable without them — the model would be shown an
+            // instruction with no visible trigger and would rightly decline it
+            // (trace `c08283a8…`). One indexed read next to a classification
+            // call; unreadable degrades to no names rather than no match.
+            const labels = await getUserLabels([
+              ...(senderId ? [senderId] : []),
+              ...offered.flatMap((rule) => rule.targetUserIds),
+            ]).catch(() => new Map<string, string>());
+            const rules = offered.map((rule) => ({
+              id: rule.id,
+              text: rule.text,
+              targetLabels: rule.targetUserIds.map((id) => labels.get(id) ?? `User ${id}`),
+            }));
             const messages = buildRuleMatchMessages({
               rules,
               text,
               chatType: message.chat.type,
+              senderLabel: senderId ? labels.get(senderId) : null,
             });
             await replyTrace.event({
               type: "llm_request",

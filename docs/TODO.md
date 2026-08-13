@@ -55,6 +55,19 @@ users in group":
 - Dashboard `/rules`: an "Applies to" list on group scope — "Everyone in this
   group" is simply the empty selection, so the half-set state cannot be reached —
   plus an audience badge on each rule card and editing of the audience.
+- **The `always` matcher is told who is involved** (2026-08-13, after the first
+  live per-person rule never fired — trace `c08283a8…`). A targeted rule is
+  offered as `if message from <label>: <text>` and the sender is named over the
+  message; labels come from one `getUserLabels` read. Without both, the matcher
+  is asked whether the message *contains* what a rule describes, about a rule
+  that describes nothing a message could contain, and correctly says no.
+  The prompt now walks two steps — who it applies to, then what it asks of the
+  message — because the first wording that made per-person rules fire also made
+  a targeted rule *with* a content condition fire on every message that person
+  sent (6 live runs of 6). Both directions are pinned in a new
+  `live-matcher.integration.test.ts` (`LLM_LIVE=1`, 6 runs per case, all green).
+  The citation guard is untouched: such a rule quotes the message itself, which
+  passes the existing mechanical check with no exemption.
 - Chat tools: `user_ids` on create; `user_ids` + `applies_to_everyone` on update
   (two fields so an empty array cannot silently widen a rule — same reason
   `text: ""` keeps the text). The same rule text set again for different people
@@ -64,25 +77,38 @@ users in group":
 ### Proof
 
 Files: `db/schema.ts` + `db/migrations/0053`, `features/chat-rules/{format.ts,
-server/{schema,repository,service,mcp-tools}.ts, ui/ChatRulesManager.tsx}`,
+server/{schema,repository,service,mcp-tools,matcher}.ts, ui/ChatRulesManager.tsx}`,
 `app/(dashboard)/rules/page.tsx`, `features/known-groups/{format.ts,
-server/{repository,service}.ts}`, `server/telegram/process-update.ts`,
+server/{repository,service}.ts}`, `features/known-users/server/service.ts`,
+`server/telegram/process-update.ts`,
 `features/scheduled-tasks/server/scheduler.ts`, plus docs.
 
-Lint clean; typecheck clean; unit suite 1097 passing — the only failures are the
+Lint clean; typecheck clean; unit suite passing — the only failures are the
 pre-existing Windows-only `ytdlp-binary`/`media-download` ones (the fake binary
 fixture is a shell script that will not execute here), untouched by this work.
-`chat-rules.integration.test.ts` 24/24 against a real database.
+`chat-rules.integration.test.ts` 24/24 against a real database;
+`live-matcher.integration.test.ts` 5/5 against the live classifier (30 model
+calls), and skipped without `LLM_LIVE=1`.
 
 Browser pass on `/rules` (attached to the running dev server): audience picker
 appears only for a group, a rule created for one member shows an "Only <name>"
 badge, editing it back to everyone stores `targetUserIds: []`, and a global rule
 with targets is rejected 422 at the API boundary. Test rule deleted afterwards.
 
-Remaining risk: the live model has not yet been observed choosing `user_ids`
-from the roster in a real group turn — the tool description and the roster ids
-are pinned by tests, but the end-to-end behaviour is worth watching on the next
-live rule set from chat.
+Remaining risks:
+
+- The live model has not yet been observed choosing `user_ids` from the roster in
+  a real group turn — the tool description and the roster ids are pinned by
+  tests, but the end-to-end behaviour is worth watching on the next live rule set
+  from chat.
+- The matcher prompt is tuned against the locally configured classifier. A
+  different model or backend can move both directions at once (fires on
+  everything / never fires), so re-run `live-matcher` after changing the
+  classifier model.
+- A person-only `always` rule opens a turn on **every** message that person
+  sends, each costing the ordinary reply. That is what the rule asks for, but it
+  is a much higher fire rate than a content-conditioned rule and is worth
+  watching on the first real one.
 
 ## Audio transcription modes + vision probe + relayed error detail (`done` pending production deploy, 2026-08-12)
 

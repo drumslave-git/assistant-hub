@@ -51,6 +51,23 @@ export async function getUser(userId: string, db: DrizzleDb = getDb()): Promise<
   return record ? toClient(record) : null;
 }
 
+/**
+ * Display labels for a set of user ids, keyed by id. Every requested id gets a
+ * label — an id with no known-user row falls back to `User <id>` — so a caller
+ * naming people to the model never has to choose between a blank and an id it
+ * would then have to explain.
+ */
+export async function getUserLabels(
+  userIds: readonly string[],
+  db: DrizzleDb = getDb(),
+): Promise<Map<string, string>> {
+  const wanted = [...new Set(userIds.filter(Boolean))];
+  if (wanted.length === 0) return new Map();
+  const records = await getKnownUsersByIds(db, wanted);
+  const byId = new Map(records.map((record) => [record.userId, formatKnownUserLabel(record)]));
+  return new Map(wanted.map((id) => [id, byId.get(id) ?? `User ${id}`]));
+}
+
 /** The identity block injected into a private-chat reply (parallel of GroupContext). */
 export interface UserContext {
   content: string;

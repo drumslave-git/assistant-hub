@@ -50,10 +50,14 @@ people, and then applies to their messages and to nobody else's.
 It is a filter on the sender, not a hint to the model. `getActiveRulesForChat`
 takes the id of whoever sent the message and drops every rule that names someone
 else *before* anything is composed — so a rule about one member never reaches
-another member's prompt, never reaches the `always` matcher, and the model is
-never asked to work out that a rule about somebody else does not apply. Nothing
-in the prompt says a rule is targeted, because by the time the prompt exists,
-only rules that apply are in it.
+another member's prompt, and the model is never asked to work out that a rule
+about somebody else does not apply. The reply prompt therefore says nothing about
+targeting: by the time it exists, only rules that apply are in it.
+
+The `always` **matcher** is the exception, and has to be told (see *Trigger
+modes*). It judges whether the message triggers a rule, and a targeted rule's
+condition can be the *person* rather than anything in the words — so it is shown
+both names.
 
 Consequences of that shape:
 
@@ -109,6 +113,41 @@ addressed.
 
 **Limit:** the matcher reads the message's *words*. A rule triggered by something
 with nothing to quote — a bare photo, a sticker — cannot match this way.
+
+### What the matcher is shown about people
+
+A rule limited to particular people is offered as `if message from <label>: <rule
+text>`, and the sender is named over the message (`Message from <label>:`).
+Labels, not ids: the model compares two names rather than an id it was never
+given. The runtime resolves both in one read (`getUserLabels`).
+
+This is not decoration. Without it, a per-person rule never fires (2026-08-13,
+trace `c08283a8…`): the matcher is asked whether the message *contains* what the
+rule describes, and *"tell him how cool and strong he is"* describes nothing a
+message could contain — the trigger is who is speaking, which was the one thing
+the prompt did not say. gemma4-26b answered `{"matched": []}`, correctly, on the
+question it was actually asked.
+
+The prompt walks a rule in two steps, and both are load-bearing in opposite
+directions:
+
+1. **Who it applies to** — compare the rule's name with the sender's, and never
+   look for that name in the message.
+2. **What it asks of the message** — if what is left of the rule names something
+   that has to be *in* the message (a link, a word, a request), the message must
+   contain it; if it only says what the bot must do, step 1 was the whole
+   condition and the rule triggers.
+
+Step 2's first branch is not optional. The first phrasing that made per-person
+rules fire also made *"if message from Ann: download any video link she posts"*
+fire on every message Ann sent — 6 live runs out of 6. The fix was to spell out
+both branches and give a worked contrast, which is what a small model
+generalizes from. Both directions are asserted live in
+`live-matcher.integration.test.ts` (6 runs per case, `LLM_LIVE=1`).
+
+The citation guard is untouched. A rule that asks nothing of the words is told to
+quote the message itself, which occurs in the message by construction — so the
+mechanical check still runs, with no exemption carved out of it.
 
 ## Whose rights a rule-driven action carries
 
@@ -304,7 +343,8 @@ injected directive, and the system-prompt step reports `chatRulesApplied`.
 | File | Covers |
 | --- | --- |
 | `features/chat-rules/format.test.ts` | Prompt block and rule-trigger directive; enabled/`always`/sender selection; `resolveRuleAuthority` |
-| `features/chat-rules/server/matcher.test.ts` | Match prompt, and every fail-closed path of the citation check |
+| `features/chat-rules/server/matcher.test.ts` | Match prompt (incl. the audience prefix and sender line), and every fail-closed path of the citation check |
+| `features/chat-rules/server/live-matcher.integration.test.ts` | `LLM_LIVE=1`: what a real classifier does with that prompt — a person-only rule fires for its person and nobody else, and naming a person does not excuse a rule from its content condition |
 | `features/chat-rules/server/mcp-tools.test.ts` | Tool contract: bound chat, relayed refusals, partial updates; the `rules_create` description |
 | `features/browser-agent/server/mcp-tools.test.ts` | The download gate reads the turn's authority, and provenance stays the sender |
 | `features/chat-rules/server/chat-rules.integration.test.ts` | Scope resolution, caps, duplicates, the permission gate, traces; sender targeting end to end (roster check, group-only, editing the audience) |

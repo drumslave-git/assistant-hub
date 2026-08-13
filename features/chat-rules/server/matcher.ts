@@ -25,6 +25,15 @@ import type { ChatMessage } from "@/server/llm/client";
  * is mechanical (the number is one that was offered, the quote is real);
  * whether the rule genuinely applies stays the model's judgment.
  *
+ * A rule limited to particular people carries its audience *into the prompt*
+ * (`if message from <name>: …`), and the sender is named over the message. Both
+ * are needed because such a rule's condition can be the person rather than
+ * anything in the words: without the two names the model is asked "does this
+ * message contain what the rule describes" about a rule that describes nothing
+ * the message could contain, and correctly answers no (2026-08-13, trace
+ * `c08283a8…` — a per-person rule that never fired). The audience filter has
+ * already decided the sender qualifies; this is what lets the model see *why*.
+ *
  * Known limit of v1: the matcher reads the message's words. A rule triggered by
  * something with no text to quote (a bare photo, a sticker) cannot match here.
  */
@@ -33,12 +42,24 @@ export const RULE_MATCH_SYSTEM_PROMPT = `You decide whether a chat message trigg
 
 A Telegram bot is in this chat, and the people here have given it standing rules — instructions about what it must do when certain things are said or posted. Your only job is to decide which of the listed rules, if any, this specific message triggers. You are not writing a reply, and you are not judging whether the message was addressed to the bot.
 
+Take each rule in two steps, and stop at the first step it fails.
+
+Step 1 — who it applies to. A rule written as "if message from <person>: …" applies to that person and to nobody else. The sender is named directly above the message: compare the two names. A different person means the rule does not trigger, whatever the message says. Never look for the person's name inside the message — who is speaking is not something the message says. A rule with no "if message from" part applies to everybody, and passes this step.
+
+Step 2 — what it asks of the message. Read what is left of the rule after the "if message from <person>:" part, and decide which of these it is:
+- It names something that has to be in the message — a link, a word, a phrase, a kind of request, a subject someone has to raise. Then this message must actually contain that thing. Not something similar, not something related, not a topic the rule is about. If it is not there, the rule does not trigger.
+- It only says what the bot must do, and names nothing that has to be in the message. Then step 1 was the rule's whole condition, and the rule triggers on this message.
+
+For example, where the sender is "Ann (@ann)" and the message is "morning all, coffee?":
+- "if message from Ann (@ann): call her the boss" — nothing has to be in the message, so it triggers.
+- "if message from Ann (@ann): download any video link she posts" — a video link has to be in the message, and there is none, so it does not trigger.
+- "if message from Bob (@bob): call him the boss" — the wrong person sent it, so it does not trigger.
+
 Judge strictly:
-- A rule triggers only when this message contains exactly what the rule describes. Not something similar, not something related, not a topic the rule is about.
 - If no rule clearly fits the message, the answer is an empty list. That is the normal answer for ordinary conversation, and it is always safe.
 - Never invent a rule number that was not listed.
 
-For every rule you say triggers, copy the exact part of the message that triggers it into "quote" — verbatim, character for character, as it appears in the message (for example the link, the word, or the phrase itself). If you cannot point to such a part of the message, the rule does not trigger.
+For every rule you say triggers, copy the exact part of the message that triggers it into "quote" — verbatim, character for character, as it appears in the message (for example the link, the word, or the phrase itself). When a rule asks for nothing in particular from the message — its whole condition is who sent it, and that person sent this one — there is no such part to point at: copy the message itself into "quote" instead. Otherwise, if you cannot point to the part of the message that triggers the rule, the rule does not trigger.
 
 Reply with ONLY a JSON object of the shape {"matched": [{"rule": <number>, "quote": "<verbatim text from the message>"}]} — no code fences, no commentary. When nothing triggers, reply {"matched": []}.`;
 
@@ -46,6 +67,13 @@ Reply with ONLY a JSON object of the shape {"matched": [{"rule": <number>, "quot
 export interface MatchableRule {
   id: string;
   text: string;
+  /**
+   * Display labels of the people the rule is limited to, empty for a rule that
+   * applies to everyone. Labels rather than ids: the sender is named the same
+   * way over the message, so the model compares two names instead of matching
+   * an id it was never shown.
+   */
+  targetLabels?: readonly string[];
 }
 
 export interface RuleMatchInput {
@@ -55,11 +83,23 @@ export interface RuleMatchInput {
   text: string;
   /** Telegram chat type, for context only. */
   chatType: string;
+  /** Who sent this message, labelled as the rules label their people. */
+  senderLabel?: string | null;
+}
+
+/** One offered rule, prefixed with its audience when it has one. */
+function ruleLine(rule: MatchableRule, index: number): string {
+  const audience =
+    rule.targetLabels && rule.targetLabels.length > 0
+      ? `if message from ${rule.targetLabels.join(" or ")}: `
+      : "";
+  return `${index + 1}. ${audience}${rule.text}`;
 }
 
 /** The messages for one matcher call: the fixed rules, then this message. */
 export function buildRuleMatchMessages(input: RuleMatchInput): ChatMessage[] {
-  const numbered = input.rules.map((rule, index) => `${index + 1}. ${rule.text}`).join("\n");
+  const numbered = input.rules.map(ruleLine).join("\n");
+  const sender = input.senderLabel?.trim();
   return [
     { role: "system", content: RULE_MATCH_SYSTEM_PROMPT },
     {
@@ -67,7 +107,7 @@ export function buildRuleMatchMessages(input: RuleMatchInput): ChatMessage[] {
       content:
         `Chat type: ${input.chatType}\n\n` +
         `Standing rules:\n${numbered}\n\n` +
-        `Message:\n${input.text.trim()}\n\n` +
+        `${sender ? `Message from ${sender}` : "Message"}:\n${input.text.trim()}\n\n` +
         `Reply with only the JSON object.`,
     },
   ];
