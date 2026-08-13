@@ -44,6 +44,19 @@ time, never an "is the variable set" guess:
 | Trace storage | Opening the current month's file for append — the same operation the flusher performs |
 | Downloads | Creating and removing a file in the downloads directory — the same thing a download does |
 
+Each optional role (embeddings, images, speech, audio, vision, browser agent)
+gets its own card, and a neutral card is **not** a warning:
+
+| Card reads | Means |
+| --- | --- |
+| Connected | The role has its own model and its endpoint was probed |
+| Chat model | The role has no model of its own, so it runs on the chat model ("main by default") — the capability is on, and the chat model must accept that input (audio, images) |
+| Off | The capability genuinely does not run — no model, and nothing to fall back to |
+| Error | A configured endpoint failed its probe |
+
+Only "Error" is a fault. "Chat model" on the Audio, Vision or Browser agent card
+is the normal state until you give that role a model of its own.
+
 The two storage cards differ in severity, deliberately. An unwritable **trace**
 directory is an error: settled traces pile up in RAM and are lost on restart, so it
 also raises the global banner. An unwritable **downloads** directory is a warning:
@@ -54,8 +67,9 @@ this page rather than from a user's failed request.
 The bot control card starts and stops the poller. The token comes from Settings, so
 there is nothing to type. If the card says "Not configured", go to Settings first.
 
-**What to do here:** confirm every card is green after any config change or restart.
-This is the page to look at first when something is not working.
+**What to do here:** after any config change or restart, confirm no card is red
+and that every neutral one says what you intended. This is the page to look at
+first when something is not working.
 
 ## Analytics (`/analytics`)
 
@@ -290,13 +304,14 @@ field regardless of which tab is open.
 | **Integrations** | Tavily key — the browsing agent's search fallback |
 | **Security** | Operator password change (its own button and endpoint) |
 
-The four optional endpoints reuse the LLM connection unless given their own, so
-**repointing the LLM URL repoints them too**. Saving an endpoint change verifies
-every stored model selection now served by the new endpoint and clears the ones
-it does not serve, naming them next to the Save button — pick replacements on
-their tabs. Nothing is cleared when the new endpoint cannot be listed, and the
-transcription model is never auto-cleared (whisper-class servers often expose no
-model listing).
+Every optional role reuses the chat backend unless given its own, so
+**repointing the chat backend repoints them too**. Saving a backend change
+verifies every stored model selection now served by the new backend and clears
+the ones it does not serve, naming them next to the Save button — pick
+replacements on their tabs. Nothing is cleared when the new backend cannot be
+listed. The audio model is spared only in `transcriptions` mode (whisper-class
+servers often expose no model listing); in `chat` mode it is an ordinary chat
+model and is verified like the rest.
 
 Every "Test …" button makes a **real call** and is recorded as a trace. Use them: they
 catch things a config check cannot, such as an embedding model whose vector width does

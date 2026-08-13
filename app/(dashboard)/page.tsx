@@ -16,7 +16,7 @@ import {
 import { BotControl } from "@/features/bot-messaging/ui/BotControl";
 import { getSettings } from "@/features/settings/server/service";
 import { buildInfo } from "@/lib/build-info";
-import { getSystemStatus } from "@/server/status";
+import { getSystemStatus, type EndpointStatus } from "@/server/status";
 import { getBotStatus } from "@/server/telegram/bot-manager";
 
 // Probe real state at request time (DB query + LLM endpoint call), so the
@@ -29,6 +29,23 @@ interface StatusItem {
   value: string;
   hint: string;
 }
+
+/**
+ * How each optional-endpoint state reads on its card. Neither "Off" (a
+ * deliberate choice) nor "Chat model" (the role running on the main model, per
+ * "main by default") is a fault, so both render neutral — but only one of them
+ * means the capability is unavailable, and the card must not confuse the two.
+ * A configured endpoint that fails its probe is the actual error.
+ */
+const ENDPOINT_PRESENTATION: Record<
+  EndpointStatus["state"],
+  { tone: StatusTone; value: string }
+> = {
+  ok: { tone: "ok", value: "Connected" },
+  inherited: { tone: "neutral", value: "Chat model" },
+  off: { tone: "neutral", value: "Off" },
+  error: { tone: "error", value: "Error" },
+};
 
 /**
  * Dashboard overview. Server Component: reads live {@link getSystemStatus} — a
@@ -92,13 +109,10 @@ export default async function OverviewPage() {
         hint: `${status.downloads.detail} — browser-agent downloads will fail`,
       };
 
-  // The optional endpoints, one card each. "Off" is a choice, not a fault —
-  // rendered neutral so a deliberately-disabled feature does not read as a
-  // problem — while a configured endpoint that fails its probe is an error.
+  // The optional endpoints, one card each.
   const endpointItems: StatusItem[] = status.endpoints.map((endpoint) => ({
     label: endpoint.label,
-    tone: endpoint.state === "ok" ? "ok" : endpoint.state === "off" ? "neutral" : "error",
-    value: endpoint.state === "ok" ? "Connected" : endpoint.state === "off" ? "Off" : "Error",
+    ...ENDPOINT_PRESENTATION[endpoint.state],
     hint: endpoint.detail,
   }));
 

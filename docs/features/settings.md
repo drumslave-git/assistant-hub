@@ -87,6 +87,20 @@ state machine, and the per-backend model cache; `RoleSection.tsx` is the
 section shell every role tab differs from only by wording; the searchable
 model select is the shared `Combobox` UI-kit component.
 
+All seven LLM role tabs are then produced by **one** renderer (`roleTab` in
+`SettingsForm.tsx`) from a `RoleTabSpec` per role, so the behaviour they must
+share is decided once and cannot drift:
+
+| Shared behaviour | Rule |
+| --- | --- |
+| Probe invalidation | Changing the backend clears that role's probe result; so does changing the model, except for chat, whose probe lists the backend and stays valid across model changes |
+| Test availability | A role whose empty model means "use the chat model" (audio, vision, browser) is testable without one; a role whose empty model means "off" (embeddings, images, speech) is not. Chat needs a backend selected |
+| Stale warning | Comes from the fetched model list, for every role whose model is listable |
+
+Only genuine differences are per-role data: wording, the probe endpoint and how
+its result reads, free-text entry (audio), extra fields (speech's voice, audio's
+transcription mode), and whether the role inherits the chat backend.
+
 ## Probes are real calls
 
 Every "Test …" button makes an actual request, and each is recorded as a trace.
@@ -100,6 +114,8 @@ stored, and resolution goes through the same runtime resolver the feature uses.
 | `test-images` | Checks the configured model is served | A real generation costs time and money and proves nothing extra |
 | `test-speech` | Checks the configured model is served | Nothing about a voice reply can only be learned by rendering one |
 | `test-audio` | Transcribes a fraction of a second of generated silence | A model listing proves nothing here — whisper-class servers often serve `/v1/audio/transcriptions` without `/v1/models`. With no audio model set it probes the chat-model `input_audio` fallback, exactly what the voice path uses |
+| `test-vision` | Describes a tiny generated PNG | A listing cannot reveal a missing image-input modality; with no vision model set it probes the chat-model fallback |
+| `test-browser` | Runs one tool round with a single trivial tool | A listing cannot reveal missing tool-call support, and browsing is nothing but tool calls; with no browser model set it probes the chat-model fallback. A model that answers without calling the tool is reported, not failed |
 
 ## Honest initial render
 

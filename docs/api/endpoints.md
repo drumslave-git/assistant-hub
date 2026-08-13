@@ -84,11 +84,14 @@ can be re-tested without resending the secret.
 | `POST` | `/api/settings/test-embeddings` | `{ backendId?, model? }` | `{ model, dimensions }` |
 | `POST` | `/api/settings/test-images` | `{ backendId?, model? }` | `{ model, modelCount }` |
 | `POST` | `/api/settings/test-speech` | `{ backendId?, model? }` | `{ model, modelCount }` |
-| `POST` | `/api/settings/test-audio` | `{ backendId?, model? }` | `{ model, text }` |
+| `POST` | `/api/settings/test-audio` | `{ backendId?, model?, transcriptionMode? }` | `{ model, text }` |
+| `POST` | `/api/settings/test-vision` | `{ backendId?, model? }` | `{ model, description }` |
+| `POST` | `/api/settings/test-browser` | `{ backendId?, model? }` | `{ model, calledTool, answer }` |
 
 Role probes merge the input over the stored configuration (omitted fields fall
 back; `backendId: null` means "use the chat backend") and resolve exactly as
-the runtime does. Every field's meaning is in
+the runtime does — including the chat-model fallback, so the audio, vision and
+browser probes work with no model of their own set. Every field's meaning is in
 [Configuration](../configuration.md#db-backed-settings).
 
 ## Telegram bot control
@@ -310,6 +313,8 @@ POST   /api/settings/test-embeddings
 POST   /api/settings/test-images
 POST   /api/settings/test-speech
 POST   /api/settings/test-audio
+POST   /api/settings/test-vision
+POST   /api/settings/test-browser
 
 GET    /api/telegram/bot
 POST   /api/telegram/bot

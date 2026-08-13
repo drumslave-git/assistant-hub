@@ -2,7 +2,7 @@
 
 import { Check, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { Button, Field, Input, Select, Switch, Tabs, type TabItem } from "@/components/ui";
 import type { Backend } from "@/features/backends/server/schema";
@@ -10,9 +10,15 @@ import { formatKnownUserLabel } from "@/features/known-users/format";
 import type { KnownUser } from "@/features/known-users/server/schema";
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 import type { Settings } from "../server/schema";
-import { readError, useBackendModels, useProbe, useSecretField } from "./connection";
+import {
+  readError,
+  useBackendModels,
+  useProbe,
+  useSecretField,
+  type ProbeState,
+} from "./connection";
 import { ChangePasswordSection } from "./ChangePasswordSection";
-import { RoleSection } from "./RoleSection";
+import { RoleSection, type RoleSectionLabels } from "./RoleSection";
 
 /**
  * Bot settings editor. Client Component with one tab per concern. The LLM
@@ -43,6 +49,47 @@ type SaveState =
   | { kind: "saving" }
   | { kind: "saved" }
   | { kind: "error"; message: string };
+
+/**
+ * One LLM role tab, as data. Every axis here is a real difference between the
+ * roles; anything not listed is shared behaviour and is decided once in
+ * {@link SettingsForm.roleTab}, so the tabs cannot drift apart.
+ */
+interface RoleTabSpec<T> {
+  /** Tab id, also the field-id prefix ("embedding" → `embeddingModel`). */
+  id: string;
+  label: string;
+  role: RoleConfig;
+  labels: RoleSectionLabels;
+  /**
+   * Whether an empty model means "run on the chat model" rather than "this
+   * capability is off". It decides the placeholder's promise and whether the
+   * role can be tested without a model of its own.
+   */
+  fallsBackToChat?: boolean;
+  /** Free-text model entry — endpoints whose ids cannot be listed. */
+  freeText?: boolean;
+  /** Whether the fetched model list can prove this selection stale (default true). */
+  listed?: boolean;
+  /** Chat has no "same backend as chat" option; every other role does. */
+  inherit?: boolean;
+  probe: {
+    state: ProbeState<T>;
+    reset: () => void;
+    run: () => void;
+    renderOk: (result: T) => ReactNode;
+    /**
+     * Whether the probe's result depends on the selected model. True for every
+     * role that tests a model; false for chat, whose probe lists the backend
+     * and stays valid across model changes.
+     */
+    dependsOnModel?: boolean;
+    /** Extra condition blocking the test (chat needs a backend selected). */
+    disabled?: boolean;
+  };
+  /** Role-specific extra fields, e.g. audio's transcription mode. */
+  children?: ReactNode;
+}
 
 /** One role's backend + model selection state. */
 function useRoleConfig(initial: { backendId: string | null; model: string | null }) {
@@ -128,7 +175,7 @@ export function SettingsForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveIds.join("|")]);
 
-  // Probes.
+  // Probes — one per role, all through the same state machine.
   const chatProbe = useProbe<{ models: string[] }>("/api/backends/test");
   const embedProbe = useProbe<{ model: string; dimensions: number }>(
     "/api/settings/test-embeddings",
@@ -138,6 +185,9 @@ export function SettingsForm({
   const audioProbe = useProbe<{ model: string; text: string }>("/api/settings/test-audio");
   const visionProbe = useProbe<{ model: string; description: string }>(
     "/api/settings/test-vision",
+  );
+  const browserProbe = useProbe<{ model: string; calledTool: boolean; answer: string }>(
+    "/api/settings/test-browser",
   );
 
   async function onTestChat() {
@@ -321,150 +371,165 @@ export function SettingsForm({
     </p>
   ) : null;
 
-  const chatTab = (
-    <div className="space-y-5">
-      {noBackendsNote}
-      <RoleSection
-        idPrefix="chat"
-        labels={{
-          intro:
-            "The main backend and model every reply runs on. Pick a model that supports thinking and tool calls — replies reason before answering and drive every tool (history search, tasks, browsing). Roles on the other tabs use this backend unless given their own, so repointing it repoints them too, and any of their model selections the new backend does not serve is cleared on save.",
-          backendHint:
-            "The chat endpoint, from the shared catalog (managed on the Backends page).",
-          modelLabel: "Model",
-          modelHint: "The chat model used for replies. Type to search the backend's models.",
-          modelPlaceholder: "Select a model…",
-          testLabel: "Test connection",
-        }}
-        backends={backends}
-        backendId={chat.backendId}
-        onBackendChange={(next) => {
-          chat.setBackendId(next);
-          chatProbe.reset();
-        }}
-        inheritLabel={null}
-        model={chat.model}
-        onModelChange={chat.setModel}
-        models={roleModels(chat)}
-        modelWarning={roleStale(chat) ? staleWarning(chat.model) : null}
-        probe={chatProbe.state}
-        renderOk={(r) => <>Connected — {r.models.length} models</>}
-        onTest={() => void onTestChat()}
-        testDisabled={!chat.backendId}
-      />
-    </div>
-  );
+  /**
+   * Render one LLM role tab. Everything the roles must agree on is decided
+   * here, once: changing a backend (or a model, when the probe tests one)
+   * clears that role's stale probe result, the model list drives the stale
+   * warning, and a role whose empty model means "use the chat model" stays
+   * testable without one. Per-role differences arrive as {@link RoleTabSpec}.
+   */
+  function roleTab<T>(spec: RoleTabSpec<T>): TabItem {
+    const { role, probe } = spec;
+    const dependsOnModel = probe.dependsOnModel ?? true;
+    const listed = spec.listed ?? true;
+    return {
+      id: spec.id,
+      label: spec.label,
+      content: (
+        <RoleSection
+          idPrefix={spec.id}
+          labels={spec.labels}
+          backends={backends}
+          backendId={role.backendId}
+          onBackendChange={(next) => {
+            role.setBackendId(next);
+            probe.reset();
+          }}
+          inheritLabel={spec.inherit === false ? null : inheritLabel}
+          model={role.model}
+          onModelChange={(next) => {
+            role.setModel(next);
+            if (dependsOnModel) probe.reset();
+          }}
+          models={roleModels(role)}
+          freeTextModel={spec.freeText}
+          modelWarning={listed && roleStale(role) ? staleWarning(role.model) : null}
+          probe={probe.state}
+          renderOk={probe.renderOk}
+          onTest={probe.run}
+          testDisabled={
+            probe.disabled ?? (!spec.fallsBackToChat && role.model.trim() === "")
+          }
+        >
+          {spec.children}
+        </RoleSection>
+      ),
+    };
+  }
 
-  const embeddingsTab = (
-    <RoleSection
-      idPrefix="embedding"
-      labels={{
-        intro:
-          "Embeddings power semantic recall over older conversations: the daily job turns each chat-day into topic summaries and embeds them, so the bot can find what was discussed weeks ago even when the wording differs. Without an embedding model the summaries are still written and keyword-searchable — only the semantic half is off.",
-        backendHint: "The host serving /v1/embeddings.",
-        modelLabel: "Embedding model",
-        modelHint: `Must emit ${EMBEDDING_DIMENSIONS}-dimensional vectors (e.g. bge-m3) — the width this database stores. Test below to confirm.`,
-        modelPlaceholder: "No embedding model (semantic recall off)",
-        testLabel: "Test embeddings",
-      }}
-      backends={backends}
-      backendId={emb.backendId}
-      onBackendChange={(next) => {
-        emb.setBackendId(next);
-        embedProbe.reset();
-      }}
-      inheritLabel={inheritLabel}
-      model={emb.model}
-      onModelChange={(next) => {
-        emb.setModel(next);
-        embedProbe.reset();
-      }}
-      models={roleModels(emb)}
-      modelWarning={roleStale(emb) ? staleWarning(emb.model) : null}
-      probe={embedProbe.state}
-      renderOk={(r) => (
+  const chatTabItem = roleTab({
+    id: "chat",
+    label: "Chat",
+    role: chat,
+    inherit: false,
+    labels: {
+      intro:
+        "The main backend and model every reply runs on. Pick a model that supports thinking and tool calls — replies reason before answering and drive every tool (history search, tasks, browsing). Roles on the other tabs use this backend unless given their own, so repointing it repoints them too, and any of their model selections the new backend does not serve is cleared on save.",
+      backendHint: "The chat endpoint, from the shared catalog (managed on the Backends page).",
+      modelLabel: "Model",
+      modelHint: "The chat model used for replies. Type to search the backend's models.",
+      modelPlaceholder: "Select a model…",
+      testLabel: "Test connection",
+    },
+    probe: {
+      state: chatProbe.state,
+      reset: chatProbe.reset,
+      run: () => void onTestChat(),
+      renderOk: (r) => <>Connected — {r.models.length} models</>,
+      // Lists the backend's models: a different model selection does not make
+      // that answer wrong, so it survives one.
+      dependsOnModel: false,
+      disabled: !chat.backendId,
+    },
+  });
+
+  // The Chat tab alone carries the "no backends yet" note: it is where the
+  // catalog is first needed, and repeating it on all seven would be noise.
+  const chatTabWithNote: TabItem = {
+    ...chatTabItem,
+    content: (
+      <div className="space-y-5">
+        {noBackendsNote}
+        {chatTabItem.content}
+      </div>
+    ),
+  };
+
+  const embeddingsTabItem = roleTab({
+    id: "embedding",
+    label: "Embeddings",
+    role: emb,
+    labels: {
+      intro:
+        "Embeddings power semantic recall over older conversations: the daily job turns each chat-day into topic summaries and embeds them, so the bot can find what was discussed weeks ago even when the wording differs. Without an embedding model the summaries are still written and keyword-searchable — only the semantic half is off.",
+      backendHint: "The host serving /v1/embeddings.",
+      modelLabel: "Embedding model",
+      modelHint: `Must emit ${EMBEDDING_DIMENSIONS}-dimensional vectors (e.g. bge-m3) — the width this database stores. Test below to confirm.`,
+      modelPlaceholder: "No embedding model (semantic recall off)",
+      testLabel: "Test embeddings",
+    },
+    probe: {
+      state: embedProbe.state,
+      reset: embedProbe.reset,
+      run: () => void embedProbe.run(roleProbeBody(emb)),
+      renderOk: (r) => (
         <>
           {r.model} — {r.dimensions} dimensions
         </>
-      )}
-      onTest={() => void embedProbe.run(roleProbeBody(emb))}
-      testDisabled={emb.model.trim() === ""}
-    />
-  );
+      ),
+    },
+  });
 
-  const imagesTab = (
-    <RoleSection
-      idPrefix="image"
-      labels={{
-        intro:
-          "Image generation lets the bot draw a picture when someone asks it to, and send it to the chat. Each image it sends is then recognized like any received photo, so later replies know what it drew. Without an image model the tool is simply not offered — the bot says it cannot make images rather than pretending to.",
-        backendHint: "The host serving /v1/images/generations.",
-        modelLabel: "Image model",
-        modelHint: "The model asked to draw. Test below to confirm the backend actually serves it.",
-        modelPlaceholder: "No image model (image generation off)",
-        testLabel: "Test image endpoint",
-      }}
-      backends={backends}
-      backendId={img.backendId}
-      onBackendChange={(next) => {
-        img.setBackendId(next);
-        imageProbe.reset();
-      }}
-      inheritLabel={inheritLabel}
-      model={img.model}
-      onModelChange={(next) => {
-        img.setModel(next);
-        imageProbe.reset();
-      }}
-      models={roleModels(img)}
-      modelWarning={roleStale(img) ? staleWarning(img.model) : null}
-      probe={imageProbe.state}
-      renderOk={(r) => (
+  const imagesTabItem = roleTab({
+    id: "image",
+    label: "Images",
+    role: img,
+    labels: {
+      intro:
+        "Image generation lets the bot draw a picture when someone asks it to, and send it to the chat. Each image it sends is then recognized like any received photo, so later replies know what it drew. Without an image model the tool is simply not offered — the bot says it cannot make images rather than pretending to.",
+      backendHint: "The host serving /v1/images/generations.",
+      modelLabel: "Image model",
+      modelHint: "The model asked to draw. Test below to confirm the backend actually serves it.",
+      modelPlaceholder: "No image model (image generation off)",
+      testLabel: "Test image endpoint",
+    },
+    probe: {
+      state: imageProbe.state,
+      reset: imageProbe.reset,
+      run: () => void imageProbe.run(roleProbeBody(img)),
+      renderOk: (r) => (
         <>
           {r.model} — served ({r.modelCount} models)
         </>
-      )}
-      onTest={() => void imageProbe.run(roleProbeBody(img))}
-      testDisabled={img.model.trim() === ""}
-    />
-  );
+      ),
+    },
+  });
 
-  const speechTab = (
-    <RoleSection
-      idPrefix="speech"
-      labels={{
-        intro:
-          "Speech lets the bot answer a voice message with a voice message: the reply text is synthesized on this endpoint and sent as a Telegram voice bubble. Without a speech model the bot still understands voice messages — it just always answers in text.",
-        backendHint: "The host serving /v1/audio/speech.",
-        modelLabel: "Speech model",
-        modelHint:
-          "The text-to-speech model voice replies use. Test below to confirm the backend actually serves it.",
-        modelPlaceholder: "No speech model (voice replies off)",
-        testLabel: "Test speech endpoint",
-      }}
-      backends={backends}
-      backendId={spc.backendId}
-      onBackendChange={(next) => {
-        spc.setBackendId(next);
-        speechProbe.reset();
-      }}
-      inheritLabel={inheritLabel}
-      model={spc.model}
-      onModelChange={(next) => {
-        spc.setModel(next);
-        speechProbe.reset();
-      }}
-      models={roleModels(spc)}
-      modelWarning={roleStale(spc) ? staleWarning(spc.model) : null}
-      probe={speechProbe.state}
-      renderOk={(r) => (
+  const speechTabItem = roleTab({
+    id: "speech",
+    label: "Speech",
+    role: spc,
+    labels: {
+      intro:
+        "Speech lets the bot answer a voice message with a voice message: the reply text is synthesized on this endpoint and sent as a Telegram voice bubble. Without a speech model the bot still understands voice messages — it just always answers in text.",
+      backendHint: "The host serving /v1/audio/speech.",
+      modelLabel: "Speech model",
+      modelHint:
+        "The text-to-speech model voice replies use. Test below to confirm the backend actually serves it.",
+      modelPlaceholder: "No speech model (voice replies off)",
+      testLabel: "Test speech endpoint",
+    },
+    probe: {
+      state: speechProbe.state,
+      reset: speechProbe.reset,
+      run: () => void speechProbe.run(roleProbeBody(spc)),
+      renderOk: (r) => (
         <>
           {r.model} — served ({r.modelCount} models)
         </>
-      )}
-      onTest={() => void speechProbe.run(roleProbeBody(spc))}
-      testDisabled={spc.model.trim() === ""}
-    >
+      ),
+    },
+    children: (
       <Field
         id="speechVoice"
         label="Voice"
@@ -480,45 +545,37 @@ export function SettingsForm({
           />
         )}
       </Field>
-    </RoleSection>
-  );
+    ),
+  });
 
-  const audioTab = (
-    <RoleSection
-      idPrefix="audio"
-      labels={{
-        intro:
-          "Audio turns incoming voice messages into text on a dedicated speech-to-text model. Whisper-class servers (whisper.cpp server, speaches, LocalAI…) take the audio on /v1/audio/transcriptions; providers like OpenRouter only take it through chat completions on an audio-capable model — pick the transcription mode to match. When no audio model is set, voice messages are transcribed by the chat model instead, which then must be audio-capable.",
-        backendHint: "The host serving the speech-to-text model.",
-        modelLabel: "Audio (STT) model",
-        modelHint:
-          "Free text — whisper-class servers often don't list models (e.g. whisper-1, Systran/faster-whisper-large-v3). Empty: voice falls back to the chat model.",
-        modelPlaceholder: "No audio model (chat-model fallback)",
-        testLabel: "Test audio",
-      }}
-      backends={backends}
-      backendId={aud.backendId}
-      onBackendChange={(next) => {
-        aud.setBackendId(next);
-        audioProbe.reset();
-      }}
-      inheritLabel={inheritLabel}
-      model={aud.model}
-      onModelChange={(next) => {
-        aud.setModel(next);
-        audioProbe.reset();
-      }}
-      models={roleModels(aud)}
-      freeTextModel
-      modelWarning={
-        audioTranscriptionMode === "chat" && roleStale(aud) ? staleWarning(aud.model) : null
-      }
-      probe={audioProbe.state}
-      renderOk={(r) => <>{r.model} — endpoint responded</>}
-      onTest={() =>
-        void audioProbe.run({ ...roleProbeBody(aud), transcriptionMode: audioTranscriptionMode })
-      }
-    >
+  const audioTabItem = roleTab({
+    id: "audio",
+    label: "Audio",
+    role: aud,
+    fallsBackToChat: true,
+    freeText: true,
+    // In `transcriptions` mode the model is a whisper-class id the backend
+    // usually does not list, so absence from a listing proves nothing. In
+    // `chat` mode it is an ordinary chat model and must be listed.
+    listed: audioTranscriptionMode === "chat",
+    labels: {
+      intro:
+        "Audio turns incoming voice messages into text on a dedicated speech-to-text model. Whisper-class servers (whisper.cpp server, speaches, LocalAI…) take the audio on /v1/audio/transcriptions; providers like OpenRouter only take it through chat completions on an audio-capable model — pick the transcription mode to match. When no audio model is set, voice messages are transcribed by the chat model instead, which then must be audio-capable.",
+      backendHint: "The host serving the speech-to-text model.",
+      modelLabel: "Audio (STT) model",
+      modelHint:
+        "Free text — whisper-class servers often don't list models (e.g. whisper-1, Systran/faster-whisper-large-v3). Empty: voice falls back to the chat model.",
+      modelPlaceholder: "No audio model (chat-model fallback)",
+      testLabel: "Test audio",
+    },
+    probe: {
+      state: audioProbe.state,
+      reset: audioProbe.reset,
+      run: () =>
+        void audioProbe.run({ ...roleProbeBody(aud), transcriptionMode: audioTranscriptionMode }),
+      renderOk: (r) => <>{r.model} — endpoint responded</>,
+    },
+    children: (
       <Field
         id="audioTranscriptionMode"
         label="Transcription mode"
@@ -539,63 +596,58 @@ export function SettingsForm({
           </Select>
         )}
       </Field>
-    </RoleSection>
-  );
+    ),
+  });
 
-  const visionTab = (
-    <RoleSection
-      idPrefix="vision"
-      labels={{
-        intro:
-          "Vision describes every photo, video, GIF and sticker the bot receives, so replies and history search know what is in them. By default the chat model does the describing (it must then be vision-capable); give this role its own backend or model to run the describer elsewhere.",
-        backendHint: "The host serving the vision-capable chat completions.",
-        modelLabel: "Vision model",
-        modelHint:
-          "The multimodal model that describes media. Empty: the chat model is used.",
-        modelPlaceholder: "Use the chat model",
-        testLabel: "Test vision",
-      }}
-      backends={backends}
-      backendId={vis.backendId}
-      onBackendChange={(next) => {
-        vis.setBackendId(next);
-        visionProbe.reset();
-      }}
-      inheritLabel={inheritLabel}
-      model={vis.model}
-      onModelChange={(next) => {
-        vis.setModel(next);
-        visionProbe.reset();
-      }}
-      models={roleModels(vis)}
-      modelWarning={roleStale(vis) ? staleWarning(vis.model) : null}
-      probe={visionProbe.state}
-      renderOk={(r) => <>{r.model} — described the test image</>}
-      onTest={() => void visionProbe.run(roleProbeBody(vis))}
-    />
-  );
+  const visionTabItem = roleTab({
+    id: "vision",
+    label: "Vision",
+    role: vis,
+    fallsBackToChat: true,
+    labels: {
+      intro:
+        "Vision describes every photo, video, GIF and sticker the bot receives, so replies and history search know what is in them. By default the chat model does the describing (it must then be vision-capable); give this role its own backend or model to run the describer elsewhere.",
+      backendHint: "The host serving the vision-capable chat completions.",
+      modelLabel: "Vision model",
+      modelHint: "The multimodal model that describes media. Empty: the chat model is used.",
+      modelPlaceholder: "Use the chat model",
+      testLabel: "Test vision",
+    },
+    probe: {
+      state: visionProbe.state,
+      reset: visionProbe.reset,
+      run: () => void visionProbe.run(roleProbeBody(vis)),
+      renderOk: (r) => <>{r.model} — described the test image</>,
+    },
+  });
 
-  const browserTab = (
-    <RoleSection
-      idPrefix="browser"
-      labels={{
-        intro:
-          "The browser agent drives a real browser to research pages and download files when a chat asks for it. By default it thinks on the chat backend and model; give it its own here — for example a larger-context model — without touching replies.",
-        backendHint: "The host serving the browsing agent's chat completions.",
-        modelLabel: "Browser agent model",
-        modelHint: "The model that plans browser actions. Empty: the chat model is used.",
-        modelPlaceholder: "Use the chat model",
-      }}
-      backends={backends}
-      backendId={brw.backendId}
-      onBackendChange={brw.setBackendId}
-      inheritLabel={inheritLabel}
-      model={brw.model}
-      onModelChange={brw.setModel}
-      models={roleModels(brw)}
-      modelWarning={roleStale(brw) ? staleWarning(brw.model) : null}
-    />
-  );
+  const browserTabItem = roleTab({
+    id: "browser",
+    label: "Browser agent",
+    role: brw,
+    fallsBackToChat: true,
+    labels: {
+      intro:
+        "The browser agent drives a real browser to research pages and download files when a chat asks for it. By default it thinks on the chat backend and model; give it its own here — for example a larger-context model — without touching replies.",
+      backendHint: "The host serving the browsing agent's chat completions.",
+      modelLabel: "Browser agent model",
+      modelHint:
+        "The model that plans browser actions — it must support tool calls, which is what the test below checks. Empty: the chat model is used.",
+      modelPlaceholder: "Use the chat model",
+      testLabel: "Test browser model",
+    },
+    probe: {
+      state: browserProbe.state,
+      reset: browserProbe.reset,
+      run: () => void browserProbe.run(roleProbeBody(brw)),
+      renderOk: (r) =>
+        r.calledTool ? (
+          <>{r.model} — completed a tool call</>
+        ) : (
+          <>{r.model} — answered, but made no tool call</>
+        ),
+    },
+  });
 
   const telegramTab = (
     <div className="space-y-5">
@@ -755,13 +807,13 @@ export function SettingsForm({
   );
 
   const tabs: TabItem[] = [
-    { id: "chat", label: "Chat", content: chatTab },
-    { id: "embeddings", label: "Embeddings", content: embeddingsTab },
-    { id: "images", label: "Images", content: imagesTab },
-    { id: "speech", label: "Speech", content: speechTab },
-    { id: "audio", label: "Audio", content: audioTab },
-    { id: "vision", label: "Vision", content: visionTab },
-    { id: "browser", label: "Browser agent", content: browserTab },
+    chatTabWithNote,
+    embeddingsTabItem,
+    imagesTabItem,
+    speechTabItem,
+    audioTabItem,
+    visionTabItem,
+    browserTabItem,
     { id: "telegram", label: "Telegram", content: telegramTab },
     { id: "general", label: "General", content: generalTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },

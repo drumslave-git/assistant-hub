@@ -52,14 +52,26 @@ export interface ModelStatus {
 
 /**
  * Live status of one optional endpoint (embeddings, images, speech,
- * transcription). `off` is a configuration choice, not a fault — these features
- * are optional — so it renders neutral, unlike a configured endpoint that fails
- * its probe.
+ * transcription, vision, browser agent).
+ *
+ * - `ok` / `error`: a dedicated endpoint that was actually probed.
+ * - `off`: the capability genuinely does not run — a configuration choice, not
+ *   a fault, so it renders neutral.
+ * - `inherited`: no dedicated model, so the role runs on the **chat** model
+ *   ("main by default"). Also neutral — nothing was probed beyond what the LLM
+ *   card already probes — but the capability is *on*, and calling that "off"
+ *   would be a lie about a working feature.
  */
 export interface EndpointStatus {
   id: "embeddings" | "images" | "speech" | "audio" | "vision" | "browser";
   label: string;
-  state: "off" | "ok" | "error";
+  state: "off" | "inherited" | "ok" | "error";
+  detail: string;
+}
+
+/** What an unprobed role reports: why, and whether the capability still runs. */
+interface UnprobedStatus {
+  state: "off" | "inherited";
   detail: string;
 }
 
@@ -114,10 +126,10 @@ export async function getConfigReadiness(db: DrizzleDb = getDb()): Promise<Confi
 async function probeModelEndpoint(
   id: EndpointStatus["id"],
   label: string,
-  offDetail: string,
+  unprobed: UnprobedStatus,
   runtime: { baseUrl: string; apiKey?: string | null; model: string } | null,
 ): Promise<EndpointStatus> {
-  if (!runtime) return { id, label, state: "off", detail: offDetail };
+  if (!runtime) return { id, label, ...unprobed };
   try {
     const models = await listModels(runtime, LLM_PROBE_TIMEOUT_MS);
     if (models.length > 0 && !models.includes(runtime.model)) {
@@ -142,13 +154,14 @@ const TRANSCRIPTION_PROBE_TIMEOUT_MS = 6_000;
  * second of silence — whisper-class servers often expose no model listing, so a
  * real call is the only honest check (same reasoning as the Settings probe).
  */
-async function probeTranscriptionEndpoint(db: DrizzleDb): Promise<EndpointStatus> {
+async function probeTranscriptionEndpoint(
+  db: DrizzleDb,
+  chatFallback: UnprobedStatus,
+): Promise<EndpointStatus> {
   const id = "audio" as const;
   const label = "Audio (STT)";
   const runtime = await getAudioRuntime(db).catch(() => null);
-  if (!runtime) {
-    return { id, label, state: "off", detail: "No STT model — voice uses the chat model" };
-  }
+  if (!runtime) return { id, label, ...chatFallback };
   try {
     await Promise.race([
       probeTranscription(runtime, tinySilenceWav()),
@@ -172,41 +185,64 @@ async function probeTranscriptionEndpoint(db: DrizzleDb): Promise<EndpointStatus
 
 /** Every optional endpoint's live status, probed concurrently. */
 async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> {
-  // The chat-fallback roles (vision, browser agent) are probed only when the
-  // operator overrode either half — otherwise they resolve to exactly the chat
-  // connection the LLM card already probes, and a second identical probe would
-  // just double the noise.
+  // The chat-fallback roles (vision, browser agent, voice transcription) are
+  // probed only when the operator gave them a model or backend of their own —
+  // otherwise they resolve to exactly the chat connection the LLM card already
+  // probes, and a second identical probe would just double the noise.
   const record = await getSettingsRecord(db).catch(() => null);
   const visionOverridden = Boolean(record?.visionBackendId || record?.visionModel);
   const browserOverridden = Boolean(record?.browserBackendId || record?.browserModel);
+  const chatModelSet = Boolean(record?.chatBackendId && record?.model);
+
+  /**
+   * What a role with no dedicated model reports. Running on the chat model is
+   * the feature working as configured, so it is `inherited`, not `off` — but
+   * the modality is the operator's to get right, since a chat model that does
+   * not accept the input fails only when the feature is actually used. With no
+   * chat model there is nothing to fall back to, and the role really is off.
+   */
+  const fallback = (modality: string, whenOff: string): UnprobedStatus =>
+    chatModelSet
+      ? { state: "inherited", detail: `Runs on the chat model, which must accept ${modality}` }
+      : { state: "off", detail: whenOff };
+
   return Promise.all([
     getEmbeddingRuntime(db)
       .catch(() => null)
       .then((runtime) =>
-        probeModelEndpoint(
-          "embeddings",
-          "Embeddings",
-          "No embedding model — semantic recall off",
-          runtime,
-        ),
+        probeModelEndpoint("embeddings", "Embeddings", {
+          state: "off",
+          detail: "No embedding model — semantic recall off",
+        }, runtime),
       ),
     getImageRuntime(db)
       .catch(() => null)
       .then((runtime) =>
-        probeModelEndpoint("images", "Images", "No image model — image generation off", runtime),
+        probeModelEndpoint("images", "Images", {
+          state: "off",
+          detail: "No image model — image generation off",
+        }, runtime),
       ),
     getSpeechRuntime(db)
       .catch(() => null)
       .then((runtime) =>
-        probeModelEndpoint("speech", "Speech", "No speech model — voice replies text-only", runtime),
+        probeModelEndpoint("speech", "Speech", {
+          state: "off",
+          detail: "No speech model — voice replies text-only",
+        }, runtime),
       ),
-    probeTranscriptionEndpoint(db),
+    probeTranscriptionEndpoint(
+      db,
+      fallback("audio", "No STT model and no chat model — voice cannot be transcribed"),
+    ),
     (visionOverridden ? getVisionRuntime(db).catch(() => null) : Promise.resolve(null)).then(
       (runtime) =>
         probeModelEndpoint(
           "vision",
           "Vision",
-          visionOverridden ? "Not fully configured" : "Follows the chat backend and model",
+          visionOverridden
+            ? { state: "off", detail: "Not fully configured" }
+            : fallback("images", "No vision model and no chat model — media cannot be described"),
           runtime,
         ),
     ),
@@ -215,7 +251,9 @@ async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> 
         probeModelEndpoint(
           "browser",
           "Browser agent",
-          browserOverridden ? "Not fully configured" : "Follows the chat backend and model",
+          browserOverridden
+            ? { state: "off", detail: "Not fully configured" }
+            : fallback("tool calls", "No browser model and no chat model — browsing is off"),
           runtime,
         ),
     ),

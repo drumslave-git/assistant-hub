@@ -102,6 +102,61 @@ restart to serve (done).
   — same "real probe" doctrine as before, now potentially against a paid
   provider.
 
+## Unified LLM role tabs + clearable model select + honest fallback status (`in-progress` — needs a browser pass, 2026-08-13)
+
+User reports, 2026-08-13: a selected model could not be cleared; the Overview
+called Browser agent and Audio (STT) "Off" when both actually run on the chat
+model; and a request that the LLM role tabs be unified in behaviour and look.
+
+### What shipped
+
+- **Combobox is clearable** (`components/ui/Combobox.tsx`): a clear (X) button
+  whenever a value is committed, plus Enter on an erased field committing "".
+  Every consumer gives "" its own meaning (use the chat model, feature off), so
+  picking an option was a one-way door. The erased-field Enter also fixes a real
+  bug: with an empty query the highlight sat on the *unfiltered* list's first
+  entry, so Enter silently selected a different model.
+- **Overview stops lying about fallback roles** (`server/status.ts`,
+  `app/(dashboard)/page.tsx`): new `inherited` endpoint state, rendered
+  "Chat model" (neutral) instead of "Off", for audio/vision/browser with no
+  dedicated model. `off` now means what it says — including the case where
+  there is no chat model to fall back to either.
+- **One renderer for all seven role tabs** (`roleTab` + `RoleTabSpec` in
+  `SettingsForm.tsx`): probe invalidation, test availability and the stale
+  warning are decided once; only wording, probe, free-text, extra fields and
+  inheritance are per-role data. Removed ~130 lines of near-duplicate JSX.
+- **`testBrowser` + `POST /api/settings/test-browser`**: the Browser agent tab
+  was the only LLM role with no Test button. The probe runs one real tool round
+  with a single trivial tool — a listing cannot reveal missing tool-call
+  support, which is all the browser agent does. A model that answers without
+  calling the tool is reported, not failed.
+
+### Proof
+
+Files: `components/ui/Combobox.tsx`, `server/status.ts`,
+`app/(dashboard)/page.tsx`, `server/status.integration.test.ts`,
+`features/settings/server/service.ts`, `features/settings/ui/SettingsForm.tsx`,
+`app/api/settings/test-browser/route.ts` (new),
+`features/settings/server/settings.integration.test.ts`, docs
+(`features/settings.md`, `api/endpoints.md`, `api/openapi.yaml`,
+`operations/operator-guide.md`).
+
+Lint clean; typecheck clean except the same three stale `.next/types` lines.
+Settings integration 56/56 (new: browser probe through the chat fallback, the
+no-tool-call case, clean rejection); status integration 7/7 (new: fallback
+roles report `inherited`, not `off`, once a chat model is set). Full
+integration suite 54 files / 714 tests pass; unit suite unchanged (same 21
+pre-existing yt-dlp Windows failures).
+
+### Next
+
+**Browser verification is not done** — the preview browser lost its session
+cookie when the dev server restarted, and signing in needs the operator
+password, which is the user's to enter. Once signed in at `/settings`, check:
+the X on a filled model select clears it; the Browser agent tab's new "Test
+browser model" button; and the Overview cards reading "Chat model" instead of
+"Off".
+
 ## Audio stale-clearing in chat mode + always-testable audio probe (`done`, 2026-08-12)
 
 User report, 2026-08-12: repointing the chat backend cleared the stale vision

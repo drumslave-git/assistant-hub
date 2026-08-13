@@ -6,6 +6,7 @@ import { insertBackend } from "@/features/backends/server/repository";
 import { upsertKnownUser } from "@/features/known-users/server/repository";
 import type { LlmBackendId } from "@/lib/llm-backend";
 import { chatCompletion, listModels } from "@/server/llm/client";
+import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import { getTraceDetail, listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "./repository";
@@ -24,6 +25,7 @@ import {
   getVisionRuntime,
   getWebSearchApiKey,
   testAudio,
+  testBrowser,
   testVision,
   updateSettings,
 } from "./service";
@@ -35,8 +37,15 @@ vi.mock("@/server/llm/client", async (importOriginal) => {
   return { ...actual, listModels: vi.fn(), chatCompletion: vi.fn() };
 });
 
+// The browser probe runs a tool round rather than a plain completion.
+vi.mock("@/server/llm/tool-loop", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/llm/tool-loop")>();
+  return { ...actual, chatCompletionWithTools: vi.fn() };
+});
+
 const listModelsMock = vi.mocked(listModels);
 const chatCompletionMock = vi.mocked(chatCompletion);
+const chatCompletionWithToolsMock = vi.mocked(chatCompletionWithTools);
 
 /** Seed a known user so the owner can be chosen by id. */
 async function seedUser(ctx: TestDb, userId: string, username: string | null) {
@@ -76,6 +85,10 @@ beforeEach(async () => {
   listModelsMock.mockRejectedValue(new Error("model listing unavailable in this test"));
   chatCompletionMock.mockReset();
   chatCompletionMock.mockRejectedValue(new Error("chat completion unavailable in this test"));
+  chatCompletionWithToolsMock.mockReset();
+  chatCompletionWithToolsMock.mockRejectedValue(
+    new Error("tool completion unavailable in this test"),
+  );
 });
 
 const trigger = { kind: "dashboard" } as const;
@@ -576,6 +589,45 @@ describe("connection probes", () => {
 
   it("testVision rejects cleanly when nothing resolves", async () => {
     await expect(testVision({}, trigger, ctx.db)).rejects.toThrow(/vision model/i);
+  });
+
+  it("testBrowser runs a real tool round through the chat-model fallback", async () => {
+    const chatId = await seedBackend(ctx, {
+      name: "Main",
+      baseUrl: "https://llm.example/v1",
+      apiKey: "sk-chat",
+    });
+    // No browser model set: the probe must test the chat-model fallback, since
+    // that is exactly what a browse job will use.
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    // Answer by invoking the offered tool, the way a tool-capable model does.
+    chatCompletionWithToolsMock.mockImplementation(async (_conn, input) => {
+      await input.callTool("probe_echo", { text: "ready" });
+      return completion("ready", "gemma");
+    });
+
+    const probe = await testBrowser({}, trigger, ctx.db);
+    expect(probe).toEqual({ model: "gemma", calledTool: true, answer: "ready" });
+
+    const [conn, input] = chatCompletionWithToolsMock.mock.calls[0];
+    expect(conn.baseUrl).toBe("https://llm.example/v1");
+    expect(input.model).toBe("gemma");
+    // Tool support is the whole point of the probe, so one must be offered.
+    expect(input.tools).toHaveLength(1);
+  });
+
+  it("testBrowser reports a model that answers without calling the tool", async () => {
+    const chatId = await seedBackend(ctx, { name: "Main", baseUrl: "https://llm.example/v1" });
+    await updateSettings({ chatBackendId: chatId, model: "gemma" }, trigger, ctx.db);
+    // No tool call: the connection works, the model just did not use the tool.
+    chatCompletionWithToolsMock.mockResolvedValue(completion("ready", "gemma"));
+
+    const probe = await testBrowser({}, trigger, ctx.db);
+    expect(probe).toMatchObject({ model: "gemma", calledTool: false });
+  });
+
+  it("testBrowser rejects cleanly when nothing resolves", async () => {
+    await expect(testBrowser({}, trigger, ctx.db)).rejects.toThrow(/browser-agent model/i);
   });
 });
 

@@ -591,6 +591,79 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /api/settings/test-vision:
+    post:
+      tags: [settings]
+      summary: Probe the vision role
+      description: |
+        Describes a tiny generated PNG — a real vision completion, since a model
+        listing cannot say whether a model accepts image input. Resolves through
+        the vision runtime, including its fallback to the chat model.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleProbeInput" }
+      responses:
+        "200":
+          description: Probe result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [model, description]
+                        properties:
+                          model: { type: string }
+                          description:
+                            type: string
+                            description: How the model described the test image.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /api/settings/test-browser:
+    post:
+      tags: [settings]
+      summary: Probe the browser-agent role
+      description: |
+        Runs one real tool round: the model is offered a single trivial tool and
+        asked to use it. A model listing cannot say whether a model supports tool
+        calling, which is all the browser agent does. Resolves through the
+        browser runtime, including its fallback to the chat model. A model that
+        answers without calling the tool is reported, not an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleProbeInput" }
+      responses:
+        "200":
+          description: Probe result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [model, calledTool, answer]
+                        properties:
+                          model: { type: string }
+                          calledTool:
+                            type: boolean
+                            description: Whether the model answered by calling the offered tool.
+                          answer:
+                            type: string
+                            description: The model's final answer.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   # ────────────────────────── directory ──────────────────────────
   /api/users:
     get:

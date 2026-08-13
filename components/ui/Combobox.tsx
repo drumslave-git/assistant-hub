@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronDown, Search } from "lucide-react";
+import { Check, ChevronDown, Search, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/cn";
@@ -16,6 +16,11 @@ import { fieldBase } from "./Input";
  *   saved by accident.
  * - `freeText`: every keystroke commits, and the options are suggestions —
  *   for endpoints whose model ids cannot be listed (whisper-class servers).
+ *
+ * Emptying is a first-class choice, not the absence of one: every consumer
+ * gives "" its own meaning (use the chat model, feature off), so a committed
+ * value is clearable — by the clear button, or by erasing the text and
+ * confirming. Without that, picking any option would be a one-way door.
  */
 export function Combobox({
   id,
@@ -71,6 +76,11 @@ export function Combobox({
   // leave it pointing past the end.
   const active = highlighted < filtered.length ? highlighted : 0;
 
+  // Offer the clear button against what is *committed*, not what is typed: the
+  // point is to undo a selection, and in the default mode erasing the text
+  // alone changes nothing until it is confirmed.
+  const clearable = value !== "" && !disabled;
+
   // Close on any pointer press outside the control (blur alone cannot tell an
   // option click from a genuine exit).
   useEffect(() => {
@@ -111,6 +121,13 @@ export function Combobox({
       listRef.current?.children[next]?.scrollIntoView({ block: "nearest" });
     } else if (event.key === "Enter") {
       event.preventDefault();
+      // An erased field is a deliberate "none", so it commits as one — and is
+      // never read as picking whatever the unfiltered list happens to start
+      // with, which is what an empty query would otherwise highlight.
+      if (typed && query.trim() === "") {
+        commit("");
+        return;
+      }
       const pick = filtered[active];
       if (pick !== undefined) commit(pick);
       else if (freeText) close();
@@ -136,7 +153,7 @@ export function Combobox({
           aria-describedby={describedBy}
           autoComplete="off"
           spellCheck={false}
-          className={cn(fieldBase, "h-9 pr-9 pl-9 text-sm")}
+          className={cn(fieldBase, "h-9 pl-9 text-sm", clearable ? "pr-14" : "pr-9")}
           value={query}
           placeholder={placeholder}
           disabled={disabled}
@@ -150,6 +167,19 @@ export function Combobox({
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
         />
+        {clearable ? (
+          <button
+            type="button"
+            aria-label="Clear selection"
+            className="absolute top-1/2 right-8 -translate-y-1/2 rounded p-0.5 text-faint hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            // pointerdown default prevented so the field keeps focus; the click
+            // handler still fires, and keyboard activation reaches it directly.
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => commit("")}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        ) : null}
         <ChevronDown
           className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-faint"
           aria-hidden

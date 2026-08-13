@@ -61,9 +61,35 @@ describe("getSystemStatus", () => {
       "vision",
       "browser",
     ]);
+    // Nothing configured at all: even the chat-fallback roles have nothing to
+    // fall back to, so "off" is the honest answer for every one of them.
     for (const endpoint of status.endpoints) {
       expect(endpoint.state).toBe("off");
       expect(endpoint.detail).not.toBe("");
+    }
+  });
+
+  it("reports chat-fallback roles as inherited — not off — once a chat model is set", async () => {
+    const backendId = randomUUID();
+    await insertBackend(ctx.db, backendId, {
+      name: "Main",
+      baseUrl: "http://localhost:11434/v1",
+      apiKey: null,
+      type: "openai-compatible",
+    });
+    await updateSettings({ chatBackendId: backendId, model: "smollm2" }, { kind: "test" }, ctx.db);
+
+    const status = await getSystemStatus(ctx.db);
+    const byId = new Map(status.endpoints.map((endpoint) => [endpoint.id, endpoint]));
+    // Voice transcription, media description and browsing all run on the chat
+    // model when they have no model of their own — the feature is on.
+    for (const id of ["audio", "vision", "browser"] as const) {
+      expect(byId.get(id)?.state).toBe("inherited");
+      expect(byId.get(id)?.detail).toMatch(/chat model/i);
+    }
+    // The genuinely optional ones stay off: nothing runs them.
+    for (const id of ["embeddings", "images", "speech"] as const) {
+      expect(byId.get(id)?.state).toBe("off");
     }
   });
 });

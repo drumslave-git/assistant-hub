@@ -12,7 +12,13 @@ import { FEATURES } from "@/lib/features";
 import type { LlmBackendId } from "@/lib/llm-backend";
 import type { TraceTrigger } from "@/lib/trace";
 import { buildDescribeMessages } from "@/features/vision/server/describe";
-import { chatCompletion, listModels, sanitizeMessagesForTrace } from "@/server/llm/client";
+import {
+  chatCompletion,
+  listModels,
+  sanitizeMessagesForTrace,
+  type ChatMessage,
+} from "@/server/llm/client";
+import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import {
   probeEmbeddings,
   type EmbeddingProbe,
@@ -324,7 +330,14 @@ async function toVisionRuntime(
  * when nothing resolves to a full connection.
  */
 export async function getBrowserLlmRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
-  const record = await getSettingsRecord(db);
+  return toBrowserRuntime(db, await getSettingsRecord(db));
+}
+
+/** The browser resolver behind {@link getBrowserLlmRuntime}, shared with the probe. */
+async function toBrowserRuntime(
+  db: DrizzleDb,
+  record: SettingsRecord | null,
+): Promise<LlmRuntime | null> {
   const model = record?.browserModel ?? record?.model ?? null;
   if (!record || !model) return null;
   const backend = await resolveRoleBackend(db, record, record.browserBackendId);
@@ -1005,6 +1018,125 @@ export async function testVision(
 
 /** Short bound for the vision probe — one tiny image, an operator is waiting. */
 const VISION_PROBE_TIMEOUT_MS = 20_000;
+
+/** What the browser probe learned: the model, and whether it called the tool. */
+export interface BrowserProbe {
+  model: string;
+  /** True when the model answered by calling the offered tool. */
+  calledTool: boolean;
+  /** The model's final answer, for the operator to eyeball. */
+  answer: string;
+}
+
+/** Short bound for the browser probe — one trivial tool round, same reasoning. */
+const BROWSER_PROBE_TIMEOUT_MS = 30_000;
+
+/**
+ * The one tool the browser probe offers. Deliberately trivial and side-effect
+ * free: the question is not whether the model can browse, it is whether this
+ * connection can carry a tool call at all.
+ */
+const BROWSER_PROBE_TOOL = {
+  type: "function" as const,
+  function: {
+    name: "probe_echo",
+    description: "Return the text you are asked to echo. Call this to answer.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string", description: "The text to echo back." } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  },
+};
+
+/**
+ * Probe the browser-agent configuration by running one real tool round: the
+ * model is offered a single trivial tool and asked to use it. A **real** probe
+ * for the same reason as vision — a model listing cannot say whether a model
+ * supports tool calling, and browsing is nothing but tool calls, so a model
+ * that cannot make one fails every browse job while looking perfectly
+ * configured. Recorded as a trace; submitted values are merged over the stored
+ * record and resolved through the runtime resolver, including the fallback to
+ * the chat model.
+ *
+ * A model that answers without calling the tool is reported, not thrown: the
+ * connection demonstrably works, and how strictly a model obeys "use the tool"
+ * is a quality judgement for the operator, not a pass/fail this can make.
+ */
+export async function testBrowser(
+  input: TestRoleConnection,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<BrowserProbe> {
+  const record = await getSettingsRecord(db);
+  const merged = mergeRoleInput(record, input, {
+    backendKey: "browserBackendId",
+    modelKey: "browserModel",
+  });
+  const runtime = await toBrowserRuntime(db, merged);
+
+  return withTrace(
+    {
+      feature: FEATURE.id,
+      action: "test-browser",
+      trigger,
+      inputSummary: merged.browserModel ?? merged.model ?? "(no model)",
+    },
+    async (trace) => {
+      if (!runtime) {
+        throw ApiError.badRequest(
+          "Choose a browser-agent model, or configure the chat role it falls back to.",
+        );
+      }
+      const messages: ChatMessage[] = [
+        {
+          role: "user",
+          content: 'Call the probe_echo tool with the text "ready", then reply with its result.',
+        },
+      ];
+      await trace.event({
+        type: "external_call",
+        message: `POST ${runtime.baseUrl} /chat/completions (tools)`,
+        data: { model: runtime.model, messages, tools: [BROWSER_PROBE_TOOL] },
+      });
+      let calledTool = false;
+      const result = await chatCompletionWithTools(
+        { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
+        {
+          model: runtime.model,
+          messages,
+          tools: [BROWSER_PROBE_TOOL],
+          callTool: async (_name, args) => {
+            calledTool = true;
+            return { text: String(args.text ?? "") };
+          },
+          maxRounds: 2,
+          timeoutMs: BROWSER_PROBE_TIMEOUT_MS,
+        },
+      );
+      await trace.event({
+        type: "output",
+        message: calledTool
+          ? "browser model called the probe tool"
+          : "browser model answered without calling the tool",
+        // The provider's raw response body, verbatim (full-raw-bodies rule).
+        data: result.responseBody ?? { content: result.content },
+      });
+      const probe: BrowserProbe = {
+        model: runtime.model,
+        calledTool,
+        answer: result.content.trim(),
+      };
+      await trace.succeed({
+        outputSummary: calledTool
+          ? `${probe.model} completed a tool call`
+          : `${probe.model} answered but made no tool call`,
+      });
+      return probe;
+    },
+  );
+}
 
 /** Field defaults for merging a partial probe input onto a never-written settings row. */
 const EMPTY_RECORD: SettingsRecord = {
