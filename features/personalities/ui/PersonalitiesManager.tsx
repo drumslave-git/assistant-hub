@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  Check,
-  Pencil,
-  Plus,
-  Star,
-  Trash2,
-  VenetianMask,
-  X,
-} from "lucide-react";
+import { Pencil, Plus, Star, Trash2, VenetianMask } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -18,15 +10,16 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardFooter,
   CardHeader,
   CardTitle,
   EmptyState,
   Fab,
   Field,
   Input,
+  Modal,
   ScrollArea,
   Textarea,
+  useConfirm,
 } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
 import { MAX_PERSONALITIES } from "../server/schema";
@@ -36,7 +29,11 @@ import type { Personality } from "../server/schema";
  * Personalities manager. Client Component: create, edit, delete named personas
  * and pick the active one. Each mutation calls the personalities API, then
  * `router.refresh()` re-reads the server-rendered list + active selection.
- * Built from the shared UI-kit `Card`/`Field` primitives — no bespoke chrome.
+ *
+ * Writing a persona happens in a modal (user decision, 2026-08-14) — one form
+ * for both create and edit, so the two cannot drift, and the page underneath
+ * stays a list. Editing used to expand a card in place, which pushed every row
+ * below it down the page while you typed.
  */
 
 async function readError(res: Response): Promise<string> {
@@ -48,128 +45,46 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
-function CreateForm({ atLimit }: { atLimit: boolean }) {
-  const router = useRouter();
-  const [name, setName] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [state, setState] = useState<"idle" | "saving" | { error: string }>(
-    "idle",
-  );
+/** Which persona the dialog is editing, or that it is closed. */
+type DialogState = { kind: "closed" } | { kind: "create" } | { kind: "edit"; personality: Personality };
 
-  async function create() {
-    setState("saving");
-    try {
-      const res = await fetch("/api/personalities", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), prompt }),
-      });
-      if (!res.ok) {
-        setState({ error: await readError(res) });
-        return;
-      }
-      setName("");
-      setPrompt("");
-      setState("idle");
-      router.refresh();
-    } catch {
-      setState({ error: "Network error — could not reach the server" });
-    }
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>New personality</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <Field id="new-personality-name" label="Name">
-          {({ id }) => (
-            <Input
-              id={id}
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                setState("idle");
-              }}
-              placeholder="e.g. Grumpy sysadmin"
-              disabled={atLimit}
-            />
-          )}
-        </Field>
-        <Field
-          id="new-personality-prompt"
-          label="Prompt"
-          hint="Persona instructions appended to the bot's base system prompt when active."
-        >
-          {({ id, describedBy }) => (
-            <Textarea
-              id={id}
-              aria-describedby={describedBy}
-              rows={4}
-              value={prompt}
-              onChange={(e) => {
-                setPrompt(e.target.value);
-                setState("idle");
-              }}
-              placeholder="e.g. You are a witty, concise assistant who speaks like a seasoned sysadmin."
-              disabled={atLimit}
-            />
-          )}
-        </Field>
-        <Fab
-          label="Create personality"
-          busyLabel="Creating…"
-          icon={<Plus className="h-4 w-4" />}
-          onClick={create}
-          busy={state === "saving"}
-          disabled={atLimit || name.trim() === ""}
-          // The limit outranks a stale error: it is why the button is dead now,
-          // which is the question a disabled control raises.
-          status={
-            atLimit
-              ? { tone: "muted", text: `Limit of ${MAX_PERSONALITIES} reached` }
-              : typeof state === "object"
-                ? { tone: "danger", text: state.error }
-                : null
-          }
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-function PersonalityCard({
+/**
+ * The one persona form. Mounted only while open and keyed by its target, so the
+ * fields are seeded once per opening and never carry a previous persona's text.
+ */
+function PersonalityDialog({
   personality,
-  active,
+  onClose,
 }: {
-  personality: Personality;
-  active: boolean;
+  /** The persona being edited, or null to create one. */
+  personality: Personality | null;
+  onClose: () => void;
 }) {
   const router = useRouter();
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(personality.name);
-  const [prompt, setPrompt] = useState(personality.prompt);
+  const [name, setName] = useState(personality?.name ?? "");
+  const [prompt, setPrompt] = useState(personality?.prompt ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function resetEdit() {
-    setName(personality.name);
-    setPrompt(personality.prompt);
-    setError(null);
-    setEditing(false);
-  }
+  const editing = personality !== null;
 
-  async function mutate(run: () => Promise<Response>, after?: () => void) {
+  async function save() {
     setBusy(true);
     setError(null);
     try {
-      const res = await run();
+      const res = await fetch(
+        editing ? `/api/personalities/${encodeURIComponent(personality.id)}` : "/api/personalities",
+        {
+          method: editing ? "PATCH" : "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: name.trim(), prompt }),
+        },
+      );
       if (!res.ok) {
         setError(await readError(res));
         return;
       }
-      after?.();
+      onClose();
       router.refresh();
     } catch {
       setError("Network error — could not reach the server");
@@ -178,89 +93,87 @@ function PersonalityCard({
     }
   }
 
-  const save = () =>
-    mutate(
-      () =>
-        fetch(`/api/personalities/${encodeURIComponent(personality.id)}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: name.trim(), prompt }),
-        }),
-      () => setEditing(false),
-    );
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      busy={busy}
+      title={editing ? `Edit ${personality.name}` : "New personality"}
+      description="Persona instructions appended to the bot's base system prompt while this personality is active."
+      footer={
+        <>
+          {error ? <p className="mr-auto text-sm text-danger">{error}</p> : null}
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={save} disabled={busy || name.trim() === ""}>
+            {busy ? "Saving…" : editing ? "Save changes" : "Create personality"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field id="personality-name" label="Name">
+          {({ id }) => (
+            <Input
+              id={id}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Grumpy sysadmin"
+              autoFocus
+            />
+          )}
+        </Field>
+        <Field id="personality-prompt" label="Prompt">
+          {({ id }) => (
+            <Textarea
+              id={id}
+              rows={8}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="e.g. You are a witty, concise assistant who speaks like a seasoned sysadmin."
+            />
+          )}
+        </Field>
+      </div>
+    </Modal>
+  );
+}
 
-  const remove = () => {
-    if (
-      !confirm(
-        `Delete personality "${personality.name}"? This cannot be undone.`,
-      )
-    )
-      return;
-    return mutate(() =>
-      fetch(`/api/personalities/${encodeURIComponent(personality.id)}`, {
-        method: "DELETE",
-      }),
-    );
-  };
+function PersonalityCard({
+  personality,
+  active,
+  onEdit,
+  onDelete,
+}: {
+  personality: Personality;
+  active: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const setActive = (personalityId: string | null) =>
-    mutate(() =>
-      fetch("/api/personalities/active", {
+  async function setActive(personalityId: string | null) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/personalities/active", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ personalityId }),
-      }),
-    );
-
-  if (editing) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Edit personality</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Field id={`edit-name-${personality.id}`} label="Name">
-            {({ id }) => (
-              <Input
-                id={id}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-            )}
-          </Field>
-          <Field id={`edit-prompt-${personality.id}`} label="Prompt">
-            {({ id }) => (
-              <Textarea
-                id={id}
-                rows={5}
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-              />
-            )}
-          </Field>
-          {error ? <p className="text-sm text-danger">{error}</p> : null}
-        </CardContent>
-        <CardFooter>
-          <Button
-            size="sm"
-            onClick={save}
-            disabled={busy || name.trim() === ""}
-            leftIcon={<Check className="h-4 w-4" />}
-          >
-            {busy ? "Saving…" : "Save"}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={resetEdit}
-            disabled={busy}
-            leftIcon={<X className="h-4 w-4" />}
-          >
-            Cancel
-          </Button>
-        </CardFooter>
-      </Card>
-    );
+      });
+      if (!res.ok) {
+        setError(await readError(res));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError("Network error — could not reach the server");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -276,12 +189,7 @@ function PersonalityCard({
         </div>
         <CardAction>
           {active ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setActive(null)}
-              disabled={busy}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setActive(null)} disabled={busy}>
               Deactivate
             </Button>
           ) : (
@@ -298,7 +206,7 @@ function PersonalityCard({
           <Button
             size="icon"
             variant="ghost"
-            onClick={() => setEditing(true)}
+            onClick={onEdit}
             disabled={busy}
             aria-label={`Edit ${personality.name}`}
           >
@@ -307,7 +215,7 @@ function PersonalityCard({
           <Button
             size="icon"
             variant="ghost"
-            onClick={remove}
+            onClick={onDelete}
             disabled={busy}
             aria-label={`Delete ${personality.name}`}
           >
@@ -317,13 +225,9 @@ function PersonalityCard({
       </CardHeader>
       <CardContent>
         {personality.prompt.trim() ? (
-          <p className="whitespace-pre-wrap text-sm text-muted">
-            {personality.prompt}
-          </p>
+          <p className="text-sm whitespace-pre-wrap text-muted">{personality.prompt}</p>
         ) : (
-          <p className="text-sm text-faint">
-            No prompt — base system prompt only.
-          </p>
+          <p className="text-sm text-faint">No prompt — base system prompt only.</p>
         )}
         {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
       </CardContent>
@@ -338,15 +242,45 @@ export function PersonalitiesManager({
   personalities: Personality[];
   activeId: string | null;
 }) {
+  const router = useRouter();
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [state, setState] = useState<DialogState>({ kind: "closed" });
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const atLimit = personalities.length >= MAX_PERSONALITIES;
+
+  async function remove(personality: Personality) {
+    const ok = await confirm({
+      title: `Delete "${personality.name}"?`,
+      body: "The personality is removed for good. If it is the active one, the bot falls back to its base prompt.",
+      confirmLabel: "Delete personality",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setDeleteError(null);
+    try {
+      const res = await fetch(`/api/personalities/${encodeURIComponent(personality.id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        setDeleteError(await readError(res));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setDeleteError("Network error — could not reach the server");
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <CreateForm atLimit={personalities.length >= MAX_PERSONALITIES} />
+      {deleteError ? <p className="text-sm text-danger">{deleteError}</p> : null}
 
       {personalities.length === 0 ? (
         <EmptyState
           icon={VenetianMask}
           title="No personalities yet"
-          description="Create a personality above, then set it active to shape every bot reply."
+          description="Create a personality, then set it active to shape every bot reply."
         />
       ) : (
         <ScrollArea className="space-y-4">
@@ -355,10 +289,30 @@ export function PersonalitiesManager({
               key={p.id}
               personality={p}
               active={p.id === activeId}
+              onEdit={() => setState({ kind: "edit", personality: p })}
+              onDelete={() => void remove(p)}
             />
           ))}
         </ScrollArea>
       )}
+
+      <Fab
+        label="New personality"
+        icon={<Plus className="h-4 w-4" />}
+        onClick={() => setState({ kind: "create" })}
+        disabled={atLimit}
+        status={atLimit ? { tone: "muted", text: `Limit of ${MAX_PERSONALITIES} reached` } : null}
+      />
+
+      {state.kind !== "closed" ? (
+        <PersonalityDialog
+          key={state.kind === "edit" ? state.personality.id : "new"}
+          personality={state.kind === "edit" ? state.personality : null}
+          onClose={() => setState({ kind: "closed" })}
+        />
+      ) : null}
+
+      {confirmDialog}
     </div>
   );
 }

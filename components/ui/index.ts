@@ -27,6 +27,8 @@ export { Fab, type FabProps } from "./Fab";
 export { Field } from "./Field";
 export { Input, fieldBase } from "./Input";
 export { Label } from "./Label";
+export { Modal, type ModalProps, type ModalSize } from "./Modal";
+export { useConfirm, type ConfirmRequest } from "./useConfirm";
 export { PageHeader } from "./PageHeader";
 export { Pagination, type PaginationProps } from "./Pagination";
 export { Progress, type ProgressTone } from "./Progress";
