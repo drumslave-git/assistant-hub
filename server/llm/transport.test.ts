@@ -1,3 +1,4 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -72,6 +73,44 @@ describe("providerOptions carries vendor fields into the request body", () => {
     });
     expect(captured.body).not.toHaveProperty("think");
     expect(captured.body).not.toHaveProperty("chat_template_kwargs");
+  });
+
+  it("sends Anthropic's thinking switch through the native provider, keyed under its name", async () => {
+    // The native provider reads `providerOptions.anthropic`, not the shared
+    // `llm` key — which is why the transport resolves the key per connection.
+    const captured: { body?: Record<string, unknown>; headers?: Headers } = {};
+    const anthropic = createAnthropic({
+      apiKey: "sk-ant-key",
+      baseURL: "https://anthropic.invalid/v1",
+      fetch: (async (_url: string, init?: RequestInit) => {
+        captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        captured.headers = new Headers(init?.headers);
+        return new Response(
+          JSON.stringify({
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            model: "m",
+            content: [{ type: "text", text: "ok" }],
+            stop_reason: "end_turn",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as unknown as typeof fetch,
+    });
+
+    await generateText({
+      model: anthropic.languageModel("m"),
+      messages: [{ role: "user", content: "hi" }],
+      maxRetries: 0,
+      providerOptions: { anthropic: chatBodyExtrasFor("anthropic", { reasoning: "off" }) },
+    });
+
+    expect(captured.body?.thinking).toEqual({ type: "disabled" });
+    // Native auth rides x-api-key; a Bearer API key is what 401'd the probe.
+    expect(captured.headers?.get("x-api-key")).toBe("sk-ant-key");
+    expect(captured.headers?.get("anthropic-version")).toBeTruthy();
   });
 });
 

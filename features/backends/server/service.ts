@@ -215,7 +215,7 @@ export async function testBackend(
     { feature: FEATURE.id, action: "test-connection", trigger, inputSummary: baseUrl },
     async (trace) => {
       await trace.event({ type: "external_call", message: `GET ${baseUrl} /models` });
-      const models = await listModels({ baseUrl, apiKey, backend: stored?.type });
+      const models = await listModels({ baseUrl, apiKey, backend: input.type ?? stored?.type });
       await trace.event({ type: "output", message: `${models.length} models returned` });
       await trace.succeed({ outputSummary: `${models.length} models` });
       return { models };

@@ -10,7 +10,7 @@ import { APICallError } from "ai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 import { ApiError } from "@/lib/api-error";
-import type { LlmBackendId } from "@/lib/llm-backend";
+import { toLlmBackendId, type LlmBackendId } from "@/lib/llm-backend";
 
 import { adapterFor } from "./backends";
 import type { ReasoningMode } from "./backends";
@@ -265,6 +265,16 @@ async function fetchWithErrorDetail(
 
 /** Construct an OpenAI SDK client for an OpenAI-compatible endpoint. */
 export function createOpenAiClient(conn: LlmConnection): OpenAI {
+  if (toLlmBackendId(conn.backend) === "anthropic") {
+    // The routes this client speaks (audio speech/transcriptions, the generic
+    // model listing) do not exist on Anthropic; chat rides the native provider
+    // (`./provider`) and the listing has its own native path. Reaching this
+    // with an Anthropic connection means a role points at a backend that
+    // cannot serve it — name that instead of relaying a 404.
+    throw ApiError.badRequest(
+      "Anthropic backends serve chat models only — pick a different backend for this role",
+    );
+  }
   return new OpenAI({
     apiKey: conn.apiKey?.trim() || "not-needed",
     baseURL: toOpenAiBaseUrl(conn.baseUrl),
@@ -597,6 +607,9 @@ export async function listModels(
   conn: LlmConnection,
   timeoutMs: number = LIST_MODELS_TIMEOUT_MS,
 ): Promise<string[]> {
+  if (toLlmBackendId(conn.backend) === "anthropic") {
+    return listAnthropicModels(conn, timeoutMs);
+  }
   try {
     const page = await createOpenAiClient(conn).models.list({ timeout: timeoutMs });
     const seen = new Set<string>();
@@ -604,6 +617,66 @@ export async function listModels(
       const id = (entry.id ?? "").trim();
       if (id) seen.add(id);
     }
+    return [...seen].sort((a, b) => a.localeCompare(b));
+  } catch (err) {
+    throw toLlmError(err, conn.baseUrl);
+  }
+}
+
+/** The `anthropic-version` every native Anthropic REST call must carry. */
+const ANTHROPIC_VERSION = "2023-06-01";
+
+/**
+ * Anthropic's model listing. `GET /v1/models` there is **not** part of the
+ * OpenAI-compatibility layer (which covers chat completions only): it is the
+ * native API, authenticating with `x-api-key` + `anthropic-version` and
+ * rejecting a `Bearer` API key outright with "Invalid bearer token" — which is
+ * exactly how the generic listing failed against it. Same contract as
+ * {@link listModels}: distinct ids, sorted, clean {@link ApiError} on failure.
+ */
+async function listAnthropicModels(conn: LlmConnection, timeoutMs: number): Promise<string[]> {
+  const base = toOpenAiBaseUrl(conn.baseUrl);
+  const seen = new Set<string>();
+  try {
+    // Paginated with `has_more`/`last_id`, unlike the OpenAI shape — one more
+    // reason the OpenAI SDK cannot make this call.
+    let afterId: string | null = null;
+    do {
+      const url = new URL(`${base}/models`);
+      url.searchParams.set("limit", "1000");
+      if (afterId) url.searchParams.set("after_id", afterId);
+      const res = await fetch(url, {
+        headers: {
+          "x-api-key": conn.apiKey?.trim() ?? "",
+          "anthropic-version": ANTHROPIC_VERSION,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let detail = text;
+        try {
+          const parsed = JSON.parse(text) as { error?: { message?: unknown } };
+          if (typeof parsed?.error?.message === "string") detail = parsed.error.message;
+        } catch {
+          // Not JSON — the raw text is the message.
+        }
+        // Same wording and status mapping as `toLlmError`'s endpoint-error
+        // branch, so an Anthropic failure reads like every other backend's.
+        const code = res.status === 401 || res.status === 403 ? "bad_request" : "service_unavailable";
+        throw new ApiError(code, `LLM endpoint error (${res.status}): ${detail || res.statusText}`);
+      }
+      const body = (await res.json()) as {
+        data?: Array<{ id?: string }>;
+        has_more?: boolean;
+        last_id?: string | null;
+      };
+      for (const entry of body.data ?? []) {
+        const id = (entry.id ?? "").trim();
+        if (id) seen.add(id);
+      }
+      afterId = body.has_more ? (body.last_id ?? null) : null;
+    } while (afterId);
     return [...seen].sort((a, b) => a.localeCompare(b));
   } catch (err) {
     throw toLlmError(err, conn.baseUrl);

@@ -61,6 +61,18 @@ describe("thinking control differs per backend", () => {
     });
   });
 
+  it("Anthropic turns thinking off through its documented thinking switch", () => {
+    expect(chatBodyExtrasFor("anthropic", { reasoning: "off" })).toEqual({
+      thinking: { type: "disabled" },
+    });
+  });
+
+  it('Anthropic drops "low" — its briefly-please knobs are model-gated', () => {
+    // `effort` and adaptive thinking both 400 on older Claude models, and the
+    // adapter cannot know which model the call is for. Dropped, not approximated.
+    expect(chatBodyExtrasFor("anthropic", { reasoning: "low" })).toEqual({});
+  });
+
   it("leaves the model alone when no reasoning preference was expressed", () => {
     for (const id of LLM_BACKEND_IDS) {
       expect(chatBodyExtrasFor(id, {})).toEqual({});
@@ -101,6 +113,27 @@ describe("reasoning text is read wherever the backend puts it", () => {
   it("ignores an empty reasoning field instead of reporting it as present", () => {
     expect(readReasoningFor("ollama", completionWithReasoning("reasoning", "   "))).toBeNull();
   });
+
+  it("reads Anthropic's thinking blocks off the native content array", () => {
+    const raw = {
+      content: [
+        { type: "thinking", thinking: "step one" },
+        { type: "thinking", thinking: "step two" },
+        { type: "text", text: "the answer" },
+      ],
+    };
+    expect(readReasoningFor("anthropic", raw)).toBe("step one\nstep two");
+  });
+
+  it("returns null for an Anthropic response with no or empty thinking blocks", () => {
+    // Opus 4.7+ omit the text by default — the block is there, the text empty.
+    expect(
+      readReasoningFor("anthropic", { content: [{ type: "thinking", thinking: "" }] }),
+    ).toBeNull();
+    expect(readReasoningFor("anthropic", { content: [{ type: "text", text: "hi" }] })).toBeNull();
+    expect(readReasoningFor("anthropic", { choices: [{ message: { content: "hi" } }] })).toBeNull();
+    expect(readReasoningFor("anthropic", null)).toBeNull();
+  });
 });
 
 describe("context overflow", () => {
@@ -108,6 +141,7 @@ describe("context overflow", () => {
     expect(truncatesOnOverflow("ollama")).toBe(true);
     expect(truncatesOnOverflow("llamacpp")).toBe(false);
     expect(truncatesOnOverflow("vllm")).toBe(false);
+    expect(truncatesOnOverflow("anthropic")).toBe(false);
     expect(truncatesOnOverflow("openai-compatible")).toBe(false);
   });
 
@@ -115,6 +149,13 @@ describe("context overflow", () => {
     const patterns = adapterFor("llamacpp").contextOverflowPatterns;
     expect(patterns.some((p) => p.test("the request exceeds n_ctx"))).toBe(true);
     expect(patterns.some((p) => p.test("KV cache is full"))).toBe(true);
+  });
+
+  it("adds Anthropic's overflow phrasing, which carries no 'context' word", () => {
+    const patterns = adapterFor("anthropic").contextOverflowPatterns;
+    expect(patterns.some((p) => p.test("prompt is too long: 215631 tokens > 204698 maximum"))).toBe(
+      true,
+    );
   });
 });
 

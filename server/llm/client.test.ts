@@ -496,6 +496,64 @@ describe("llmUsageOf", () => {
   });
 });
 
+describe("listModels against an Anthropic backend", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("lists via the native route with x-api-key, following its pagination", async () => {
+    const requests: Array<{ url: URL; headers: Headers }> = [];
+    vi.stubGlobal("fetch", async (url: URL | string, init?: RequestInit) => {
+      const u = new URL(String(url));
+      requests.push({ url: u, headers: new Headers(init?.headers) });
+      // Anthropic paginates with `has_more`/`last_id` — not the OpenAI shape.
+      const body = u.searchParams.get("after_id")
+        ? { data: [{ id: "claude-c" }], has_more: false, last_id: "claude-c" }
+        : { data: [{ id: "claude-b" }, { id: "claude-a" }], has_more: true, last_id: "claude-a" };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const { listModels } = await import("./client");
+    const models = await listModels({
+      baseUrl: "https://api.anthropic.com",
+      apiKey: "sk-ant-key",
+      backend: "anthropic",
+    });
+
+    expect(models).toEqual(["claude-a", "claude-b", "claude-c"]);
+    expect(requests[0].url.pathname).toBe("/v1/models");
+    // Native auth: the key rides `x-api-key`, never `Authorization: Bearer` —
+    // Anthropic answers a Bearer API key with 401 "Invalid bearer token".
+    expect(requests[0].headers.get("x-api-key")).toBe("sk-ant-key");
+    expect(requests[0].headers.get("anthropic-version")).toBeTruthy();
+    expect(requests[0].headers.get("authorization")).toBeNull();
+    expect(requests[1].url.searchParams.get("after_id")).toBe("claude-a");
+  });
+
+  it("maps an auth failure to bad_request carrying the endpoint's own message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            type: "error",
+            error: { type: "authentication_error", message: "invalid x-api-key" },
+          }),
+          { status: 401 },
+        ),
+    );
+
+    const { listModels } = await import("./client");
+    await expect(
+      listModels({ baseUrl: "https://api.anthropic.com/v1", apiKey: "bad", backend: "anthropic" }),
+    ).rejects.toMatchObject({
+      code: "bad_request",
+      message: "LLM endpoint error (401): invalid x-api-key",
+    });
+  });
+});
+
 describe("servedModelOf", () => {
   it("reads the model a response claims to have served", async () => {
     const { servedModelOf } = await import("./client");

@@ -12,7 +12,7 @@ import { toLlmBackendId } from "@/lib/llm-backend";
 import { adapterFor } from "./backends";
 import type { ReasoningMode } from "./backends";
 import type { ChatContentPart, ChatUsage, LlmConnection } from "./client";
-import { createProvider, PROVIDER_NAME } from "./provider";
+import { createProvider, providerOptionsName } from "./provider";
 
 /**
  * The single wire between this app and whichever inference server is configured.
@@ -210,7 +210,7 @@ export async function completeRound(
   const extras = adapter.chatBodyExtras({ reasoning: input.reasoning });
   const start = Date.now();
   const result = await generateText({
-    model: provider.chatModel(input.model),
+    model: provider.languageModel(input.model),
     messages: toModelMessages(input.messages),
     // The SDK rejects `system` turns inside `messages` by default, steering
     // callers to its single `instructions` field. That does not fit this app:
@@ -230,7 +230,11 @@ export async function completeRound(
     // Retries live in `./client` alongside the priority gate, so the SDK's own
     // are off — two retry layers would multiply into a wait nobody chose.
     maxRetries: 0,
-    ...(Object.keys(extras).length > 0 ? { providerOptions: { [PROVIDER_NAME]: extras } } : {}),
+    // Keyed per connection: the shared `llm` name for OpenAI-compatible
+    // providers, the SDK-fixed `anthropic` for the native one.
+    ...(Object.keys(extras).length > 0
+      ? { providerOptions: { [providerOptionsName(conn)]: extras } }
+      : {}),
     // Off by default in the SDK; the Debug pages require the complete bodies.
     include: { requestBody: true, requestMessages: true, responseBody: true },
   });

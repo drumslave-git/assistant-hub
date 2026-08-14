@@ -13,7 +13,7 @@ import type { ChatRequestIntent, JsonValue, LlmBackendAdapter } from "./types";
  * snake-case `reasoning_effort` here would be silently overwritten by the unset
  * typed option and never reach the endpoint. It is pinned by a test.
  *
- * The four backend adapters, deliberately in one file: their value is in being
+ * The five backend adapters, deliberately in one file: their value is in being
  * comparable. Reading them side by side is how you see that "turn thinking off"
  * is four different requests, which is the fact that kept breaking the bot on
  * every backend switch.
@@ -163,6 +163,61 @@ const vllm: LlmBackendAdapter = {
 };
 
 /**
+ * Anthropic (Claude) — the one backend that does not speak the OpenAI wire
+ * shape at all. The AI SDK's native provider (`@ai-sdk/anthropic`, selected in
+ * `../provider`) owns the request translation; what lives here is the same
+ * behavioral seam as the other adapters: how to express a reasoning intent,
+ * where the thinking text ends up, and how overflow announces itself.
+ *
+ * These extras are keyed under `providerOptions.anthropic` (the provider's own
+ * name), not the shared `llm` key — see `providerOptionsName` in `../provider`.
+ *
+ * `thinking: {type: "disabled"}` is Anthropic's documented off-switch and is
+ * valid across the model range this app can meet (Claude 3.7 through Opus 5;
+ * only claude-fable-5 rejects it, and the provider itself guards the one other
+ * invalid combination by lowering effort). "low" is deliberately dropped: the
+ * knobs that could express it — `effort`, adaptive thinking — are model-gated
+ * (a 400 on Haiku/Sonnet 4.5 and older), and an intent a server cannot express
+ * is dropped, never approximated.
+ */
+const anthropic: LlmBackendAdapter = {
+  id: "anthropic",
+  chatBodyExtras(intent: ChatRequestIntent): Record<string, JsonValue> {
+    return intent.reasoning === "off" ? { thinking: { type: "disabled" } } : {};
+  },
+  readReasoning(raw) {
+    // The raw body is a native Messages response: `content` is an array of
+    // blocks, and thinking arrives as `{type: "thinking", thinking: "…"}`
+    // blocks — there is no `choices[0].message` here. Note that on Opus 4.7+
+    // the text is empty unless the request opted into a summarized display,
+    // which this app does not force: absent text is Anthropic's default, not
+    // a missing channel.
+    const body = raw as { content?: unknown } | null | undefined;
+    if (!body || !Array.isArray(body.content)) return null;
+    const text = body.content
+      .filter(
+        (block): block is { type: string; thinking: string } =>
+          !!block &&
+          typeof block === "object" &&
+          (block as { type?: unknown }).type === "thinking" &&
+          typeof (block as { thinking?: unknown }).thinking === "string",
+      )
+      .map((block) => block.thinking.trim())
+      .filter(Boolean)
+      .join("\n");
+    return text || null;
+  },
+  // "prompt is too long: 215631 tokens > 204698 maximum" — carries no
+  // "context" word, so the shared concept matcher cannot see it.
+  contextOverflowPatterns: [/prompt is too long/i],
+  contextOverflowBehavior: "error",
+  normalizeServedModelId(raw) {
+    // Anthropic model ids are exact, versioned strings; case is preserved.
+    return normalizeModelName(raw);
+  },
+};
+
+/**
  * Generic OpenAI-compatible — including OpenAI itself.
  *
  * Claims nothing beyond the published spec. `reasoning_effort` is in that spec,
@@ -190,4 +245,10 @@ const generic: LlmBackendAdapter = {
   },
 };
 
-export const LLM_BACKEND_ADAPTERS = { ollama, llamacpp, vllm, "openai-compatible": generic } as const;
+export const LLM_BACKEND_ADAPTERS = {
+  ollama,
+  llamacpp,
+  vllm,
+  anthropic,
+  "openai-compatible": generic,
+} as const;

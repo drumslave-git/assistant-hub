@@ -69,12 +69,16 @@ export type UpdateBackend = z.infer<typeof updateBackendSchema>;
  * (`backendId`, testing what is stored) or an ad-hoc `baseUrl` from the create
  * form. `apiKey` follows the probe convention: omitted falls back to the stored
  * key (when a `backendId` is given), so an unchanged secret never round-trips.
+ * `type` carries the form's current server-type selection — the listing call
+ * differs per backend (Anthropic's is a native route), so the test must probe
+ * what the operator is about to save, not what a stored row still says.
  */
 export const testBackendSchema = z
   .object({
     backendId: z.string().optional(),
     baseUrl: baseUrl.optional(),
     apiKey: apiKey.nullable().optional(),
+    type: backendType.optional(),
   })
   .refine((v) => v.backendId !== undefined || v.baseUrl !== undefined, {
     message: "Provide a backendId or a baseUrl to test",

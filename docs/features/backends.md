@@ -2,10 +2,15 @@
 
 **Feature id:** `backends` · **Dashboard:** `/backends`
 
-The operator's catalog of OpenAI-compatible endpoints. Each backend is one named
+The operator's catalog of LLM endpoints. Each backend is one named
 server — base URL, optional API key, and which inference server answers there
-(`ollama`, `llamacpp`, `vllm`, or generic; see the backend-normalization layer
-in [LLM & MCP](../architecture/llm-and-mcp.md)). The settings roles (chat,
+(`ollama`, `llamacpp`, `vllm`, `anthropic`, or generic; see the
+backend-normalization layer in [LLM & MCP](../architecture/llm-and-mcp.md)).
+Most types speak the OpenAI wire shape; `anthropic` is the exception — it rides
+the native Anthropic API (`x-api-key` auth, native `/v1/models` listing) and
+serves the chat-shaped roles only (chat, vision, browser agent, classifiers,
+background); embeddings, images, speech and transcription-mode audio refuse it
+with a named error. The settings roles (chat,
 embeddings, images, speech, audio, vision, browser agent) reference backends by
 id instead of carrying their own URL/key copies — one server, entered once,
 picked everywhere.

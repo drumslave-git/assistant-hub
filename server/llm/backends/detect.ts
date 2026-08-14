@@ -62,6 +62,12 @@ export async function detectBackend(baseUrl: string): Promise<BackendDetection> 
   const origin = originOf(baseUrl);
   if (!origin) return { backend: null, detail: "Not a valid URL" };
 
+  // Anthropic serves no unauthenticated fingerprint route (every native path
+  // wants a key), but it does not need one: the hostname is the signature.
+  if (new URL(origin).hostname === "api.anthropic.com") {
+    return { backend: "anthropic", detail: "Anthropic API (api.anthropic.com)" };
+  }
+
   const ollama = await probe(origin, "/api/version");
   if (ollama && typeof ollama.version === "string") {
     return { backend: "ollama", detail: `Ollama ${ollama.version}` };

@@ -22,6 +22,13 @@ Each of the four non-chat clients falls back to the chat role's backend when the
 role has none of its own — an embedding model usually comes from a different
 model and sometimes a different host, but often enough the same one serves both.
 
+One backend type does not speak these OpenAI routes at all: a backend declared
+`anthropic` rides the AI SDK's native Anthropic provider for chat
+(`server/llm/provider.ts` picks the provider per connection) and a native
+`x-api-key` `/v1/models` listing (`client.ts`); the non-chat clients refuse it
+with a named error, since Anthropic serves no embeddings, image, or audio
+routes.
+
 `classifier.ts` is not a sixth client but a call *shape* over `client.ts`: the
 reasoning mode and token budget every per-message classification uses (addressing
 analyzer and verifier, chat-rule match, honesty gate). It lives on its own so the

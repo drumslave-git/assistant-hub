@@ -3,6 +3,7 @@ import "server-only";
 import { sql } from "drizzle-orm";
 
 import { getDb, type DrizzleDb } from "@/db/drizzle";
+import type { LlmBackendId } from "@/lib/llm-backend";
 import {
   getDownloadStorageHealth,
   type DownloadStorageHealth,
@@ -129,7 +130,13 @@ async function probeModelEndpoint(
   id: EndpointStatus["id"],
   label: string,
   unprobed: UnprobedStatus,
-  runtime: { baseUrl: string; apiKey?: string | null; model: string } | null,
+  runtime: {
+    baseUrl: string;
+    apiKey?: string | null;
+    /** Forwarded to the listing: an Anthropic backend lists via its native route. */
+    backend?: LlmBackendId | null;
+    model: string;
+  } | null,
 ): Promise<EndpointStatus> {
   if (!runtime) return { id, label, ...unprobed };
   try {

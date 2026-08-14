@@ -377,6 +377,7 @@ paths:
                 backendId: { type: string }
                 baseUrl: { type: string, format: uri, maxLength: 500 }
                 apiKey: { type: [string, "null"], maxLength: 500 }
+                type: { $ref: "#/components/schemas/BackendType" }
       responses:
         "200":
           description: Models served by the endpoint
@@ -2232,7 +2233,7 @@ components:
 
     BackendType:
       type: string
-      enum: [ollama, llamacpp, vllm, openai-compatible]
+      enum: [ollama, llamacpp, vllm, anthropic, openai-compatible]
       description: Which inference server answers at the endpoint (drives the backend-normalization adapters).
 
     BackendCreate:

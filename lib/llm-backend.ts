@@ -19,7 +19,13 @@
  */
 
 /** The inference servers we normalize for. */
-export const LLM_BACKEND_IDS = ["ollama", "llamacpp", "vllm", "openai-compatible"] as const;
+export const LLM_BACKEND_IDS = [
+  "ollama",
+  "llamacpp",
+  "vllm",
+  "anthropic",
+  "openai-compatible",
+] as const;
 
 export type LlmBackendId = (typeof LLM_BACKEND_IDS)[number];
 
@@ -66,6 +72,11 @@ export const LLM_BACKENDS: LlmBackendOption[] = [
     id: "vllm",
     label: "vLLM",
     hint: "Closest to the OpenAI spec; supports reasoning_effort natively.",
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic (Claude)",
+    hint: "Native Anthropic API — not OpenAI-compatible. Chat and vision roles only; requires an API key.",
   },
   {
     id: "openai-compatible",

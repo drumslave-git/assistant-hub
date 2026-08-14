@@ -57,6 +57,19 @@ describe("detectBackend", () => {
     expect((await detectBackend("https://host.invalid/v1")).backend).toBe("ollama");
   });
 
+  it("identifies Anthropic by hostname alone, without sending a single probe", async () => {
+    // Anthropic serves no unauthenticated fingerprint route, so a probe could
+    // only fail; the hostname is the signature.
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      seen.push(String(url));
+      return new Response("nope", { status: 404 });
+    });
+    const result = await detectBackend("https://api.anthropic.com/v1");
+    expect(result.backend).toBe("anthropic");
+    expect(seen).toEqual([]);
+  });
+
   it("suggests nothing when no server names itself, leaving the choice alone", async () => {
     stubRoutes({});
     const result = await detectBackend("https://host.invalid/v1");

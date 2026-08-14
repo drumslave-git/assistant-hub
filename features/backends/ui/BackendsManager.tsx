@@ -229,6 +229,7 @@ function CreateForm() {
             void test.run({
               baseUrl: baseUrl.trim(),
               ...(apiKey.trim() !== "" ? { apiKey: apiKey.trim() } : {}),
+              type,
             })
           }
         />
@@ -390,6 +391,7 @@ function BackendCard({ backend, inUseBy }: { backend: Backend; inUseBy: string[]
                 backendId: backend.id,
                 baseUrl: baseUrl.trim(),
                 ...(keyDirty ? { apiKey: apiKey.trim() === "" ? null : apiKey.trim() } : {}),
+                type,
               })
             }
           />

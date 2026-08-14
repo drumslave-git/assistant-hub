@@ -28,6 +28,95 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Anthropic (Claude) as a native backend type (`done` pending key-in-hand verification, 2026-08-14)
+
+User report, 2026-08-14 (screenshot): pointing a Generic backend at
+`https://api.anthropic.com/v1` failed Test connection with
+`LLM endpoint error (401): Invalid bearer token`. Diagnosis: the test's
+`GET /v1/models` is **not** part of Anthropic's OpenAI-compatibility layer
+(which covers chat completions only) — the native route wants `x-api-key` +
+`anthropic-version` and rejects any Bearer API key before validating it.
+**User decision: full native Anthropic integration** (over an
+OpenAI-compat-shim backend type, and over "diagnosis only").
+
+### What shipped
+
+- **New backend id `anthropic`** (`lib/llm-backend.ts`, option labeled
+  "Anthropic (Claude)"): plain-text column, no migration. Zod enums and the
+  Backends UI pick it up from `LLM_BACKEND_IDS`.
+- **Chat rides the AI SDK's native provider** (`@ai-sdk/anthropic` 4.0.38, new
+  dependency): `createProvider` (`server/llm/provider.ts`) branches per
+  connection and now returns a normalized `LlmProvider`
+  (`languageModel`/`embeddingModel`/`imageModel` — the factory names the two
+  provider families share); the transport calls `languageModel` and keys
+  `providerOptions` per connection (`providerOptionsName`: the shared `llm`
+  name, or the SDK-fixed `anthropic`). Tool loop, traces, retry policy
+  untouched — the wire dialect lives in the provider.
+- **Adapter** (`server/llm/backends/adapters.ts`): reasoning `off` →
+  `thinking: {type: "disabled"}` (valid across the meetable model range; only
+  `claude-fable-5` rejects it); `low` dropped — Anthropic's briefly-please
+  knobs (`effort`, adaptive) are model-gated, and an intent a server cannot
+  express is dropped, never approximated. `readReasoning` reads native
+  `content[]` thinking blocks (empty by default on Opus 4.7+ — Anthropic's
+  default, not a missing channel). Overflow pattern `/prompt is too long/i`
+  (their wording carries no "context" word), behavior `error`.
+- **Native model listing** (`listAnthropicModels` in `server/llm/client.ts`):
+  `GET /v1/models?limit=1000` with `x-api-key` + `anthropic-version:
+  2023-06-01`, following `has_more`/`last_id` pagination; errors mapped to the
+  same `LLM endpoint error (status): detail` wording as every other backend.
+  `listModels` branches on the declared backend.
+- **Test connection carries the form's `type`** (`testBackendSchema` +
+  `testBackend` + both forms): the listing differs per backend now, so the
+  test probes what the operator is about to save, not what a stored row says.
+- **Detect** recognizes `api.anthropic.com` by hostname without sending a
+  single probe (Anthropic serves no unauthenticated fingerprint route).
+- **Non-chat roles refuse with a named error** instead of relaying a 404:
+  `createProvider`'s anthropic `embeddingModel`/`imageModel` factories and
+  `createOpenAiClient` (speech, transcriptions-mode audio) throw
+  "Anthropic backends serve chat models only — pick a different backend…".
+  Chat-shaped roles (chat, vision, browser agent, classifiers, background)
+  work; vision image parts convert natively in the provider.
+- Docs: `configuration.md`, `features/backends.md`,
+  `architecture/llm-and-mcp.md`, `api/openapi.yaml` (BackendType enum + test
+  body `type`).
+
+### Proof
+
+Lint clean; typecheck clean. Unit: full suite 1064 passed / the same 21
+pre-existing yt-dlp + media-download Windows failures (new: adapter body/read
+pinning incl. the native thinking-block shape, detect-by-hostname with zero
+probes sent, native listing pagination + header assertions + 401 mapping, and
+a transport test proving `thinking: {type:"disabled"}` reaches the native
+request body under `providerOptions.anthropic` with `x-api-key` auth — same
+stub-fetch philosophy as the existing provider tests). Integration: backends
+11/11, settings + status 48/48.
+
+Browser-verified against the live dev server: the type dropdown lists
+"Anthropic (Claude)"; Detect on `https://api.anthropic.com/v1` answered
+"Detected Anthropic API (api.anthropic.com)" and switched the type; Test
+connection (no key) now reaches the **native** route — the error became
+`LLM endpoint error (401): x-api-key header is required`, Anthropic's own
+message, where the generic path died on `Invalid bearer token` regardless of
+key.
+
+### Remaining risks / operator steps
+
+- **Key-in-hand verification is the operator's step** (the assistant does not
+  handle API keys): create the backend with the real key — Test connection
+  should list `claude-*` models — then point the chat (or vision) role at it
+  and run the Settings chat probe. Not yet observed with a real key.
+- The reply path sends no `max_tokens` by default; the provider fills the
+  model's own output cap for known `claude-*` ids. A truncated-looking reply
+  on an unknown/new model id would be the 4096-token compatibility default —
+  visible in the trace's request body.
+- `reasoning: "off"` maps to `thinking: {type: "disabled"}`, which
+  `claude-fable-5` rejects (400) — if that model is ever configured for the
+  classifier role, the adapter mapping is the place to revisit.
+- Anthropic has no audio input on the chat route: chat-mode audio (STT) on an
+  Anthropic backend sends the turn's text without the audio part (the
+  transport drops `input_audio` for all AI SDK backends) — the audio probe
+  reports what actually comes back rather than failing.
+
 ## Unified tasks (`done` pending production deploy, 2026-08-13)
 
 User direction, 2026-08-13: a significant rework. Scheduled tasks become just
