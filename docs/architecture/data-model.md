@@ -112,7 +112,7 @@ decision, 2026-08-13; replaced `chat_rules` and `scheduled_tasks`, migrations
 | `time_of_day` | text NULL | `schedule`: local `HH:MM` in the operator timezone |
 | `weekdays` | integer[] NULL | `schedule` weekly; 0 = Sunday |
 | `run_date` | text NULL | `schedule` once; `YYYY-MM-DD` |
-| `enabled` | boolean NOT NULL, default true | A paused task never fires and never enters a prompt |
+| `enabled` | boolean NOT NULL, default true | A paused task never fires, never enters a prompt, and is invisible to the chat toolkit — the operator's toggle alone |
 | `attempts` | integer NOT NULL, default 0 | Consecutive failed fires of a due one-shot (capped at 5, then disabled) |
 | `recent_deliveries` | jsonb `string[]`, default `[]` | What fires actually sent, newest first, for wording variation |
 | `last_run_at`, `next_run_at` | timestamptz | `next_run_at` is null for prompt kinds and spent rows |

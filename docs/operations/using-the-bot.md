@@ -78,6 +78,10 @@ Anyone in the chat can create a task. You can list and read all of the chat's ta
 but you can only **change or cancel the ones you created**. Reminders are delivered to
 the chat they were created in.
 
+Cancelling from the chat **removes** the task; there is no "pause it for now" from
+here. Pausing is the operator's, on the `/tasks` page — and a paused task is one the
+bot no longer knows about at all, so asking it about one gets you "no such task".
+
 The delivered message is written fresh each time rather than replayed, so a daily
 reminder does not read identically every day.
 

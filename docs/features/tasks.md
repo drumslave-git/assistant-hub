@@ -31,7 +31,8 @@ The two **families** share the row but not the rules:
   needs somewhere to speak), carry an optional `context` gathered at creation
   (a fire sees no transcript), and keep the one-shot retry lifecycle — a failed
   due one-shot retries on later ticks up to **5 attempts**, then is disabled,
-  never deleted; a fired one-shot is deleted, spent.
+  never deleted (and a disabled task is gone as far as the chat is concerned —
+  see below); a fired one-shot is deleted, spent.
 
 ## How a task delivers — no hardcoded sending
 
@@ -165,6 +166,7 @@ unchanged — see `docs/features/browser-agent.md`.
 | Scope | Any chat, **and** the global set (prompt kinds) | Only the current chat |
 | Audience | Everyone, or people ticked off the group's roster | Everyone, or `user_ids` copied from the roster |
 | Global tasks | Create, edit, delete | Visible, never editable |
+| Pausing | The `enabled` toggle | **Not offered** — cancelling is deleting |
 
 Chat-side gates are enforced **inside the service** (no lexical pre-filter),
 and a denial is returned, never thrown, so the model relays the refusal:
@@ -183,6 +185,30 @@ reassure in prose instead of calling), while the same instruction with a
 *different audience* amends the audience and says so. The dashboard still gets
 a 409 for duplicates — an operator must see a no-op for what it is.
 
+## Paused tasks belong to the operator
+
+A paused task is invisible to the bot — not composed into a prompt, not offered
+to the matcher, not fired, and not listed, read, changed or deleted through the
+chat toolkit (`isVisibleFromChat`, read through `getChatVisibleTasks` /
+`getChatVisibleTask`; user decision, 2026-08-14). From a chat it reads as an
+unknown id, which is what it is to the people there.
+
+It leaked before: `tasks_list` returned paused rows, and the model — holding a
+rule it could neither carry out nor remove — told the group about a task it was
+supposedly still under and could not delete. A rule the bot cannot act on has
+nothing to say to anyone.
+
+The same decision removes pausing from the chat side entirely: **cancelling a
+task from a chat deletes it**, and `enabled` exists only on the dashboard's
+toggle and its `PATCH /api/tasks/[id]`. Two consequences follow:
+
+- `updateTaskFromChat` refuses a patch carrying `enabled` (the tool schema
+  cannot express one; the refusal covers every other caller of the service).
+- The prompt-task duplicate guard skips paused rows, so the same wording can be
+  set again. The guard is a prompt budget, and a paused task is in no prompt —
+  while answering "already in force" about a switched-off rule would be a lie,
+  and refusing with a reason would tell the chat about a task it is never shown.
+
 ## Tools
 
 | Tool | Input | Purpose |
@@ -190,8 +216,8 @@ a 409 for duplicates — an operator must see a no-op for what it is.
 | `tasks_list` | — | This chat's tasks with ids, triggers, and audience, plus the global ones |
 | `tasks_get` | `id` | One task, including its saved context |
 | `tasks_create` | `instruction`, `trigger`, `context`, `user_ids`, `every_minutes`, `delay_minutes`, `time`, `weekdays`, `date` | Save a standing rule or a timed job |
-| `tasks_update` | `id` + any of the above, `enabled`, `applies_to_everyone` | Reword, retime, retarget, pause/resume |
-| `tasks_delete` | `id` | Remove a task for good |
+| `tasks_update` | `id` + any of the above, `applies_to_everyone` | Reword, retime, retarget |
+| `tasks_delete` | `id` | Remove a task for good — how a chat cancels one |
 | `send_message` | `text` | **Timed fires only** — send a standalone message to the task's chat |
 | `reply_to_message` | `text` | **`message`-triggered turns only** — reply to the message that triggered the task (bot-messaging) |
 | `set_message_reaction` | `message_id`, `emoji`, `big` | React to an earlier message (bot-messaging; every turn — a reaction is not a delivery) |
@@ -259,7 +285,8 @@ calls are traced under `mcp-tools-tasks`.
 | `features/tasks/server/matcher.test.ts` | Match prompt (audience prefix, sender line, two-step structure) and every fail-closed citation path |
 | `features/tasks/server/live-matcher.integration.test.ts` | `LLM_LIVE=1`: a real classifier fires a person-only task for its person and nobody else, and a content condition still binds |
 | `features/tasks/server/fire.test.ts` | The delivery inversion: `deliver` binding, quiet fires, delivery-failure semantics, history mirroring |
-| `features/tasks/server/tasks.integration.test.ts` | Scopes, caps, duplicates, targeting, per-kind timing and gates, chat-side idempotence, traces |
+| `features/tasks/server/tasks.integration.test.ts` | Scopes, caps, duplicates, targeting, per-kind timing and gates, chat-side idempotence, paused-task invisibility, traces |
+| `features/tasks/server/mcp-tools.test.ts` | The toolkit boundary: reads go through the chat-visible service, an invisible id reads as unknown, and no tool can pause anything |
 | `features/tasks/server/scheduler.integration.test.ts` | The due-run loop: settle per kind, quiet fires, one-shot retry/disable |
 | `features/mcp-tools/server/service.test.ts` | The delivery carve-out: an ordinary reply turn sees neither tool, a `message` turn sees only `reply_to_message`, a fire only `send_message`, and never both |
 | `features/bot-messaging/server/service.test.ts` | The task-opened turn: directive placement, enforcement retry + suppression, the addressed-turn authority pass |

@@ -447,15 +447,18 @@ standing (`message`/`on-reply`) kinds are self-serve in a DM and owner-only in
 a group; timed kinds are open to create and creator-or-owner to mutate. Global
 tasks are read-only here. A group standing task may name the people it applies
 to, by ids copied from the roster in the group context — never resolved from a
-name in code.
+name in code. **Paused** tasks are not in this toolkit's world at all: every
+read goes through the service's chat-visible functions, so one cannot be listed,
+read or mutated here, and no tool can pause anything — from a chat, cancelling a
+task deletes it (user decision, 2026-08-14).
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
 | `tasks_list` | — | This chat's tasks with ids, triggers, and audience, plus the global ones |
 | `tasks_get` | `id` | One task, including its saved context |
 | `tasks_create` | `instruction`, `trigger`, `context`, `user_ids`, `every_minutes`, `delay_minutes`, `time`, `weekdays`, `date` | Save a standing rule or a timed job for **this** chat |
-| `tasks_update` | `id` + any changed field, `applies_to_everyone` | Reword, retime, re-target, or pause/resume |
-| `tasks_delete` | `id` | Remove a task for good |
+| `tasks_update` | `id` + any changed field, `applies_to_everyone` | Reword, retime, re-target |
+| `tasks_delete` | `id` | Remove a task for good — how a chat cancels one |
 
 The toolkit's second registrar owns the **outbound** delivery tool:
 

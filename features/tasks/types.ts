@@ -119,6 +119,21 @@ export function isPromptTask(task: Pick<Task, "triggerKind">): boolean {
   return task.triggerKind === "message" || task.triggerKind === "on-reply";
 }
 
+/**
+ * Whether a task exists at all as far as a chat is concerned.
+ *
+ * Pausing is the operator's decision, taken in the dashboard, and a paused task
+ * is invisible to the bot everywhere — not composed into a prompt, not offered
+ * to the matcher, not fired, and not listed, read, changed or deleted through
+ * the chat toolkit (user decision, 2026-08-14). It leaked before: a paused row
+ * still came back from `tasks_list`, and the model, holding a task it could
+ * neither carry out nor remove, discussed it with the chat as something it was
+ * still under. A rule the bot cannot act on has nothing to say to anyone.
+ */
+export function isVisibleFromChat(task: Pick<Task, "enabled">): boolean {
+  return task.enabled;
+}
+
 /** Whether the wall-clock scheduler owns firing this task. */
 export function isTimedTask(task: Pick<Task, "triggerKind">): boolean {
   return (

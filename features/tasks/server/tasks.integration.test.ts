@@ -9,14 +9,15 @@ import { upsertSettings } from "@/features/settings/server/repository";
 import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
-import { MAX_PROMPT_TASKS_PER_SCOPE } from "./schema";
+import { MAX_PROMPT_TASKS_PER_SCOPE, type UpdateTaskInput } from "./schema";
 import {
   createTaskFromChat,
   createTaskService,
   deleteTaskFromChat,
   editTaskService,
   getActiveTasksForChat,
-  getTasksForChat,
+  getChatVisibleTask,
+  getChatVisibleTasks,
   getTasksView,
   removeTaskService,
   updateTaskFromChat,
@@ -25,8 +26,9 @@ import {
 /**
  * Tasks against a real database: scope resolution (a chat sees its own tasks
  * plus the global ones), the prompt-kind cap and duplicate guard, sender
- * targeting, per-kind timing, and the two chat-side permission gates — the
- * rules gate for standing kinds, the creator-or-owner gate for timed ones.
+ * targeting, per-kind timing, the two chat-side permission gates — the rules
+ * gate for standing kinds, the creator-or-owner gate for timed ones — and the
+ * paused-task rules (invisible from chat; pausing is dashboard-only).
  */
 
 let ctx: TestDb;
@@ -86,7 +88,7 @@ describe("scopes and selection", () => {
     const global = await create({ chatId: null, instruction: "Never swear." });
     await create({ chatId: "-2002", instruction: "Somebody else's task." });
 
-    const tasks = await getTasksForChat(GROUP, ctx.db);
+    const tasks = await getChatVisibleTasks(GROUP, ctx.db);
 
     expect(tasks.map((t) => t.id).sort()).toEqual([own.id, global.id].sort());
   });
@@ -127,6 +129,88 @@ describe("scopes and selection", () => {
   });
 });
 
+/**
+ * A paused task belongs to the operator alone (user decision, 2026-08-14). The
+ * bot never sees one, so it can never hold a rule it can neither carry out nor
+ * remove — and it cannot pause anything itself: from a chat, cancelling is
+ * deleting.
+ */
+describe("paused tasks", () => {
+  it("leaves paused tasks out of what a chat can see, its own and the global ones", async () => {
+    const live = await create({ instruction: "Answer briefly." });
+    await create({ instruction: "Paused rule.", enabled: false });
+    await create({ chatId: null, instruction: "Paused everywhere.", enabled: false });
+    const globalLive = await create({ chatId: null, instruction: "Never swear." });
+
+    expect((await getChatVisibleTasks(GROUP, ctx.db)).map((t) => t.id).sort()).toEqual(
+      [live.id, globalLive.id].sort(),
+    );
+  });
+
+  it("reads a paused task as an unknown id, and refuses to change or delete it", async () => {
+    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
+    const paused = await create({ instruction: "Paused rule.", enabled: false });
+
+    const read = await getChatVisibleTask(paused.id, GROUP, ctx.db);
+    const updated = await updateTaskFromChat(
+      { chatId: GROUP, userId: DM_USER, id: paused.id, patch: { instruction: "Reworded." } },
+      chatTrigger,
+      ctx.db,
+    );
+    const deleted = await deleteTaskFromChat(
+      { chatId: GROUP, userId: DM_USER, id: paused.id },
+      chatTrigger,
+      ctx.db,
+    );
+
+    expect(read).toBeNull();
+    expect(updated).toEqual({ status: "not_found" });
+    expect(deleted).toEqual({ status: "not_found" });
+    // Invisible, not gone: the operator still has it in the dashboard.
+    expect((await getTasksView(ctx.db)).map((t) => t.id)).toEqual([paused.id]);
+  });
+
+  it("refuses a chat-side patch that would pause a task, and leaves it running", async () => {
+    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
+    const task = await create({ instruction: "Answer briefly." });
+
+    const result = await updateTaskFromChat(
+      {
+        chatId: GROUP,
+        userId: DM_USER,
+        id: task.id,
+        // The tool schema cannot express this; every other caller of the
+        // service gets an honest refusal rather than a silent drop.
+        patch: { enabled: false } as Omit<UpdateTaskInput, "enabled">,
+      },
+      chatTrigger,
+      ctx.db,
+    );
+
+    expect(result).toMatchObject({
+      status: "denied",
+      reason: expect.stringMatching(/cannot be paused/i),
+    });
+    expect(await getChatVisibleTask(task.id, GROUP, ctx.db)).toMatchObject({ enabled: true });
+  });
+
+  it("creates a fresh standing task rather than claiming a paused twin is in force", async () => {
+    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
+    await create({ instruction: "Answer briefly.", enabled: false });
+
+    const result = await createTaskFromChat(
+      { chatId: GROUP, userId: DM_USER, instruction: "Answer briefly.", triggerKind: "on-reply" },
+      chatTrigger,
+      ctx.db,
+    );
+
+    expect(result.status).toBe("created");
+    expect((await getChatVisibleTasks(GROUP, ctx.db)).map((t) => t.instruction)).toEqual([
+      "Answer briefly.",
+    ]);
+  });
+});
+
 describe("dashboard CRUD", () => {
   it("creates, edits and deletes, recording a trace for each", async () => {
     const task = await create();
@@ -143,6 +227,11 @@ describe("dashboard CRUD", () => {
     await create({ instruction: "Answer briefly." });
     await expect(create({ instruction: "answer BRIEFLY." })).rejects.toMatchObject({ status: 409 });
     await expect(create({ chatId: null, instruction: "Answer briefly." })).resolves.toBeTruthy();
+  });
+
+  it("lets a paused task's wording be used again — the duplicate guard is a prompt budget", async () => {
+    await create({ instruction: "Answer briefly.", enabled: false });
+    await expect(create({ instruction: "answer BRIEFLY." })).resolves.toBeTruthy();
   });
 
   it("caps standing tasks per scope, leaving timed tasks uncapped and un-deduplicated", async () => {
@@ -255,7 +344,7 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
       status: "exists",
       task: { triggerKind: "on-reply", instruction: "Answer briefly." },
     });
-    expect(await getTasksForChat(DM_USER, ctx.db)).toHaveLength(1);
+    expect(await getChatVisibleTasks(DM_USER, ctx.db)).toHaveLength(1);
   });
 
   it("amends the audience when the same standing task is set again for other people", async () => {
@@ -286,7 +375,7 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
 
     expect(first.status).toBe("created");
     expect(widened).toMatchObject({ status: "updated", task: { targetUserIds: ["22", "11"] } });
-    expect(await getTasksForChat(GROUP, ctx.db)).toHaveLength(1);
+    expect(await getChatVisibleTasks(GROUP, ctx.db)).toHaveLength(1);
   });
 
   it("refuses a non-owner writing a standing task in a group, before the duplicate check", async () => {
@@ -312,7 +401,7 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
     const global = await create({ chatId: null, instruction: "Never swear." });
     await upsertSettings(ctx.db, { ownerUserId: DM_USER });
 
-    expect((await getTasksForChat(GROUP, ctx.db)).map((t) => t.id)).toContain(global.id);
+    expect((await getChatVisibleTasks(GROUP, ctx.db)).map((t) => t.id)).toContain(global.id);
     const result = await deleteTaskFromChat(
       { chatId: GROUP, userId: DM_USER, id: global.id },
       chatTrigger,
@@ -368,12 +457,12 @@ describe("chat-side gate — timed kinds (creator or owner)", () => {
     const id = created.status === "created" ? created.task.id : "";
 
     const stranger = await updateTaskFromChat(
-      { chatId: GROUP, userId: "300", id, patch: { enabled: false } },
+      { chatId: GROUP, userId: "300", id, patch: { instruction: "Remind us to nap." } },
       chatTrigger,
       ctx.db,
     );
     const creator = await updateTaskFromChat(
-      { chatId: GROUP, userId: OTHER_USER, id, patch: { enabled: false } },
+      { chatId: GROUP, userId: OTHER_USER, id, patch: { instruction: "Remind us to nap." } },
       chatTrigger,
       ctx.db,
     );

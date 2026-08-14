@@ -272,6 +272,13 @@ it — unless you ask the bot as the configured owner, who is exempt and can
 cancel or edit any task in a chat they are in. Standing rules in a group are
 owner-only from chat either way.
 
+The **enable/disable** toggle is yours alone, and disabling hides the task from
+the bot completely: it is not listed, read, changed or deleted from a chat, and
+asking about it there gets "no such task". Nobody in a chat can pause anything —
+when they cancel a task, it is deleted. So a switched-off row is a task only you
+can bring back, and the only place its wording still exists (which is the point:
+the bot cannot discuss a rule it has no way to carry out).
+
 ## Browser agent (`/browser`)
 
 Lists runs and lets you start one. A dashboard-started run has no chat to deliver to —

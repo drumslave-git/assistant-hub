@@ -20,11 +20,17 @@ import {
   describeTrigger,
   normalizeTrigger,
 } from "../schedule";
-import { isPromptTask, isTimedTask, type Task, type TriggerKind } from "../types";
+import {
+  isPromptTask,
+  isTimedTask,
+  isVisibleFromChat,
+  type Task,
+  type TriggerKind,
+} from "../types";
 import {
   countPromptTasksInScope,
   deleteTask,
-  getPromptTaskByInstruction,
+  getActivePromptTaskByInstruction,
   getTaskById,
   insertTask,
   listTasks,
@@ -83,12 +89,36 @@ export async function getTasksView(db: DrizzleDb = getDb()): Promise<Task[]> {
   return listTasks(db);
 }
 
-/** Every task governing one chat — its own plus the global ones. */
-export async function getTasksForChat(chatId: string, db: DrizzleDb = getDb()): Promise<Task[]> {
-  return listTasksForChat(db, chatId);
+/**
+ * The tasks a chat may see: its own plus the global ones, paused ones left out.
+ * The chat toolkit reads through here and nowhere else, so what the bot can list
+ * is exactly what it can act on (see {@link isVisibleFromChat}).
+ */
+export async function getChatVisibleTasks(
+  chatId: string,
+  db: DrizzleDb = getDb(),
+): Promise<Task[]> {
+  return (await listTasksForChat(db, chatId)).filter(isVisibleFromChat);
 }
 
-/** One task by id, or null. */
+/**
+ * One task as a chat may see it — its own or a global one, and never a paused
+ * one — or null. The whole "invisible from chat" rule lives here and in
+ * {@link getChatVisibleTasks}: a paused task reads as an unknown id from chat,
+ * which is what it is to the people there.
+ */
+export async function getChatVisibleTask(
+  id: string,
+  chatId: string,
+  db: DrizzleDb = getDb(),
+): Promise<Task | null> {
+  const task = await getTaskById(db, id);
+  if (!task || !isVisibleFromChat(task)) return null;
+  if (task.chatId !== null && task.chatId !== chatId) return null;
+  return task;
+}
+
+/** One task by id, or null — the dashboard's read (a paused task included). */
 export async function getTask(id: string, db: DrizzleDb = getDb()): Promise<Task | null> {
   return getTaskById(db, id);
 }
@@ -196,7 +226,7 @@ async function assertPromptWritable(
       `At most ${MAX_PROMPT_TASKS_PER_SCOPE} standing tasks are allowed for ${scopeLabel(chatId)}`,
     );
   }
-  if (await getPromptTaskByInstruction(db, chatId, instruction, exceptId)) {
+  if (await getActivePromptTaskByInstruction(db, chatId, instruction, exceptId)) {
     throw ApiError.conflict("That task already exists here");
   }
 }
@@ -467,19 +497,19 @@ async function createDenyReason(
 
 /**
  * Resolve a task a chat turn wants to modify, and whether this caller may.
- * A task of another chat is invisible (`not_found`, never "forbidden" — the
- * chat has no business learning it exists), and a global task is visible but
- * read-only from chat. Prompt kinds take the rules gate; timed kinds take the
- * creator-or-owner gate (owner exemption: user decision, 2026-08-07), judged on
- * the turn's *authority* — the sender normally, a matched task's author when a
- * task drove the turn.
+ * A task of another chat — or a paused one — is invisible (`not_found`, never
+ * "forbidden": the chat has no business learning it exists), and a global task
+ * is visible but read-only from chat. Prompt kinds take the rules gate; timed
+ * kinds take the creator-or-owner gate (owner exemption: user decision,
+ * 2026-08-07), judged on the turn's *authority* — the sender normally, a matched
+ * task's author when a task drove the turn.
  */
 async function resolveMutationTarget(
   db: DrizzleDb,
   input: { chatId: string; userId: string | null; authorityUserId?: string | null; id: string },
 ): Promise<{ ok: true; task: Task } | { ok: false; result: TaskWriteResult }> {
-  const task = await getTaskById(db, input.id);
-  if (!task || (task.chatId !== null && task.chatId !== input.chatId)) {
+  const task = await getChatVisibleTask(input.id, input.chatId, db);
+  if (!task) {
     return { ok: false, result: { status: "not_found" } };
   }
   if (task.chatId === null) {
@@ -546,7 +576,7 @@ export async function createTaskFromChat(
   if (isPromptTask(input)) {
     // Idempotent from chat (see `TaskWriteResult.exists`): the same standing
     // task again is the state the caller asked for, so report it as reached.
-    const existing = await getPromptTaskByInstruction(db, input.chatId, instruction);
+    const existing = await getActivePromptTaskByInstruction(db, input.chatId, instruction);
     if (existing) {
       // …unless it is asked for with a different set of people. That is not the
       // stored state, so reporting "already in force" would be a lie about the
@@ -588,18 +618,35 @@ export async function createTaskFromChat(
   }
 }
 
-/** Update one of the current chat's tasks from a chat turn, gated and traced. */
+/**
+ * Update one of the current chat's tasks from a chat turn, gated and traced.
+ *
+ * The patch cannot carry `enabled`: pausing and resuming are the operator's,
+ * taken in the dashboard, and cancelling from chat means deleting (user
+ * decision, 2026-08-14). The tool schema no longer offers the field, so the
+ * refusal below is for every other caller of this service function — an honest
+ * "no" the model can relay, rather than a silent drop that would answer "task
+ * updated" to a request that changed nothing.
+ */
 export async function updateTaskFromChat(
   input: {
     chatId: string;
     userId: string | null;
     authorityUserId?: string | null;
     id: string;
-    patch: UpdateTaskInput;
+    patch: Omit<UpdateTaskInput, "enabled">;
   },
   traceTrigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<TaskWriteResult> {
+  if ("enabled" in input.patch) {
+    return {
+      status: "denied",
+      reason:
+        "Tasks cannot be paused or resumed from the chat. To cancel one, delete it; only the " +
+        "operator can pause a task, in the dashboard.",
+    };
+  }
   const target = await resolveMutationTarget(db, input);
   if (!target.ok) return target.result;
   try {

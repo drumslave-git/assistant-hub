@@ -105,7 +105,7 @@ const DEFAULT_CANNED: Record<string, McpToolCallResult> = {
     structuredContent: { ok: true, task: { id: "task_demo_1" } },
   },
   tasks_update: {
-    text: "Task updated (every day at 09:00, active): remind me to drink water",
+    text: "Task updated (every day at 09:00): remind me to drink water",
     structuredContent: { ok: true, task: { id: "task_demo_1" } },
   },
   tasks_delete: {

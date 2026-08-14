@@ -144,13 +144,19 @@ export async function countPromptTasksInScope(
 }
 
 /**
- * The prompt-composed task with this exact instruction in a scope
+ * The **enabled** prompt-composed task with this exact instruction in a scope
  * (case-insensitive), or null. Lets the chat path answer "that rule is already
  * in force" with the task itself instead of a bare conflict; the same
  * instruction twice is just noise in every prompt. Timed tasks are exempt —
  * "remind me to drink water" twice is two reminders, not noise.
+ *
+ * Paused rows are skipped, because the guard is a prompt budget and a paused
+ * task is in no prompt. It is also what keeps the chat honest: "already in
+ * force" about a rule the operator switched off would be a lie, and the
+ * alternative — refusing with a reason — would tell the chat about a task it is
+ * never shown (user decision, 2026-08-14).
  */
-export async function getPromptTaskByInstruction(
+export async function getActivePromptTaskByInstruction(
   db: DrizzleDb,
   chatId: string | null,
   instruction: string,
@@ -158,6 +164,7 @@ export async function getPromptTaskByInstruction(
 ): Promise<Task | null> {
   const parts = [
     scopeWhere(chatId),
+    eq(tasks.enabled, true),
     inArray(tasks.trigger, PROMPT_TRIGGER_KINDS),
     sql`lower(${tasks.instruction}) = lower(${instruction})`,
   ];

@@ -28,6 +28,83 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## A paused task leaked into the chat (`done` pending live verification, 2026-08-14)
+
+Operator report with a group screenshot: asked to call off a task, the bot had
+*disabled* it instead of removing it, and then — reading `tasks_list` — told the
+group it was still carrying two tasks, that one had been switched off, that the
+other "fires from time to time", and that it could not delete that one itself.
+A paused row was in every answer it gave about its own rules, while being a
+thing it could neither carry out nor remove.
+
+User decisions (2026-08-14):
+
+1. **A cancellation in chat is a deletion** — never a pause.
+2. **Pausing/resuming is dashboard-only.**
+3. **A paused task is never given to the bot** — "not even when `tasks_list` is
+   called".
+
+### What shipped
+
+- `isVisibleFromChat` (`features/tasks/types.ts`) — the one place the rule is
+  written — behind two service reads that the chat toolkit uses exclusively:
+  `getChatVisibleTasks` (replaces `getTasksForChat`) and `getChatVisibleTask`.
+  Prompt composition, the matcher and the scheduler already filtered on
+  `enabled`; the toolkit was the leak.
+- `resolveMutationTarget` resolves through `getChatVisibleTask`, so a paused id
+  is `not_found` from chat — the same answer another chat's task gets, and for
+  the same reason: the chat has no business learning it exists.
+- `tasks_update` lost its `enabled` field; `updateTaskFromChat`'s patch type
+  excludes it and the service refuses one that arrives anyway (an honest refusal
+  the model relays, not a silent drop that would answer "task updated" to a
+  request that changed nothing). `taskView` no longer carries `enabled`, and the
+  "disabled" flag is gone from the listed line — every task a chat is shown is in
+  force.
+- `tasks_delete`'s description now says cancelling *is* deleting, and names the
+  phrasings ("forget that", "stop doing that", "you can drop that one now"); the
+  update description says it cannot switch a task off. The empty-patch answer
+  points at deletion.
+- Duplicate guard: `getPromptTaskByInstruction` → `getActivePromptTaskByInstruction`,
+  skipping paused rows. It is a prompt budget and a paused task is in no prompt;
+  the alternatives were both bad — claiming "already in force" about a
+  switched-off rule is a lie, and refusing with a reason tells the chat about a
+  task it is never shown. Consequence: the operator no longer gets a 409 for
+  duplicating their own paused row (both rows are visible on `/tasks`).
+
+### Proof
+
+Files: `features/tasks/{types.ts,server/{service,repository,mcp-tools}.ts}`,
+new `features/tasks/server/mcp-tools.test.ts`, `tasks.integration.test.ts`,
+`test/tool-selection.ts`, docs (`features/tasks.md`, `architecture/llm-and-mcp.md`,
+`architecture/data-model.md`, `operations/{operator-guide,using-the-bot}.md`).
+
+Lint, typecheck and `next build` clean. Unit suite **1130 passed / 26 skipped**;
+`tasks.integration.test.ts` 23 passed, plus `scheduler` and `process-update`
+integration green.
+
+New tests: paused tasks are absent from what a chat can see (own and global),
+read as an unknown id, refuse update/delete while staying in the dashboard view,
+a chat-side patch that would pause is denied and leaves the task running, and the
+same wording can be set again over a paused twin. At the toolkit boundary: reads
+go through the chat-visible service, an invisible id answers with the ids it *can*
+copy, nothing is ever labelled disabled, and the update tool has no `enabled` in
+its schema or description.
+
+### Remaining risks / operator steps
+
+- **Restart the process before testing.** `tasks_update` lost a field, and the
+  MCP registry singleton survives a hot reload comparing tool *names* only — a
+  running server keeps offering yesterday's schema (with `enabled`) until it is
+  restarted.
+- **Not yet observed live.** Ask the bot in chat to cancel a task and confirm the
+  row is gone from `/tasks` (not merely unticked), then pause a different task in
+  the dashboard and confirm the bot answers "no such task" about it.
+- A one-shot that exhausts its 5 retries is disabled, so it is now invisible from
+  chat too: only the operator can clear it. Intended, and worth watching that such
+  rows do not pile up unnoticed.
+- Two rows with the same wording (one paused, one live) are possible now. If the
+  operator re-enables the paused twin, both are composed into the prompt.
+
 ## Task turns deliver through a tool (`done` pending live verification, 2026-08-14)
 
 Two operator traces, one root cause. A `message` task — *"from time to time,

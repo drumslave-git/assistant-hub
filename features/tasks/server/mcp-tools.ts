@@ -13,8 +13,8 @@ import { MAX_INSTRUCTION_LENGTH, MAX_TASK_TARGETS } from "./schema";
 import {
   createTaskFromChat,
   deleteTaskFromChat,
-  getTask,
-  getTasksForChat,
+  getChatVisibleTask,
+  getChatVisibleTasks,
   summarizeTask,
   updateTaskFromChat,
   type TaskWriteResult,
@@ -33,6 +33,11 @@ import {
  * open to create and creator-or-owner to change. A denied caller gets a refusal
  * the model relays. Global tasks are visible here and editable only in the
  * dashboard.
+ *
+ * Every read here goes through the service's chat-visible functions, so a
+ * **paused** task simply is not in this toolkit's world: it cannot be listed,
+ * read, changed or deleted, and there is no way to pause one from a chat —
+ * cancelling means deleting (user decision, 2026-08-14).
  */
 
 export const TASKS_LIST_TOOL = "tasks_list";
@@ -118,17 +123,17 @@ export const TASKS_CREATE_DESCRIPTION =
  * missing.
  */
 export const TASKS_UPDATE_DESCRIPTION =
-  "Change one of THIS chat's tasks by its id — reword it, change when or how it triggers, " +
-  "change who a standing rule applies to, or switch it off without deleting it (enabled false " +
-  "pauses it, true brings it back). Use it when someone amends a task they already set rather " +
-  "than adding a new one. Just call it: the tool decides who is allowed and answers plainly " +
-  "when the caller is not, so never refuse on its behalf. Get the id from tasks_list; only the " +
-  "fields you pass are changed. " +
+  "Change one of THIS chat's tasks by its id — reword it, change when or how it triggers, or " +
+  "change who a standing rule applies to. Use it when someone amends a task they already set " +
+  "rather than adding a new one. It cannot switch a task off: when someone cancels, stops or " +
+  "calls off a task, that task is deleted, not changed here. Just call it: the tool decides who " +
+  "is allowed and answers plainly when the caller is not, so never refuse on its behalf. Get " +
+  "the id from tasks_list; only the fields you pass are changed. " +
   "IMPORTANT for timed tasks — the same rule as tasks_create: a fire sees ONLY the stored " +
   "'instruction' and 'context'. When the update touches what the task is about — including the " +
   "user telling you what a task's person/event/joke/topic actually is — gather the background " +
   "(visible messages, or history search) and pass it as 'context'; it replaces the stored " +
-  "context entirely. Changing only the timing or 'enabled' needs no context. " +
+  "context entirely. Changing only the timing needs no context. " +
   "Times are in the operator timezone.";
 
 function textResult(text: string, structured?: Record<string, unknown>) {
@@ -150,7 +155,11 @@ function toolTrigger(chatId: string, userId?: string | null): TraceTrigger {
   return { kind: "telegram", actor: userId ?? chatId, correlationId: chatId };
 }
 
-/** Structured view of a task returned alongside the text result. */
+/**
+ * Structured view of a task returned alongside the text result. It carries no
+ * `enabled`: every task a chat is shown is in force, and a field that is always
+ * true only invites the model to reason about a state it cannot reach.
+ */
 function taskView(task: Task) {
   return {
     id: task.id,
@@ -162,7 +171,6 @@ function taskView(task: Task) {
     time: task.timeOfDay,
     weekdays: task.weekdays,
     run_date: task.runDate,
-    enabled: task.enabled,
     scope: task.chatId === null ? "global" : "this_chat",
     applies_to: task.targetUserIds.length > 0 ? task.targetUserIds : "everyone",
     next_run_at: task.nextRunAt,
@@ -180,7 +188,6 @@ function audienceText(task: Task): string {
 /** One task as a compact line the model can read back to the chat. */
 function taskLine(task: Task): string {
   const flags = [describeTrigger(task)];
-  if (!task.enabled) flags.push("disabled");
   if (task.chatId === null) flags.push("every chat");
   if (task.targetUserIds.length > 0) flags.push(`only for user ${task.targetUserIds.join(", ")}`);
   const noContext =
@@ -216,7 +223,7 @@ async function relayFailure(
 ): Promise<ReturnType<typeof errorResult> | null> {
   if (result.status === "denied") return errorResult(result.reason);
   if (result.status === "not_found") {
-    const known = (await getTasksForChat(chatId).catch(() => []))
+    const known = (await getChatVisibleTasks(chatId).catch(() => []))
       .filter((task) => task.chatId !== null)
       .map((task) => task.id);
     return errorResult(unknownTaskText(id ?? "?", known));
@@ -246,7 +253,7 @@ export function registerTasksMcpTools(server: McpServer): void {
     },
     async () => {
       const ctx = getToolContext();
-      const tasks = await getTasksForChat(ctx.chatId);
+      const tasks = await getChatVisibleTasks(ctx.chatId);
       const text =
         tasks.length === 0 ? "(no tasks are set for this chat)" : tasks.map(taskLine).join("\n");
       return textResult(text, { ok: true, count: tasks.length, tasks: tasks.map(taskView) });
@@ -270,9 +277,9 @@ export function registerTasksMcpTools(server: McpServer): void {
     },
     async ({ id }) => {
       const ctx = getToolContext();
-      const task = await getTask(id);
-      if (!task || (task.chatId !== null && task.chatId !== ctx.chatId)) {
-        const known = (await getTasksForChat(ctx.chatId))
+      const task = await getChatVisibleTask(id, ctx.chatId);
+      if (!task) {
+        const known = (await getChatVisibleTasks(ctx.chatId))
           .filter((t) => t.chatId !== null)
           .map((t) => t.id);
         return errorResult(unknownTaskText(id, known));
@@ -427,11 +434,8 @@ export function registerTasksMcpTools(server: McpServer): void {
           .enum(["message", "on-reply", "interval", "timeout", "schedule"])
           .optional()
           .describe("New trigger kind (optional; omit to keep it)"),
-        enabled: z
-          .boolean()
-          .nullable()
-          .default(null)
-          .describe("false to pause the task, true to reactivate it (optional)"),
+        // No `enabled`: pausing is the operator's, done in the dashboard, and a
+        // cancellation from chat is a deletion (user decision, 2026-08-14).
         // Two fields rather than one nullable list, for the same reason `text`
         // keeps its value on "": an empty array is what a model sends when it
         // means "leave this alone", and reading that as "everyone" would
@@ -482,7 +486,6 @@ export function registerTasksMcpTools(server: McpServer): void {
       instruction,
       context,
       trigger,
-      enabled,
       user_ids,
       applies_to_everyone,
       every_minutes,
@@ -499,7 +502,6 @@ export function registerTasksMcpTools(server: McpServer): void {
         ...(instruction.trim() ? { instruction: instruction.trim() } : {}),
         ...(context.trim() ? { context: context.trim() } : {}),
         ...(trigger ? { triggerKind: trigger as TriggerKind } : {}),
-        ...(enabled === null ? {} : { enabled }),
         ...(applies_to_everyone === true || targets.length > 0
           ? { targetUserIds: targets }
           : {}),
@@ -511,8 +513,8 @@ export function registerTasksMcpTools(server: McpServer): void {
       };
       if (Object.keys(patch).length === 0) {
         return errorResult(
-          "Nothing to change — pass new text, a new trigger or timing, enabled true/false, or " +
-            "who the rule applies to.",
+          "Nothing to change — pass new text, a new trigger or timing, or who the rule applies " +
+            "to. To cancel the task instead, delete it.",
         );
       }
       try {
@@ -529,12 +531,11 @@ export function registerTasksMcpTools(server: McpServer): void {
         const failure = await relayFailure(result, ctx.chatId, id);
         if (failure) return failure;
         if (result.status !== "updated") return errorResult("The task could not be changed.");
-        const state = result.task.enabled ? "active" : "paused";
         const audience = isPromptTask(result.task)
           ? `, applies ${audienceText(result.task)}`
           : "";
         return textResult(
-          `Task updated (${describeTrigger(result.task)}, ${state}${audience}): ` +
+          `Task updated (${describeTrigger(result.task)}${audience}): ` +
             `${result.task.instruction}` +
             (result.task.nextRunAt ? `\nNext run: ${result.task.nextRunAt}` : ""),
           { ok: true, task: taskView(result.task) },
@@ -552,11 +553,12 @@ export function registerTasksMcpTools(server: McpServer): void {
     {
       title: "Delete task",
       description:
-        "Remove one of THIS chat's tasks for good by its id — use it when someone cancels a " +
-        "rule or a reminder (\"forget that rule\", \"cancel that reminder\", \"stop doing " +
-        "that\"). To pause instead of losing it, update it with enabled false. Just call it: " +
-        "the tool decides who is allowed and answers plainly when the caller is not. List the " +
-        "tasks first to get the id.",
+        "Remove one of THIS chat's tasks for good by its id. This is how a task is cancelled " +
+        "here — there is no pausing from a chat, so any request to cancel, stop, call off or " +
+        "undo a rule or a reminder (\"forget that rule\", \"cancel that reminder\", \"stop " +
+        "doing that\", \"you can drop that one now\") means deleting it. Just call it: the tool " +
+        "decides who is allowed and answers plainly when the caller is not. List the tasks " +
+        "first to get the id.",
       inputSchema: { id: z.string().min(1).describe("Task id to delete (from tasks_list)") },
       annotations: {
         readOnlyHint: false,
