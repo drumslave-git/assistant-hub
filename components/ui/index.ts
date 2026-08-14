@@ -27,6 +27,7 @@ export { Field } from "./Field";
 export { Input, fieldBase } from "./Input";
 export { Label } from "./Label";
 export { PageHeader } from "./PageHeader";
+export { Pagination, type PaginationProps } from "./Pagination";
 export { Progress, type ProgressTone } from "./Progress";
 export { ScrollArea } from "./ScrollArea";
 export { SegmentedControl, type SegmentedOption } from "./SegmentedControl";

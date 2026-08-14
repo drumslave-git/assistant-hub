@@ -1,4 +1,6 @@
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
+import { Pagination } from "@/components/ui";
+import { DEFAULT_TRACE_PAGE_SIZE } from "@/lib/trace";
 import type { TraceListView, TraceQuery } from "@/server/trace";
 import { DebugFilters } from "./DebugFilters";
 import { DownloadButton } from "./DownloadButton";
@@ -14,9 +16,13 @@ function queryString(query: TraceQuery): string {
 
 /**
  * Shared Debug explorer — filters, live indicator, "download all" bundle export,
- * and the (uncapped) trace list in one reusable block. Every feature's Debug page
+ * and one page of the trace list in one reusable block. Every feature's Debug page
  * renders this with an already-fetched {@link TraceListView}; scoped pages hide
  * the feature filter by passing `showFeatureFilter={false}`.
+ *
+ * The list is paged rather than complete: rendering every trace an installation
+ * has ever recorded was the whole cost of opening this page. The export is not —
+ * "Download all" still bundles the entire filtered set, page or no page.
  */
 export function TraceExplorer({
   view,
@@ -35,6 +41,16 @@ export function TraceExplorer({
 }) {
   const { traces, total, features } = view;
   const bundleQs = queryString(query);
+  const limit = query.limit ?? DEFAULT_TRACE_PAGE_SIZE;
+  const offset = query.offset ?? 0;
+
+  /** A page URL that keeps the active filters — the filters own `offset` reset. */
+  const hrefFor = (next: number) => {
+    const params = new URLSearchParams(bundleQs);
+    if (next > 0) params.set("offset", String(next));
+    const qs = params.toString();
+    return qs ? `${basePath}?${qs}` : basePath;
+  };
 
   return (
     <div className="space-y-5">
@@ -56,7 +72,9 @@ export function TraceExplorer({
 
       <TraceList traces={traces} basePath={detailBasePath} />
 
-      {total > 0 ? (
+      <Pagination total={total} limit={limit} offset={offset} hrefFor={hrefFor} noun="trace" />
+
+      {total > 0 && total <= limit ? (
         <p className="text-sm text-muted">
           {total} trace{total === 1 ? "" : "s"}
         </p>

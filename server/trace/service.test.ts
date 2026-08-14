@@ -61,7 +61,7 @@ describe("getTraceList", () => {
     expect(settings.features).toEqual(["bot-messaging", "settings"]);
   });
 
-  it("returns every trace uncapped (no default 50 limit)", async () => {
+  it("returns every trace uncapped when no limit is given", async () => {
     for (let i = 0; i < 55; i++) {
       const trace = await startTrace({ ...baseInput, action: `reply-${i}` });
       await trace.succeed();
@@ -69,6 +69,41 @@ describe("getTraceList", () => {
     const all = await getTraceList({});
     expect(all.total).toBe(55);
     expect(all.traces).toHaveLength(55);
+  });
+
+  it("pages with limit/offset while total still counts the whole match", async () => {
+    for (let i = 0; i < 55; i++) {
+      const trace = await startTrace({ ...baseInput, action: `reply-${i}` });
+      await trace.succeed();
+    }
+
+    const first = await getTraceList({ limit: 50, offset: 0 });
+    // `total` is what the Debug pagination sizes itself from: a page-sized total
+    // would report "1 page" for 55 traces and hide the last five for good.
+    expect(first.total).toBe(55);
+    expect(first.traces).toHaveLength(50);
+
+    const second = await getTraceList({ limit: 50, offset: 50 });
+    expect(second.total).toBe(55);
+    expect(second.traces).toHaveLength(5);
+
+    // The two pages are disjoint and cover everything — no row is skipped or
+    // repeated at the boundary.
+    const ids = new Set([...first.traces, ...second.traces].map((t) => t.id));
+    expect(ids.size).toBe(55);
+  });
+
+  it("pages a filtered list against the filtered total", async () => {
+    for (let i = 0; i < 5; i++) {
+      const trace = await startTrace({ ...baseInput, feature: "settings", action: `s-${i}` });
+      await trace.succeed();
+    }
+    await seed({ feature: "bot-messaging" });
+
+    const page = await getTraceList({ feature: "settings", limit: 2, offset: 2 });
+    expect(page.total).toBe(5);
+    expect(page.traces).toHaveLength(2);
+    expect(page.traces.every((t) => t.feature === "settings")).toBe(true);
   });
 });
 

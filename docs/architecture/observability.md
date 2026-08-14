@@ -52,6 +52,7 @@ across the codebase:
 | --- | --- |
 | `id` | The `feature` string on every trace, and the Debug filter (`/debug?feature=<id>`) |
 | `label` | The human name in the Debug filter |
+| `group` | Product area (Conversation, People, Knowledge, Automation, Tools, Insights, System) — the Debug filter's optgroups |
 | `realtimeTopic` | The SSE topic this feature's pages live-update on |
 | `relatedIdsKey` | The key under `trace.relatedIds` for this feature's rows |
 | `path` | The feature's dashboard route |
@@ -143,6 +144,24 @@ The store is a `globalThis` singleton so the writers (feature, route and poller
 bundles) and the boot-owned flush timer share one instance across Next bundles and
 dev hot-reload.
 
+### The header index
+
+Full-history reads (`listTraces`, `listFeatures`, `getTrace`) need every month's
+headers. Each request used to walk the directory and load them itself, which made
+the Debug page cost grow with the installation's whole history and made N
+concurrent requests do the work N times.
+
+`startTraceStore` now kicks off that scan **in the background at boot** (user
+decision, 2026-08-14: startup must not wait for it, and the first Debug visit
+should not pay for it either). The build is a single promise on the store, so a
+read arriving mid-scan awaits it rather than racing a second one; a failure clears
+it so the next read retries. The directory listing is cached alongside it — only
+this process writes there, and both the flush (which creates a month) and the
+prune (which deletes them) update the cache.
+
+The Debug list is **paged** on top of that (50 rows), with `total` still counting
+the whole match. The uncapped read remains for `/api/traces` and the bundle export.
+
 ### Trace storage health
 
 `getTraceStorageHealth()` probes the **real** write path — opening the current
@@ -194,8 +213,8 @@ their own debug pages; they compose the shared components in
 
 | Component | Role |
 | --- | --- |
-| `TraceExplorer` | Filters + list + bundle-export link |
-| `DebugFilters` | Feature and status filters. Lists every *registered* feature, not only those with traces, so an empty list reads as "no traces yet" rather than "this feature does not exist" |
+| `TraceExplorer` | Filters + one page of the list + pagination + bundle-export link |
+| `DebugFilters` | Feature and status filters. The feature select is grouped by product area (`groupedFeatureOptions`), and lists every *registered* feature, not only those with traces, so an empty list reads as "no traces yet" rather than "this feature does not exist". Ids that appear only in old trace data — a retired feature — land under "Other" so their traces stay reachable |
 | `TraceList` | Dense, scannable table of headers linking to the detail view |
 | `TraceDetail` | Metadata panel plus the timeline |
 | `TraceTimeline` | The ordered events, with stage-category badges |

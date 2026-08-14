@@ -352,6 +352,48 @@ describe("multi-month corpus (range + eviction)", () => {
   });
 });
 
+describe("directory-listing cache", () => {
+  /**
+   * The cached month listing is the whole point of the header index — a list
+   * read must not `readdir` per request — but a cache that misses a month
+   * created *after* it was built would silently hide traces. Only this process
+   * writes the directory, and each of its three writers has to say so.
+   */
+  it("sees a month created by a flush after the listing was cached", async () => {
+    // Warm the cache against an empty directory.
+    expect(await listTraceMonths()).toEqual([]);
+    expect((await listTraces({})).total).toBe(0);
+
+    const trace = await startTrace(baseInput);
+    await trace.succeed();
+    await flushTracesNow();
+
+    const month = new Date().toISOString().slice(0, 7);
+    expect(await listTraceMonths()).toEqual([month]);
+    const all = await listTraces({});
+    expect(all.total).toBe(1);
+    expect(all.traces[0].id).toBe(trace.id);
+  });
+
+  it("sees the month file the storage-health probe creates", async () => {
+    expect(await listTraceMonths()).toEqual([]);
+    // The probe appends zero bytes, which creates the file when the month is new.
+    const health = await getTraceStorageHealth();
+    expect(health.ok).toBe(true);
+    expect(await listTraceMonths()).toEqual([new Date().toISOString().slice(0, 7)]);
+  });
+
+  it("re-reads the directory after a prune deleted files", async () => {
+    writeMonthFile(store.dir, "2026-01", [traceLine("2026-01-a", "2026-01-10T08:00:00.000Z")]);
+    writeMonthFile(store.dir, "2026-02", [traceLine("2026-02-a", "2026-02-10T08:00:00.000Z")]);
+    __resetTraceStoreForTests();
+
+    expect(await listTraceMonths()).toEqual(["2026-01", "2026-02"]);
+    await pruneTracesBefore("2026-02");
+    expect(await listTraceMonths()).toEqual(["2026-02"]);
+  });
+});
+
 describe("pruneTracesBefore (manual prune)", () => {
   /** Four months, two traces each, ids like `2026-01-a` — cold store. */
   function seedFourMonths(): void {

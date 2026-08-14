@@ -37,6 +37,7 @@ files.
 | `Field` | Labelled form row: wires `htmlFor`/`id`/`aria-describedby` and renders either a hint or an error |
 | `Input`, `Textarea`, `Select`, `Label` | Form controls. `Select` is a native select with a chevron affordance |
 | `PageHeader` | Page title, description, actions |
+| `Pagination` | Offset pagination for a server-rendered list. Presentational — the caller supplies `hrefFor(offset)`, so every page stays a real URL and the control works in a Server Component. Renders nothing when the list fits on one page |
 | `Progress` | Clamped 0–100% meter |
 | `ScrollArea` | Caps a growing section at a fraction of the viewport and scrolls **inside** the panel, so one dense list never stretches the page |
 | `SegmentedControl` | One-of-N pills with arrow-key navigation. Distinct from `Tabs`: it owns only the choice, so it fits in a card header |

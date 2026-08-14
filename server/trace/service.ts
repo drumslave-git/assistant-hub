@@ -40,9 +40,9 @@ export interface TraceListView {
 }
 
 /**
- * Trace headers (all matching the filter, newest first) plus the feature list
- * that powers the Debug filter. The Debug list is intentionally uncapped — pass
- * an explicit `limit` only for a bounded/programmatic read.
+ * Trace headers (newest first) plus the feature list that powers the Debug
+ * filter. `total` always counts the whole match, so a caller can paginate; omit
+ * `limit` for the uncapped read (the JSON API and bundle export).
  */
 export async function getTraceList(query: TraceQuery = {}): Promise<TraceListView> {
   const [page, features] = await Promise.all([listTraces(query), listFeatures()]);

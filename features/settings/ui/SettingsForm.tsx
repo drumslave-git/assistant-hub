@@ -8,6 +8,7 @@ import { Button, Field, Input, Select, Switch, Tabs, type TabItem } from "@/comp
 import type { Backend } from "@/features/backends/server/schema";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import type { KnownUser } from "@/features/known-users/server/schema";
+import { cn } from "@/lib/cn";
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 import type { ProbeReport, Settings } from "../server/schema";
 import {
@@ -21,9 +22,11 @@ import { ChangePasswordSection } from "./ChangePasswordSection";
 import { RoleSection, type RoleSectionLabels } from "./RoleSection";
 
 /**
- * Bot settings editor. Client Component with one tab per concern. The LLM
- * configuration is per **role** — Chat (the main model every reply runs on,
- * which must support thinking and tool calls), Embeddings, Images, Speech,
+ * Bot settings editor. Client Component with one tab per concern: **Models**,
+ * Telegram, General, Integrations, Security.
+ *
+ * The LLM configuration is per **role** — Chat (the main model every reply runs
+ * on, which must support thinking and tool calls), Embeddings, Images, Speech,
  * Audio (STT), Vision, Browser agent, Classifiers (the per-message checks) and
  * Background jobs (the nightly passes) — and every role picks a backend from
  * the shared catalog (managed on the Backends page) plus a model through a
@@ -31,6 +34,15 @@ import { RoleSection, type RoleSectionLabels } from "./RoleSection";
  * own backend uses the chat backend; audio/vision/browser/classifier/background
  * additionally fall back to the chat model when none is picked ("main by
  * default").
+ *
+ * All nine roles live on **one** tab as stacked sections (user decision,
+ * 2026-08-14) rather than nine tabs of their own. They are not nine independent
+ * settings: eight of them inherit the chat backend, so repointing chat can
+ * invalidate a model selection belonging to a role the operator is not looking
+ * at. On separate tabs that consequence was real but invisible — the warning
+ * existed, on a tab nobody had a reason to open. Side by side, the effect of a
+ * chat change shows up where it happens, and {@link SettingsForm.staleRoles}
+ * additionally names every affected role at the top of the tab.
  *
  * One Save button below the tabs persists every changed field regardless of
  * the active tab. Secrets are write-only — shown as "configured" but their
@@ -41,8 +53,8 @@ import { RoleSection, type RoleSectionLabels } from "./RoleSection";
  * backend serving it, the server verifies it against the new backend's model
  * list and clears it if it is not served. The form covers the case that check
  * cannot see — a selection stale against the *unchanged* backend: a
- * successfully listed backend that does not serve the stored model flags it on
- * its tab, and the save sends it as null. Either way, everything cleared is
+ * successfully listed backend that does not serve the stored model flags it in
+ * its section, and the save sends it as null. Either way, everything cleared is
  * named next to the Save button.
  */
 
@@ -53,12 +65,12 @@ type SaveState =
   | { kind: "error"; message: string };
 
 /**
- * One LLM role tab, as data. Every axis here is a real difference between the
- * roles; anything not listed is shared behaviour and is decided once in
- * {@link SettingsForm.roleTab}, so the tabs cannot drift apart.
+ * One LLM role section, as data. Every axis here is a real difference between
+ * the roles; anything not listed is shared behaviour and is decided once in
+ * {@link SettingsForm.roleBlock}, so the sections cannot drift apart.
  */
 interface RoleTabSpec {
-  /** Tab id, also the field-id prefix ("embedding" → `embeddingModel`). */
+  /** Section id (anchor target), also the field-id prefix ("embedding" → `embeddingModel`). */
   id: string;
   label: string;
   role: RoleConfig;
@@ -103,6 +115,28 @@ function useRoleConfig(initial: { backendId: string | null; model: string | null
 }
 
 type RoleConfig = ReturnType<typeof useRoleConfig>;
+
+/** One rendered role section plus the bits the Models tab's summary reads. */
+interface RoleBlock {
+  spec: RoleTabSpec;
+  /** The configured model is provably not served by this role's effective backend. */
+  stale: boolean;
+  content: ReactNode;
+}
+
+/**
+ * What a role is currently set to, for the section heading — the line that makes
+ * nine stacked sections scannable without opening each one.
+ */
+function roleSummary(block: RoleBlock): { text: string; tone: "ok" | "muted" | "warn" } {
+  const model = block.spec.role.model.trim();
+  if (block.stale) return { text: `${model} — not served`, tone: "warn" };
+  if (model) return { text: model, tone: "ok" };
+  if (block.spec.fallsBackToChat) return { text: "Chat model", tone: "muted" };
+  // Chat is the one role that neither falls back nor is optional.
+  if (block.spec.inherit === false) return { text: "No model selected", tone: "warn" };
+  return { text: "Off", tone: "muted" };
+}
 
 export function SettingsForm({
   initial,
@@ -162,7 +196,7 @@ export function SettingsForm({
   const [clearedOnSave, setClearedOnSave] = useState<string[]>([]);
   // Controlled so the global Save row can step aside on the Security tab, whose
   // password change has its own endpoint and button.
-  const [activeTab, setActiveTab] = useState("chat");
+  const [activeTab, setActiveTab] = useState("models");
 
   // Per-backend model lists, preloaded for saved backends and fetched on
   // demand for any backend a role gets pointed at afterwards.
@@ -381,18 +415,18 @@ export function SettingsForm({
   ) : null;
 
   /**
-   * Render one LLM role tab. Everything the roles must agree on is decided
+   * Render one LLM role section. Everything the roles must agree on is decided
    * here, once: changing a backend (or a model, when the probe tests one)
    * clears that role's stale probe result, the model list drives the stale
    * warning, and a role whose empty model means "use the chat model" stays
    * testable without one. Per-role differences arrive as {@link RoleTabSpec}.
    */
-  function roleTab(spec: RoleTabSpec): TabItem {
+  function roleBlock(spec: RoleTabSpec): RoleBlock {
     const { role, probe } = spec;
     const listed = spec.listed ?? true;
     return {
-      id: spec.id,
-      label: spec.label,
+      spec,
+      stale: listed && roleStale(role),
       content: (
         <RoleSection
           idPrefix={spec.id}
@@ -424,7 +458,7 @@ export function SettingsForm({
     };
   }
 
-  const chatTabItem = roleTab({
+  const chatBlock = roleBlock({
     id: "chat",
     label: "Chat",
     role: chat,
@@ -449,19 +483,7 @@ export function SettingsForm({
     },
   });
 
-  // The Chat tab alone carries the "no backends yet" note: it is where the
-  // catalog is first needed, and repeating it on all seven would be noise.
-  const chatTabWithNote: TabItem = {
-    ...chatTabItem,
-    content: (
-      <div className="space-y-5">
-        {noBackendsNote}
-        {chatTabItem.content}
-      </div>
-    ),
-  };
-
-  const embeddingsTabItem = roleTab({
+  const embeddingsBlock = roleBlock({
     id: "embedding",
     label: "Embeddings",
     role: emb,
@@ -481,7 +503,7 @@ export function SettingsForm({
     },
   });
 
-  const imagesTabItem = roleTab({
+  const imagesBlock = roleBlock({
     id: "image",
     label: "Images",
     role: img,
@@ -502,7 +524,7 @@ export function SettingsForm({
     },
   });
 
-  const speechTabItem = roleTab({
+  const speechBlock = roleBlock({
     id: "speech",
     label: "Speech",
     role: spc,
@@ -540,7 +562,7 @@ export function SettingsForm({
     ),
   });
 
-  const audioTabItem = roleTab({
+  const audioBlock = roleBlock({
     id: "audio",
     label: "Audio",
     role: aud,
@@ -590,7 +612,7 @@ export function SettingsForm({
     ),
   });
 
-  const visionTabItem = roleTab({
+  const visionBlock = roleBlock({
     id: "vision",
     label: "Vision",
     role: vis,
@@ -611,7 +633,7 @@ export function SettingsForm({
     },
   });
 
-  const browserTabItem = roleTab({
+  const browserBlock = roleBlock({
     id: "browser",
     label: "Browser agent",
     role: brw,
@@ -633,7 +655,7 @@ export function SettingsForm({
     },
   });
 
-  const classifierTabItem = roleTab({
+  const classifierBlock = roleBlock({
     id: "classifier",
     label: "Classifiers",
     role: cls,
@@ -655,7 +677,7 @@ export function SettingsForm({
     },
   });
 
-  const backgroundTabItem = roleTab({
+  const backgroundBlock = roleBlock({
     id: "background",
     label: "Background jobs",
     role: bgd,
@@ -834,16 +856,96 @@ export function SettingsForm({
     </div>
   );
 
+  // Chat first — every other role's default answer is "whatever chat uses", so
+  // it is the one that has to be decided before the rest mean anything.
+  const roleBlocks: RoleBlock[] = [
+    chatBlock,
+    embeddingsBlock,
+    imagesBlock,
+    speechBlock,
+    audioBlock,
+    visionBlock,
+    browserBlock,
+    classifierBlock,
+    backgroundBlock,
+  ];
+
+  // Roles whose saved model the effective backend provably does not serve. On
+  // nine separate tabs this was only visible to someone who happened to open
+  // the right one; here it is the first thing the tab says.
+  const staleRoles = roleBlocks.filter((block) => block.stale);
+
+  const modelsTab = (
+    <div className="space-y-5">
+      <p className="text-sm text-muted">
+        Every LLM role in one place. Chat is the main model; the roles below it use the chat
+        backend unless given their own, and most fall back to the chat model too — so changing
+        Chat changes them, and anything the new backend does not serve is flagged here and
+        cleared on save.
+      </p>
+
+      {noBackendsNote}
+
+      {staleRoles.length > 0 ? (
+        <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+          {staleRoles.map((block) => block.spec.label).join(", ")}{" "}
+          {staleRoles.length === 1 ? "has a model" : "have models"} the configured backend does
+          not serve. Pick replacements below, or save to clear{" "}
+          {staleRoles.length === 1 ? "it" : "them"}.
+        </p>
+      ) : null}
+
+      <nav aria-label="Roles" className="flex flex-wrap gap-1.5">
+        {roleBlocks.map((block) => (
+          <a
+            key={block.spec.id}
+            href={`#role-${block.spec.id}`}
+            className={cn(
+              "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+              block.stale
+                ? "border-warning/40 bg-warning/10 text-warning"
+                : "border-border bg-surface-2 text-muted hover:text-foreground",
+            )}
+          >
+            {block.spec.label}
+          </a>
+        ))}
+      </nav>
+
+      <div className="divide-y divide-border">
+        {roleBlocks.map((block) => {
+          const summary = roleSummary(block);
+          return (
+            <section
+              key={block.spec.id}
+              id={`role-${block.spec.id}`}
+              className="scroll-mt-6 space-y-4 py-6 first:pt-0 last:pb-0"
+            >
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <h3 className="text-base font-semibold text-foreground">{block.spec.label}</h3>
+                <span
+                  className={cn(
+                    "text-xs",
+                    summary.tone === "warn"
+                      ? "text-warning"
+                      : summary.tone === "ok"
+                        ? "text-muted"
+                        : "text-faint",
+                  )}
+                >
+                  {summary.text}
+                </span>
+              </div>
+              {block.content}
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   const tabs: TabItem[] = [
-    chatTabWithNote,
-    embeddingsTabItem,
-    imagesTabItem,
-    speechTabItem,
-    audioTabItem,
-    visionTabItem,
-    browserTabItem,
-    classifierTabItem,
-    backgroundTabItem,
+    { id: "models", label: "Models", content: modelsTab },
     { id: "telegram", label: "Telegram", content: telegramTab },
     { id: "general", label: "General", content: generalTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },
@@ -872,7 +974,7 @@ export function SettingsForm({
           {save.kind === "saved" && clearedOnSave.length > 0 ? (
             <span className="text-sm text-warning">
               Cleared {clearedOnSave.join(", ")} — not served by the configured backend. Pick
-              replacements on their tabs when ready.
+              replacements in their sections when ready.
             </span>
           ) : null}
           {save.kind === "error" ? (

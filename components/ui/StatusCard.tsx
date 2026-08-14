@@ -25,11 +25,14 @@ export function StatusCard({
   return (
     <Card className="p-4">
       <div className="flex items-center gap-2">
-        <span className={`h-2 w-2 rounded-full ${TONE_DOT[tone]}`} aria-hidden />
+        <span className={`h-2 w-2 shrink-0 rounded-full ${TONE_DOT[tone]}`} aria-hidden />
         <span className="text-xs font-medium tracking-wide text-muted uppercase">{label}</span>
       </div>
-      <div className="mt-2 text-sm font-medium">{value}</div>
-      {hint ? <div className="mt-1 text-xs text-faint">{hint}</div> : null}
+      {/* The value is the reading — it outranks both the label above it and the
+          detail below, which the previous uniform `text-sm`/`text-faint` stack
+          did not say. */}
+      <div className="mt-2 text-base font-semibold tracking-tight">{value}</div>
+      {hint ? <div className="mt-1 text-xs break-words text-muted">{hint}</div> : null}
     </Card>
   );
 }

@@ -28,6 +28,131 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Dashboard rework: Overview, Settings, Debug (`done` pending live verification, 2026-08-14)
+
+User report, 2026-08-14: Overview tiles "hard to read, not structured", the
+Activity & insights section "seems to be just randomly placed here", and the page
+should "show really useful and crucial information"; Settings tabs "overwhelming"
+— combine the LLM-related ones into one tab with sections and one save button, so
+state is tracked live (the example given: embeddings inherit the chat backend, the
+chat backend is repointed to one that does not serve the embedding model, and
+nothing says so); Debug "very slow to load" and its Feature dropdown "horrible UX".
+
+User decisions (2026-08-14):
+
+1. **Overview** — keep every status tile but split into labelled **groups**
+   (Core / Model roles / Storage), and add real data: last-24h traffic,
+   background-job health, and recent failures.
+2. **Activity rows are traced actions**, not chat messages — one stream covering
+   replies, jobs, tool calls and failures, reusing the trace list rendering.
+3. **Settings** — one **Models** tab, nine sections, one Save; Telegram, General,
+   Integrations and Security stay as they are (13 tabs → 5).
+4. **Debug** — server pagination **plus** an in-memory header index, built in the
+   **background at boot** (blocking startup was rejected: the bot must come online
+   on time; lazy-on-first-request was rejected: the first visit would still be
+   slow).
+5. **Feature filter** — a **grouped native select** (over a searchable combobox),
+   grouped **by product area**: Conversation · People · Knowledge · Automation ·
+   Tools · Insights · System.
+6. All three screens in one pass.
+
+### What shipped
+
+- **`lib/features.ts`**: `FeatureDescriptor.group` (required, so a new feature
+  cannot be added ungrouped) + `FEATURE_GROUPS`/`FEATURE_GROUP_LABELS` and
+  `groupedFeatureOptions()`. Ids that exist only in old trace data — `chat-rules`
+  from before the tasks merge — have no registered group and land under a trailing
+  "Other", so their traces stay reachable rather than being dropped from the filter.
+- **Trace store header index** (`server/trace/store.ts`): `ensureHeaderIndex` — one
+  shared promise per store, so N concurrent reads cost one scan and a failure
+  retries — plus a cached directory listing (`monthKeys`, invalidated by flush and
+  prune, since only this process writes there). `warmTraceIndex()` is fired
+  un-awaited from `startTraceStore`.
+- **Debug pagination**: `DEFAULT_TRACE_PAGE_SIZE` (50) in `lib/trace.ts` — client
+  and server both need it — a new shared `components/ui/Pagination` (presentational,
+  `hrefFor(offset)`, so pages stay real URLs and it renders in a Server Component),
+  and `TraceExplorer` rendering it. `/api/traces` and the bundle export stay uncapped.
+- **Settings**: the nine `roleTab` items became `roleBlock`s stacked on one Models
+  tab, with a jump-link row, a per-section summary line (model / "Chat model" /
+  "Off" / the stale one), and a banner naming every role whose model the effective
+  backend does not serve. The staleness machinery is unchanged — it was already
+  computed per role; it was simply invisible on a tab nobody opened.
+- **Overview**: `server/overview.ts` (`getOverviewActivity`) reusing the analytics
+  aggregators — `trafficTotalsFrom`/`usageRowsFrom`/`totalTokens` — so "handled",
+  "replied" and "failed" cannot come to mean two different things on two pages. The
+  page now leads with a 24h stat row, then grouped system status, then a tabbed
+  Activity card (recent / failures / background jobs) with count badges. New
+  `features/jobs/ui/JobHealthList` — a compact read-only row per job, sharing the
+  board's activity mapping.
+- `StatusCard` gained hierarchy (the value outranks its label and detail) — the
+  uniform `text-sm`/`text-faint` stack is what made 13 tiles hard to read.
+
+Decisions taken in implementation (defaults, not asked):
+
+- **Failure and activity lists are not windowed**, only the counters are. The last
+  failure matters whether it was ten minutes or three days ago; an empty panel that
+  really meant "none today" would read as "nothing is wrong". `failuresInWindow`
+  carries the recency instead.
+- **The Overview's window ends at `now + 1ms`**, because `scanTraces`' upper bound
+  is exclusive — otherwise work started in the same tick as the render is invisible.
+- The Debug page composes its query with explicit `??` rather than a spread over
+  defaults: zod emits absent optionals as present-but-`undefined` keys, which a
+  spread would use to overwrite the defaults.
+
+### Proof
+
+Lint clean; typecheck clean; `next build` clean (a dev server was running on
+3200; the build was run against it without restarting it, and the route table is
+unchanged). Unit suite **1131 tests, 1110 passed / 21 failed** — the same two
+pre-existing Windows-only files (`browser-agent` `media-download` +
+`ytdlp-binary`, yt-dlp is not installed on this machine), unrelated.
+
+Integration suite: **391 tests, 360 passed / 30 skipped / 1 failed** against real
+Postgres. The one failure is **pre-existing and unrelated** —
+`known-groups.integration.test.ts:207` still expects the roster line *without*
+the `[user id N]` segment the formatter now emits. Reproduced on its own; a
+task chip was raised for it rather than fixing an unrelated feature's test here.
+
+New tests:
+
+- `lib/features.test.ts` (6): every registered feature has a known group; the
+  grouped options cover the registry exactly once with no empty groups; group order
+  and per-group label order; a retired id kept under a last-placed "Other"; the
+  active selection always present; no duplicate when an id is both registered and
+  in the data.
+- `server/overview.test.ts` (6): window counts and token totals; the window's start
+  instant; work outside the window excluded; failures listed regardless of age with
+  `failuresInWindow` distinguishing recent ones; recent list newest-first as headers
+  with no events; described media counted separately from handled messages.
+- `server/trace/service.test.ts` (+2): `limit`/`offset` paging with `total` still
+  counting the whole match (a page-sized total would hide the tail for good), pages
+  disjoint and complete at the boundary, and paging a *filtered* list.
+- `server/trace/store.test.ts` (+3): the cached directory listing sees a month
+  created after it was built — by a flush, and by the storage-health probe (which
+  creates the file when the month rolls over mid-process) — and re-reads the
+  directory after a prune. A cache that missed a month would hide its traces.
+
+### Remaining risks / operator steps
+
+- **Not yet seen in a browser.** No dev server was running when this was written.
+- The Overview now reads the trace store on every render (`scanTraces` over the
+  24h window loads the current month at the full tier) and calls `getAllJobs()`.
+  Both are cached/parallelized, but the landing page is doing more work than it
+  did; worth a look at its response time on an installation with real history.
+- **The Overview is now live, and it was not before.** One `LiveIndicator` on
+  `traces`/`status`/`bot` refreshes the whole server render — including
+  `getSystemStatus()`'s real LLM probes — on a 400 ms trailing debounce. Left
+  open during steady traffic that is a re-probe roughly per message. The
+  indicator is click-to-pause, which is the escape hatch; if it proves too heavy
+  in practice the fix is to throttle (not debounce) the shared hook, or to drop
+  `traces` from the list and accept static counters.
+- The header index is built once per process. A month file created by something
+  other than this process would not be noticed until a restart — which is the
+  existing single-container assumption, now depended on slightly harder.
+- The nine role sections make the Models tab long. The jump-links and summary
+  lines are the mitigation; if it still reads as a wall, collapsing the inherited
+  roles is the next step (it was the runner-up option).
+
 ## Message reactions as an MCP tool (`done` pending live verification, 2026-08-14)
 
 User request, 2026-08-14: *"another mcp tool - allow bot to set reaction on

@@ -64,6 +64,19 @@ interface TraceStore {
   months: Map<string, Trace[]>;
   /** Months cached at least as headers (empty/missing files count as loaded). */
   loaded: Set<string>;
+  /**
+   * The month keys on disk, cached so a list read does not `readdir` per request.
+   * Only this process writes the directory (flush creates months, prune deletes
+   * them), and both invalidate this — so the cache cannot go stale behind us.
+   */
+  monthKeys: string[] | null;
+  /**
+   * The in-flight (or settled) header-index build. Every list read awaits this
+   * one promise instead of starting its own scan, so N concurrent dashboard
+   * requests during a cold start cost one pass over the month files, not N.
+   * Reset to null on failure so a transient IO error is retried.
+   */
+  headerIndex: Promise<void> | null;
   /** Months cached WITH events, least-recently-used first. */
   fullMonths: string[];
   /** Newest-first view over every cached flushed trace; null when stale. */
@@ -101,6 +114,8 @@ function store(): TraceStore {
       pending: new Map(),
       months: new Map(),
       loaded: new Set(),
+      monthKeys: null,
+      headerIndex: null,
       fullMonths: [],
       sortedFlushed: null,
       correlations: new Map(),
@@ -239,8 +254,13 @@ async function loadMonth(s: TraceStore, monthKey: string, tier: MonthTier): Prom
   s.sortedFlushed = null;
 }
 
-/** The month keys present on disk, ascending. */
+/**
+ * The month keys present on disk, ascending. Cached after the first read (see
+ * {@link TraceStore.monthKeys}); a missing directory is deliberately NOT cached,
+ * so the first flush after boot is still discovered.
+ */
 async function diskMonthKeys(s: TraceStore): Promise<string[]> {
+  if (s.monthKeys) return s.monthKeys;
   let entries: string[];
   try {
     entries = await readdir(s.dir);
@@ -252,12 +272,48 @@ async function diskMonthKeys(s: TraceStore): Promise<string[]> {
     const match = MONTH_FILE_RE.exec(name);
     if (match) keys.push(match[1]);
   }
-  return keys.sort();
+  keys.sort();
+  s.monthKeys = keys;
+  return keys;
+}
+
+/** Record a month key this process just created, so no re-`readdir` is needed. */
+function noteMonthKey(s: TraceStore, monthKey: string): void {
+  if (!s.monthKeys || s.monthKeys.includes(monthKey)) return;
+  s.monthKeys = [...s.monthKeys, monthKey].sort();
 }
 
 /** Load every month file present on disk at the given tier. */
 async function ensureAllLoaded(s: TraceStore, tier: MonthTier): Promise<void> {
   for (const key of await diskMonthKeys(s)) await loadMonth(s, key, tier);
+}
+
+/**
+ * The header index every full-history read needs, built at most once and shared
+ * by concurrent readers. Before this existed, each Debug request re-walked every
+ * month file itself — the dominant cost of loading the page on an installation
+ * with real history.
+ */
+function ensureHeaderIndex(s: TraceStore): Promise<void> {
+  if (!s.headerIndex) {
+    s.headerIndex = ensureAllLoaded(s, "headers").catch((err: unknown) => {
+      s.headerIndex = null; // Transient IO failure — let the next read retry.
+      throw err;
+    });
+  }
+  return s.headerIndex;
+}
+
+/**
+ * Start building the header index without waiting for it — called at boot so the
+ * first Debug visit does not pay for the scan, while the bot still comes online
+ * on time. A read arriving mid-build awaits the same promise rather than racing
+ * a second scan.
+ */
+export function warmTraceIndex(): void {
+  void ensureHeaderIndex(store()).catch((err: unknown) => {
+    console.error("Trace header index could not be built:", err);
+  });
 }
 
 /** Every flushed trace currently cached, across all loaded months. */
@@ -310,7 +366,10 @@ export async function pruneTracesBefore(beforeMonth: string): Promise<PruneTrace
     if (fullIdx !== -1) s.fullMonths.splice(fullIdx, 1);
     months.push(key);
   }
-  if (months.length > 0) s.sortedFlushed = null;
+  if (months.length > 0) {
+    s.sortedFlushed = null;
+    s.monthKeys = null; // Files are gone; re-read the directory rather than guess.
+  }
   return { months, traces };
 }
 
@@ -462,6 +521,7 @@ export async function flushTracesNow(): Promise<void> {
         failure = { monthKey, message: errText(err), at: new Date().toISOString() };
         continue; // Leave this group pending; retry next tick.
       }
+      noteMonthKey(s, monthKey);
       const list = s.months.get(monthKey)!;
       for (const trace of traces) {
         list.push(trace);
@@ -499,11 +559,16 @@ export interface TraceStorageHealth {
 export async function getTraceStorageHealth(): Promise<TraceStorageHealth> {
   const s = store();
   let probeError: string | null = null;
+  const probedMonth = monthKeyOf(new Date().toISOString());
   try {
     await mkdir(s.dir, { recursive: true });
     // A zero-byte append: opens the real file with the real flags (surfacing
     // EACCES/EPERM/read-only exactly like a flush) without altering content.
-    await appendFile(fileFor(s, monthKeyOf(new Date().toISOString())), "");
+    await appendFile(fileFor(s, probedMonth), "");
+    // The probe CREATES the file when the month is new, so the cached directory
+    // listing has to learn about it here — otherwise a month that rolled over
+    // mid-process would be missing from the prune picker until the next flush.
+    noteMonthKey(s, probedMonth);
   } catch (err) {
     probeError = errText(err);
   }
@@ -529,6 +594,10 @@ export async function getTraceStorageHealth(): Promise<TraceStorageHealth> {
 export async function startTraceStore(): Promise<void> {
   const s = store();
   await loadMonth(s, monthKeyOf(new Date().toISOString()), "full").catch(() => undefined);
+  // Build the full header index in the background (user decision, 2026-08-14):
+  // boot must not wait for a scan of every month, but the first Debug visit
+  // should not have to pay for one either.
+  warmTraceIndex();
   // Probe the write path at boot so an unwritable volume screams in the server
   // log immediately — not only at the first failed flush, a settled trace and
   // up to one flush interval later. The dashboard banner reads the same health.
@@ -570,7 +639,7 @@ export async function getTrace(id: string): Promise<Trace | null> {
   const live = s.open.get(id) ?? s.pending.get(id);
   if (live) return live;
   // Locate the trace via the (cheap) header tier, then load just its month full.
-  await ensureAllLoaded(s, "headers");
+  await ensureHeaderIndex(s);
   let header: Trace | null = null;
   for (const list of s.months.values()) {
     const found = list.find((t) => t.id === id);
@@ -676,7 +745,7 @@ function mergeNewestFirst(a: Trace[], b: Trace[]): Trace[] {
  */
 export async function listTraces(input: ListTracesInput = {}): Promise<ListTracesResult> {
   const s = store();
-  await ensureAllLoaded(s, "headers");
+  await ensureHeaderIndex(s);
   if (!s.sortedFlushed) {
     s.sortedFlushed = flushedTraces(s).sort(newestFirst);
   }
@@ -694,7 +763,7 @@ export async function listTraces(input: ListTracesInput = {}): Promise<ListTrace
 /** Distinct feature names that have recorded traces, alphabetically. Full-history read. */
 export async function listFeatures(): Promise<string[]> {
   const s = store();
-  await ensureAllLoaded(s, "headers");
+  await ensureHeaderIndex(s);
   const names = new Set<string>();
   for (const t of s.open.values()) names.add(t.feature);
   for (const t of s.pending.values()) names.add(t.feature);
@@ -716,7 +785,7 @@ export async function getEventsForTraces(ids: string[]): Promise<Map<string, Tra
   }
   // Locate the rest via headers, then load their months full one at a time —
   // collecting each month's events before the next load can evict it.
-  await ensureAllLoaded(s, "headers");
+  await ensureHeaderIndex(s);
   const monthsNeeded = new Map<string, Set<string>>();
   for (const list of s.months.values()) {
     for (const trace of list) {

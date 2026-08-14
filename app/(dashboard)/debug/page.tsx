@@ -2,19 +2,20 @@ import { Database } from "lucide-react";
 
 import { PruneCard, TraceExplorer } from "@/components/debug";
 import { EmptyState, PageHeader } from "@/components/ui";
+import { DEFAULT_TRACE_PAGE_SIZE } from "@/lib/trace";
 import { getTraceList, getTraceMonths, type TraceListView } from "@/server/trace";
 import { traceQuerySchema } from "@/server/trace/schema";
 
-// Traces are read from the database at request time.
+// Traces are read from the on-disk trace store at request time.
 export const dynamic = "force-dynamic";
 
 const first = (value: string | string[] | undefined): string | undefined =>
   Array.isArray(value) ? value[0] : value;
 
 /**
- * Global Debug page — every feature's traces in one filterable list, linking to
- * the shared detail view and JSON bundle export. A genuine DB read: a failure
- * surfaces as a real error, not a misleading empty state.
+ * Global Debug page — every feature's traces in one filterable, paged list,
+ * linking to the shared detail view and JSON bundle export. A genuine store
+ * read: a failure surfaces as a real error, not a misleading empty state.
  */
 export default async function DebugPage({
   searchParams,
@@ -28,15 +29,25 @@ export default async function DebugPage({
     limit: first(sp.limit),
     offset: first(sp.offset),
   });
-  const query = parsed.success ? parsed.data : {};
+  const filters = parsed.success ? parsed.data : {};
+  // The page always reads one page's worth: an unbounded list is what made this
+  // route slow, and `total` still counts the whole match so pagination works.
+  // Written as explicit `??` rather than a spread over defaults — zod emits
+  // absent optionals as present-but-undefined keys, which a spread would use to
+  // overwrite the defaults with `undefined`.
+  const query = {
+    ...filters,
+    limit: filters.limit ?? DEFAULT_TRACE_PAGE_SIZE,
+    offset: filters.offset ?? 0,
+  };
 
   let view: TraceListView | null = null;
   let months: string[] = [];
-  let dbError: string | null = null;
+  let storeError: string | null = null;
   try {
     [view, months] = await Promise.all([getTraceList(query), getTraceMonths()]);
   } catch (err) {
-    dbError = err instanceof Error ? err.message : "Could not read traces from the database";
+    storeError = err instanceof Error ? err.message : "Could not read the trace store";
   }
 
   return (
@@ -53,8 +64,8 @@ export default async function DebugPage({
       ) : (
         <EmptyState
           icon={Database}
-          title="Database unavailable"
-          description={dbError ?? "The trace database could not be reached."}
+          title="Trace store unavailable"
+          description={storeError ?? "The trace store could not be read."}
         />
       )}
     </>

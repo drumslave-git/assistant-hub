@@ -68,12 +68,22 @@ on the chat role — a fired task is a real message to a person.
 
 ## The form
 
-`SettingsForm` is a Client Component with one tab per concern — the nine roles
-above plus **Telegram** (bot token, owner, maintenance mode), **General**
-(timezone, daily run time, browser download cap), **Integrations** (Tavily) and
-**Security** (password change; its own endpoint and button) — and **one** Save
-button below them that persists every changed field regardless of which tab is
-active.
+`SettingsForm` is a Client Component with one tab per concern — **Models** (all
+nine roles above, as stacked sections), **Telegram** (bot token, owner,
+maintenance mode), **General** (timezone, daily run time, browser download cap),
+**Integrations** (Tavily) and **Security** (password change; its own endpoint
+and button) — and **one** Save button below them that persists every changed
+field regardless of which tab is active.
+
+The nine roles share a tab rather than having one each (user decision,
+2026-08-14). They are not nine independent settings: eight of them inherit the
+chat backend, so repointing Chat can invalidate a model belonging to a role the
+operator is not looking at. On separate tabs that consequence was real but
+invisible — the warning existed, on a tab nobody had a reason to open. Stacked,
+the effect of a chat change appears where it happens, a jump-link row and a
+per-section summary line (the model in use, "Chat model", "Off", or the stale
+one) keep nine sections scannable, and a banner at the top of the tab names
+every role whose model the effective backend does not serve.
 
 The form sends **only changed fields**, and the service depends on that: a model
 absent from the patch is a *stored* selection. When the same patch repoints the
@@ -90,16 +100,16 @@ must list, so it is verified like the rest.
 The form owns the case that check cannot see: a selection stale against the
 *unchanged* backend. Each role's model list is preloaded (and fetched live when
 a role is pointed elsewhere); a successfully listed backend that does not serve
-the stored model flags it on its tab, and the save sends it as null. Either
+the stored model flags it in its section, and the save sends it as null. Either
 way, everything cleared is named next to the Save button.
 
 The repeated machinery lives in shared modules rather than being copied per
 role: `ui/connection.ts` holds the probe flow, the write-only secret-input
 state machine, and the per-backend model cache; `RoleSection.tsx` is the
-section shell every role tab differs from only by wording; the searchable
+section shell every role differs from only by wording; the searchable
 model select is the shared `Combobox` UI-kit component.
 
-All seven LLM role tabs are then produced by **one** renderer (`roleTab` in
+All nine LLM role sections are then produced by **one** renderer (`roleBlock` in
 `SettingsForm.tsx`) from a `RoleTabSpec` per role, so the behaviour they must
 share is decided once and cannot drift:
 
@@ -108,7 +118,7 @@ share is decided once and cannot drift:
 | Probe invalidation | Changing the backend or the model clears that role's probe result — every probe now tests a specific model, so neither survives a change |
 | Test availability | A role whose empty model means "use the chat model" (audio, vision, browser) is testable without one; a role whose empty model means "off" (embeddings, images, speech) is not. Chat needs both a backend and a model, having no fallback of its own |
 | Stale warning | Comes from the fetched model list, for every role whose model is listable |
-| Result rendering | One shared `ProbeReport` view for all seven |
+| Result rendering | One shared `ProbeReport` view for all nine |
 
 Only genuine differences are per-role data: wording, the probe endpoint,
 free-text entry (audio), extra fields (speech's voice, audio's transcription

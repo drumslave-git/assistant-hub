@@ -1,26 +1,48 @@
-import { BarChart3, Settings as SettingsIcon } from "lucide-react";
+import {
+  AlertTriangle,
+  BarChart3,
+  Bug,
+  CheckCircle2,
+  Coins,
+  MessageSquare,
+  Settings as SettingsIcon,
+  Users,
+} from "lucide-react";
 import Link from "next/link";
 
+import { TraceList } from "@/components/debug";
+import { LiveIndicator } from "@/components/realtime/LiveIndicator";
+import { Timestamp } from "@/components/time/Timestamp";
 import {
   Badge,
   Button,
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
+  EmptyState,
   PageHeader,
+  StatCard,
   StatusCard,
+  Tabs,
   type StatusTone,
+  type TabItem,
 } from "@/components/ui";
 import { BotControl } from "@/features/bot-messaging/ui/BotControl";
+import { getAllJobs } from "@/features/jobs/server/registry";
+import { JobHealthList } from "@/features/jobs/ui/JobHealthList";
 import { getSettings } from "@/features/settings/server/service";
 import { buildInfo } from "@/lib/build-info";
+import type { RealtimeTopic } from "@/lib/realtime";
+import { getOverviewActivity, OVERVIEW_WINDOW_HOURS } from "@/server/overview";
 import { getSystemStatus, type EndpointStatus } from "@/server/status";
 import { getBotStatus } from "@/server/telegram/bot-manager";
 
-// Probe real state at request time (DB query + LLM endpoint call), so the
-// overview reflects what actually works, not build-time or env-presence guesses.
+// Probe real state at request time (DB query + LLM endpoint call + trace reads),
+// so the overview reflects what actually works, not build-time or env-presence
+// guesses.
 export const dynamic = "force-dynamic";
 
 interface StatusItem {
@@ -28,6 +50,18 @@ interface StatusItem {
   tone: StatusTone;
   value: string;
   hint: string;
+}
+
+/**
+ * One labelled block of the status grid. Thirteen equally-weighted tiles in a
+ * flat grid gave "the database is down" and "images are switched off" the same
+ * visual weight; grouping separates the things that must be true for the bot to
+ * work at all from the optional roles and the write paths.
+ */
+interface StatusGroup {
+  title: string;
+  description: string;
+  items: StatusItem[];
 }
 
 /**
@@ -48,13 +82,46 @@ const ENDPOINT_PRESENTATION: Record<
 };
 
 /**
+ * What the page live-updates on. Deliberately not every job topic: `traces`
+ * already fires for the work those jobs do, and this render is expensive (live
+ * LLM probes plus a trace scan), so a wider subscription would buy nothing and
+ * cost a full re-probe per event.
+ */
+const OVERVIEW_TOPICS: RealtimeTopic[] = ["traces", "status", "bot"];
+
+const number = (value: number): string => value.toLocaleString("en-US");
+
+/** Tokens read at a glance: 1.2M / 43.1k / 812. */
+function compactTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
+}
+
+/** "3 problems" / "1 needs setup" / "all clear" for a group's heading. */
+function groupSummary(items: StatusItem[]): { text: string; tone: "error" | "warn" | "ok" } {
+  const errors = items.filter((item) => item.tone === "error").length;
+  const warns = items.filter((item) => item.tone === "warn").length;
+  if (errors > 0) return { text: `${errors} failing`, tone: "error" };
+  if (warns > 0) return { text: `${warns} needs setup`, tone: "warn" };
+  return { text: "All clear", tone: "ok" };
+}
+
+/**
  * Dashboard overview. Server Component: reads live {@link getSystemStatus} — a
- * real `SELECT 1` and a real `/v1/models` probe — so operators see honest state.
+ * real `SELECT 1` and a real `/v1/models` probe — plus what the bot has actually
+ * been doing ({@link getOverviewActivity}) and whether every background job is
+ * still running, so operators see honest state rather than configuration alone.
  */
 export default async function OverviewPage() {
-  const status = await getSystemStatus();
   const botStatus = getBotStatus();
-  const settings = await getSettings();
+  // Independent reads: a slow LLM probe must not serialize behind a trace scan.
+  const [status, settings, activity, jobs] = await Promise.all([
+    getSystemStatus(),
+    getSettings(),
+    getOverviewActivity(),
+    getAllJobs().catch(() => []),
+  ]);
   const telegramConfigured = settings.telegramBotTokenConfigured;
 
   const botItem: StatusItem =
@@ -116,24 +183,37 @@ export default async function OverviewPage() {
     hint: endpoint.detail,
   }));
 
-  const items: StatusItem[] = [
+  const groups: StatusGroup[] = [
     {
-      label: "Database",
-      tone: status.db.connected ? "ok" : "error",
-      value: status.db.connected ? "Connected" : "Unavailable",
-      hint: status.db.detail,
+      title: "Core",
+      description: "Nothing works without these",
+      items: [
+        {
+          label: "Database",
+          tone: status.db.connected ? "ok" : "error",
+          value: status.db.connected ? "Connected" : "Unavailable",
+          hint: status.db.detail,
+        },
+        llmItem,
+        {
+          label: "Model",
+          tone: status.model.selected ? "ok" : "warn",
+          value: status.model.selected ? "Selected" : "None",
+          hint: status.model.detail,
+        },
+        botItem,
+      ],
     },
-    llmItem,
     {
-      label: "Model",
-      tone: status.model.selected ? "ok" : "warn",
-      value: status.model.selected ? "Selected" : "None",
-      hint: status.model.detail,
+      title: "Model roles",
+      description: "Optional capabilities — unset roles run on the chat model or stay off",
+      items: endpointItems,
     },
-    botItem,
-    ...endpointItems,
-    tracesItem,
-    downloadsItem,
+    {
+      title: "Storage",
+      description: "Write paths, probed for real",
+      items: [tracesItem, downloadsItem],
+    },
   ];
 
   const operational =
@@ -144,41 +224,197 @@ export default async function OverviewPage() {
     status.traces.ok &&
     status.downloads.ok;
 
+  const stuckJobs = jobs.filter((job) => job.activity === "stopped" || job.failed);
+  const runningJobs = jobs.filter((job) => job.activity === "running").length;
+
+  const activityTabs: TabItem[] = [
+    {
+      id: "recent",
+      label: "Recent activity",
+      content:
+        activity.recent.length > 0 ? (
+          <TraceList traces={activity.recent} />
+        ) : (
+          <EmptyState
+            icon={Bug}
+            title="Nothing recorded yet"
+            description="Every action the bot and the dashboard take shows up here as it happens."
+          />
+        ),
+    },
+    {
+      id: "failures",
+      label: (
+        <span className="inline-flex items-center gap-1.5">
+          Failures
+          {activity.failures.length > 0 ? (
+            <Badge tone={activity.failuresInWindow > 0 ? "danger" : "neutral"}>
+              {activity.failures.length}
+            </Badge>
+          ) : null}
+        </span>
+      ),
+      content:
+        activity.failures.length > 0 ? (
+          <div className="space-y-3">
+            {/* The list is not windowed on purpose: the last failure matters
+                whether it happened ten minutes or three days ago. */}
+            <p className="text-sm text-muted">
+              {activity.failuresInWindow > 0
+                ? `${activity.failuresInWindow} in the last ${OVERVIEW_WINDOW_HOURS} hours.`
+                : `None in the last ${OVERVIEW_WINDOW_HOURS} hours — these are older.`}
+            </p>
+            <TraceList traces={activity.failures} />
+          </div>
+        ) : (
+          <EmptyState
+            icon={CheckCircle2}
+            title="No failed traces"
+            description="Nothing the bot or the dashboard did has ended in an error."
+          />
+        ),
+    },
+    {
+      id: "jobs",
+      label: (
+        <span className="inline-flex items-center gap-1.5">
+          Background jobs
+          {stuckJobs.length > 0 ? <Badge tone="warning">{stuckJobs.length}</Badge> : null}
+        </span>
+      ),
+      content:
+        jobs.length > 0 ? (
+          <JobHealthList jobs={jobs} />
+        ) : (
+          <EmptyState
+            icon={AlertTriangle}
+            title="Job status unavailable"
+            description="No background job reported its state. Open the jobs board for details."
+          />
+        ),
+    },
+  ];
+
   return (
     <>
       <PageHeader
         title="Overview"
         description={`llm-tg-bot dashboard — v${buildInfo.version}`}
         actions={
-          <Button asChild variant="outline" leftIcon={<SettingsIcon className="h-4 w-4" />}>
-            <Link href="/settings">Settings</Link>
-          </Button>
+          <>
+            {/* One subscription for the whole page. Every block here re-reads on
+                the same `router.refresh()`, so a second indicator would only add
+                a duplicate refresh of an already expensive render. */}
+            <LiveIndicator topic={OVERVIEW_TOPICS} />
+            <Button asChild variant="outline" leftIcon={<SettingsIcon className="h-4 w-4" />}>
+              <Link href="/settings">Settings</Link>
+            </Button>
+          </>
         }
       />
+
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold tracking-tight">
+              Last {OVERVIEW_WINDOW_HOURS} hours
+            </h2>
+            <p className="text-sm text-muted">
+              What the bot actually did, since <Timestamp iso={activity.since} />.
+            </p>
+          </div>
+          <Button asChild variant="outline" size="sm" leftIcon={<BarChart3 className="h-4 w-4" />}>
+            <Link href="/analytics">Analytics</Link>
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <StatCard
+            label="Messages handled"
+            value={number(activity.handled)}
+            icon={MessageSquare}
+            accent
+            hint={`${number(activity.replied)} answered`}
+          />
+          <StatCard
+            label="Failures"
+            value={number(activity.failed)}
+            icon={AlertTriangle}
+            hint={
+              activity.failed > 0 ? (
+                <Link href="/debug?status=error" className="text-primary hover:underline">
+                  Inspect in Debug
+                </Link>
+              ) : (
+                "No failed replies"
+              )
+            }
+          />
+          <StatCard
+            label="Active people"
+            value={number(activity.activeUsers)}
+            icon={Users}
+            hint={`${number(activity.images)} media described`}
+          />
+          <StatCard
+            label="Tokens"
+            value={compactTokens(activity.promptTokens + activity.completionTokens)}
+            icon={Coins}
+            hint={`${compactTokens(activity.promptTokens)} in · ${compactTokens(activity.completionTokens)} out`}
+          />
+        </div>
+      </div>
 
       <Card>
         <CardHeader>
           <div>
             <CardTitle>System status</CardTitle>
-            <CardDescription>Live checks against the database and the configured LLM endpoint.</CardDescription>
+            <CardDescription>
+              Live checks against the database, the configured endpoints, and the write paths.
+            </CardDescription>
           </div>
-          <Badge tone={operational ? "success" : "warning"} dot>
-            {operational ? "Operational" : "Setup needed"}
-          </Badge>
+          <CardAction>
+            <Badge tone={operational ? "success" : "warning"} dot>
+              {operational ? "Operational" : "Setup needed"}
+            </Badge>
+          </CardAction>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {items.map((item) => (
-              <StatusCard
-                key={item.label}
-                label={item.label}
-                value={item.value}
-                tone={item.tone}
-                hint={item.hint}
-              />
-            ))}
-          </div>
-          <div className="mt-4 flex flex-col gap-2 border-t border-border pt-4">
+        <CardContent className="space-y-6">
+          {groups.map((group) => {
+            const summary = groupSummary(group.items);
+            return (
+              <div key={group.title} className="space-y-2">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <h3 className="text-sm font-semibold tracking-tight">{group.title}</h3>
+                  <span
+                    className={
+                      summary.tone === "error"
+                        ? "text-xs font-medium text-danger"
+                        : summary.tone === "warn"
+                          ? "text-xs font-medium text-warning"
+                          : "text-xs font-medium text-success"
+                    }
+                  >
+                    {summary.text}
+                  </span>
+                  <span className="text-xs text-faint">{group.description}</span>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {group.items.map((item) => (
+                    <StatusCard
+                      key={item.label}
+                      label={item.label}
+                      value={item.value}
+                      tone={item.tone}
+                      hint={item.hint}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+
+          <div className="flex flex-col gap-2 border-t border-border pt-5">
             <span className="text-sm font-medium text-foreground">Telegram bot</span>
             <BotControl initial={botStatus} configured={telegramConfigured} />
           </div>
@@ -188,23 +424,21 @@ export default async function OverviewPage() {
       <Card>
         <CardHeader>
           <div>
-            <CardTitle>Activity & insights</CardTitle>
+            <CardTitle>Activity</CardTitle>
             <CardDescription>
-              Traffic, model performance, mood, and health — with per-chat and per-user drill-down.
+              {runningJobs > 0
+                ? `${runningJobs} background job${runningJobs === 1 ? "" : "s"} running now.`
+                : "The latest traced actions, anything that failed, and every background job."}
             </CardDescription>
           </div>
-          <Button asChild variant="outline" size="sm" leftIcon={<BarChart3 className="h-4 w-4" />}>
-            <Link href="/analytics">Open Analytics</Link>
-          </Button>
+          <CardAction>
+            <Button asChild variant="outline" size="sm" leftIcon={<Bug className="h-4 w-4" />}>
+              <Link href="/debug">Debug</Link>
+            </Button>
+          </CardAction>
         </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted">
-            Every traced action is also browsable on the{" "}
-            <Link href="/debug" className="text-primary hover:underline">
-              Debug
-            </Link>{" "}
-            page.
-          </p>
+        <CardContent className="pt-0">
+          <Tabs tabs={activityTabs} />
         </CardContent>
       </Card>
     </>

@@ -32,8 +32,24 @@ Navigation, in sidebar order:
 
 ## Overview (`/`)
 
-The honest-state page. Everything on it is a **real probe** performed at request
-time, never an "is the variable set" guess:
+The honest-state page — what is configured *and* what the bot has actually been
+doing. Four blocks, in the order they answer questions:
+
+1. **Last 24 hours** — messages handled and answered, failures, active people,
+   media described, tokens in/out. Read from the traces, using the same
+   aggregation the Analytics page uses, so the two always agree.
+2. **System status** — the probes below, grouped into Core (nothing works
+   without these), Model roles (optional capabilities) and Storage (write
+   paths), each group carrying its own "all clear / needs setup / failing"
+   summary. The bot start/stop control sits under it.
+3. **Activity** — three tabs: the latest traced actions, everything that has
+   failed (any age — with a line saying how many are recent), and every
+   background job's state, next run and last result. The failures and jobs tabs
+   badge their counts, so a stalled job or a run of errors is visible without
+   opening the tab.
+
+Everything under System status is a **real probe** performed at request time,
+never an "is the variable set" guess:
 
 | Card | Probe |
 | --- | --- |
@@ -70,8 +86,10 @@ The bot control card starts and stops the poller. The token comes from Settings,
 there is nothing to type. If the card says "Not configured", go to Settings first.
 
 **What to do here:** after any config change or restart, confirm no card is red
-and that every neutral one says what you intended. This is the page to look at
-first when something is not working.
+and that every neutral one says what you intended. Then check the Activity card:
+a job stuck on "Stopped", or a failure count that keeps climbing, is the thing
+this page exists to show you before a user does. It is the page to look at first
+when something is not working.
 
 ## Analytics (`/analytics`)
 

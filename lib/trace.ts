@@ -13,6 +13,13 @@ import { z } from "zod";
  * persistence live under `server/trace`.
  */
 
+/**
+ * Rows per page on the Debug trace list. Lives here (not with the server
+ * service) because both halves need it: the Server Component picks the page to
+ * fetch, and the shared explorer UI sizes its pagination from the same number.
+ */
+export const DEFAULT_TRACE_PAGE_SIZE = 50;
+
 /** Terminal + in-flight states shared by traces and background jobs. */
 export const traceStatusSchema = z.enum([
   "pending",
