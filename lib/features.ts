@@ -283,6 +283,12 @@ export const FEATURES = {
     group: "tools",
     path: "/tools",
   },
+  "mcp-tools-randomness": {
+    id: "mcp-tools-randomness",
+    label: "Randomness tool",
+    group: "tools",
+    path: "/tools",
+  },
   "mcp-tools-image-gen": {
     id: "mcp-tools-image-gen",
     label: "Image generation tool",

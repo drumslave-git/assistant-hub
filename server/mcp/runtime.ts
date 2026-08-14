@@ -25,6 +25,10 @@ import {
   registerMemoryMcpTools,
 } from "@/features/memory/server/mcp-tools";
 import {
+  RANDOMNESS_TOOL_NAMES,
+  registerRandomnessMcpTools,
+} from "@/features/randomness/server/mcp-tools";
+import {
   registerSpecialistsMcpTools,
   SPECIALISTS_TOOL_NAMES,
 } from "@/features/specialists/server/mcp-tools";
@@ -91,6 +95,11 @@ const REGISTRARS: { feature: string; registrar: McpToolRegistrar; toolNames: str
     toolNames: SPECIALISTS_TOOL_NAMES,
   },
   { feature: "memory", registrar: registerMemoryMcpTools, toolNames: MEMORY_TOOL_NAMES },
+  {
+    feature: "randomness",
+    registrar: registerRandomnessMcpTools,
+    toolNames: RANDOMNESS_TOOL_NAMES,
+  },
   { feature: "image-gen", registrar: registerImageGenMcpTools, toolNames: IMAGE_GEN_TOOL_NAMES },
   {
     feature: "browser-agent",

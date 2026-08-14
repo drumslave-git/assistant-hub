@@ -14,6 +14,7 @@ import { BROWSE_WEB_TOOL } from "@/features/browser-agent/server/mcp-tools";
 import { IMAGE_GENERATE_TOOL } from "@/features/image-gen/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
 import { MEMORY_TOOL_NAMES } from "@/features/memory/server/mcp-tools";
+import { RANDOMNESS_TOOL_NAMES, ROLL_CHANCE_TOOL } from "@/features/randomness/server/mcp-tools";
 import { SPECIALISTS_TOOL_NAMES } from "@/features/specialists/server/mcp-tools";
 import { TASKS_TOOL_NAMES } from "@/features/tasks/server/mcp-tools";
 import {
@@ -43,6 +44,9 @@ const REPLY_TOOLS = [
   ...TASKS_TOOL_NAMES,
   ...SPECIALISTS_TOOL_NAMES,
   ...MEMORY_TOOL_NAMES,
+  // Rolling a chance is not a delivery, so a reply turn gets it too: "from time
+  // to time, do X" is written as a standing task but decided in an ordinary turn.
+  ...RANDOMNESS_TOOL_NAMES,
   IMAGE_GENERATE_TOOL,
   BROWSE_WEB_TOOL,
 ].sort();
@@ -65,6 +69,7 @@ describe("getToolsView", () => {
     expect(featureOf(BROWSE_WEB_TOOL)).toBe("browser-agent");
     expect(featureOf(REPLY_TO_MESSAGE_TOOL)).toBe("bot-messaging");
     expect(featureOf(SET_MESSAGE_REACTION_TOOL)).toBe("bot-messaging");
+    expect(featureOf(ROLL_CHANCE_TOOL)).toBe("randomness");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });
 });
