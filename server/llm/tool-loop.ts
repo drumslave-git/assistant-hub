@@ -22,7 +22,7 @@ import {
   type LlmRetryInfo,
 } from "./client";
 import { withLlmPriority, type LlmPriority } from "./priority";
-import { completeRound } from "./transport";
+import { completeRound, type LoopToolCall } from "./transport";
 
 /**
  * Chat completion with tools as ONE conversation. Each round the model either
@@ -49,7 +49,7 @@ export interface ToolCallRecord {
 export interface ToolLoopRound {
   /** The assistant message (with `tool_calls` and/or content) to append verbatim. */
   assistantMessage: ChatCompletionMessageParam;
-  toolCalls: ChatCompletionMessageToolCall[];
+  toolCalls: LoopToolCall[];
   content: string;
   usage?: ChatUsage;
   latencyMs: number;
@@ -493,7 +493,10 @@ export async function chatCompletionWithTools(
             // the SDK's shape, and what the loop appends to `conversation` must
             // be the OpenAI shape it feeds back on the next round. `tool_calls`
             // is omitted when empty — a `null` there is rejected by some
-            // backends on the following request.
+            // backends on the following request. The calls are appended as the
+            // transport made them, vendor extras included: a Gemini call replayed
+            // without its thought signature is a 400 on the very next round (see
+            // `ToolCallExtraContent`).
             const assistantMessage = {
               role: "assistant",
               content: round.content || null,

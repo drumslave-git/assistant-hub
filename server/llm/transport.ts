@@ -1,6 +1,13 @@
 import "server-only";
 
-import { dynamicTool, generateText, jsonSchema, type ModelMessage, type ToolSet } from "ai";
+import {
+  dynamicTool,
+  generateText,
+  jsonSchema,
+  type ModelMessage,
+  type ProviderMetadata,
+  type ToolSet,
+} from "ai";
 import type {
   ChatCompletionMessageParam,
   ChatCompletionMessageToolCall,
@@ -32,10 +39,38 @@ import { createProvider, providerOptionsName } from "./provider";
  * agent, and the MCP tool bridge untouched by the transport swap.
  */
 
+/**
+ * Vendor extras a provider attaches to a tool call and requires echoed back
+ * verbatim when that call is replayed in the conversation.
+ *
+ * Google is the one that makes this mandatory. Gemini signs every `functionCall`
+ * it emits, and a follow-up request whose history replays the call without its
+ * signature is rejected outright — `Function call is missing a thought_signature
+ * in functionCall parts` (400 INVALID_ARGUMENT). That kills the **whole turn**,
+ * not the round: on a tool-using bot the first tool call is always followed by
+ * another request carrying it, so every reply that touches a tool fails.
+ *
+ * The loop's conversation is the OpenAI wire shape, so the extras are kept
+ * exactly where that wire carries them — `extra_content` on the tool call, which
+ * is what Google's OpenAI-compatibility layer emits and expects back.
+ */
+export interface ToolCallExtraContent {
+  google?: { thought_signature?: string };
+}
+
+/**
+ * A tool call as the loop passes it around: OpenAI's shape plus the vendor
+ * extras above. Structurally a `ChatCompletionMessageToolCall` everywhere the
+ * loop reads `id`/`function`, so nothing downstream had to learn about this.
+ */
+export type LoopToolCall = ChatCompletionMessageToolCall & {
+  extra_content?: ToolCallExtraContent;
+};
+
 /** What one model round produced, in the shape the tool loop already speaks. */
 export interface TransportRound {
   content: string;
-  toolCalls: ChatCompletionMessageToolCall[];
+  toolCalls: LoopToolCall[];
   usage?: ChatUsage;
   latencyMs: number;
   /** Exact body sent to the endpoint, for the trace. */
@@ -120,14 +155,20 @@ export function toModelMessages(messages: ChatCompletionMessageParam[]): ModelMe
       }
       const parts: Array<Record<string, unknown>> = [];
       if (text) parts.push({ type: "text", text });
-      for (const call of calls) {
+      for (const call of calls as LoopToolCall[]) {
         if (call.type !== "function") continue;
         toolNames.set(call.id, call.function.name);
+        // The signature the model signed this call with, handed back the only
+        // way the provider reads it: `providerOptions.google` on the part, which
+        // it re-serializes as `extra_content` on the wire. Absent for every
+        // backend that does not sign — nothing is invented here, only replayed.
+        const signature = call.extra_content?.google?.thought_signature;
         parts.push({
           type: "tool-call",
           toolCallId: call.id,
           toolName: call.function.name,
           input: safeParseJson(call.function.arguments),
+          ...(signature ? { providerOptions: { google: { thoughtSignature: signature } } } : {}),
         });
       }
       out.push({ role: "assistant", content: parts } as unknown as ModelMessage);
@@ -148,6 +189,25 @@ export function toModelMessages(messages: ChatCompletionMessageParam[]): ModelMe
     }
   }
   return out;
+}
+
+/**
+ * The thought signature a provider attached to a tool call, whatever key it
+ * filed the metadata under.
+ *
+ * The two halves of the SDK disagree on that key: the response reader files the
+ * signature under the *provider's own name* (`llm` here — what
+ * `createOpenAICompatible` was constructed with), while the request builder only
+ * ever looks under `google`. Scanning the entries is what bridges them; naming
+ * one key would tie this to the provider's current name and regress silently
+ * back to the 400 if it ever changed.
+ */
+function thoughtSignatureOf(metadata: ProviderMetadata | undefined): string | undefined {
+  for (const entry of Object.values(metadata ?? {})) {
+    const value = (entry as { thoughtSignature?: unknown }).thoughtSignature;
+    if (typeof value === "string" && value) return value;
+  }
+  return undefined;
 }
 
 /** Parse tool-call arguments, falling back to `{}` — never throwing mid-round. */
@@ -208,10 +268,13 @@ export async function completeRound(
   const provider = createProvider(conn);
 
   const extras = adapter.chatBodyExtras({ reasoning: input.reasoning });
+  // Where a turn may sit is the server's rule, not the caller's: a backend that
+  // constrains it rearranges here, once, for every path that sends a message.
+  const messages = adapter.normalizeMessages?.(input.messages) ?? input.messages;
   const start = Date.now();
   const result = await generateText({
     model: provider.languageModel(input.model),
-    messages: toModelMessages(input.messages),
+    messages: toModelMessages(messages),
     // The SDK rejects `system` turns inside `messages` by default, steering
     // callers to its single `instructions` field. That does not fit this app:
     // the reply prompt places system turns *between* other turns on purpose —
@@ -240,11 +303,18 @@ export async function completeRound(
   });
   const latencyMs = Date.now() - start;
 
-  const toolCalls: ChatCompletionMessageToolCall[] = result.toolCalls.map((call) => ({
-    id: call.toolCallId,
-    type: "function",
-    function: { name: call.toolName, arguments: JSON.stringify(call.input ?? {}) },
-  }));
+  const toolCalls: LoopToolCall[] = result.toolCalls.map((call) => {
+    const signature = thoughtSignatureOf(call.providerMetadata);
+    return {
+      id: call.toolCallId,
+      type: "function",
+      function: { name: call.toolName, arguments: JSON.stringify(call.input ?? {}) },
+      // Kept on the call, not beside it: the loop appends this object to the
+      // conversation and re-sends it every following round, so the signature has
+      // to travel with the call it belongs to — see {@link ToolCallExtraContent}.
+      ...(signature ? { extra_content: { google: { thought_signature: signature } } } : {}),
+    };
+  });
 
   return {
     content: result.text.trim(),

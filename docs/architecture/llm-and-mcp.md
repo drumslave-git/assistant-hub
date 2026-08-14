@@ -61,6 +61,24 @@ Notable constraints, each learned the hard way:
   returns a context overflow as a 400 on one route and a 500 on another — so
   errors are classified by *concept* keywords, with live phrasings pinned in
   tests.
+- **A tool call may carry vendor extras that must be echoed back.** Gemini signs
+  every function call it emits, and replaying that call in the next round without
+  its signature is a flat 400 (`Function call is missing a thought_signature in
+  functionCall parts`) — so on a tool-using bot, every reply that touched a tool
+  failed. The signature travels on the call itself, as `extra_content` in the
+  conversation's OpenAI shape (`LoopToolCall` in `transport.ts`), and is handed
+  back to the provider as `providerOptions.google.thoughtSignature`. The two
+  halves of the SDK key it differently — the response files it under the
+  provider's own name, the request reads only `google` — so the transport bridges
+  them rather than naming one key.
+- **Where a turn may sit is the server's rule, not the caller's.** Anthropic
+  accepts a `system` turn inside `messages` only where it precedes an assistant
+  turn or ends the array, while the reply prompt interleaves system turns for
+  prompt-cache reuse and recency. `LlmBackendAdapter.normalizeMessages` is the
+  seam: the Anthropic adapter merges each run of system turns into one block and
+  moves a block that would sit in front of user turns to just after them. Content
+  and relative order are preserved; only that one adjacency changes. Every other
+  backend leaves it unset and is sent the conversation exactly as assembled.
 
 ## Deadlines and retries
 

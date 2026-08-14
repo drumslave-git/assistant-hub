@@ -10,7 +10,12 @@ Most types speak the OpenAI wire shape; `anthropic` is the exception — it ride
 the native Anthropic API (`x-api-key` auth, native `/v1/models` listing) and
 serves the chat-shaped roles only (chat, vision, browser agent, classifiers,
 background); embeddings, images, speech and transcription-mode audio refuse it
-with a named error. The settings roles (chat,
+with a named error, and its adapter also rearranges the prompt's interleaved
+system turns into the placement the native API allows (see
+[LLM & MCP](../architecture/llm-and-mcp.md)). A Gemini endpoint is configured as
+a generic OpenAI-compatible backend; the thought signature it attaches to every
+tool call is carried back automatically, without which no tool-using reply
+completes. The settings roles (chat,
 embeddings, images, speech, audio, vision, browser agent) reference backends by
 id instead of carrying their own URL/key copies — one server, entered once,
 picked everywhere.

@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+
 import type { LlmBackendId } from "@/lib/llm-backend";
 
 /**
@@ -75,6 +77,19 @@ export interface LlmBackendAdapter {
    * reasoning on the live bot, so this is what makes that cost observable.
    */
   readReasoning(rawResponse: unknown): string | null;
+
+  /**
+   * Rewrites the assembled conversation into an arrangement this backend will
+   * accept, without dropping anything the caller put in it.
+   *
+   * For servers that place no constraints of their own this is unset and the
+   * conversation is sent exactly as assembled — which is every backend but one.
+   * It exists because a rule about *where a turn may sit* is a property of the
+   * server, not of the feature that composed the prompt: the reply path places
+   * its system turns for prompt-cache reuse and recency, and it must not have to
+   * know which endpoint is configured to do that.
+   */
+  normalizeMessages?(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[];
 
   /**
    * Backend-specific context-overflow phrasings, tried in addition to (never

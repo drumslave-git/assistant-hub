@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+
 import { LLM_BACKEND_IDS } from "@/lib/llm-backend";
 
 import { adapterFor, chatBodyExtrasFor, readReasoningFor, truncatesOnOverflow } from "./registry";
@@ -190,5 +192,82 @@ describe("adapterFor", () => {
 
   it("resolves every declared id to an adapter that reports that id", () => {
     for (const id of LLM_BACKEND_IDS) expect(adapterFor(id).id).toBe(id);
+  });
+});
+
+/**
+ * The reply prompt interleaves system turns on purpose, and Anthropic is the one
+ * backend with a rule about where they may sit — so the arrangement it sends is
+ * asserted against that rule directly, message by message, rather than against a
+ * hand-copied expected array that would stop meaning anything if the prompt
+ * gained a block.
+ */
+describe("system-turn placement is rewritten only where the server demands it", () => {
+  /** Anthropic's rule: a system turn precedes an assistant turn, or ends the array. */
+  function violations(messages: ChatCompletionMessageParam[]): number[] {
+    return messages.flatMap((message, index) =>
+      message.role === "system" &&
+      index !== 0 &&
+      index !== messages.length - 1 &&
+      messages[index + 1]?.role !== "assistant"
+        ? [index]
+        : [],
+    );
+  }
+
+  /** The shape `composeMessages` produces for a group reply, abridged. */
+  const reply: ChatCompletionMessageParam[] = [
+    { role: "system", content: "persona" },
+    { role: "system", content: "chat context" },
+    { role: "system", content: "memory" },
+    { role: "user", content: "earlier" },
+    { role: "assistant", content: "earlier answer" },
+    { role: "system", content: "sender preferences" },
+    { role: "system", content: "It is now 14:00." },
+    { role: "system", content: "Reply in English." },
+    { role: "user", content: "now" },
+  ];
+
+  it("produces an arrangement Anthropic accepts, from the one that 400'd", () => {
+    // The prompt as assembled is exactly what the live endpoint rejected.
+    expect(violations(reply)).not.toEqual([]);
+    expect(violations(adapterFor("anthropic").normalizeMessages!(reply))).toEqual([]);
+  });
+
+  it("keeps every block, in order, and the turn it was placed against", () => {
+    const sent = adapterFor("anthropic").normalizeMessages!(reply);
+    // Nothing dropped: each block still appears, still in composition order.
+    const text = sent.map((m) => String(m.content)).join("\n");
+    for (const block of ["persona", "chat context", "memory", "It is now 14:00.", "Reply in English."]) {
+      expect(text).toContain(block);
+    }
+    expect(text.indexOf("It is now 14:00.")).toBeLessThan(text.indexOf("Reply in English."));
+    // The prefix stays the prefix — the provider lifts it into `system`, and the
+    // endpoint's KV-cache reuse depends on it not moving.
+    expect(sent[0]).toMatchObject({ role: "system" });
+    expect(String(sent[0].content)).toContain("persona");
+    // The per-turn directives now sit after the message they are about, which is
+    // the only legal spot and the one with the most recency.
+    expect(sent.at(-1)).toMatchObject({ role: "system" });
+    expect(String(sent.at(-1)!.content)).toContain("Reply in English.");
+    expect(sent.at(-2)).toEqual({ role: "user", content: "now" });
+  });
+
+  it("leaves a directive that already precedes an assistant turn where it is", () => {
+    // The enforcement retry: the model's own empty-handed answer, then the
+    // correction. Both spots are legal already, so nothing may move.
+    const enforced: ChatCompletionMessageParam[] = [
+      { role: "system", content: "persona" },
+      { role: "user", content: "do it" },
+      { role: "assistant", content: "I will" },
+      { role: "system", content: "you did not" },
+    ];
+    expect(adapterFor("anthropic").normalizeMessages!(enforced)).toEqual(enforced);
+  });
+
+  it("is not applied to backends that never asked for it", () => {
+    for (const id of LLM_BACKEND_IDS.filter((backend) => backend !== "anthropic")) {
+      expect(adapterFor(id).normalizeMessages).toBeUndefined();
+    }
   });
 });

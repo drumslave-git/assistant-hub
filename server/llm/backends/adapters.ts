@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+
 import { normalizeModelName } from "@/features/self-improvement/model-name";
 
 import type { ChatRequestIntent, JsonValue, LlmBackendAdapter } from "./types";
@@ -162,6 +164,78 @@ const vllm: LlmBackendAdapter = {
   },
 };
 
+/** A system turn's text; this app never gives one anything but a string. */
+function systemText(message: ChatCompletionMessageParam): string {
+  const content = message.content;
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part): part is { type: "text"; text: string } => (part as { type?: unknown }).type === "text")
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+}
+
+/**
+ * Rearrange system turns to Anthropic's placement rule, keeping every word.
+ *
+ * The native API accepts a `system` turn inside `messages` only where it
+ * "must precede an 'assistant' message or end the array" — anywhere else is a
+ * flat 400 (`messages.1: role 'system' must precede an 'assistant' message or
+ * end the array`), which fails the whole reply.
+ *
+ * This app interleaves system turns deliberately (see `composeMessages` in
+ * `features/bot-messaging/server/service.ts`): the per-chat blocks sit above the
+ * history window so the endpoint can reuse its KV-cache prefix, and the per-turn
+ * directives sit directly below it so the instruction about "now" is the last
+ * thing read before the message being answered. Both clusters are followed by a
+ * `user` turn, so on Anthropic *every* reply failed, tools or not.
+ *
+ * Two mechanical moves, no content dropped and no relative order changed:
+ *
+ * - a run of consecutive system turns is merged into one block, so a run cannot
+ *   break the rule on its own second element;
+ * - a block that would sit in front of user turns moves to just after them,
+ *   where it either precedes the assistant's answer or ends the array. The
+ *   leading block has nothing before it and stays put — the provider lifts it
+ *   into the top-level `system` field, which is where a prompt prefix belongs.
+ *
+ * The move is the one semantic change, and it goes the way the placement was
+ * already reaching: a directive that had to outrank the message it is about now
+ * sits after that message instead of before it.
+ */
+export function toAnthropicSystemPlacement(
+  messages: ChatCompletionMessageParam[],
+): ChatCompletionMessageParam[] {
+  const out: ChatCompletionMessageParam[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    if (messages[i].role !== "system") {
+      out.push(messages[i]);
+      i += 1;
+      continue;
+    }
+    const run: string[] = [];
+    while (i < messages.length && messages[i].role === "system") {
+      const text = systemText(messages[i]);
+      if (text) run.push(text);
+      i += 1;
+    }
+    const merged: ChatCompletionMessageParam = { role: "system", content: run.join("\n\n") };
+    // Carry the user turn(s) this block was placed in front of over it, so the
+    // block lands where the API allows one. A leading block has none, and a
+    // block already followed by an assistant turn is legal where it stands.
+    if (out.length > 0) {
+      while (i < messages.length && messages[i].role === "user") {
+        out.push(messages[i]);
+        i += 1;
+      }
+    }
+    out.push(merged);
+  }
+  return out;
+}
+
 /**
  * Anthropic (Claude) — the one backend that does not speak the OpenAI wire
  * shape at all. The AI SDK's native provider (`@ai-sdk/anthropic`, selected in
@@ -185,6 +259,7 @@ const anthropic: LlmBackendAdapter = {
   chatBodyExtras(intent: ChatRequestIntent): Record<string, JsonValue> {
     return intent.reasoning === "off" ? { thinking: { type: "disabled" } } : {};
   },
+  normalizeMessages: toAnthropicSystemPlacement,
   readReasoning(raw) {
     // The raw body is a native Messages response: `content` is an array of
     // blocks, and thinking arrives as `{type: "thinking", thinking: "…"}`

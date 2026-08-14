@@ -28,6 +28,87 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Tool calls and system turns broke on hosted backends (`done` pending live verification, 2026-08-14)
+
+Two operator reports the same day, both 400s that killed the whole reply, both
+from the same root cause: the conversation was assembled for the local
+OpenAI-shaped servers this app grew up on, and a hosted provider's own rules
+about it were never carried.
+
+1. **Gemini** — `[{"error":{"code":400,"message":"Function call is missing a
+   thought_signature in functionCall parts … function call
+   `default_api:memory_save`, position 3","status":"INVALID_ARGUMENT"}}]`. Gemini
+   signs every function call it emits and rejects any request whose history
+   replays one unsigned. Round 1 (the call) succeeded; the round that re-sent it
+   with the tool result never could — so **every reply that touched any MCP tool
+   failed**, and only those.
+2. **Anthropic** — `messages.1: role 'system' must precede an 'assistant'
+   message or end the array`. The reply prompt interleaves system turns on
+   purpose (per-chat blocks above the history window for prompt-cache reuse;
+   per-turn directives directly below it, the language directive last for
+   recency), and each cluster is followed by a `user` turn. On Anthropic **every**
+   reply failed, tools or not.
+
+### What shipped
+
+- **Vendor extras ride the tool call** (`server/llm/transport.ts`): new
+  `LoopToolCall` = the OpenAI-shaped call plus `extra_content`, which is exactly
+  where Google's OpenAI-compatibility layer carries the signature. `completeRound`
+  reads it off the SDK's per-call `providerMetadata` and `toModelMessages` hands
+  it back as `providerOptions.google.thoughtSignature`. The two halves of
+  `@ai-sdk/openai-compatible` disagree on the key — the response files it under
+  the provider's own name (`llm` here), the request builder reads only `google` —
+  so the transport scans the metadata entries rather than naming one key, which is
+  what would regress silently if the provider were ever renamed. The loop already
+  appends the call object verbatim, so nothing else changed.
+- **`LlmBackendAdapter.normalizeMessages`** (`server/llm/backends/types.ts`,
+  optional; only `anthropic` implements it): `toAnthropicSystemPlacement` merges
+  each run of consecutive system turns into one block and moves a block that
+  would sit in front of user turns to just after them, where it precedes the
+  assistant's answer or ends the array. Nothing is dropped and relative order is
+  kept; the leading block stays leading (the provider lifts it into the top-level
+  `system` field, which is what the KV-cache prefix depends on). Applied once in
+  `completeRound`, so both the tool loop and plain completions get it.
+  **Decision taken in implementation, not asked**: moving the per-turn directives
+  to *after* the message they are about was preferred over folding them into the
+  user turn — it is the only legal spot that keeps them a separate turn, and it
+  moves the way the placement was already reaching (maximum recency).
+
+### Proof
+
+Lint clean; typecheck clean. `server/llm` 143/143, full unit suite 1070 passed /
+the same 21 pre-existing yt-dlp + media-download Windows failures. New tests, all
+written so the pre-fix code fails them:
+
+- `transport.test.ts` — a two-round `chatCompletionWithTools` against a stubbed
+  Gemini-shaped endpoint asserting the **second** request's assistant turn still
+  carries `extra_content.google.thought_signature` (a conversion-only unit test
+  would have passed while the bot stayed broken); plus the conversion both ways.
+- `transport.test.ts` — `chatCompletion` on an `anthropic` connection with the
+  real native provider and a stubbed fetch: the wire body's `system` field holds
+  the prefix and its `messages` roles are `user, assistant, user, system` with no
+  illegal system placement. This is the half no pure test can see — that the
+  provider emits those turns as `system` messages rather than hoisting them.
+- `backends.test.ts` — the rewrite asserted against Anthropic's rule directly
+  (a predicate over the messages, not a hand-copied array), that every block
+  survives in order, that an already-legal arrangement is untouched, and that no
+  other backend has a normalizer at all.
+
+### Remaining risks / operator steps
+
+- **Neither fix is yet observed against the live providers** — the assistant
+  holds no key for either. Gemini: point the chat role at the endpoint and send a
+  message that uses a tool. Anthropic: any message at all.
+- If the Gemini endpoint is reached **through OpenRouter** rather than directly,
+  the mechanism may differ (OpenRouter relays Google's signatures in its own
+  `reasoning_details` shape). The raw array-wrapped error body in the report is
+  Google's own, with no OpenRouter envelope, so the direct endpoint is what this
+  targets; a trace from the failing turn would settle it.
+- The Anthropic rewrite changes prompt composition on that backend only: two to
+  five system blocks arrive merged into one, positioned after the user turn.
+  Worth a read of the first live trace to confirm the directives still land the
+  way they were tuned to.
+
 ## Anthropic (Claude) as a native backend type (`done` pending key-in-hand verification, 2026-08-14)
 
 User report, 2026-08-14 (screenshot): pointing a Generic backend at
