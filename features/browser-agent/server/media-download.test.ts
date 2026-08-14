@@ -2,8 +2,9 @@ import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 
+import { describeOnPosix } from "@/test/platform";
 import { __setDataDirsForTests } from "@/server/paths";
 
 import type { MediaProgress } from "../ytdlp";
@@ -20,6 +21,9 @@ import { downloadMediaToDisk, YtDlpMissingError } from "./media-download";
  * The real downloads directory is fixed at `data/downloads`, so each case
  * redirects it to a throwaway path through the test-only override (as
  * `download.test.ts` does).
+ *
+ * The stub is an executable script, so these cases run on POSIX only (see
+ * `test/platform.ts`); on a Windows host `npm run test:linux` proves them.
  */
 
 /**
@@ -76,7 +80,7 @@ beforeEach(() => {
   chmodSync(stubPath, 0o755);
 
   originalPath = process.env.PATH;
-  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
   process.env.STUB_ARGV_OUT = argvFile;
   process.env.STUB_FILES = "VIRUS (Fytch Remix).mp3=5000";
 });
@@ -93,7 +97,7 @@ afterEach(() => {
   rmSync(managedBinDir, { recursive: true, force: true });
 });
 
-describe("downloadMediaToDisk", () => {
+describeOnPosix("downloadMediaToDisk", () => {
   it("keeps the file yt-dlp produced, named from the media's own title", async () => {
     const { downloadMediaToDisk } = loadDownloader();
 

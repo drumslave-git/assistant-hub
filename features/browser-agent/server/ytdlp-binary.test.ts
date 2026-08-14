@@ -3,8 +3,9 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+import { describeOnPosix } from "@/test/platform";
 import { __setDataDirsForTests } from "@/server/paths";
 
 import { ytDlpAssetName } from "../ytdlp-release";
@@ -26,6 +27,10 @@ import {
  *
  * Nothing here touches the network or a real yt-dlp; `../ytdlp-release.test.ts`
  * covers the pure half of the contract.
+ *
+ * The stub binaries are shebang scripts, and executing one is the whole point —
+ * so these cases run on POSIX only (see `test/platform.ts`) and are proved on a
+ * Windows host with `npm run test:linux`.
  */
 
 /** A stand-in yt-dlp: prints a version, like the real one's `--version`. */
@@ -115,7 +120,7 @@ function installManaged(contents: string): void {
   chmodSync(managedYtDlpPath(), 0o755);
 }
 
-describe("resolveYtDlpCommand", () => {
+describeOnPosix("resolveYtDlpCommand", () => {
   it("prefers the managed copy — it is the one the updater keeps current", async () => {
     installOnPath(fakeBinary("2026.03.17"));
     installManaged(fakeBinary("2026.07.04"));
@@ -130,7 +135,7 @@ describe("resolveYtDlpCommand", () => {
   });
 });
 
-describe("getYtDlpInstallation", () => {
+describeOnPosix("getYtDlpInstallation", () => {
   it("reports the managed copy and its version", async () => {
     installOnPath(fakeBinary("2026.03.17"));
     installManaged(fakeBinary("2026.07.04"));
@@ -167,7 +172,7 @@ describe("getYtDlpInstallation", () => {
   });
 });
 
-describe("updateYtDlp", () => {
+describeOnPosix("updateYtDlp", () => {
   it("installs the upstream build when the machine has no yt-dlp", async () => {
     stubGithub({ version: "2026.07.04", assetBody: fakeBinary("2026.07.04") });
 

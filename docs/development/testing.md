@@ -11,6 +11,39 @@ Three tiers, three different costs, three different purposes.
 Tests are **colocated** with the code they cover: `addressing.test.ts` sits beside
 `addressing.ts`. The default suite excludes `*.integration.test.ts`.
 
+## Running the unit suite on a Windows host
+
+```bash
+npm run test:linux
+```
+
+Runs the same suite inside `node:24-alpine` (`docker-compose.test.yml`), and it
+is the way to prove the whole thing from a Windows machine.
+
+Two suites — `ytdlp-binary.test.ts` and `media-download.test.ts` — spawn a
+**real** stub binary, because what they prove is that the app executes the right
+file: which copy of yt-dlp a download runs, and that a downloaded one is executed
+before it is allowed to replace a working install. A portable stub for that is a
+shebang script, which Windows cannot spawn (`CreateProcess` runs PE binaries, and
+Node refuses `.bat`/`.cmd` without a shell). They are also describing a platform
+Windows is not: upstream publishes no single-file yt-dlp for it, so the updater
+is a documented no-op there.
+
+So those two skip themselves off POSIX through `test/platform.ts`
+(`describeOnPosix`) rather than being rewritten around a mocked `spawn`, which
+would drop the one guarantee they exist for — and `npm run test:linux` runs them.
+A Windows `npm run test` reports them as skipped, not passed.
+
+The repository is bind-mounted into that container, but `node_modules` is a named
+volume: esbuild, rollup and lightningcss ship per-platform native builds, so the
+host's install cannot execute there. The first run populates the volume (a couple
+of minutes); later runs start in seconds. Arguments pass through, so a subset
+works too:
+
+```bash
+npm run test:linux -- npx vitest run features/browser-agent
+```
+
 ## Unit tests
 
 `vitest.config.ts`, `environment: "node"`. Two aliases make server code directly

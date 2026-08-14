@@ -1,0 +1,32 @@
+# The test suite on the platform the app actually ships to.
+#
+# Parts of the suite drive real subprocesses — a stub `yt-dlp` on PATH, a
+# downloaded binary that has to run before it replaces anything. Those stubs are
+# executable scripts, which Windows cannot spawn (`CreateProcess` runs PE
+# binaries, not shebangs), so on a Windows host those cases skip themselves and
+# would otherwise be proved nowhere. This runs them where the app lives.
+#
+#   npm run test:linux                      # the whole suite
+#   npm run test:linux -- npx vitest run features/browser-agent
+#
+# Not the app image: the suite needs dev dependencies and no build, so this is
+# the plain node image the Dockerfile is based on.
+services:
+  test:
+    image: node:24-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+      # Shadows the host's node_modules — see docker/test/entrypoint.sh.
+      - node_modules:/app/node_modules
+    environment:
+      CI: "true"
+      # The suite is pure unit tests (integration tests run separately, against
+      # Testcontainers), so nothing here needs a database or the network.
+      NODE_ENV: test
+    entrypoint: ["sh", "docker/test/entrypoint.sh"]
+    command: ["npm", "run", "test"]
+    init: true
+
+volumes:
+  node_modules:

@@ -1,0 +1,4 @@
+# Shell scripts run inside linux containers. A CRLF checkout on Windows makes
+# them unrunnable there ("no such file or directory" on the interpreter line),
+# so they stay LF whatever the host's autocrlf setting is.
+*.sh text eol=lf
