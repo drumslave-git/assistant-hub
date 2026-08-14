@@ -25,6 +25,7 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Fab,
   Field,
   Input,
   ScrollArea,
@@ -217,21 +218,21 @@ function CreateForm({ atLimit }: { atLimit: boolean }) {
           setDataScope={setDataScope}
           disabled={atLimit}
         />
-        <div className="flex items-center gap-3">
-          <Button
-            onClick={create}
-            disabled={atLimit || name.trim() === "" || state === "saving"}
-            leftIcon={<Plus className="h-4 w-4" />}
-          >
-            {state === "saving" ? "Creating…" : "Create specialist"}
-          </Button>
-          {atLimit ? (
-            <span className="text-sm text-muted">Limit of {MAX_SPECIALISTS} reached.</span>
-          ) : null}
-          {typeof state === "object" ? (
-            <span className="text-sm text-danger">{state.error}</span>
-          ) : null}
-        </div>
+        <Fab
+          label="Create specialist"
+          busyLabel="Creating…"
+          icon={<Plus className="h-4 w-4" />}
+          onClick={create}
+          busy={state === "saving"}
+          disabled={atLimit || name.trim() === ""}
+          status={
+            atLimit
+              ? { tone: "muted", text: `Limit of ${MAX_SPECIALISTS} reached` }
+              : typeof state === "object"
+                ? { tone: "danger", text: state.error }
+                : null
+          }
+        />
       </CardContent>
     </Card>
   );

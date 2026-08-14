@@ -79,7 +79,13 @@ export function AppShell({
       {/* Main column */}
       <div className="flex min-h-screen flex-col md:pl-64">
         <Topbar onMenuClick={() => setDrawerOpen(true)} />
-        <main className="flex-1 px-4 py-6 md:px-8 md:py-8">
+        {/* The generous bottom padding is for the floating action button: it is
+            `fixed`, so without room reserved here it would sit on top of the
+            last row of a table or the final field of a form. Reserved for every
+            page rather than only the ones with a Fab — the alternative is the
+            layout knowing which pages have one, and a page that grows an action
+            silently starting to cover its own content. */}
+        <main className="flex-1 px-4 py-6 pb-28 md:px-8 md:py-8 md:pb-32">
           <div className="w-full space-y-6">{children}</div>
         </main>
       </div>

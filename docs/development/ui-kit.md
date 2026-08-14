@@ -37,6 +37,7 @@ files.
 | `Field` | Labelled form row: wires `htmlFor`/`id`/`aria-describedby` and renders either a hint or an error |
 | `Input`, `Textarea`, `Select`, `Label` | Form controls. `Select` is a native select with a chevron affordance |
 | `PageHeader` | Page title, description, actions |
+| `Fab` | The page's one main action, pinned bottom-right. **Replaces** the inline button rather than shadowing it, and carries that button's state (`busy`, plus a short `status` pill) — a floating button that swallowed the only copy of the feedback would make a failed save look like nothing happened. See [below](#the-floating-action-button) |
 | `Pagination` | Offset pagination for a server-rendered list. Presentational — the caller supplies `hrefFor(offset)`, so every page stays a real URL and the control works in a Server Component. Renders nothing when the list fits on one page |
 | `Progress` | Clamped 0–100% meter |
 | `ScrollArea` | Caps a growing section at a fraction of the viewport and scrolls **inside** the panel, so one dense list never stretches the page |
@@ -134,6 +135,42 @@ not to.
 The Settings form is the worked example: it once carried three hand-rolled copies of the
 probe flow and five of the write-only secret input. Those are now two hooks in
 `features/settings/ui/connection.ts` and one section shell.
+
+### The floating action button
+
+A page with **one** unambiguous main action renders it as a `Fab` instead of an inline
+button (user decision, 2026-08-14). Today that is six pages:
+
+| Page | Action |
+| --- | --- |
+| `/settings` | Save settings |
+| `/backends` | Create backend |
+| `/personalities` | Create personality |
+| `/specialists` | Create specialist |
+| `/tasks` | Create task |
+| `/browser` | Start run |
+
+The rule is "one unambiguous action", not "every page". Pages deliberately left without
+one: `/history/transfer` (import *and* export are both the point), `/debug` (a bundle
+download and a destructive prune — a floating button is the wrong home for the second),
+`/jobs` (every action belongs to a row, not the page), and `/` (its only action is the
+bot start/stop toggle, which belongs beside the status it reflects). Inventing a winner
+on those pages would mean promoting one action for the sake of consistency.
+
+Mechanics worth knowing before adding a seventh:
+
+- It **replaces** the inline button. Two live copies of one action means two places
+  showing its state and a reader working out whether they differ.
+- The inline row's feedback moves onto the `status` pill — but only the verdict.
+  Anything longer belongs in the page next to what it is about; Settings puts "Saved" on
+  the button and the list of models the save cleared on the Models tab, where those
+  roles are.
+- A `disabled` Fab should say why via `status` (`tone: "muted"`), since a dead floating
+  button is further from its cause than an inline one.
+- Positioning is plain `fixed` at `z-30`, no portal — the content column has no
+  transformed ancestor, and the mobile drawer at `z-40` correctly covers it. `AppShell`
+  carries the bottom padding that stops it covering the last row of a page, reserved on
+  every page rather than only the ones with a Fab.
 
 ## Theming
 

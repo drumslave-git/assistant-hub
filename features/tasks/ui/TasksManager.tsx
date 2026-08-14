@@ -15,6 +15,7 @@ import {
   CardTitle,
   Checkbox,
   EmptyState,
+  Fab,
   Field,
   Input,
   ScrollArea,
@@ -504,22 +505,15 @@ function CreateForm({ chats }: { chats: TaskChat[] }) {
             )}
           </Field>
         ) : null}
-        <div className="flex items-center gap-3">
-          <Button
-            onClick={create}
-            disabled={
-              instruction.trim().length < 2 ||
-              (!promptKind && scope === GLOBAL) ||
-              state === "saving"
-            }
-            leftIcon={<Plus className="h-4 w-4" />}
-          >
-            {state === "saving" ? "Creating…" : "Create task"}
-          </Button>
-          {typeof state === "object" ? (
-            <span className="text-sm text-danger">{state.error}</span>
-          ) : null}
-        </div>
+        <Fab
+          label="Create task"
+          busyLabel="Creating…"
+          icon={<Plus className="h-4 w-4" />}
+          onClick={create}
+          busy={state === "saving"}
+          disabled={instruction.trim().length < 2 || (!promptKind && scope === GLOBAL)}
+          status={typeof state === "object" ? { tone: "danger", text: state.error } : null}
+        />
       </CardContent>
     </Card>
   );

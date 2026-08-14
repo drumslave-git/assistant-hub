@@ -23,6 +23,7 @@ export {
 export { Checkbox } from "./Checkbox";
 export { Combobox } from "./Combobox";
 export { EmptyState } from "./EmptyState";
+export { Fab, type FabProps } from "./Fab";
 export { Field } from "./Field";
 export { Input, fieldBase } from "./Input";
 export { Label } from "./Label";

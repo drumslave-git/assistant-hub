@@ -22,6 +22,7 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Fab,
   Field,
   Input,
   ScrollArea,
@@ -116,23 +117,23 @@ function CreateForm({ atLimit }: { atLimit: boolean }) {
             />
           )}
         </Field>
-        <div className="flex items-center gap-3">
-          <Button
-            onClick={create}
-            disabled={atLimit || name.trim() === "" || state === "saving"}
-            leftIcon={<Plus className="h-4 w-4" />}
-          >
-            {state === "saving" ? "Creating…" : "Create personality"}
-          </Button>
-          {atLimit ? (
-            <span className="text-sm text-muted">
-              Limit of {MAX_PERSONALITIES} reached.
-            </span>
-          ) : null}
-          {typeof state === "object" ? (
-            <span className="text-sm text-danger">{state.error}</span>
-          ) : null}
-        </div>
+        <Fab
+          label="Create personality"
+          busyLabel="Creating…"
+          icon={<Plus className="h-4 w-4" />}
+          onClick={create}
+          busy={state === "saving"}
+          disabled={atLimit || name.trim() === ""}
+          // The limit outranks a stale error: it is why the button is dead now,
+          // which is the question a disabled control raises.
+          status={
+            atLimit
+              ? { tone: "muted", text: `Limit of ${MAX_PERSONALITIES} reached` }
+              : typeof state === "object"
+                ? { tone: "danger", text: state.error }
+                : null
+          }
+        />
       </CardContent>
     </Card>
   );

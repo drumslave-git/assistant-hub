@@ -1,17 +1,17 @@
 "use client";
 
-import { Check, Save } from "lucide-react";
+import { Save } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
 import {
   Badge,
-  Button,
   Card,
   CardAction,
   CardContent,
   CardHeader,
   CardTitle,
+  Fab,
   Field,
   Input,
   Select,
@@ -59,9 +59,11 @@ import { RoleSection, type RoleSectionLabels } from "./RoleSection";
  * chat change shows up where it happens, and {@link SettingsForm.staleRoles}
  * additionally names every affected role at the top of the tab.
  *
- * One Save button below the tabs persists every changed field regardless of
- * the active tab. Secrets are write-only — shown as "configured" but their
- * values never leave the server.
+ * One Save button — the floating {@link Fab} — persists every changed field
+ * regardless of the active tab, which is the reason it floats: the form is five
+ * tabs and nine role cards long, and an inline button at the bottom of it is a
+ * scroll away from most of what it saves. Secrets are write-only — shown as
+ * "configured" but their values never leave the server.
  *
  * Only changed fields are sent, which the server relies on: a model absent
  * from the patch is a *stored* selection, and when the same patch repoints the
@@ -70,7 +72,8 @@ import { RoleSection, type RoleSectionLabels } from "./RoleSection";
  * cannot see — a selection stale against the *unchanged* backend: a
  * successfully listed backend that does not serve the stored model flags it in
  * its section, and the save sends it as null. Either way, everything cleared is
- * named next to the Save button.
+ * named on the Models tab, where those roles are — the floating button carries
+ * only the verdict.
  */
 
 type SaveState =
@@ -914,6 +917,16 @@ export function SettingsForm({
         </p>
       ) : null}
 
+      {/* What the last save cleared. This lives here rather than beside the Save
+          button: it names roles, and the roles are on this tab — the floating
+          button carries the verdict ("Saved"), not the consequences. */}
+      {save.kind === "saved" && clearedOnSave.length > 0 ? (
+        <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+          Cleared {clearedOnSave.join(", ")} — not served by the configured backend. Pick
+          replacements in their sections when ready.
+        </p>
+      ) : null}
+
       <nav aria-label="Roles" className="flex flex-wrap gap-1.5">
         {roleBlocks.map((block) => (
           <a
@@ -971,31 +984,24 @@ export function SettingsForm({
     <form onSubmit={(e) => e.preventDefault()} className="space-y-6">
       <Tabs tabs={tabs} value={activeTab} onValueChange={setActiveTab} />
 
+      {/* The Security tab keeps its own button: changing a password is a
+          different write, on a different endpoint, and a floating "Save
+          settings" beside it would be an invitation to press the wrong one. */}
       {activeTab !== "security" ? (
-        <div className="flex items-center gap-3 border-t border-border pt-4">
-          <Button
-            type="button"
-            onClick={onSave}
-            disabled={save.kind === "saving"}
-            leftIcon={<Save className="h-4 w-4" />}
-          >
-            {save.kind === "saving" ? "Saving…" : "Save settings"}
-          </Button>
-          {save.kind === "saved" ? (
-            <span className="inline-flex items-center gap-1 text-sm text-success">
-              <Check className="h-4 w-4" aria-hidden /> Saved
-            </span>
-          ) : null}
-          {save.kind === "saved" && clearedOnSave.length > 0 ? (
-            <span className="text-sm text-warning">
-              Cleared {clearedOnSave.join(", ")} — not served by the configured backend. Pick
-              replacements in their sections when ready.
-            </span>
-          ) : null}
-          {save.kind === "error" ? (
-            <span className="text-sm text-danger">{save.message}</span>
-          ) : null}
-        </div>
+        <Fab
+          label="Save settings"
+          busyLabel="Saving…"
+          icon={<Save className="h-4 w-4" />}
+          onClick={onSave}
+          busy={save.kind === "saving"}
+          status={
+            save.kind === "saved"
+              ? { tone: "success", text: "Saved" }
+              : save.kind === "error"
+                ? { tone: "danger", text: save.message }
+                : null
+          }
+        />
       ) : null}
     </form>
   );

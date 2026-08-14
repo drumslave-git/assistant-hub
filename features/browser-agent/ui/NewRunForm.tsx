@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Globe } from "lucide-react";
 
-import { Button, Card, CardContent, Textarea } from "@/components/ui";
+import { Card, CardContent, Fab, Textarea } from "@/components/ui";
 
 /**
  * Operator-facing "start a run" form. A dashboard run has no chat to deliver to —
@@ -18,8 +18,9 @@ export function NewRunForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  // Split from the form's submit handler because the button that triggers it now
+  // floats outside the form (see the Fab below) and has no event to swallow.
+  async function start() {
     const trimmed = goal.trim();
     if (trimmed.length < 4 || busy) return;
     setBusy(true);
@@ -46,7 +47,13 @@ export function NewRunForm() {
   return (
     <Card>
       <CardContent className="pt-6">
-        <form onSubmit={submit} className="space-y-3">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void start();
+          }}
+          className="space-y-3"
+        >
           <Textarea
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
@@ -54,17 +61,19 @@ export function NewRunForm() {
             rows={3}
             disabled={busy}
           />
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-muted">
-              Runs in the background. The report appears below when it finishes.
-            </p>
-            <Button type="submit" disabled={busy || goal.trim().length < 4}>
-              <Globe className="h-4 w-4" aria-hidden />
-              {busy ? "Starting…" : "Start run"}
-            </Button>
-          </div>
+          <p className="text-xs text-muted">
+            Runs in the background. The report appears below when it finishes.
+          </p>
           {error ? <p className="text-sm text-danger">{error}</p> : null}
         </form>
+        <Fab
+          label="Start run"
+          busyLabel="Starting…"
+          icon={<Globe className="h-4 w-4" />}
+          onClick={() => void start()}
+          busy={busy}
+          disabled={goal.trim().length < 4}
+        />
       </CardContent>
     </Card>
   );

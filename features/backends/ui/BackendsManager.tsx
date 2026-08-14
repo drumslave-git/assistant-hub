@@ -14,6 +14,7 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Fab,
   Field,
   Input,
 } from "@/components/ui";
@@ -233,18 +234,15 @@ function CreateForm() {
             })
           }
         />
-        <div className="flex items-center gap-3">
-          <Button
-            onClick={create}
-            disabled={name.trim() === "" || baseUrl.trim() === "" || state === "saving"}
-            leftIcon={<Plus className="h-4 w-4" />}
-          >
-            {state === "saving" ? "Creating…" : "Create backend"}
-          </Button>
-          {typeof state === "object" ? (
-            <span className="text-sm text-danger">{state.error}</span>
-          ) : null}
-        </div>
+        <Fab
+          label="Create backend"
+          busyLabel="Creating…"
+          icon={<Plus className="h-4 w-4" />}
+          onClick={create}
+          busy={state === "saving"}
+          disabled={name.trim() === "" || baseUrl.trim() === ""}
+          status={typeof state === "object" ? { tone: "danger", text: state.error } : null}
+        />
       </CardContent>
     </Card>
   );
