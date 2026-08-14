@@ -1,6 +1,9 @@
+import type { ReactionTypeEmoji } from "@grammyjs/types";
+
 /**
  * Pure facts about Telegram identifiers, single-sourced so the assumption is
- * written down once. Client-safe (no server dependencies).
+ * written down once. Client-safe (no server dependencies — the one import above
+ * is a type and is erased at build time).
  */
 
 /**
@@ -82,4 +85,45 @@ export function telegramFileKind(mime: string | null | undefined): TelegramFileK
   if (VIDEO_MIMES.has(normalized)) return "video";
   if (AUDIO_MIMES.has(normalized)) return "audio";
   return "document";
+}
+
+/**
+ * The emoji Telegram accepts as a message reaction, single-sourced from the Bot
+ * API type so the set cannot drift from what the server will take. A bot may set
+ * exactly one of these per message; anything else (a custom emoji, a plain emoji
+ * outside the set) is refused by Telegram, and a chat may additionally narrow the
+ * set it allows.
+ *
+ * The literals are the API's own canonical forms, several of which carry no
+ * variation selector and several of which are ZWJ sequences. Telegram matches
+ * them literally, so {@link toTelegramReactionEmoji} normalizes an incoming
+ * emoji to this form rather than comparing raw strings.
+ */
+export const TELEGRAM_REACTION_EMOJI = [
+  "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔",
+  "🤯", "😱", "🤬", "😢", "🎉", "🤩", "🤮", "💩",
+  "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳",
+  "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆",
+  "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈",
+  "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈",
+  "😇", "😨", "🤝", "✍", "🤗", "🫡", "🎅", "🎄",
+  "☃", "💅", "🤪", "🗿", "🆒", "💘", "🙉", "🦄",
+  "😘", "💊", "🙊", "😎", "👾", "🤷‍♂", "🤷", "🤷‍♀",
+  "😡",
+] as const satisfies readonly ReactionTypeEmoji["emoji"][];
+
+/** One emoji Telegram accepts as a reaction. */
+export type TelegramReactionEmoji = (typeof TELEGRAM_REACTION_EMOJI)[number];
+
+/**
+ * The canonical reaction emoji matching `input`, or null when Telegram has none.
+ *
+ * Only mechanical normalization: emoji presentation selectors (U+FE0F) are
+ * stripped before matching, because a client (or a model) writes the heart as
+ * `U+2764 U+FE0F` while the Bot API names it `U+2764` and rejects the other
+ * spelling. Nothing is guessed: an emoji outside the set stays unmatched.
+ */
+export function toTelegramReactionEmoji(input: string): TelegramReactionEmoji | null {
+  const stripped = input.trim().replaceAll("\u{FE0F}", "");
+  return TELEGRAM_REACTION_EMOJI.find((emoji) => emoji === stripped) ?? null;
 }

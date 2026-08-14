@@ -171,6 +171,7 @@ a 409 for duplicates — an operator must see a no-op for what it is.
 | `tasks_delete` | `id` | Remove a task for good |
 | `send_message` | `text` | **Fires only** — deliver a message to the task's chat |
 | `reply_to_message` | `message_id`, `text` | Attach what is said to an earlier message (bot-messaging; `text` used in fires) |
+| `set_message_reaction` | `message_id`, `emoji`, `big` | React to an earlier message (bot-messaging; every turn — a reaction is not a delivery) |
 
 `tasks_create`'s description is long by design and pinned in tests: it carries
 every behavioural rule its two predecessors earned in production — the many

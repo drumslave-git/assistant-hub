@@ -28,6 +28,74 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Message reactions as an MCP tool (`done` pending live verification, 2026-08-14)
+
+User request, 2026-08-14: *"another mcp tool - allow bot to set reaction on
+message(s), for example putting a like, or smile"*.
+
+User decisions (2026-08-14):
+
+1. **Offered in every turn**, not fires-only like `send_message` — a reaction is
+   not a text delivery, so there is nothing to double-send, and the bot can like
+   the message it is answering.
+2. **One message per call** — the model calls the tool again for another message.
+3. **Setting only.** The bot does not gain general awareness of reactions other
+   people put on messages; that would need `message_reaction` carried into
+   context/history and is not in scope. (Note the narrow read path that already
+   exists: 👍/👎 on the bot's own reply drives the self-improvement feedback
+   loop, and its handler ignores bot authors, so the bot's own reactions cannot
+   feed it.)
+
+### What shipped
+
+- `set_message_reaction` (`features/bot-messaging/server/mcp-tools.ts`), beside
+  `reply_to_message` — same feature, same trace scope
+  (`mcp-tools-bot-messaging`), same chat binding and same history-mirror check
+  on the target id. Inputs `message_id`, `emoji` (empty removes), `big`.
+- `TELEGRAM_REACTION_EMOJI` + `toTelegramReactionEmoji` (`lib/telegram.ts`),
+  **generated from `@grammyjs/types`** and pinned to it with
+  `satisfies readonly ReactionTypeEmoji["emoji"][]`, so a mangled or invented
+  entry fails typecheck rather than Telegram.
+- `reactToChatMessage` (`server/telegram/bot-manager.ts`), the `setMessageReaction`
+  call. Throws on refusal so the tool can report it.
+
+Decisions made in implementation (defaults, not asked):
+
+- **Validity is checked in the handler, not by a `z.enum` of the 73 emoji.** The
+  local backends this bot usually runs on template tool JSON without enforcing
+  schemas, so an off-list emoji would surface as a raw zod error instead of a
+  refusal written for the model; and the handler can accept the
+  variation-selector spelling (`U+2764 U+FE0F`) that the Bot API rejects, which
+  a strict enum could not. The full set rides the tool description instead.
+- **`reactToChatMessage` is imported lazily inside the handler.** Not style: the
+  Telegram edge imports the reply pipeline → the tool registry → this module, so
+  a static import leaves `BOT_MESSAGING_TOOL_NAMES` undefined while the registrar
+  table is built and every tool in the file loses its owning feature. Caught by
+  `features/mcp-tools/server/service.test.ts` (it failed exactly that way first).
+
+### Proof
+
+Lint clean; typecheck clean. `features/bot-messaging/server/mcp-tools.test.ts`
+12/12 (6 new: reacts on the bound chat only; `❤️` normalized to the API's `❤` on
+the wire; empty emoji removes; an off-list emoji refused **without** calling
+Telegram and with the whole menu in the refusal; unknown id refused without
+calling Telegram; a Telegram `REACTION_INVALID` relayed with "do not claim you
+reacted"), plus a compile-time proof the offered set is Telegram's whole
+documented set. `features/mcp-tools`, `server/mcp`, `features/bot-messaging`,
+`features/tasks`: 359/359, including the registry's schema-compat lint and the
+tool-inventory test now pinning the new name to `bot-messaging`.
+
+### Remaining risks / operator steps
+
+- **Not yet exercised against live Telegram** — no reaction has actually landed
+  in a chat. Ask the bot to like a message and check the badge appears.
+- Group chats can restrict which reactions are allowed, and Telegram refuses
+  reactions on old messages; both surface only as a relayed error at call time.
+- Whether the model reaches for it at the right moments (and does not react
+  *instead of* answering) is prompt-quality, unverified live. The description
+  says both; if it over-reacts, that text is the place to tune.
+- `npm run build` not run (a dev server may be live); no schema or API change.
+
 ## Voice: why transcription is failing in production (`blocked`, 2026-08-14)
 
 Reported by the operator, 2026-08-14: voice messages come back with no

@@ -107,6 +107,19 @@ Design constraints worth preserving:
   validated against this chat's mirror before it is accepted. Sends pass
   `allow_sending_without_reply`, so a target that has since been deleted costs the
   quote, not the answer, and the mirror records where the reply actually landed.
+- **The bot can react to a message** instead of, or alongside, saying something.
+  The `set_message_reaction` tool puts one of Telegram's fixed reaction emoji on
+  a message of this chat (an empty emoji takes it back off; a bot gets one
+  reaction per message, so reacting again replaces it). Available in every turn
+  — a reply turn and a task fire alike — because a reaction is not a message and
+  cannot double-deliver. The target id is validated against the chat's mirror,
+  and a Telegram refusal (an emoji this chat does not allow, a message too old,
+  the poller down) is relayed to the model rather than swallowed, so it never
+  tells the chat it reacted when it did not. A reaction the bot sets cannot feed
+  itself: the `message_reaction` handler behind the 👍/👎 feedback loop
+  ([Self-improvement](self-improvement.md)) ignores updates whose author is a
+  bot. See
+  [LLM and MCP](../architecture/llm-and-mcp.md#bot-messaging--mcp-tools-bot-messaging).
 - A voice reply is synthesized when a speech endpoint is configured
   ([Voice](voice.md)).
 - Generated images are delivered after the text ([Image generation](image-generation.md)).

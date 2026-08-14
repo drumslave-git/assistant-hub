@@ -369,6 +369,31 @@ bot-vs-participant distinction and the self-authored-only warning are unchanged.
 | Tool | Input | Purpose |
 | --- | --- | --- |
 | `reply_to_message` | `message_id`, `text` | Attach what is said to an earlier message: in a reply turn it retargets the turn's own reply (`text` empty); in a task fire it delivers `text` as a reply to that message |
+| `set_message_reaction` | `message_id`, `emoji`, `big` | Put one of Telegram's reaction emoji on a message of this chat (empty `emoji` takes it back off) |
+
+Both act on **one message of the bound chat**, and both check the id against the
+chat's mirror before doing anything — the model can aim neither at another
+conversation nor at an id it invented.
+
+`set_message_reaction` is offered in **every** turn, unlike `send_message`: a
+reaction is not a message, so there is nothing to double-deliver, and the bot
+can react to the very message it is answering. The allowed emoji are Telegram's
+fixed set, single-sourced in `lib/telegram.ts` from the Bot API type
+(`TELEGRAM_REACTION_EMOJI`) and carried in the tool's own description. Validity
+is checked in the **handler**, not by a `z.enum`: the local backends this bot
+usually runs on template tool JSON without enforcing schemas, so an off-list
+emoji has to come back as a refusal written for the model rather than a raw
+schema error — and `toTelegramReactionEmoji` accepts the variation-selector
+spellings (`U+2764 U+FE0F`) that Telegram itself rejects. A refusal from
+Telegram (a chat that allows only some emoji, a message too old, the poller
+down) is relayed verbatim with "do not claim you reacted".
+
+Note the module-cycle hazard this tool introduced: the Telegram edge imports the
+reply pipeline, which imports the tool registry, which imports the bot-messaging
+tool module — so `reactToChatMessage` is imported **lazily inside the handler**.
+A static import leaves the toolkit's name list undefined while the registrar
+table is built, and every tool in that file silently loses its owning feature;
+`features/mcp-tools/server/service.test.ts` is what catches it.
 
 Pointing at *one* message. When the answer names several, citing their `#<id>`s in
 an ordinary sentence is the better shape — the delivery layer turns each cited id

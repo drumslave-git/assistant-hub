@@ -5,7 +5,12 @@ import { Bot, GrammyError, HttpError, InputFile, type Context } from "grammy";
 
 import { renderTelegramHtml } from "@/features/bot-messaging/telegram-html";
 import { getTelegramBotToken } from "@/features/settings/server/service";
-import { messageLinkBase, telegramFileKind, type TelegramFileKind } from "@/lib/telegram";
+import {
+  messageLinkBase,
+  telegramFileKind,
+  type TelegramFileKind,
+  type TelegramReactionEmoji,
+} from "@/lib/telegram";
 import { publishEvent } from "@/server/realtime/hub";
 
 import { processCallbackUpdate } from "./process-callback";
@@ -212,6 +217,33 @@ export async function sendChatFile(
     const sent = await sendWithCaption("document");
     return { messageId: sent.message_id };
   }
+}
+
+/**
+ * Set (or clear) the bot's own reaction on one message of a chat — the whole
+ * mechanism behind the `set_message_reaction` tool. Requires the poller to be
+ * running, like every other out-of-band call. A null `emoji` clears whatever the
+ * bot had set; Telegram allows a bot exactly one reaction per message, so a new
+ * emoji replaces the previous one rather than adding to it.
+ *
+ * Throws on refusal (an emoji this chat does not allow, a message too old to
+ * react to, a chat the bot cannot reach) so the caller can report it — a
+ * silently swallowed failure would leave the model telling the chat it reacted.
+ */
+export async function reactToChatMessage(
+  chatId: string,
+  messageId: number,
+  emoji: TelegramReactionEmoji | null,
+  opts: { big?: boolean } = {},
+): Promise<void> {
+  const bot = store().bot;
+  if (!bot) throw new Error("Telegram bot is not running");
+  await bot.api.setMessageReaction(
+    chatId,
+    messageId,
+    emoji ? [{ type: "emoji", emoji }] : [],
+    { is_big: opts.big ?? false },
+  );
 }
 
 /**
