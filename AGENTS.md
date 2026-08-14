@@ -95,7 +95,11 @@ unique visualization need.
 The v1 rewrite is complete: priorities 1–16 below are done. Priorities 5 and 6
 were later superseded (user decision, 2026-07-26): the `search_web` and
 `read_web_page` MCP tools were removed and `browse_web` is the only web tool.
-Remaining work is tracked in `docs/TODO.md`.
+Priorities 9 and 16 were merged (user decision, 2026-08-13): scheduled tasks
+and chat rules are now the single **Tasks** feature — one instruction plus one
+trigger (`message` / `on-reply` / `interval` / `timeout` / `schedule`), with
+timed fires delivering through outbound MCP tools instead of a hardcoded send.
+See `docs/features/tasks.md`. Remaining work is tracked in `docs/TODO.md`.
 
 Priority order:
 

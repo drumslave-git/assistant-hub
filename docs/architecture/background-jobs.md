@@ -33,7 +33,7 @@ that must happen at a wall-clock instant regardless of activity. The timer is
 Status shape (`IntervalJobStatus`): `running`, `ticking`, `lastTickAt`,
 `lastSummary`, `lastError`, `progress`.
 
-Used directly by: the scheduled-tasks poller.
+Used directly by: the tasks poller.
 
 ### Daily — `daily-scheduler.ts`
 
@@ -190,7 +190,7 @@ any status or progress change refreshes it with no manual reload.
 
 | Flavour | Endpoints | Behavior |
 | --- | --- | --- |
-| Awaited | `/api/analytics/insights/run`, `/api/scheduled-tasks/run`, `/api/vision/backfill` | Triggers the run (or forces the next tick) and returns the refreshed job info |
+| Awaited | `/api/analytics/insights/run`, `/api/tasks/run`, `/api/vision/backfill` | Triggers the run (or forces the next tick) and returns the refreshed job info |
 | Fire-and-forget | `/api/history/summaries/run`, `/api/memory/run`, `/api/self-improvement/run`, `/api/browser/ytdlp/run` | Returns the job snapshot **immediately** and progress arrives live over SSE, because a backlog can take many LLM passes (or, for yt-dlp, a ~40 MB download) |
 
 Forcing a run does not skip the job's own gating: an unchanged day is still

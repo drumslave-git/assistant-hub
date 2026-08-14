@@ -9,7 +9,6 @@ import {
   Image,
   LayoutDashboard,
   MessageSquare,
-  Scale,
   Server,
   Settings,
   Sparkles,
@@ -62,17 +61,16 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/personalities", label: "Personalities", icon: VenetianMask },
       { href: "/specialists", label: "Specialists", icon: GraduationCap },
-      { href: "/rules", label: "Chat rules", icon: Scale },
       { href: "/memory", label: "Memory", icon: Brain },
       { href: "/tools", label: "Tools", icon: Wrench },
       { href: "/self-improvement", label: "Self-improvement", icon: Sparkles },
     ],
   },
   {
-    // Work that runs without a message triggering it.
+    // Work the bot does on its own: standing rules, timed jobs, browsing.
     label: "Automation",
     items: [
-      { href: "/scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock },
+      { href: "/tasks", label: "Tasks", icon: CalendarClock },
       { href: "/browser", label: "Browser agent", icon: Globe },
       { href: "/jobs", label: "Background jobs", icon: Activity },
     ],

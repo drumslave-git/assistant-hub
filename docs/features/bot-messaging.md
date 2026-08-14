@@ -142,7 +142,7 @@ see [Configuration](../configuration.md)).
 standing chat rule opened, where the model produced no tool call in two
 attempts. Its answer claims an action that provably did not happen, so it is
 withheld and the chat is told the rule did not run. See
-[Chat rules](chat-rules.md#a-rule-turn-that-called-no-tool).
+[Tasks](tasks.md#message-triggers--the-matcher).
 
 ## Tests
 

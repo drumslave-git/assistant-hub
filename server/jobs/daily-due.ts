@@ -1,8 +1,4 @@
-import {
-  parseTimeOfDay,
-  zonedDate,
-  zonedWallClockToUtc,
-} from "@/features/scheduled-tasks/schedule";
+import { parseTimeOfDay, zonedDate, zonedWallClockToUtc } from "@/features/tasks/schedule";
 
 /**
  * Wall-clock due-math shared by the daily background jobs (self-improvement,

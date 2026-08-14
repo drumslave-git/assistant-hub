@@ -8,7 +8,7 @@ import { chatCompletion, type ChatCompletionResult, type ChatMessage } from "./c
  * The **classification** call shape, shared by everything that asks the model
  * one question about one piece of text and expects a small JSON verdict back:
  * the addressing analyzer and its verifier, the honesty gate over a drafted
- * reply, and the standing chat-rule match. No tools, no history, no persona —
+ * reply, and the standing-task match. No tools, no history, no persona —
  * not a conversation.
  *
  * It lives here rather than in the Telegram runtime so the settings probe can

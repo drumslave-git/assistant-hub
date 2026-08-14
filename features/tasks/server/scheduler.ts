@@ -1,0 +1,304 @@
+import "server-only";
+
+import type { DrizzleDb } from "@/db/drizzle";
+import { getDb } from "@/db/drizzle";
+import { recordAssistantMessage } from "@/features/history/server/service";
+import { getGroupLanguage } from "@/features/known-groups/server/service";
+import { getUserLanguage } from "@/features/known-users/server/service";
+import { getToolset } from "@/features/mcp-tools/server/service";
+import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
+import { getBotPolicy, getLlmRuntime, getTimezone } from "@/features/settings/server/service";
+import { getActiveSpecialistInstructions } from "@/features/specialists/server/service";
+import { FEATURES } from "@/lib/features";
+import { resolveRequiredLanguage } from "@/lib/language";
+import { isGroupChatId } from "@/lib/telegram";
+import { chatCompletion, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import { chatCompletionWithTools } from "@/server/llm/tool-loop";
+import {
+  createIntervalScheduler,
+  type IntervalJobStatus,
+  type IntervalRunContext,
+  type IntervalScheduler,
+} from "@/server/jobs/interval-scheduler";
+import { withAdvisoryLock } from "@/server/jobs/lock";
+import type { JobProgress } from "@/server/jobs/progress";
+import { publishEvent } from "@/server/realtime/hub";
+import { sendChatMessage } from "@/server/telegram/bot-manager";
+
+import { buildStandingTasksBlock } from "../format";
+import { computeNextTriggerRun } from "../schedule";
+import { MAX_ONE_SHOT_ATTEMPTS } from "../types";
+import { fireTask, type FireToolCall } from "./fire";
+import {
+  deleteTask,
+  listDueTasks,
+  markTaskFailedAttempt,
+  markTaskRun,
+  nextRecentDeliveries,
+  nextUpcomingRunAt,
+} from "./repository";
+import { getActiveTasksForChat } from "./service";
+
+/**
+ * In-process periodic scheduler for timed tasks, owned by a single `globalThis`
+ * singleton (like the bot manager, MCP registry, and vision-backfill scheduler)
+ * so there is exactly one per process and it survives HMR.
+ *
+ * Unlike the idle-debounced vision backfill, this is a fixed-interval poller
+ * ({@link import("@/server/jobs/interval-scheduler")}): a task must fire at its
+ * wall-clock instant regardless of whether the bot is busy. Each tick, under a
+ * cross-process advisory lock, it scans for due tasks, fires each, then
+ * advances `next_run_at` — or deletes the task outright once it is spent (a
+ * one-shot that has fired). Firing is paused while maintenance mode is on. The
+ * LLM connection is read fresh per tick.
+ *
+ * A fire delivers only through the outbound tools, so this is the one caller
+ * that asks {@link getToolset} for them (`outbound: true`).
+ */
+
+/** Poll period. A code constant, not a setting. */
+const TICK_MS = 30_000;
+
+const FEATURE = FEATURES.tasks;
+const STORE_KEY = Symbol.for("llm-tg-bot.tasks.scheduler");
+
+/**
+ * Collaborators the due-run loop needs. Injected so the whole tick can be
+ * driven against a real database with a capturing delivery sink + deterministic
+ * generator — no live bot or LLM (the same simulation approach as the
+ * message-flow tests).
+ */
+export interface DueRunDeps {
+  /** IANA timezone the schedules are interpreted in when advancing. */
+  timezone: string;
+  /** Active persona prompt for the fire's system prompt, or null. */
+  personalityPrompt: string | null;
+  /**
+   * Run the completion (real: `chatCompletionWithTools` with the outbound
+   * toolset). Called inside the task chat's tool context; tool calls are
+   * reported back for the fire trace.
+   */
+  complete: (
+    messages: ChatMessage[],
+    onToolCall?: (call: FireToolCall) => void | Promise<void>,
+  ) => Promise<ChatCompletionResult>;
+  /** Raw delivery (real: the bot's `sendChatMessage`); resolves the message id. */
+  send: (
+    chatId: string,
+    text: string,
+    opts: { threadId?: number | null; replyToMessageId?: number },
+  ) => Promise<{ messageId: number }>;
+  /** Mirror a delivered message into history (real: `recordAssistantMessage`). */
+  recordReply?: (input: {
+    chatId: string;
+    telegramMessageId: number;
+    content: string;
+  }) => Promise<void>;
+  /** Now, for the due scan + schedule advance. Defaults to the wall clock. */
+  now?: Date;
+  /** Publish live per-task progress to the scheduler (drives the Jobs dashboard). */
+  onProgress?: (progress: JobProgress | null) => void;
+  db?: DrizzleDb;
+}
+
+/**
+ * Fire every currently-due task and settle its schedule. Pure of scheduling
+ * mechanics (the caller owns the lock/interval): scans due rows, fires each via
+ * the injected collaborators, then either stamps `last_run_at`/`next_run_at` +
+ * the capped `recent_deliveries` (a recurring task) or deletes the row (a spent
+ * one-shot — it has had its turn and can never fire again). Never throws per
+ * task — a failing fire still settles so it doesn't busy-loop.
+ */
+export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; failed: number }> {
+  const db = deps.db ?? getDb();
+  const now = deps.now ?? new Date();
+  const due = await listDueTasks(db, now);
+  if (due.length === 0) return { fired: 0, failed: 0 };
+
+  let fired = 0;
+  let failed = 0;
+  for (const task of due) {
+    deps.onProgress?.({
+      step: `Firing: ${task.instruction.slice(0, 60)}`,
+      current: fired + failed + 1,
+      total: due.length,
+    });
+    // A due row always has a chat (the DB check pins global scope to prompt
+    // kinds, which never carry a next_run_at) — narrow it once here.
+    const chatId = task.chatId!;
+    // Anything the fire sends must be in the chat's configured language, like a
+    // normal reply. A private chat's id is the user id; a group's names the
+    // group — the kind selects which registry to read. Unset → the default.
+    const storedLanguage = await (
+      isGroupChatId(chatId) ? getGroupLanguage(chatId) : getUserLanguage(chatId)
+    ).catch(() => null);
+    // The firing chat's active specialist — per chat, so it is resolved per
+    // task, like the language. Best-effort: unreadable → the generic bot.
+    const specialistInstructions = await getActiveSpecialistInstructions(chatId, db).catch(
+      () => null,
+    );
+    // The chat's standing tasks, resolved per task for the same reason. Only
+    // the prompt-composed set applies, and with a null sender: a fire is
+    // nobody's message, so a standing task that singles people out has no one
+    // to single out here.
+    const standingTasks = await getActiveTasksForChat(chatId, null, db)
+      .then(({ prompt }) => buildStandingTasksBlock(prompt))
+      .catch(() => null);
+    const result = await fireTask(task, {
+      personalityPrompt: deps.personalityPrompt,
+      specialistInstructions,
+      standingTasks,
+      requiredLanguage: resolveRequiredLanguage(storedLanguage),
+      complete: deps.complete,
+      send: (text, opts) => deps.send(chatId, text, opts),
+      recordReply: deps.recordReply,
+      db,
+    }).catch(() => ({ ok: false as const, sent: [] as string[] }));
+    if (result.ok) fired += 1;
+    else failed += 1;
+
+    // Settle the schedule. A recurring task advances regardless of fire success
+    // (the next occurrence self-heals, and advancing prevents a busy-loop). A
+    // one-shot that *fired* is spent and is deleted — it can never fire again —
+    // while a one-shot that *failed* keeps its due `next_run_at` and retries on
+    // later ticks, up to MAX_ONE_SHOT_ATTEMPTS, then is disabled — never
+    // deleted — so a transient outage cannot silently eat a reminder (user
+    // decision, 2026-07-20). Every fire is recorded in its trace.
+    const nextRunAt = computeNextTriggerRun(task, now, deps.timezone);
+    if (nextRunAt) {
+      await markTaskRun(db, task.id, {
+        lastRunAt: now,
+        nextRunAt,
+        recentDeliveries:
+          result.ok && result.sent.length > 0
+            ? result.sent.reduce(
+                (acc, text) => nextRecentDeliveries(acc, text),
+                task.recentDeliveries ?? [],
+              )
+            : undefined,
+      }).catch(() => undefined);
+    } else if (result.ok) {
+      await deleteTask(db, task.id).catch(() => undefined);
+    } else {
+      const attempts = task.attempts + 1;
+      await markTaskFailedAttempt(db, task.id, {
+        lastRunAt: now,
+        attempts,
+        disable: attempts >= MAX_ONE_SHOT_ATTEMPTS,
+      }).catch(() => undefined);
+    }
+    publishEvent(FEATURE.realtimeTopic);
+  }
+  return { fired, failed };
+}
+
+/** One poll tick: wire the real LLM + bot collaborators and fire due tasks under the lock. */
+async function runTick(ctx?: IntervalRunContext): Promise<{ summary: string }> {
+  // Pause firing during maintenance — the bot is owner-only then, so it should
+  // not push proactive task messages into arbitrary chats.
+  const policy = await getBotPolicy().catch(() => null);
+  if (policy?.maintenanceModeEnabled) return { summary: "paused (maintenance)" };
+
+  const runtime = await getLlmRuntime().catch(() => null);
+  if (!runtime) return { summary: "LLM not configured" };
+  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
+
+  const outcome = await withAdvisoryLock("tasks", async () => {
+    const [timezone, personalityPrompt, toolset] = await Promise.all([
+      getTimezone().catch(() => "UTC"),
+      getActivePersonalityPrompt().catch(() => null),
+      // Fires run with the full toolset plus the outbound tools — the one turn
+      // that carries them, because delivery happens only through them. No tools
+      // registered → plain completion (the fire then simply cannot send, and
+      // records a quiet fire).
+      getToolset({ outbound: true }).catch(() => null),
+    ]);
+    return runDueTasks({
+      timezone,
+      personalityPrompt,
+      complete: (messages, onToolCall) =>
+        toolset
+          ? chatCompletionWithTools(conn, {
+              model: runtime.model,
+              messages,
+              tools: toolset.tools,
+              callTool: toolset.callTool,
+              onToolCall: (rec) =>
+                onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
+            })
+          : chatCompletion(conn, { model: runtime.model, messages }),
+      send: (chatId, text, opts) => sendChatMessage(chatId, text, opts),
+      onProgress: ctx?.reportProgress,
+      recordReply: (input) =>
+        recordAssistantMessage({
+          chatId: input.chatId,
+          telegramMessageId: input.telegramMessageId,
+          content: input.content,
+          replyToMessageId: null,
+        }).then(() => undefined),
+    });
+  });
+
+  if (!outcome.ran) return { summary: "skipped (locked elsewhere)" };
+  const { fired, failed } = outcome.result;
+  return { summary: `${fired} fired${failed ? `, ${failed} failed` : ""}` };
+}
+
+function scheduler(): IntervalScheduler {
+  const g = globalThis as typeof globalThis & { [STORE_KEY]?: IntervalScheduler };
+  if (!g[STORE_KEY]) {
+    g[STORE_KEY] = createIntervalScheduler({
+      name: "tasks",
+      tickMs: TICK_MS,
+      onStatusChange: () => publishEvent(FEATURE.realtimeTopic),
+      run: (ctx) => runTick(ctx),
+    });
+  }
+  return g[STORE_KEY];
+}
+
+/** Start the periodic task poller (boot). Idempotent. */
+export function startTaskScheduler(): void {
+  scheduler().start();
+}
+
+/** Stop the poller (shutdown). */
+export function stopTaskScheduler(): void {
+  scheduler().stop();
+}
+
+/** Trigger one poll tick as soon as possible (dashboard "Run due now"). */
+export function runTaskSchedulerNow(): Promise<void> {
+  return scheduler().runNow();
+}
+
+/** Job info for the dashboard card. */
+export interface TaskSchedulerJobInfo {
+  status: IntervalJobStatus;
+  /** True while maintenance mode pauses firing. */
+  paused: boolean;
+  /** How many enabled tasks are currently due (waiting for the next tick). */
+  overdue: number;
+  /** ISO instant of the next upcoming run across enabled tasks, or null. */
+  nextRunAt: string | null;
+  /** When this snapshot was taken. */
+  asOf: string;
+}
+
+/** Current job info — the ticker's status plus the policy/backlog around it. */
+export async function getTaskSchedulerInfo(db: DrizzleDb = getDb()): Promise<TaskSchedulerJobInfo> {
+  const now = new Date();
+  const [policy, due, next] = await Promise.all([
+    getBotPolicy(db).catch(() => null),
+    listDueTasks(db, now).catch(() => []),
+    nextUpcomingRunAt(db, now).catch(() => null),
+  ]);
+
+  return {
+    status: scheduler().getStatus(),
+    paused: policy?.maintenanceModeEnabled ?? false,
+    overdue: due.length,
+    nextRunAt: next?.toISOString() ?? null,
+    asOf: now.toISOString(),
+  };
+}

@@ -229,23 +229,30 @@ The feedback loop.
 For 👎 reactions to arrive at all in a **group**, the bot must be a group
 administrator. In private chats they arrive out of the box.
 
-## Scheduled tasks (`/scheduled-tasks`)
+## Tasks (`/tasks`)
 
-Create, edit, enable/disable and delete tasks, and trigger "run due now". Times are
-local wall-clock in the operator timezone.
+One page for everything the bot does on its own: **standing rules** (act on
+matching messages, or shape every reply — for everyone in a group or only for
+people you tick off its roster) and **timed jobs** (every N minutes, once after
+a delay, or on the calendar). Create, edit, enable/disable and delete, filter
+by chat, and trigger "run due now". Times are local wall-clock in the operator
+timezone.
 
-A task is an **instruction**, not a canned message: when it fires, the bot writes an
-in-character message that performs the directive, and the last few deliveries are fed
-back so a daily reminder is not word-for-word identical every day.
+A task is an **instruction**, not a canned message. A timed fire runs the model
+with the full toolset, and *the model decides what to send* — nothing is
+delivered automatically, so "check X and only message if something changed" is
+a valid task whose quiet runs are successes, and the last few deliveries are
+fed back so a daily reminder is not word-for-word identical every day.
 
-The job card's **paused** notice matters: maintenance mode stops every fire. Due tasks
-stay due and deliver once you turn it off — but until then an enabled task with a
-next-run time in the past simply never arrives, and this notice is the only place that
-says why.
+The job card's **paused** notice matters: maintenance mode stops every fire.
+Due tasks stay due and fire once you turn it off — but until then an enabled
+task with a next-run time in the past simply never arrives, and this notice is
+the only place that says why.
 
-A task you create here has no author, so the in-chat tools (which are author-scoped)
-cannot modify it — unless you ask the bot as the configured owner, who is exempt from
-the author rule and can cancel or edit any task in a chat they are in.
+A timed task you create here has no author, so the in-chat tools cannot modify
+it — unless you ask the bot as the configured owner, who is exempt and can
+cancel or edit any task in a chat they are in. Standing rules in a group are
+owner-only from chat either way.
 
 ## Browser agent (`/browser`)
 
@@ -377,7 +384,7 @@ Which feature to filter to, by question:
 | Did a tool run, and what did it return? | `mcp-tools-<feature>` |
 | Why is a recall bad? | `history-summaries` |
 | Why did it remember (or forget) something? | `memory`, `memory-extraction` |
-| Why did a scheduled message not arrive? | `scheduled-tasks`, then the job card's pause notice |
+| Why did a task's message not arrive? | `tasks`, then the job card's pause notice (a quiet fire is the model's own choice, visible in the fire trace) |
 | What did the browser agent do? | `browser-agent` |
 | When did the model/config change? | `settings` |
 | Who tried to sign in? | `auth` |

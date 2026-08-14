@@ -31,7 +31,7 @@ that the interesting logic *is* pure and does not need a database or a model:
 | `features/bot-messaging/server/policy.ts` | Owner and maintenance decisions |
 | `features/bot-messaging/telegram-html.ts` | That the output cannot contain an unbalanced tag |
 | `features/analytics/period.ts` | The bucket math — including that the JS keys match Postgres's `to_char(date_trunc(...))` |
-| `features/scheduled-tasks/schedule.ts` | Wall-clock ↔ UTC conversion across timezones |
+| `features/tasks/schedule.ts` | Wall-clock ↔ UTC conversion across timezones |
 | `features/history/csv.ts` | The one CSV dialect, both directions |
 | `server/jobs/daily-due.ts` | Due math: idempotent across restarts, immune to drift |
 | `server/mcp/openai-tools.ts` | MCP ↔ OpenAI shape conversion |

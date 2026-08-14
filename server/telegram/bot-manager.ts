@@ -123,21 +123,32 @@ function setStatus(s: ManagerStore, status: BotStatus): void {
 }
 
 /**
- * Send an out-of-band message to a chat, outside any incoming update (used by the
- * scheduled-tasks fire path). Requires the poller to be running — Telegram's `api`
- * lives on the active bot. Throws when the bot is not running so the caller can
- * record the failure. Resolves the delivered message id.
+ * Send an out-of-band message to a chat, outside any incoming update (used by
+ * the task fire path's outbound tools). Requires the poller to be running —
+ * Telegram's `api` lives on the active bot. Throws when the bot is not running
+ * so the caller can record the failure. Resolves the delivered message id.
+ * `replyToMessageId` attaches it as a Telegram reply to an existing message
+ * (`allow_sending_without_reply` keeps a since-deleted target from failing the
+ * send — the message still arrives, just unattached).
  */
 export async function sendChatMessage(
   chatId: string,
   text: string,
-  opts: { threadId?: number | null; silent?: boolean } = {},
+  opts: { threadId?: number | null; silent?: boolean; replyToMessageId?: number } = {},
 ): Promise<{ messageId: number }> {
   const bot = store().bot;
   if (!bot) throw new Error("Telegram bot is not running");
   const base = {
     ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
     ...(opts.silent ? { disable_notification: true } : {}),
+    ...(opts.replyToMessageId != null
+      ? {
+          reply_parameters: {
+            message_id: opts.replyToMessageId,
+            allow_sending_without_reply: true,
+          },
+        }
+      : {}),
   };
   try {
     const sent = await bot.api.sendMessage(chatId, renderTelegramHtml(text), {

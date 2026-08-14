@@ -423,7 +423,7 @@ async function toBackgroundRuntime(
 
 /**
  * Server-only: the operator timezone (IANA name, defaulting to `UTC`). Used by
- * the scheduled-tasks feature to interpret wall-clock schedules.
+ * the tasks feature to interpret wall-clock schedules.
  */
 export async function getTimezone(db: DrizzleDb = getDb()): Promise<string> {
   return (await getSettingsRecord(db))?.timezone ?? "UTC";

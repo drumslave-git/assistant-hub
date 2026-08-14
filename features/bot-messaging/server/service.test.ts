@@ -17,7 +17,7 @@ import { openPolicy } from "@/test/__mocks__/policy";
 import { BOT, BOT_USER, makeMessage } from "@/test/__mocks__/telegram";
 import { imagePart } from "@/test/__mocks__/vision";
 import { startTrace } from "@/server/trace";
-import { RULE_ENFORCEMENT_DIRECTIVE } from "@/features/chat-rules/format";
+import { TASK_ENFORCEMENT_DIRECTIVE } from "@/features/tasks/format";
 import { ACTION_CLAIM_ENFORCEMENT_DIRECTIVE, ACTION_NOT_TAKEN_REPLY } from "./action-claim";
 import { BASE_SYSTEM_PROMPT } from "./prompt";
 import { handleIncomingMessage, type BotMessagingDeps, type IncomingMessage } from "./service";
@@ -1193,12 +1193,12 @@ describe("voice turns", () => {
 /**
  * Standing `always` rules — the one path by which the bot answers a message
  * nobody addressed to it. The matcher itself (prompt + citation check) is unit
- * tested in `features/chat-rules/server/matcher.test.ts`; what matters here is
+ * tested in `features/tasks/server/matcher.test.ts`; what matters here is
  * that the service only consults it when the addressing check has already said
  * no, that a match produces a real reply carrying the directive, and that no
  * match leaves the message ignored.
  */
-describe("handleIncomingMessage — standing chat rules", () => {
+describe("handleIncomingMessage — standing tasks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -1209,7 +1209,7 @@ describe("handleIncomingMessage — standing chat rules", () => {
   }
 
   const matched = (directive: string | null = "RULE DIRECTIVE") =>
-    vi.fn().mockResolvedValue({ directive, ruleIds: ["r1"] });
+    vi.fn().mockResolvedValue({ directive, taskIds: ["r1"] });
 
   /**
    * A generator that actually calls a tool — what a rule-opened turn must do to
@@ -1226,13 +1226,13 @@ describe("handleIncomingMessage — standing chat rules", () => {
     });
 
   it("replies to an un-addressed message when a rule matched, injecting the directive last", async () => {
-    const applyChatRules = matched();
-    const d = deps({ applyChatRules, generateReply: actsOnTheRule() });
+    const applyStandingTasks = matched();
+    const d = deps({ applyStandingTasks, generateReply: actsOnTheRule() });
 
     const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
     expect(out).toEqual({ status: "replied", text: "hi back" });
-    expect(applyChatRules).toHaveBeenCalledOnce();
+    expect(applyStandingTasks).toHaveBeenCalledOnce();
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
     // Last system message before the turn being answered: maximum recency.
     expect(messages.at(-2)).toEqual({ role: "system", content: "RULE DIRECTIVE" });
@@ -1240,7 +1240,7 @@ describe("handleIncomingMessage — standing chat rules", () => {
   });
 
   it("tells the model the sender did not address it", async () => {
-    const d = deps({ applyChatRules: matched(), generateReply: actsOnTheRule() });
+    const d = deps({ applyStandingTasks: matched(), generateReply: actsOnTheRule() });
     await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -1252,19 +1252,19 @@ describe("handleIncomingMessage — standing chat rules", () => {
   });
 
   it("stays silent when no rule matched", async () => {
-    const applyChatRules = vi.fn().mockResolvedValue(null);
-    const d = deps({ applyChatRules });
+    const applyStandingTasks = vi.fn().mockResolvedValue(null);
+    const d = deps({ applyStandingTasks });
 
     const out = await handleIncomingMessage(groupChatter("just chatter"), d);
 
     expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
-    expect(applyChatRules).toHaveBeenCalledOnce();
+    expect(applyStandingTasks).toHaveBeenCalledOnce();
     expect(d.generateReply).not.toHaveBeenCalled();
   });
 
   it("stays silent when the matcher fails — a broken call is never an invitation", async () => {
-    const applyChatRules = vi.fn().mockRejectedValue(new Error("provider down"));
-    const d = deps({ applyChatRules });
+    const applyStandingTasks = vi.fn().mockRejectedValue(new Error("provider down"));
+    const d = deps({ applyStandingTasks });
 
     const out = await handleIncomingMessage(groupChatter("just chatter"), d);
 
@@ -1273,26 +1273,26 @@ describe("handleIncomingMessage — standing chat rules", () => {
   });
 
   it("does not consult the matcher in maintenance mode", async () => {
-    const applyChatRules = matched();
+    const applyStandingTasks = matched();
     const d = deps({
-      applyChatRules,
+      applyStandingTasks,
       policy: { ownerUserId: "1", maintenanceModeEnabled: true },
     });
 
     const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
     expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
-    expect(applyChatRules).not.toHaveBeenCalled();
+    expect(applyStandingTasks).not.toHaveBeenCalled();
   });
 
   it("still applies the rules on an addressed turn — that is where the authority is bound", async () => {
-    const applyChatRules = matched();
-    const d = deps({ applyChatRules });
+    const applyStandingTasks = matched();
+    const d = deps({ applyStandingTasks });
 
     const out = await handleIncomingMessage(incoming({ text: "hello" }), d);
 
     expect(out).toEqual({ status: "replied", text: "hi back" });
-    expect(applyChatRules).toHaveBeenCalledWith(expect.anything(), { addressed: true });
+    expect(applyStandingTasks).toHaveBeenCalledWith(expect.anything(), { addressed: true });
     // No directive on an addressed turn: the person asked, and the rules are
     // already in the system prompt.
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -1300,13 +1300,13 @@ describe("handleIncomingMessage — standing chat rules", () => {
   });
 
   it("applies the rules exactly once on a turn a rule opened", async () => {
-    const applyChatRules = matched();
-    const d = deps({ applyChatRules, generateReply: actsOnTheRule() });
+    const applyStandingTasks = matched();
+    const d = deps({ applyStandingTasks, generateReply: actsOnTheRule() });
 
     await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
-    expect(applyChatRules).toHaveBeenCalledOnce();
-    expect(applyChatRules).toHaveBeenCalledWith(expect.anything(), { addressed: false });
+    expect(applyStandingTasks).toHaveBeenCalledOnce();
+    expect(applyStandingTasks).toHaveBeenCalledWith(expect.anything(), { addressed: false });
   });
 
   it("runs the rule match concurrently with the addressing analyzer", async () => {
@@ -1320,19 +1320,19 @@ describe("handleIncomingMessage — standing chat rules", () => {
           releaseAnalyzer = resolve;
         }),
     );
-    const applyChatRules = vi.fn().mockImplementation(async () => {
+    const applyStandingTasks = vi.fn().mockImplementation(async () => {
       // Next macrotask: the service has started the analyzer by then.
       await new Promise((resolve) => setTimeout(resolve, 0));
       releaseAnalyzer({ content: '{"name_match": "absent"}', model: "m", latencyMs: 1 });
-      return { ruleIds: ["r1"], directive: "RULE DIRECTIVE" };
+      return { taskIds: ["r1"], directive: "RULE DIRECTIVE" };
     });
-    const d = deps({ analyzeAddressing, applyChatRules, generateReply: actsOnTheRule() });
+    const d = deps({ analyzeAddressing, applyStandingTasks, generateReply: actsOnTheRule() });
 
     const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
     expect(out).toEqual({ status: "replied", text: "hi back" });
-    expect(applyChatRules).toHaveBeenCalledOnce();
-    expect(applyChatRules).toHaveBeenCalledWith(expect.anything(), { addressed: false });
+    expect(applyStandingTasks).toHaveBeenCalledOnce();
+    expect(applyStandingTasks).toHaveBeenCalledWith(expect.anything(), { addressed: false });
   });
 
   it("settles the concurrent rule match, then re-applies the rules, when the analyzer opens the turn", async () => {
@@ -1351,15 +1351,15 @@ describe("handleIncomingMessage — standing chat rules", () => {
         model: "m",
         latencyMs: 1,
       });
-    const applyChatRules = matched();
-    const d = deps({ analyzeAddressing, applyChatRules });
+    const applyStandingTasks = matched();
+    const d = deps({ analyzeAddressing, applyStandingTasks });
 
     const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
 
     expect(out).toEqual({ status: "replied", text: "hi back" });
-    expect(applyChatRules).toHaveBeenCalledTimes(2);
-    expect(applyChatRules.mock.calls[0][1]).toEqual({ addressed: false });
-    expect(applyChatRules.mock.calls[1][1]).toEqual({ addressed: true });
+    expect(applyStandingTasks).toHaveBeenCalledTimes(2);
+    expect(applyStandingTasks.mock.calls[0][1]).toEqual({ addressed: false });
+    expect(applyStandingTasks.mock.calls[1][1]).toEqual({ addressed: true });
     // The rule directive from the unaddressed pass is not injected — the person
     // addressed the bot themselves.
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -1369,8 +1369,8 @@ describe("handleIncomingMessage — standing chat rules", () => {
   it("stays silent when the only matched rules cannot open a turn (no directive)", async () => {
     // An `on-reply` rule matched: it lends its author's rights on a turn the bot
     // was addressed in, but it can never start one.
-    const applyChatRules = vi.fn().mockResolvedValue({ ruleIds: ["r1"], directive: null });
-    const d = deps({ applyChatRules });
+    const applyStandingTasks = vi.fn().mockResolvedValue({ taskIds: ["r1"], directive: null });
+    const d = deps({ applyStandingTasks });
 
     const out = await handleIncomingMessage(groupChatter("just chatter"), d);
 
@@ -1379,8 +1379,8 @@ describe("handleIncomingMessage — standing chat rules", () => {
   });
 
   it("does not fail the reply when applying the rules throws on an addressed turn", async () => {
-    const applyChatRules = vi.fn().mockRejectedValue(new Error("provider down"));
-    const d = deps({ applyChatRules });
+    const applyStandingTasks = vi.fn().mockRejectedValue(new Error("provider down"));
+    const d = deps({ applyStandingTasks });
 
     const out = await handleIncomingMessage(incoming({ text: "hello" }), d);
 
@@ -1388,7 +1388,7 @@ describe("handleIncomingMessage — standing chat rules", () => {
   });
 
   it("composes the rules block into the system prompt and records that it applied", async () => {
-    const d = deps({ chatRules: "Standing rules for this chat:\n1. Answer briefly." });
+    const d = deps({ standingTasks: "Standing rules for this chat:\n1. Answer briefly." });
 
     await handleIncomingMessage(incoming({ text: "hello" }), d);
 
@@ -1397,7 +1397,7 @@ describe("handleIncomingMessage — standing chat rules", () => {
     const step = recorder.event.mock.calls
       .map((c) => c[0])
       .find((e) => e.message === "system prompt composed");
-    expect(step.data.chatRulesApplied).toBe(true);
+    expect(step.data.standingTasksApplied).toBe(true);
   });
 });
 
@@ -1425,7 +1425,7 @@ describe("handleIncomingMessage — a rule turn that called no tool", () => {
   }
 
   const matched = () =>
-    vi.fn().mockResolvedValue({ directive: "RULE DIRECTIVE", ruleIds: ["r1"] });
+    vi.fn().mockResolvedValue({ directive: "RULE DIRECTIVE", taskIds: ["r1"] });
 
   /** Answers with words only, as the incident did — no tool call, ever. */
   const allTalk = (content = "downloaded the video") =>
@@ -1455,7 +1455,7 @@ describe("handleIncomingMessage — a rule turn that called no tool", () => {
       });
 
   it("retries once with the answer and the correction appended", async () => {
-    const d = deps({ applyChatRules: matched(), generateReply: actsOnSecondAsking() });
+    const d = deps({ applyStandingTasks: matched(), generateReply: actsOnSecondAsking() });
 
     await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
@@ -1463,14 +1463,14 @@ describe("handleIncomingMessage — a rule turn that called no tool", () => {
     // The empty-handed answer, then the correction — shown, not merely asserted.
     expect(second.at(-2)).toEqual({ role: "assistant", content: "downloaded the video" });
     expect(second.at(-1).role).toBe("system");
-    expect(second.at(-1).content).toBe(RULE_ENFORCEMENT_DIRECTIVE);
+    expect(second.at(-1).content).toBe(TASK_ENFORCEMENT_DIRECTIVE);
     // Everything before the correction is the same turn, unchanged.
     const first = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(second.slice(0, first.length)).toEqual(first);
   });
 
   it("delivers the retry's answer when the retry calls the tool", async () => {
-    const d = deps({ applyChatRules: matched(), generateReply: actsOnSecondAsking() });
+    const d = deps({ applyStandingTasks: matched(), generateReply: actsOnSecondAsking() });
 
     const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
@@ -1481,7 +1481,7 @@ describe("handleIncomingMessage — a rule turn that called no tool", () => {
   });
 
   it("never sends the claim when the retry is also all talk, and says so instead", async () => {
-    const d = deps({ applyChatRules: matched(), generateReply: allTalk() });
+    const d = deps({ applyStandingTasks: matched(), generateReply: allTalk() });
 
     const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
@@ -1496,19 +1496,19 @@ describe("handleIncomingMessage — a rule turn that called no tool", () => {
   });
 
   it("fails the trace so a rule that did not run is findable on Debug", async () => {
-    const d = deps({ applyChatRules: matched(), generateReply: allTalk() });
+    const d = deps({ applyStandingTasks: matched(), generateReply: allTalk() });
 
     await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
     expect(recorder.fail).toHaveBeenCalled();
     expect(recorder.succeed).not.toHaveBeenCalled();
     const messages = recorder.event.mock.calls.map((c) => c[0].message);
-    expect(messages).toContain("rule turn answered without calling any tool — retrying");
-    expect(messages).toContain("rule turn called no tool on the retry either — answer suppressed");
+    expect(messages).toContain("task turn answered without calling any tool — retrying");
+    expect(messages).toContain("task turn called no tool on the retry either — answer suppressed");
   });
 
   it("does not mirror the suppressed answer or the notice into history", async () => {
-    const d = deps({ applyChatRules: matched(), generateReply: allTalk() });
+    const d = deps({ applyStandingTasks: matched(), generateReply: allTalk() });
 
     await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
@@ -1529,8 +1529,8 @@ describe("handleIncomingMessage — a rule turn that called no tool", () => {
   it("leaves an addressed turn alone even when a rule matched it", async () => {
     // An `on-reply` match binds authority but sets no directive: the person asked
     // a question, and answering it in words is a complete answer.
-    const applyChatRules = vi.fn().mockResolvedValue({ ruleIds: ["r1"], directive: null });
-    const d = deps({ applyChatRules, generateReply: allTalk("no idea") });
+    const applyStandingTasks = vi.fn().mockResolvedValue({ taskIds: ["r1"], directive: null });
+    const d = deps({ applyStandingTasks, generateReply: allTalk("no idea") });
 
     const out = await handleIncomingMessage(incoming({ text: "hello" }), d);
 
@@ -1803,7 +1803,7 @@ describe("handleIncomingMessage — the honesty gate", () => {
     const text = "look https://example.com/clip";
     const d = deps({
       checkActionClaim,
-      applyChatRules: vi.fn().mockResolvedValue({ directive: "RULE DIRECTIVE", ruleIds: ["r1"] }),
+      applyStandingTasks: vi.fn().mockResolvedValue({ directive: "RULE DIRECTIVE", taskIds: ["r1"] }),
       generateReply: allTalk("downloaded the video"),
     });
     const m = makeMessage({ message_id: 7, chat: { id: 5, type: "group" }, text });

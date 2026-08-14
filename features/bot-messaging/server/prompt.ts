@@ -155,13 +155,13 @@ export interface SystemPromptOptions {
    */
   selfCorrection?: string | null;
   /**
-   * The chat's standing rules, already composed into a block by
-   * {@link import("@/features/chat-rules/format").buildChatRulesBlock}. Appended
+   * The chat's standing tasks, already composed into a block by
+   * {@link import("@/features/tasks/format").buildStandingTasksBlock}. Appended
    * last, at maximum recency: unlike the layers above it these are explicit
    * instructions the people in the chat gave the bot about its own behavior, and
-   * they are what a reply is judged against. Null/empty means no rules block.
+   * they are what a reply is judged against. Null/empty means no block.
    */
-  chatRules?: string | null;
+  standingTasks?: string | null;
 }
 
 /** Whether a non-empty personality prompt is present (after trimming). */
@@ -173,7 +173,7 @@ export function hasPersonality(personalityPrompt?: string | null): boolean {
  * Compose the system prompt for a reply: the fixed base prompt, plus the
  * operator's personality instructions when configured, plus the chat's active
  * specialist role when one is active, plus the latest self-correction
- * guidelines learned from user feedback, plus the chat's standing rules. The
+ * guidelines learned from user feedback, plus the chat's standing tasks. The
  * stack never replaces a layer — a specialist adds to the persona, it does not
  * suppress it.
  */
@@ -181,7 +181,7 @@ export function buildSystemPrompt(options: SystemPromptOptions = {}): string {
   const persona = options.personalityPrompt?.trim();
   const specialist = options.specialistInstructions?.trim();
   const correction = options.selfCorrection?.trim();
-  const rules = options.chatRules?.trim();
+  const standing = options.standingTasks?.trim();
   let prompt = BASE_SYSTEM_PROMPT;
   if (persona) prompt += `\n\n---\nAdditional instructions:\n${persona}`;
   if (specialist) {
@@ -190,9 +190,9 @@ export function buildSystemPrompt(options: SystemPromptOptions = {}): string {
   if (correction) {
     prompt += `\n\n---\nSelf-correction guidelines (learned from user feedback on your replies):\n${correction}`;
   }
-  // The rules block carries its own heading (it is composed by the chat-rules
-  // feature, which owns how a rule is phrased to the model).
-  if (rules) prompt += `\n\n---\n${rules}`;
+  // The standing block carries its own heading (it is composed by the tasks
+  // feature, which owns how a standing task is phrased to the model).
+  if (standing) prompt += `\n\n---\n${standing}`;
   return prompt;
 }
 
@@ -205,10 +205,10 @@ const ADDRESS_PHRASES: Record<string, string> = {
   // The analyzer only ever fires on a name reference, so it reads the same to the
   // model — how we worked out that the name was there is our business, not its.
   analyzer: "called you by name",
-  // A rule-opened turn is the one case where the sender did NOT address the bot;
+  // A task-opened turn is the one case where the sender did NOT address the bot;
   // saying so keeps the model from answering as if it had been spoken to. What
-  // it should do instead comes from the rule directive.
-  "chat-rule": "did not address you at all — a standing rule of this chat matched their message",
+  // it should do instead comes from the task directive.
+  task: "did not address you at all — a standing rule of this chat matched their message",
 };
 
 export interface AddressingHintOptions {

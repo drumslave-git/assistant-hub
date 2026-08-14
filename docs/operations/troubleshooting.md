@@ -77,10 +77,10 @@ addressing — the LLM analyzer is off for everyone), and **no scheduled task fi
 
 | Check | Fix |
 | --- | --- |
-| `/scheduled-tasks` job card shows **paused** | Maintenance mode. Turn it off; due tasks stay due and deliver then |
+| `/tasks` job card shows **paused** | Maintenance mode. Turn it off; due tasks stay due and fire then |
 | Task shows `enabled: false` | Enable it |
 | `nextRunAt` is null | A spent one-shot, or an incoherent schedule. Re-save it |
-| `attempts` is climbing | A due one-shot keeps failing; it is capped at 5 attempts. The fire trace under `scheduled-tasks` has the error |
+| `attempts` is climbing | A due one-shot keeps failing; it is capped at 5 attempts. The fire trace under `tasks` has the error |
 | Time is wrong by hours | Settings → General → Timezone. Task times are wall-clock in *that* zone, not the container's `TZ` |
 | Job card shows no LLM configured | A tick with no LLM is a no-op — the task fires by asking the model to write the message |
 

@@ -32,6 +32,14 @@ export const LLM_CALL_KINDS = {
     description:
       "Checks whether a reply that called no tool nevertheless claims something was done.",
   },
+  "task-match": {
+    id: "task-match",
+    label: "Task match",
+    description:
+      "Decides whether a standing task applies to a message nobody addressed the bot in.",
+  },
+  // Retired writer (the chat-rules feature merged into tasks, 2026-08-13), kept
+  // so traces recorded before the merge still label instead of showing a raw id.
   "chat-rule-match": {
     id: "chat-rule-match",
     label: "Chat rule match",
@@ -93,6 +101,13 @@ export const LLM_CALL_KINDS = {
     label: "Browser agent · final report",
     description: "The round that produced a browsing run's report.",
   },
+  "task-fire": {
+    id: "task-fire",
+    label: "Task · fire",
+    description: "Executes a due timed task — the model decides what, if anything, to send.",
+  },
+  // Retired writer (scheduled tasks merged into tasks, 2026-08-13), kept so
+  // traces recorded before the merge still label instead of showing a raw id.
   "scheduled-task-fire": {
     id: "scheduled-task-fire",
     label: "Scheduled task · fire",
@@ -159,6 +174,8 @@ export function callKindOf(
       return "insight-hour";
     case "scheduled-tasks":
       return "scheduled-task-fire";
+    case "tasks":
+      return "task-fire";
     case "browser-agent":
       return "browser-agent-turn";
     case "self-improvement":

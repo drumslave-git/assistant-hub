@@ -696,77 +696,35 @@ export type MediaBlobRow = typeof mediaBlobs.$inferSelect;
 export type MediaBlobInsert = typeof mediaBlobs.$inferInsert;
 
 /**
- * A scheduled task: a chat-scoped standing directive ("remind me to call mom at
- * 09:00") that, when its wall-clock schedule comes due, has the LLM generate an
- * in-character message *performing* the directive and posts it to the chat.
+ * A task: one standing instruction plus the trigger that runs it. The unified
+ * feature that absorbed scheduled tasks and chat rules (user decision,
+ * 2026-08-13).
  *
- * Schedules are once/daily/weekly at a local `time_of_day`, interpreted at
- * runtime against the single configured operator timezone (`settings.timezone`) —
- * not stored per row, so changing the operator timezone re-times every task.
- * `next_run_at` is the absolute UTC instant of the next firing (all instant
- * columns are `timestamptz`, i.e. stored in UTC) — the poller scans for enabled
- * rows whose `next_run_at` is due, fires them, then advances it (null for a spent
- * one-shot, which also flips `enabled` off). `recent_deliveries` keeps the last
- * few delivered message texts so recurring fires can be told to vary their wording.
+ * `trigger` decides how the instruction ever runs, and which of the per-kind
+ * columns are meaningful (everything a kind does not use is null):
+ *  - `message`  — an incoming chat message matches it (LLM matcher); may name
+ *    the senders it applies to via `target_user_ids`.
+ *  - `on-reply` — composed into every reply prompt; never fires on its own.
+ *  - `interval` — every `every_minutes` minutes.
+ *  - `timeout`  — once, `delay_minutes` after creation (the instant is computed
+ *    at creation into `next_run_at`; `delay_minutes` is kept for display).
+ *  - `schedule` — calendar-based at a local `time_of_day` in the operator
+ *    timezone (`settings.timezone`): once on `run_date`, weekly on `weekdays`,
+ *    or daily. The kind is derived from which fields are set.
  *
- * Tasks are managed by any chat participant (MCP tools, chat-scoped) and by the
- * operator (dashboard). Ids are app-generated UUIDs (entity convention).
+ * `next_run_at` is the absolute UTC instant of the next firing — the poller
+ * scans enabled timed rows whose `next_run_at` is due, fires them, then
+ * advances (interval/schedule) or deletes/disables (a spent/failed one-shot).
+ * A timed fire delivers nothing by itself: the model decides what to send via
+ * the outbound tools, so `recent_deliveries` keeps what it actually sent.
+ *
+ * `chat_id` is null for a global task (applies in every chat) — valid only for
+ * the prompt-composed kinds, which the check below enforces; a timed task acts
+ * in a chat, so it needs one. The instruction text is the model's contract, not
+ * code: tasks are carried out through the prompt and the toolset, never by
+ * bespoke per-task handling. Ids are app-generated UUIDs (entity convention).
  */
-export const scheduledTasks = pgTable(
-  "scheduled_tasks",
-  {
-    id: text("id").primaryKey(),
-    /** The chat the task belongs to and fires into (Telegram chat id as a string). */
-    chatId: text("chat_id").notNull(),
-    /** Forum-topic thread to deliver into, or null (delivered to the chat root). */
-    threadId: bigint("thread_id", { mode: "number" }),
-    /** Numeric Telegram user id of whoever created it, or null (dashboard). */
-    createdByUserId: text("created_by_user_id"),
-    /** The self-contained directive the fire generates a message from. */
-    instruction: text("instruction").notNull(),
-    /**
-     * Background gathered when the task was created — what the referenced
-     * person/event/joke/topic actually is, written for a reader with no chat
-     * transcript. Null on tasks whose instruction needs none (or created
-     * before the field existed). The fire gets it alongside the instruction.
-     */
-    context: text("context"),
-    /** `once` | `daily` | `weekly`. */
-    scheduleKind: text("schedule_kind").notNull(),
-    /** Local time of day as `HH:MM` (24-hour) in `timezone`. */
-    timeOfDay: text("time_of_day").notNull(),
-    /** Weekdays for `weekly` (0=Sunday..6=Saturday); null otherwise. */
-    weekdays: integer("weekdays").array(),
-    /** Calendar date for `once` as `YYYY-MM-DD` (in the operator timezone); null otherwise. */
-    runDate: text("run_date"),
-    /** Whether the task is active (a spent one-shot flips this off). */
-    enabled: boolean("enabled").notNull().default(true),
-    /**
-     * Consecutive failed fires of a due one-shot (user decision, 2026-07-20): a
-     * one-shot whose fire fails keeps its `next_run_at` and retries on later
-     * ticks; at the cap it is disabled — never deleted — so the row stays
-     * visible with why it stopped. Reset on any operator update.
-     */
-    attempts: integer("attempts").notNull().default(0),
-    /** The last few delivered message texts, newest first, for wording variation. */
-    recentDeliveries: jsonb("recent_deliveries").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
-    /** When the task last fired, or null. */
-    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
-    /** Absolute UTC instant of the next firing; null disables the task. */
-    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    index("scheduled_tasks_chat_idx").on(t.chatId),
-    // The poller scans enabled rows ordered by their due instant.
-    index("scheduled_tasks_due_idx").on(t.enabled, t.nextRunAt),
-    check("scheduled_tasks_schedule_kind_check", sql`${t.scheduleKind} in ('once', 'daily', 'weekly')`),
-  ],
-);
 
-export type ScheduledTaskRow = typeof scheduledTasks.$inferSelect;
-export type ScheduledTaskInsert = typeof scheduledTasks.$inferInsert;
 
 /**
  * One piece of user feedback on a bot reply, collected via a 👍/👎 reaction and
@@ -1474,68 +1432,88 @@ export const specialistEntries = pgTable(
 export type SpecialistEntryRow = typeof specialistEntries.$inferSelect;
 export type SpecialistEntryInsert = typeof specialistEntries.$inferInsert;
 
-/**
- * Standing chat rules: free-text instructions the bot must follow in a chat,
- * authored from the chat itself (the MCP toolkit) or on the dashboard. A rule is
- * scoped to one chat, or global when `chat_id` is null — global rules are
- * dashboard-only to author (user decision, 2026-07-29) and apply everywhere on
- * top of a chat's own rules.
- *
- * `trigger` is what makes a rule more than extra prompt text:
- *  - `on-reply` — the rule shapes replies the bot was already going to make.
- *  - `always`  — the rule may also act on a message that never addressed the
- *    bot. A chat holding at least one enabled `always` rule pays one extra
- *    classification call per unaddressed message (see
- *    `features/chat-rules/matcher.ts`); a chat with none pays nothing.
- *
- * `target_user_ids` is the second axis: a group rule applies to everyone there
- * by default, or only to the senders it names.
- *
- * The text is the model's contract, not code: rules are enforced through the
- * prompt and the existing toolset, never by bespoke per-rule handling.
- */
-export const chatRules = pgTable(
-  "chat_rules",
+export const tasks = pgTable(
+  "tasks",
   {
     id: text("id").primaryKey(),
-    /** Telegram chat id as a string, or null for a global rule. */
+    /** Telegram chat id as a string, or null for a global `message`/`on-reply` task. */
     chatId: text("chat_id"),
-    /** The rule itself, in the author's own words. */
-    text: text("text").notNull(),
-    /** `on-reply` | `always` — see the table note. */
-    trigger: text("trigger").notNull().default("on-reply"),
-    /** Disabled rules stay authored but are never composed into a prompt. */
-    enabled: boolean("enabled").notNull().default(true),
+    /** Forum-topic thread to deliver into, or null (delivered to the chat root). */
+    threadId: bigint("thread_id", { mode: "number" }),
+    /** Numeric Telegram user id of whoever created it, or null (dashboard). */
+    createdByUserId: text("created_by_user_id"),
+    /** `chat` | `dashboard` — where the task was authored, as provenance. */
+    source: text("source").notNull().default("dashboard"),
+    /** The task itself, in the author's own words. */
+    instruction: text("instruction").notNull(),
     /**
-     * Whose messages the rule applies to: empty means everyone in the chat, and
-     * a non-empty list restricts it to those senders (numeric Telegram user
-     * ids). Only a group-scoped rule may narrow this way — a DM has exactly one
-     * person in it, and a global rule spans chats whose rosters have nothing to
-     * do with each other (user decision, 2026-08-13), which the check below is
-     * what actually enforces.
+     * Background gathered when the task was created — what the referenced
+     * person/event/joke/topic actually is, written for a reader with no chat
+     * transcript. Null on tasks whose instruction needs none. Timed kinds only:
+     * a fire has no transcript, while a `message`/`on-reply` task runs inside a
+     * live turn that does.
+     */
+    context: text("context"),
+    /** The trigger kind — see the table note. */
+    trigger: text("trigger").notNull(),
+    /**
+     * Whose messages a `message`/`on-reply` task applies to: empty means
+     * everyone in the chat; a non-empty list restricts it to those senders
+     * (numeric Telegram user ids). Only a group-scoped task may narrow this way
+     * — the check below keeps a global task from naming anyone, and the service
+     * owns the group half (a group id is a Telegram fact, not a database one).
      */
     targetUserIds: text("target_user_ids").array().notNull().default(sql`ARRAY[]::text[]`),
-    /** Numeric Telegram user id of the author, or null (dashboard). */
-    createdByUserId: text("created_by_user_id"),
-    /** `chat` | `dashboard` — where the rule was authored, as provenance. */
-    source: text("source").notNull().default("dashboard"),
+    /** Minutes between fires (`interval`); null otherwise. */
+    everyMinutes: integer("every_minutes"),
+    /** Minutes after creation the one-shot fires (`timeout`, display); null otherwise. */
+    delayMinutes: integer("delay_minutes"),
+    /** Local time of day as `HH:MM` (24-hour) for `schedule`; null otherwise. */
+    timeOfDay: text("time_of_day"),
+    /** Weekdays for a weekly `schedule` (0=Sunday..6=Saturday); null otherwise. */
+    weekdays: integer("weekdays").array(),
+    /** Calendar date for a once `schedule` as `YYYY-MM-DD`; null otherwise. */
+    runDate: text("run_date"),
+    /** A paused task stays authored but never fires and never enters a prompt. */
+    enabled: boolean("enabled").notNull().default(true),
+    /**
+     * Consecutive failed fires of a due one-shot (user decision, 2026-07-20): a
+     * one-shot whose fire fails keeps its `next_run_at` and retries on later
+     * ticks; at the cap it is disabled — never deleted — so the row stays
+     * visible with why it stopped. Reset on any operator update.
+     */
+    attempts: integer("attempts").notNull().default(0),
+    /** The last few messages fires actually sent, newest first, for wording variation. */
+    recentDeliveries: jsonb("recent_deliveries").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    /** When the task last fired, or null. */
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    /** Absolute UTC instant of the next firing; null for prompt kinds and spent rows. */
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    // Every reply reads one chat's enabled rules plus the global ones.
-    index("chat_rules_chat_idx").on(t.chatId, t.enabled),
-    check("chat_rules_trigger_check", sql`${t.trigger} in ('on-reply', 'always')`),
-    check("chat_rules_source_check", sql`${t.source} in ('chat', 'dashboard')`),
-    // A global rule can never name senders. Group-only is narrower still, but a
-    // group id is a Telegram fact (negative), not a database one — the service
-    // owns that half.
+    // Every reply reads one chat's enabled prompt tasks plus the global ones.
+    index("tasks_chat_idx").on(t.chatId, t.enabled),
+    // The poller scans enabled timed rows ordered by their due instant.
+    index("tasks_due_idx").on(t.enabled, t.nextRunAt),
     check(
-      "chat_rules_targets_scope_check",
+      "tasks_trigger_check",
+      sql`${t.trigger} in ('message', 'on-reply', 'interval', 'timeout', 'schedule')`,
+    ),
+    check("tasks_source_check", sql`${t.source} in ('chat', 'dashboard')`),
+    // Only a prompt-composed task may span chats; a timed one acts in a chat.
+    check(
+      "tasks_scope_check",
+      sql`${t.chatId} is not null or ${t.trigger} in ('message', 'on-reply')`,
+    ),
+    // A global task can never name senders (group-only is the service's half).
+    check(
+      "tasks_targets_scope_check",
       sql`${t.chatId} is not null or cardinality(${t.targetUserIds}) = 0`,
     ),
   ],
 );
 
-export type ChatRuleRow = typeof chatRules.$inferSelect;
-export type ChatRuleInsert = typeof chatRules.$inferInsert;
+export type TaskRow = typeof tasks.$inferSelect;
+export type TaskInsert = typeof tasks.$inferInsert;

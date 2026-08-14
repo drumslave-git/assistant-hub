@@ -1,4 +1,4 @@
-import { addCalendarDays, zonedDate, zonedWallClockToUtc } from "@/features/scheduled-tasks/schedule";
+import { addCalendarDays, zonedDate, zonedWallClockToUtc } from "@/features/tasks/schedule";
 import { extractJsonObject } from "@/lib/json";
 
 /**

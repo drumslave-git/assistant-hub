@@ -17,7 +17,7 @@ import {
   sanitizeRequestBodyForTrace,
 } from "@/server/llm/client";
 import { startTrace, type TraceRecorder } from "@/server/trace";
-import { RULE_ENFORCEMENT_DIRECTIVE } from "@/features/chat-rules/format";
+import { TASK_ENFORCEMENT_DIRECTIVE } from "@/features/tasks/format";
 import { ADDRESSING_CHECK_EVENT } from "../addressing-trace";
 import {
   ACTION_CLAIM_ENFORCEMENT_DIRECTIVE,
@@ -68,21 +68,22 @@ const MAINTENANCE_REPLY =
   "Please try again later.";
 
 /**
- * Sent in place of a rule-turn answer that claimed an action no tool performed
+ * Sent in place of a task-turn answer that claimed an action no tool performed
  * (see the enforcement in {@link handleIncomingMessage}). Same labeled-system
  * form as the notices above, for the same reason: it is the infrastructure
  * reporting a fault, not the persona speaking, so it is exempt from the chat's
- * language directive and cannot be mistaken for the bot's own voice.
+ * language directive and cannot be mistaken for the bot's own voice. The chat
+ * still reads "standing rule" — that is what a `message` task is to its people.
  */
-const RULE_NOT_APPLIED_REPLY =
+const TASK_NOT_APPLIED_REPLY =
   "⚠️ System: a standing rule for this chat matched this message, but the action it calls for was " +
   "not carried out. Nothing was downloaded or sent. Please try again, or ask the bot directly.";
 
-/** The correction turn appended to a second attempt at a rule-opened reply. */
+/** The correction turn appended to a second attempt at a task-opened reply. */
 interface EnforcementTurn {
   /** The empty-handed answer the first attempt produced, shown back to the model. */
   previousAnswer: string;
-  /** The instruction that follows it — see `RULE_ENFORCEMENT_DIRECTIVE`. */
+  /** The instruction that follows it — see `TASK_ENFORCEMENT_DIRECTIVE`. */
   directive: string;
 }
 
@@ -306,36 +307,36 @@ export interface BotMessagingDeps {
    */
   selfCorrection?: string | null;
   /**
-   * The chat's standing rules, composed into a prompt block by the chat-rules
+   * The chat's standing tasks, composed into a prompt block by the tasks
    * feature and appended last in the system prompt. Null/absent → the chat has
-   * no rules.
+   * none.
    */
-  chatRules?: string | null;
+  standingTasks?: string | null;
   /**
-   * Apply this chat's standing rules to the current message: work out which of
+   * Apply this chat's standing tasks to the current message: work out which of
    * them it triggers, which settles two things.
    *
-   * 1. **Whether to answer at all.** A matched `always` rule opens a turn nobody
-   *    addressed the bot in — the one path by which the bot acts on a message
-   *    nobody sent to it. That is what the returned `directive` is for; it is
-   *    null when nothing matched that may open a turn.
-   * 2. **Whose rights the turn carries.** The runtime binds the matched rules'
-   *    author as the tool authority for this turn (a rule is its author's
+   * 1. **Whether to answer at all.** A matched `message` task opens a turn
+   *    nobody addressed the bot in — the one path by which the bot acts on a
+   *    message nobody sent to it. That is what the returned `directive` is for;
+   *    it is null when nothing matched that may open a turn.
+   * 2. **Whose rights the turn carries.** The runtime binds the matched tasks'
+   *    author as the tool authority for this turn (a task is its author's
    *    standing order), which is why this runs on an *addressed* turn too, where
-   *    its return value is unused: an owner's rule must work the same whether or
+   *    its return value is unused: an owner's task must work the same whether or
    *    not the person who triggered it happened to name the bot.
    *
    * Wired by the runtime only when one of those could actually come of it, so
-   * ordinary traffic in a chat with no rules — or none that could elevate
-   * anything — costs nothing. Takes the reply trace so the classification call
-   * is recorded in this same turn. Best-effort: a failure resolves to null, the
-   * message stays ignored and no rights are lent — acting on a failed call is
-   * worse than missing a rule.
+   * ordinary traffic in a chat with no standing tasks — or none that could
+   * elevate anything — costs nothing. Takes the reply trace so the
+   * classification call is recorded in this same turn. Best-effort: a failure
+   * resolves to null, the message stays ignored and no rights are lent —
+   * acting on a failed call is worse than missing a task.
    */
-  applyChatRules?: (
+  applyStandingTasks?: (
     trace: TraceRecorder,
     context: { addressed: boolean },
-  ) => Promise<{ ruleIds: string[]; directive: string | null } | null>;
+  ) => Promise<{ taskIds: string[]; directive: string | null } | null>;
   /**
    * A system-message line giving the model the current date/time (see
    * {@link import("./prompt").buildTimeContext}), injected right before the
@@ -588,10 +589,10 @@ export async function handleIncomingMessage(
   // an undecided message costs an LLM call, and maintenance means no LLM work
   // except turns the deterministic checks already addressed. The undecided
   // message stays silent, exactly like chatter the cheap checks rejected.
-  // Maintenance also turns the standing-rule match off below, for the same
+  // Maintenance also turns the standing-task match off below, for the same
   // reason.
-  const applyRules = deps.policy.maintenanceModeEnabled ? undefined : deps.applyChatRules;
-  let unaddressedRuleMatch: ReturnType<NonNullable<typeof applyRules>> | null = null;
+  const applyTasks = deps.policy.maintenanceModeEnabled ? undefined : deps.applyStandingTasks;
+  let unaddressedTaskMatch: ReturnType<NonNullable<typeof applyTasks>> | null = null;
   if (
     !decision.addressed &&
     decision.needsAnalyzer &&
@@ -599,35 +600,35 @@ export async function handleIncomingMessage(
     !deps.policy.maintenanceModeEnabled
   ) {
     trace = await openTrace();
-    // The standing-rule match judges the same message but shares nothing with
+    // The standing-task match judges the same message but shares nothing with
     // the analyzer, so the two classifications run concurrently — on a serial
     // local endpoint the turn still pays them one after the other, but nothing
     // else is stacked on top (both were measured multi-second on the live bot).
-    unaddressedRuleMatch = applyRules?.(trace, { addressed: false }).catch(() => null) ?? null;
+    unaddressedTaskMatch = applyTasks?.(trace, { addressed: false }).catch(() => null) ?? null;
     decision = await runAddressAnalyzer(incoming, deps, trace);
   }
-  // Nobody addressed the bot — but this chat may hold a standing rule that tells
+  // Nobody addressed the bot — but this chat may hold a standing task that tells
   // it to act on such a message anyway ("any time someone posts X, do Y"). The
-  // dep is wired only when such a rule exists, so this costs nothing in a chat
+  // dep is wired only when such a task exists, so this costs nothing in a chat
   // without one.
-  let ruleDirective: string | null = null;
-  if (!decision.addressed && applyRules) {
-    const matched = await (unaddressedRuleMatch ??
-      applyRules(await openTrace(), { addressed: false }).catch(() => null));
+  let taskDirective: string | null = null;
+  if (!decision.addressed && applyTasks) {
+    const matched = await (unaddressedTaskMatch ??
+      applyTasks(await openTrace(), { addressed: false }).catch(() => null));
     if (matched?.directive) {
-      ruleDirective = matched.directive;
+      taskDirective = matched.directive;
       decision = {
         addressed: true,
-        source: "chat-rule",
-        reason: `standing chat rule matched (${matched.ruleIds.length})`,
+        source: "task",
+        reason: `standing task matched (${matched.taskIds.length})`,
       };
     }
-  } else if (unaddressedRuleMatch) {
-    // The analyzer said "addressed" while the rule match was still in flight.
+  } else if (unaddressedTaskMatch) {
+    // The analyzer said "addressed" while the task match was still in flight.
     // Its directive is moot (the turn is open anyway), but it is settled here so
     // its authority binding cannot land in the middle of the reply — the
     // addressed-turn match below then has the last word on authority.
-    await unaddressedRuleMatch;
+    await unaddressedTaskMatch;
   }
 
   if (!decision.addressed) {
@@ -725,7 +726,7 @@ export async function handleIncomingMessage(
         personalityPrompt: deps.personalityPrompt,
         specialistInstructions: deps.specialistInstructions,
         selfCorrection: deps.selfCorrection,
-        chatRules: deps.chatRules,
+        standingTasks: deps.standingTasks,
       });
       await trace.event({
         type: "step",
@@ -734,7 +735,7 @@ export async function handleIncomingMessage(
           personalityApplied: hasPersonality(deps.personalityPrompt),
           specialistApplied: Boolean(deps.specialistInstructions?.trim()),
           selfCorrectionApplied: Boolean(deps.selfCorrection?.trim()),
-          chatRulesApplied: Boolean(deps.chatRules?.trim()),
+          standingTasksApplied: Boolean(deps.standingTasks?.trim()),
           systemPrompt,
         },
       });
@@ -773,15 +774,15 @@ export async function handleIncomingMessage(
           // attach to the current user message below. Takes the reply trace so
           // the recognize pass (describe + store) records into this same flow.
           deps.loadVision?.(trace) ?? null,
-          // 3c. Standing rules on a turn that was *addressed* (a rule-opened turn
-          // already ran this above, and is skipped here). Its result is
+          // 3c. Standing tasks on a turn that was *addressed* (a task-opened
+          // turn already ran this above, and is skipped here). Its result is
           // deliberately not destructured: what it produces is a side effect in
-          // the runtime — binding the matched rules' author as this turn's tool
+          // the runtime — binding the matched tasks' author as this turn's tool
           // authority — and that must be in place before any tool runs, which is
           // what awaiting it here guarantees.
-          decision.source === "chat-rule"
+          decision.source === "task"
             ? null
-            : (deps.applyChatRules?.(trace, { addressed: true }).catch(() => null) ?? null),
+            : (deps.applyStandingTasks?.(trace, { addressed: true }).catch(() => null) ?? null),
         ]);
 
       if (chatContext) {
@@ -873,15 +874,15 @@ export async function handleIncomingMessage(
         });
       }
 
-      // A turn nobody addressed, opened by a standing rule: the directive naming
-      // the matched rules goes in last, after the language directive, so the
-      // model acts on the rule instead of joining a conversation it was not part
+      // A turn nobody addressed, opened by a standing task: the directive naming
+      // the matched tasks goes in last, after the language directive, so the
+      // model acts on the task instead of joining a conversation it was not part
       // of. Absent on every ordinary (addressed) turn.
-      if (ruleDirective) {
+      if (taskDirective) {
         await trace.event({
           type: "step",
-          message: "opened by a standing chat rule",
-          data: { reason: decision.reason, directive: ruleDirective },
+          message: "opened by a standing task",
+          data: { reason: decision.reason, directive: taskDirective },
         });
       }
 
@@ -915,9 +916,9 @@ export async function handleIncomingMessage(
         ...(languageInstruction
           ? [{ role: "system" as const, content: languageInstruction }]
           : []),
-        ...(ruleDirective ? [{ role: "system" as const, content: ruleDirective }] : []),
+        ...(taskDirective ? [{ role: "system" as const, content: taskDirective }] : []),
         { role: "user", content: userContent },
-        // The second pass at a rule turn the model answered without acting: its
+        // The second pass at a task turn the model answered without acting: its
         // own empty-handed answer, then the correction. Shown rather than merely
         // asserted — the model is being told what it just did, and the Grounding
         // rules already say its own line is not evidence of anything.
@@ -936,8 +937,8 @@ export async function handleIncomingMessage(
       // the request is the *whole* body the model saw (model, messages, tools), not
       // hand-picked fields. Inline image bytes are replaced with a compact marker
       // (the real image is on the Vision page); all other content is verbatim.
-      // Tool calls are counted, not just recorded: a turn a standing rule opened
-      // is answerable only by doing what the rule asks, and the only way anything
+      // Tool calls are counted, not just recorded: a turn a standing task opened
+      // is answerable only by doing what the task asks, and the only way anything
       // is done is a tool call. See the enforcement below the generation.
       let toolCallCount = 0;
       const generate = (
@@ -1043,56 +1044,56 @@ export async function handleIncomingMessage(
         }
       }
 
-      // 4d. Rule-turn enforcement. This turn exists only because a standing rule
+      // 4d. Task-turn enforcement. This turn exists only because a standing task
       // matched a message nobody addressed the bot in, so the reply's whole
-      // purpose is the action the rule calls for — and the only way anything is
+      // purpose is the action the task calls for — and the only way anything is
       // done is a tool call. Zero of them means the answer cannot be true,
       // whatever it says.
       //
-      // The check is mechanical (was a rule directive injected; did `onToolCall`
+      // The check is mechanical (was a task directive injected; did `onToolCall`
       // ever fire), never a reading of the text — code judges facts, the model
       // judges language. It also cannot misfire on an ordinary turn: only a turn
       // nobody addressed gets a directive — an addressed one never does, whether
-      // or not an `on-reply` rule matched it — and the guard needs one.
-      if (ruleDirective && toolCallCount === 0) {
+      // or not an `on-reply` task matched it — and the guard needs one.
+      if (taskDirective && toolCallCount === 0) {
         await trace.event({
           type: "step",
           level: "warn",
-          message: "rule turn answered without calling any tool — retrying",
+          message: "task turn answered without calling any tool — retrying",
           data: { reason: decision.reason, answer: reply.content },
         });
         reply = await generate(historyWindow.messages, {
           previousAnswer: reply.content,
-          directive: RULE_ENFORCEMENT_DIRECTIVE,
+          directive: TASK_ENFORCEMENT_DIRECTIVE,
         });
       }
       // Still nothing. The model's text claims an action that provably did not
       // happen, so it is not delivered — but the chat is not left in silence
       // either (user decision, 2026-08-03): the people here posted something a
-      // rule promised to act on, and they are owed the truth about it rather
+      // task promised to act on, and they are owed the truth about it rather
       // than a plausible lie or nothing at all. The notice is a labeled system
       // message like the other two, and is deliberately not mirrored into
       // history — the bot's own failure notice is not conversation.
-      if (ruleDirective && toolCallCount === 0) {
+      if (taskDirective && toolCallCount === 0) {
         await trace.event({
           type: "step",
           level: "error",
-          message: "rule turn called no tool on the retry either — answer suppressed",
+          message: "task turn called no tool on the retry either — answer suppressed",
           data: { reason: decision.reason, suppressedAnswer: reply.content },
         });
-        const sent = await deps.sendReply(RULE_NOT_APPLIED_REPLY);
+        const sent = await deps.sendReply(TASK_NOT_APPLIED_REPLY);
         await trace.event({
           type: "output",
           level: "warn",
           message: "send message",
-          data: { content: RULE_NOT_APPLIED_REPLY, messageId: sent.messageId, asVoice: false },
+          data: { content: TASK_NOT_APPLIED_REPLY, messageId: sent.messageId, asVoice: false },
         });
-        // Failed, not succeeded: a rule the bot did not carry out is exactly the
+        // Failed, not succeeded: a task the bot did not carry out is exactly the
         // turn an operator has to be able to find on the Debug page, and a green
         // trace is how the first one went unnoticed for a day.
         const failure = new Error(
-          "A standing chat rule matched, but the model produced no tool call in two attempts — " +
-            "the rule was not carried out",
+          "A standing task matched, but the model produced no tool call in two attempts — " +
+            "the task was not carried out",
         );
         await trace.fail(failure);
         return { status: "error", message: failure.message };
@@ -1112,7 +1113,7 @@ export async function handleIncomingMessage(
       // conversation — answers, opinions, jokes, "I can't do that" — claims
       // nothing and passes untouched.
       //
-      // Rule turns never reach here: theirs is the stricter mechanical check
+      // Task turns never reach here: theirs is the stricter mechanical check
       // above, which has already retried and returned by now.
       if (toolCallCount === 0) {
         let claim = await runActionClaimGate(

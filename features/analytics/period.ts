@@ -22,7 +22,7 @@
  * its Monday's date.
  */
 
-import { addCalendarDays, zonedWallClockToUtc } from "@/features/scheduled-tasks/schedule";
+import { addCalendarDays, zonedWallClockToUtc } from "@/features/tasks/schedule";
 
 import type { Granularity, PeriodUnit } from "./types";
 

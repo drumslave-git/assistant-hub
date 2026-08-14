@@ -74,9 +74,24 @@ export interface McpToolContext {
    * The reply pipeline uses it to treat this turn's reply as a transient
    * acknowledgement: delivered silently, and deleted once the run posts its own
    * report (user decision, 2026-08-01). Absent when the turn has no reply to
-   * treat that way (e.g. a scheduled-task fire).
+   * treat that way (e.g. a task fire).
    */
   onBrowserRunEnqueued?: (runId: string) => void;
+  /**
+   * Outbound delivery for a **task fire** — the one turn where the model's own
+   * text is never sent and the outbound tools (`send_message`,
+   * `reply_to_message`) are how anything reaches the chat. Bound only by the
+   * fire (user decision, 2026-08-13: the model decides what a task sends, not
+   * a hardcoded delivery); its absence is what makes those tools refuse in an
+   * ordinary reply turn, whose reply already delivers itself.
+   *
+   * Resolves the delivered Telegram message id. `replyToMessageId` attaches
+   * the message as a Telegram reply to an existing message of this chat.
+   */
+  deliver?: (
+    text: string,
+    opts?: { replyToMessageId?: number },
+  ) => Promise<{ messageId: number }>;
 }
 
 const storage = new AsyncLocalStorage<McpToolContext>();

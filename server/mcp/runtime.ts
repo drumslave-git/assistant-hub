@@ -9,10 +9,6 @@ import {
   registerBrowserAgentMcpTools,
 } from "@/features/browser-agent/server/mcp-tools";
 import {
-  CHAT_RULES_TOOL_NAMES,
-  registerChatRulesMcpTools,
-} from "@/features/chat-rules/server/mcp-tools";
-import {
   HISTORY_TOOL_NAMES,
   registerHistoryMcpTools,
 } from "@/features/history/server/mcp-tools";
@@ -29,13 +25,14 @@ import {
   registerMemoryMcpTools,
 } from "@/features/memory/server/mcp-tools";
 import {
-  registerScheduledTasksMcpTools,
-  SCHEDULED_TASKS_TOOL_NAMES,
-} from "@/features/scheduled-tasks/server/mcp-tools";
-import {
   registerSpecialistsMcpTools,
   SPECIALISTS_TOOL_NAMES,
 } from "@/features/specialists/server/mcp-tools";
+import { registerTasksMcpTools, TASKS_TOOL_NAMES } from "@/features/tasks/server/mcp-tools";
+import {
+  registerTasksOutboundMcpTools,
+  TASKS_OUTBOUND_TOOL_NAMES,
+} from "@/features/tasks/server/outbound-tools";
 import { BotMcpRegistry, type McpToolRegistrar } from "./registry";
 
 /**
@@ -79,17 +76,20 @@ const REGISTRARS: { feature: string; registrar: McpToolRegistrar; toolNames: str
     registrar: registerKnownUsersMcpTools,
     toolNames: KNOWN_USERS_TOOL_NAMES,
   },
+  { feature: "tasks", registrar: registerTasksMcpTools, toolNames: TASKS_TOOL_NAMES },
+  // The outbound delivery tools are the tasks feature's second registrar: same
+  // trace scope, but a separate name list so `getToolset` can withhold them
+  // from reply turns (only a task fire delivers through tools).
   {
-    feature: "scheduled-tasks",
-    registrar: registerScheduledTasksMcpTools,
-    toolNames: SCHEDULED_TASKS_TOOL_NAMES,
+    feature: "tasks",
+    registrar: registerTasksOutboundMcpTools,
+    toolNames: TASKS_OUTBOUND_TOOL_NAMES,
   },
   {
     feature: "specialists",
     registrar: registerSpecialistsMcpTools,
     toolNames: SPECIALISTS_TOOL_NAMES,
   },
-  { feature: "chat-rules", registrar: registerChatRulesMcpTools, toolNames: CHAT_RULES_TOOL_NAMES },
   { feature: "memory", registrar: registerMemoryMcpTools, toolNames: MEMORY_TOOL_NAMES },
   { feature: "image-gen", registrar: registerImageGenMcpTools, toolNames: IMAGE_GEN_TOOL_NAMES },
   {

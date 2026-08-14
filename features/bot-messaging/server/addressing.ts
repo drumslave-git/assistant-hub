@@ -38,11 +38,11 @@ export type AddressSource =
   | "analyzer"
   /**
    * Nobody addressed the bot: the turn was opened by a standing `always` chat
-   * rule that matched the message (see `features/chat-rules/server/matcher.ts`).
+   * task that matched the message (see `features/tasks/server/matcher.ts`).
    * Never produced by the checks in this module — the caller sets it after the
    * addressing verdict has already come back negative.
    */
-  | "chat-rule";
+  | "task";
 
 export interface AddressResult {
   addressed: boolean;

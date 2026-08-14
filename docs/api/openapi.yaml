@@ -42,7 +42,7 @@ tags:
   - name: history
   - name: memory
   - name: vision
-  - name: scheduled-tasks
+  - name: tasks
   - name: self-improvement
   - name: browser-agent
   - name: analytics
@@ -1228,14 +1228,14 @@ paths:
                       data: { $ref: "#/components/schemas/VisionBackfillSnapshot" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
-  # ────────────────────── scheduled tasks ────────────────────────
-  /api/scheduled-tasks:
+  # ────────────────────────── tasks ──────────────────────────────
+  /api/tasks:
     get:
-      tags: [scheduled-tasks]
-      summary: List scheduled tasks
+      tags: [tasks]
+      summary: List tasks
       responses:
         "200":
-          description: Tasks
+          description: Every task in every scope, oldest first
           content:
             application/json:
               schema:
@@ -1243,44 +1243,49 @@ paths:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
                       data:
-                        type: object
-                        required: [tasks]
-                        properties:
-                          tasks:
-                            type: array
-                            items: { $ref: "#/components/schemas/ScheduledTask" }
+                        type: array
+                        items: { $ref: "#/components/schemas/Task" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
-      tags: [scheduled-tasks]
-      summary: Create a scheduled task
+      tags: [tasks]
+      summary: Create a task
       description: |
-        Times are local wall-clock in the operator timezone. A dashboard-created
-        task has `createdByUserId: null`, so the author-scoped chat tools cannot
-        mutate it — except the owner, who is exempt from the author rule.
+        `triggerKind` selects which fields apply. Times are local wall-clock in
+        the operator timezone. `chatId: null` is the global scope, valid only
+        for `message`/`on-reply`; `targetUserIds` only on a group standing
+        task, and only naming people on that group's roster.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [chatId, instruction, scheduleKind, timeOfDay]
+              required: [instruction, triggerKind]
               properties:
                 chatId:
-                  type: string
-                  pattern: '^-?\d+$'
+                  type: [string, "null"]
+                  default: null
                 threadId: { type: [integer, "null"] }
                 instruction: { type: string, minLength: 2, maxLength: 2000 }
+                context: { type: [string, "null"], maxLength: 4000 }
+                triggerKind: { $ref: "#/components/schemas/TriggerKind" }
+                targetUserIds:
+                  type: array
+                  items: { type: string }
+                  maxItems: 16
+                  default: []
+                everyMinutes: { type: [integer, "null"] }
+                delayMinutes: { type: [integer, "null"] }
                 scheduleKind: { $ref: "#/components/schemas/ScheduleKind" }
                 timeOfDay: { $ref: "#/components/schemas/TimeOfDay" }
                 weekdays:
-                  type: array
+                  type: [array, "null"]
                   items: { type: integer, minimum: 0, maximum: 6 }
-                  default: []
-                  description: For `weekly`. 0 = Sunday.
+                  description: For a weekly schedule. 0 = Sunday.
                 runDate:
                   type: [string, "null"]
                   pattern: '^\d{4}-\d{2}-\d{2}$'
-                  description: Required for `once`.
+                  description: For a one-time schedule.
                 enabled: { type: boolean, default: true }
       responses:
         "201":
@@ -1291,20 +1296,23 @@ paths:
                 allOf:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
-                      data: { $ref: "#/components/schemas/ScheduledTask" }
+                      data: { $ref: "#/components/schemas/Task" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  /api/scheduled-tasks/{id}:
+  /api/tasks/{id}:
     parameters:
       - name: id
         in: path
         required: true
         schema: { type: string }
     patch:
-      tags: [scheduled-tasks]
-      summary: Update a scheduled task
-      description: Partial; at least one field. `nextRunAt` is recomputed.
+      tags: [tasks]
+      summary: Update a task
+      description: |
+        Partial; at least one field. The trigger (including its kind) is
+        editable and the timing is renormalized; the scope is not. `nextRunAt`
+        is recomputed and the failed-attempt counter resets.
       requestBody:
         required: true
         content:
@@ -1314,10 +1322,18 @@ paths:
               minProperties: 1
               properties:
                 instruction: { type: string, minLength: 2, maxLength: 2000 }
+                context: { type: [string, "null"], maxLength: 4000 }
+                triggerKind: { $ref: "#/components/schemas/TriggerKind" }
+                targetUserIds:
+                  type: array
+                  items: { type: string }
+                  maxItems: 16
+                everyMinutes: { type: [integer, "null"] }
+                delayMinutes: { type: [integer, "null"] }
                 scheduleKind: { $ref: "#/components/schemas/ScheduleKind" }
                 timeOfDay: { $ref: "#/components/schemas/TimeOfDay" }
                 weekdays:
-                  type: array
+                  type: [array, "null"]
                   items: { type: integer, minimum: 0, maximum: 6 }
                 runDate:
                   type: [string, "null"]
@@ -1332,13 +1348,13 @@ paths:
                 allOf:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
-                      data: { $ref: "#/components/schemas/ScheduledTask" }
+                      data: { $ref: "#/components/schemas/Task" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
-      tags: [scheduled-tasks]
-      summary: Delete a scheduled task
+      tags: [tasks]
+      summary: Delete a task
       responses:
         "200":
           description: Deleted
@@ -1348,9 +1364,9 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /api/scheduled-tasks/run:
+  /api/tasks/run:
     get:
-      tags: [scheduled-tasks]
+      tags: [tasks]
       summary: Poller status
       responses:
         "200":
@@ -1364,7 +1380,7 @@ paths:
                       data: { $ref: "#/components/schemas/TaskSchedulerJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
-      tags: [scheduled-tasks]
+      tags: [tasks]
       summary: Run one poll tick now
       description: Only tasks that are actually due fire — and none do while maintenance mode is on.
       responses:
@@ -2717,8 +2733,16 @@ components:
             - type: "null"
         generalPendingNotes: { type: integer }
 
-    # ── scheduled tasks ──
-    ScheduledTask:
+    # ── tasks ──
+    TriggerKind:
+      type: string
+      enum: [message, on-reply, interval, timeout, schedule]
+      description: >
+        How the task's instruction runs. `message`/`on-reply` are standing
+        rules composed into prompts; `interval`/`timeout`/`schedule` are fired
+        by the poller, and only the fields their kind uses are non-null.
+
+    Task:
       type: object
       required:
         [
@@ -2726,8 +2750,13 @@ components:
           chatId,
           threadId,
           createdByUserId,
+          source,
           instruction,
-          scheduleKind,
+          context,
+          triggerKind,
+          targetUserIds,
+          everyMinutes,
+          delayMinutes,
           timeOfDay,
           weekdays,
           runDate,
@@ -2741,14 +2770,26 @@ components:
         ]
       properties:
         id: { type: string }
-        chatId: { type: string }
+        chatId:
+          type: [string, "null"]
+          description: Null for a global task (message/on-reply kinds only).
         threadId: { type: [integer, "null"] }
         createdByUserId:
           type: [string, "null"]
-          description: The author. Null for a dashboard-created task, which the author-scoped chat tools cannot mutate — except by the owner, who is exempt from the author rule.
+          description: The author. Null for a dashboard-created task, which the chat tools cannot mutate (timed kinds) — except by the owner, who is exempt.
+        source: { type: string, enum: [chat, dashboard] }
         instruction: { type: string }
-        scheduleKind: { $ref: "#/components/schemas/ScheduleKind" }
-        timeOfDay: { $ref: "#/components/schemas/TimeOfDay" }
+        context:
+          type: [string, "null"]
+          description: Saved background for a fire (timed kinds only).
+        triggerKind: { $ref: "#/components/schemas/TriggerKind" }
+        targetUserIds:
+          type: array
+          items: { type: string }
+          description: Senders a group standing task is limited to; empty = everyone.
+        everyMinutes: { type: [integer, "null"] }
+        delayMinutes: { type: [integer, "null"] }
+        timeOfDay: { type: [string, "null"] }
         weekdays:
           type: [array, "null"]
           items: { type: integer, minimum: 0, maximum: 6 }
@@ -2760,12 +2801,12 @@ components:
         recentDeliveries:
           type: array
           items: { type: string }
-          description: The last few delivered texts (newest first), for wording variation.
+          description: What fires actually sent (newest first), for wording variation.
         lastRunAt: { type: [string, "null"], format: date-time }
         nextRunAt:
           type: [string, "null"]
           format: date-time
-          description: Null when the task will not fire again.
+          description: Null for prompt kinds, paused tasks, and spent one-shots.
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
@@ -3074,12 +3115,13 @@ components:
         callKind:
           type: string
           description: |
-            What the call was for. One of `addressing-check`, `reply-tool-turn`,
-            `reply-final`, `vision-describe`, `voice-transcribe`,
-            `history-summarize`, `memory-extract`, `memory-consolidate`,
-            `insight-hour`, `insight-rollup`, `browser-agent-turn`,
-            `browser-agent-report`, `scheduled-task-fire`, `self-improve-analyze`,
-            `self-improve-reflect`.
+            What the call was for. One of `addressing-check`, `task-match`,
+            `reply-tool-turn`, `reply-final`, `vision-describe`,
+            `voice-transcribe`, `history-summarize`, `memory-extract`,
+            `memory-consolidate`, `insight-hour`, `insight-rollup`,
+            `browser-agent-turn`, `browser-agent-report`, `task-fire`,
+            `self-improve-analyze`, `self-improve-reflect` (plus the retired
+            `chat-rule-match` and `scheduled-task-fire` from pre-merge traces).
         calls: { type: integer, description: Provider rounds counted. }
         avgLatencyMs: { type: number }
         latencyP50: { type: [number, "null"] }

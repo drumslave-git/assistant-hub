@@ -263,7 +263,7 @@ and closed when the run settles.
 ## The runner
 
 `server/runner.ts` is an in-process queue pump, the same operating model as the
-scheduled-tasks poller. A single run executes at a time; the queue **is** the
+tasks poller. A single run executes at a time; the queue **is** the
 `browser_agent_runs` table.
 
 - Enqueuers insert a `queued` row and then call `emitRunEnqueued()` (`signal.ts`, a

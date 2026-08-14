@@ -28,87 +28,120 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
-## Chat rules: for everyone, or for named people in a group (`done` pending production deploy, 2026-08-13)
+## Unified tasks (`done` pending production deploy, 2026-08-13)
 
-User decisions, 2026-08-13, answering "allow to specify for all or specific
-users in group":
+User direction, 2026-08-13: a significant rework. Scheduled tasks become just
+**tasks**; chat rules are absorbed; hardcoded fire delivery is replaced by
+outbound MCP tools the model chooses to call.
 
-1. **Sender filter, not a prompt hint.** A rule naming people is dropped for
-   every other sender *before* composition, so the model never sees a rule about
-   somebody else and is never asked to judge whether it applies.
-2. **Group-scoped rules only.** A DM is one person; a global rule spans chats
-   with unrelated rosters.
-3. **Dashboard *and* chat.** `rules_create`/`rules_update` take user ids — which
-   required the group roster injected into every group prompt to carry each
-   participant's exact id, since names are never resolved to ids in code.
+User decisions (2026-08-13):
 
-### What shipped
+1. **One feature.** A task = instruction + trigger. Trigger kinds:
+   - `message` — fires when an incoming message matches the instruction (the
+     chat-rules `always` matcher machinery, incl. per-user targeting, sender
+     labels, and the citation guard);
+   - `on-reply` — no fire of its own; the instruction is composed into every
+     reply prompt (the old shaping rules, folded in — user picked "fold into
+     tasks" over a separate slim rules feature);
+   - `interval` — every N minutes/hours/days ("every 10m");
+   - `timeout` — one-shot, relative to creation ("in 1h");
+   - `schedule` — calendar-based (the current once/daily/weekly shape).
+2. **No hardcoded sending.** A fire runs a full tool loop (same toolset as a
+   reply) plus new outbound tools — `send_message`, `reply_to_message` — bound
+   to the task's own chat (user decision: no cross-chat sends). The completion's
+   final text is traced, never delivered; only tool calls deliver.
+3. **Silence is allowed** for timed fires (enables "check X, message only if Y";
+   the trace records a quiet fire). Message-triggered fires keep the chat-rules
+   enforcement: a matched message demanded an action, so a no-tool turn is
+   retried once with the enforcement directive, then suppressed with an honest
+   notice.
+4. **Clean cut.** `chat_rules` and `scheduled_tasks` (tables, features, pages,
+   toolkits) are removed in the same release; the new `tasks` table starts
+   empty and the operator re-creates the handful of live entries. One `/tasks`
+   page replaces `/scheduled-tasks` and `/rules`.
 
-- `chat_rules.target_user_ids text[]` (migration `0053_magenta_living_tribunal`,
-  **applied to the dev DB**), empty = everyone, with a DB check keeping it empty
-  for a global rule. Group-only and roster membership are enforced in the service
-  (`assertTargetsAllowed`) — a group id is a Telegram fact, and an unknown id is
-  refused rather than stored as a rule that silently never fires.
-- `getActiveRulesForChat(chatId, senderUserId, db)` filters through
-  `rulesForSender`. `process-update` passes the sender; the scheduler passes null
-  (a fire is nobody's message, so only untargeted rules apply).
-- Dashboard `/rules`: an "Applies to" list on group scope — "Everyone in this
-  group" is simply the empty selection, so the half-set state cannot be reached —
-  plus an audience badge on each rule card and editing of the audience.
-- **The `always` matcher is told who is involved** (2026-08-13, after the first
-  live per-person rule never fired — trace `c08283a8…`). A targeted rule is
-  offered as `if message from <label>: <text>` and the sender is named over the
-  message; labels come from one `getUserLabels` read. Without both, the matcher
-  is asked whether the message *contains* what a rule describes, about a rule
-  that describes nothing a message could contain, and correctly says no.
-  The prompt now walks two steps — who it applies to, then what it asks of the
-  message — because the first wording that made per-person rules fire also made
-  a targeted rule *with* a content condition fire on every message that person
-  sent (6 live runs of 6). Both directions are pinned in a new
-  `live-matcher.integration.test.ts` (`LLM_LIVE=1`, 6 runs per case, all green).
-  The citation guard is untouched: such a rule quotes the message itself, which
-  passes the existing mechanical check with no exemption.
-- Chat tools: `user_ids` on create; `user_ids` + `applies_to_everyone` on update
-  (two fields so an empty array cannot silently widen a rule — same reason
-  `text: ""` keeps the text). The same rule text set again for different people
-  amends the audience instead of reporting "already in force".
-- Group roster lines now read `- <label> [user id <id>] — also known as: …`.
+Decisions made in implementation (defaults, not asked):
+
+- Scope: `chat_id` stays nullable, but **null (global) is valid only for
+  `message` / `on-reply` kinds** — a timed task acts in a chat, so it needs one.
+  Per-user targeting stays valid for `message`/`on-reply` in groups only.
+- Permission gates carry over per kind, unchanged in spirit: `message`/`on-reply`
+  keep the rules gate (self-serve in a DM, owner-only in a group);
+  `interval`/`timeout`/`schedule` keep the scheduled-tasks gate (create freely
+  in chat, mutate own or as owner).
+- Interval floor: 1 minute (tick is 30s); `timeout` is a one-shot — fires once,
+  then the row is deleted like a spent one-shot today, with the same
+  failed-attempt retry/disable behavior.
+- Outbound tools are registered like any toolkit but refuse outside a fire
+  context (a reply turn already delivers its text; `send_message` there would
+  double-send). Exact mechanism decided at the registry.
+- A **message-triggered** task turn keeps the reply-pipeline execution it has
+  today (context assembly, vision, browse ack flow, the no-tool enforcement
+  retry + suppression notice, auto-delivered reply to the triggering message).
+  "No hardcoded sending" targets the *timed* fire path, which today generates
+  text and blindly sends it — that is what the outbound tools replace. The
+  message path never had a hardcoded send: the model's reply IS the delivery,
+  and real actions were already enforced as tool calls.
+- Outbound tools (`send_message`, `reply_to_message`) are therefore offered
+  **only to timed fires**: `getToolset` gains a filter (reply turns never see
+  them — a reply that calls `send_message` would double-deliver), and the tools
+  read a `deliver` sink on the MCP tool context that only the fire binds.
+- The matcher's system prompt text is ported **verbatim** (it was live-tuned on
+  2026-08-13, both directions pinned) — only module/type names change.
+- `tasks` table: one row shape with per-kind nullable columns (`every_minutes`,
+  `delay_minutes`, `time_of_day`/`weekdays`/`run_date`), `target_user_ids`,
+  `source` provenance, and the existing attempts/recent-deliveries lifecycle.
+  The 32-per-scope cap applies to prompt-composed kinds (`message`/`on-reply`)
+  only — it is a prompt-budget fact, not a scheduling one.
+
+### What shipped (`done` pending production deploy)
+
+Everything above, as specified. The per-user targeting and the live-tuned
+two-step matcher prompt (both shipped earlier on 2026-08-13 under chat rules —
+see git history for that entry) carried over intact into `message`/`on-reply`
+tasks.
+
+- New `features/tasks/` (types, trigger math, format, matcher, schema,
+  repository, service, fire, scheduler, CRUD + outbound MCP tools, UI), the
+  `/tasks` page, `/api/tasks` (+`[id]`, `/run`). `getToolset({ outbound })`
+  carve-out in `features/mcp-tools`; `deliver` binding on the MCP tool context;
+  `sendChatMessage` gained `replyToMessageId`. `reply_to_message`
+  (bot-messaging) is now dual-mode: retargets in a reply turn, delivers in a
+  fire.
+- Removed: `features/chat-rules/`, `features/scheduled-tasks/`, `/rules` +
+  `/scheduled-tasks` pages and APIs, their feature ids and tools. Migrations
+  `0054` (drop both tables, clean cut) + `0055` (create `tasks`), **applied to
+  the dev DB**. Trace `callKind`s: `task-match` / `task-fire` (retired ids kept
+  for old traces).
+- Docs: `docs/features/tasks.md` replaces `chat-rules.md` +
+  `scheduled-tasks.md`; data-model, llm-and-mcp, endpoints + openapi, operator
+  guide, troubleshooting, background-jobs, testing, specialists, security,
+  README, `AGENTS.md` note.
 
 ### Proof
 
-Files: `db/schema.ts` + `db/migrations/0053`, `features/chat-rules/{format.ts,
-server/{schema,repository,service,mcp-tools,matcher}.ts, ui/ChatRulesManager.tsx}`,
-`app/(dashboard)/rules/page.tsx`, `features/known-groups/{format.ts,
-server/{repository,service}.ts}`, `features/known-users/server/service.ts`,
-`server/telegram/process-update.ts`,
-`features/scheduled-tasks/server/scheduler.ts`, plus docs.
+Lint clean; typecheck clean; `next build` clean (route table shows `/tasks`,
+old routes gone). Unit suite: the only failures are the pre-existing
+Windows-only `ytdlp-binary`/`media-download` ones. Integration:
+`tasks.integration.test.ts` (scopes, caps, targeting, per-kind gates, timing)
+and `scheduler.integration.test.ts` (settle per kind, quiet fires, one-shot
+retry/disable) green against real Postgres; `live-matcher.integration.test.ts`
+ported (opt-in, `LLM_LIVE=1`).
 
-Lint clean; typecheck clean; unit suite passing — the only failures are the
-pre-existing Windows-only `ytdlp-binary`/`media-download` ones (the fake binary
-fixture is a shell script that will not execute here), untouched by this work.
-`chat-rules.integration.test.ts` 24/24 against a real database;
-`live-matcher.integration.test.ts` 5/5 against the live classifier (30 model
-calls), and skipped without `LLM_LIVE=1`.
+### Remaining risks / follow-ups
 
-Browser pass on `/rules` (attached to the running dev server): audience picker
-appears only for a group, a rule created for one member shows an "Only <name>"
-badge, editing it back to everyone stores `targetUserIds: []`, and a global rule
-with targets is rejected 422 at the API boundary. Test rule deleted afterwards.
-
-Remaining risks:
-
-- The live model has not yet been observed choosing `user_ids` from the roster in
-  a real group turn — the tool description and the roster ids are pinned by
-  tests, but the end-to-end behaviour is worth watching on the next live rule set
-  from chat.
-- The matcher prompt is tuned against the locally configured classifier. A
-  different model or backend can move both directions at once (fires on
-  everything / never fires), so re-run `live-matcher` after changing the
-  classifier model.
-- A person-only `always` rule opens a turn on **every** message that person
-  sends, each costing the ordinary reply. That is what the rule asks for, but it
-  is a much higher fire rate than a content-conditioned rule and is worth
-  watching on the first real one.
+- **Not yet observed live**: a real timed fire delivering via `send_message`
+  (the whole delivery inversion), and the model picking the right `trigger` in
+  `tasks_create` from chat phrasings. The old live-flow + tool-selection
+  LLM_LIVE tests were deleted with chat-rules and not yet rewritten for tasks —
+  `todo`: port `live-flow.integration.test.ts` (group message-task download +
+  DM chat-side create) and the tool-selection cases to the unified toolkit.
+- The matcher prompt remains tuned against the locally configured classifier;
+  re-run `live-matcher` after changing the classifier model.
+- A person-only `message` task opens a turn on **every** message that person
+  sends; worth watching on the first real one.
+- The operator re-creates the handful of live rules/tasks after deploying (the
+  clean cut dropped both tables).
 
 ## Audio transcription modes + vision probe + relayed error detail (`done` pending production deploy, 2026-08-12)
 

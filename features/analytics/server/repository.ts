@@ -5,7 +5,7 @@ import { sql, type SQL } from "drizzle-orm";
 import type { DrizzleDb } from "@/db/drizzle";
 import { chatHourInsights, periodInsights } from "@/db/schema";
 
-import { addCalendarDays, zonedWallClockToUtc } from "@/features/scheduled-tasks/schedule";
+import { addCalendarDays, zonedWallClockToUtc } from "@/features/tasks/schedule";
 
 import { addDaysToDateStr, bucketFormat, truncUnit } from "../period";
 import type { Granularity } from "../types";

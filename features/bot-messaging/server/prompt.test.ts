@@ -45,12 +45,12 @@ describe("buildSystemPrompt", () => {
     expect(buildSystemPrompt({ specialistInstructions: "   \n " })).toBe(BASE_SYSTEM_PROMPT);
   });
 
-  it("orders the full stack persona → specialist → self-correction → chat rules", () => {
+  it("orders the full stack persona → specialist → self-correction → standing tasks", () => {
     const out = buildSystemPrompt({
       personalityPrompt: "Persona.",
       specialistInstructions: "Role.",
       selfCorrection: "Correction.",
-      chatRules: "Rules block.",
+      standingTasks: "Rules block.",
     });
     const personaAt = out.indexOf("Persona.");
     const roleAt = out.indexOf("Role.");
@@ -63,11 +63,13 @@ describe("buildSystemPrompt", () => {
     expect(rulesAt).toBeGreaterThan(correctionAt);
   });
 
-  it("appends the chat-rules block verbatim (it carries its own heading) and treats blank as unset", () => {
-    const out = buildSystemPrompt({ chatRules: "  Standing rules for this chat:\n1. Be brief.  " });
+  it("appends the standing-tasks block verbatim (it carries its own heading) and treats blank as unset", () => {
+    const out = buildSystemPrompt({
+      standingTasks: "  Standing rules for this chat:\n1. Be brief.  ",
+    });
     expect(out).toBe(`${BASE_SYSTEM_PROMPT}\n\n---\nStanding rules for this chat:\n1. Be brief.`);
-    expect(buildSystemPrompt({ chatRules: "   " })).toBe(BASE_SYSTEM_PROMPT);
-    expect(buildSystemPrompt({ chatRules: null })).toBe(BASE_SYSTEM_PROMPT);
+    expect(buildSystemPrompt({ standingTasks: "   " })).toBe(BASE_SYSTEM_PROMPT);
+    expect(buildSystemPrompt({ standingTasks: null })).toBe(BASE_SYSTEM_PROMPT);
   });
 
   it("appends a trimmed self-correction block below the persona", () => {

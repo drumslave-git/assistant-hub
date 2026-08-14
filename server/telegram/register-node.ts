@@ -21,7 +21,7 @@ import {
   stopSummaryScheduler,
 } from "@/features/history/server/summary-scheduler";
 import { startMemoryScheduler, stopMemoryScheduler } from "@/features/memory/server/scheduler";
-import { startTaskScheduler, stopTaskScheduler } from "@/features/scheduled-tasks/server/scheduler";
+import { startTaskScheduler, stopTaskScheduler } from "@/features/tasks/server/scheduler";
 import {
   startSelfImprovementScheduler,
   stopSelfImprovementScheduler,
@@ -83,7 +83,7 @@ export function registerNode(): void {
   // descriptions; with no embedding model configured it still indexes the text.
   startMessageIndexing();
 
-  // Start the periodic scheduled-tasks poller. It fires due tasks at their
+  // Start the periodic tasks poller. It fires due tasks at their
   // wall-clock time (independent of bot activity); a tick with no LLM configured,
   // no due tasks, or the bot stopped settles as a harmless no-op.
   startTaskScheduler();

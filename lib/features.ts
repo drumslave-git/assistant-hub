@@ -97,12 +97,15 @@ export const FEATURES = {
     relatedIdsKey: "personalities",
     path: "/personalities",
   },
-  "scheduled-tasks": {
-    id: "scheduled-tasks",
-    label: "Scheduled tasks",
+  // The unified feature that absorbed scheduled tasks and chat rules (user
+  // decision, 2026-08-13): one instruction + one trigger (message / on-reply /
+  // interval / timeout / schedule).
+  tasks: {
+    id: "tasks",
+    label: "Tasks",
     realtimeTopic: "tasks",
-    relatedIdsKey: "scheduled_tasks",
-    path: "/scheduled-tasks",
+    relatedIdsKey: "tasks",
+    path: "/tasks",
   },
   specialists: {
     id: "specialists",
@@ -110,13 +113,6 @@ export const FEATURES = {
     realtimeTopic: "specialists",
     relatedIdsKey: "specialists",
     path: "/specialists",
-  },
-  "chat-rules": {
-    id: "chat-rules",
-    label: "Chat rules",
-    realtimeTopic: "rules",
-    relatedIdsKey: "chat_rules",
-    path: "/rules",
   },
   settings: {
     id: "settings",
@@ -214,9 +210,9 @@ export const FEATURES = {
     label: "User tools",
     path: "/tools",
   },
-  "mcp-tools-scheduled-tasks": {
-    id: "mcp-tools-scheduled-tasks",
-    label: "Scheduled task tools",
+  "mcp-tools-tasks": {
+    id: "mcp-tools-tasks",
+    label: "Task tools",
     path: "/tools",
   },
   "mcp-tools-memory": {
@@ -237,11 +233,6 @@ export const FEATURES = {
   "mcp-tools-specialists": {
     id: "mcp-tools-specialists",
     label: "Specialist tools",
-    path: "/tools",
-  },
-  "mcp-tools-chat-rules": {
-    id: "mcp-tools-chat-rules",
-    label: "Chat rule tools",
     path: "/tools",
   },
 } as const satisfies Record<string, FeatureDescriptor>;

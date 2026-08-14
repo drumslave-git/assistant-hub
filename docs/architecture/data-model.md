@@ -35,8 +35,8 @@ memory_extraction_days                             (per-day processing markers)
 chat_hour_insights ──rolls up──► period_insights
 
 browser_agent_runs ──► browser_run_screenshots
-general_memories      self_corrections      scheduled_tasks
-chat_rules            (chat_id, or null = every chat; target_user_ids = whose messages)
+general_memories      self_corrections
+tasks                 (one instruction + one trigger; chat_id null = every chat)
 ```
 
 ---
@@ -90,30 +90,43 @@ server, see `lib/llm-backend.ts`), timestamps.
 Index: `personalities_name_idx (name)`. Bounds (32 personalities, 64-char name,
 32 000-char prompt) are enforced by the zod contract.
 
-### `chat_rules`
+### `tasks`
 
-Standing instructions the bot follows in a chat — see
-[chat-rules.md](../features/chat-rules.md).
+One instruction plus one trigger — standing rules and timed jobs unified (user
+decision, 2026-08-13; replaced `chat_rules` and `scheduled_tasks`, migrations
+`0054`/`0055`) — see [tasks.md](../features/tasks.md).
 
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | text PK | |
-| `chat_id` | text NULL | The chat the rule belongs to; **null** means every chat (global) |
-| `text` | text NOT NULL | The rule in the author's words; composed into the system prompt |
-| `trigger` | text NOT NULL, default `'on-reply'` | `on-reply` \| `always` (CHECK). `always` may act on a message nobody addressed |
-| `enabled` | boolean NOT NULL, default true | A paused rule stays authored but is never composed into a prompt |
-| `target_user_ids` | text[] NOT NULL, default `{}` | Senders the rule is limited to; empty = everyone in the chat. CHECK: empty unless `chat_id` is set |
+| `chat_id` | text NULL | The chat the task belongs to; **null** means every chat (global). CHECK: null only for `message`/`on-reply` |
+| `thread_id` | bigint | Forum topic, when applicable |
 | `created_by_user_id` | text NULL | Numeric Telegram user id of the author, null for the dashboard |
 | `source` | text NOT NULL, default `'dashboard'` | `chat` \| `dashboard` (CHECK) — provenance |
+| `instruction` | text NOT NULL | The task in the author's words (≤2000 chars) |
+| `context` | text NULL | Saved background for a fire (timed kinds only; a fire sees no transcript) |
+| `trigger` | text NOT NULL | `message` \| `on-reply` \| `interval` \| `timeout` \| `schedule` (CHECK) |
+| `target_user_ids` | text[] NOT NULL, default `{}` | Senders a prompt task is limited to; empty = everyone. CHECK: empty unless `chat_id` is set |
+| `every_minutes` | integer NULL | `interval`: minutes between fires |
+| `delay_minutes` | integer NULL | `timeout`: minutes after creation (display; the instant is in `next_run_at`) |
+| `time_of_day` | text NULL | `schedule`: local `HH:MM` in the operator timezone |
+| `weekdays` | integer[] NULL | `schedule` weekly; 0 = Sunday |
+| `run_date` | text NULL | `schedule` once; `YYYY-MM-DD` |
+| `enabled` | boolean NOT NULL, default true | A paused task never fires and never enters a prompt |
+| `attempts` | integer NOT NULL, default 0 | Consecutive failed fires of a due one-shot (capped at 5, then disabled) |
+| `recent_deliveries` | jsonb `string[]`, default `[]` | What fires actually sent, newest first, for wording variation |
+| `last_run_at`, `next_run_at` | timestamptz | `next_run_at` is null for prompt kinds and spent rows |
 | `created_at`, `updated_at` | timestamptz | |
 
-Index: `chat_rules_chat_idx (chat_id, enabled)` — every reply reads one chat's
-enabled rules plus the global ones. Bounds (32 rules per scope, 1 000-char text,
-16 named people, no duplicate text within a scope) are enforced by the zod
-contract and the service, not the schema. Scope is not editable: a rule moves
-chats only by being deleted and recreated. Who it applies to *is* editable, and
-is narrowed to group scope by the service (a group id is a Telegram fact, not a
-database one) and to people on the `group_members` roster.
+Indexes: `tasks_chat_idx (chat_id, enabled)` — every reply reads one chat's
+enabled prompt tasks plus the global ones — and `tasks_due_idx (enabled,
+next_run_at)` — the poller's scan. Bounds (32 prompt tasks per scope, 16 named
+people, no duplicate instruction within a scope for prompt kinds) are enforced
+by the zod contract and the service. Scope is not editable: a task moves chats
+only by being deleted and recreated. The trigger, audience, timing, and context
+*are* editable; audience is narrowed to group scope by the service (a group id
+is a Telegram fact, not a database one) and to people on the `group_members`
+roster.
 
 ### `known_users`
 
@@ -255,27 +268,8 @@ converts to/from base64 so callers never handle `Buffer`s.
 
 ## Automation
 
-### `scheduled_tasks`
-
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | text PK | |
-| `chat_id` | text NOT NULL | Where the task delivers |
-| `thread_id` | bigint | Forum topic, when applicable |
-| `created_by_user_id` | text | The author. Only the author may edit/cancel via the chat tools |
-| `instruction` | text NOT NULL | The self-contained directive (≤2000 chars) |
-| `schedule_kind` | text NOT NULL | `check`: `once` \| `daily` \| `weekly` |
-| `time_of_day` | text NOT NULL | Local `HH:MM` in the operator timezone |
-| `weekdays` | integer[] | For `weekly`; 0 = Sunday |
-| `run_date` | text | For `once`; `YYYY-MM-DD` |
-| `enabled` | boolean NOT NULL, default `true` | |
-| `attempts` | integer NOT NULL, default 0 | Consecutive failed fires of a due one-shot (capped at 5) |
-| `recent_deliveries` | jsonb `string[]`, default `[]` | Last few delivered texts, for wording variation |
-| `last_run_at`, `next_run_at` | timestamptz | `next_run_at` is recomputed after each fire |
-| `created_at`, `updated_at` | timestamptz | |
-
-Indexes: `(chat_id)`, and `scheduled_tasks_due_idx (enabled, next_run_at)` — the
-poller's scan.
+Timed automation lives in [`tasks`](#tasks) above (the poller scans
+`tasks_due_idx`).
 
 ### `browser_agent_runs`
 

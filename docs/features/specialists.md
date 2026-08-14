@@ -3,7 +3,7 @@
 **Feature ids:** `specialists`, `mcp-tools-specialists` · **Dashboard:** `/specialists` · **Priority 15**
 
 Operator-authored bot roles that store, operate on, and analyze their own data,
-and keep themselves proactive through the scheduled-tasks engine. The user's
+and keep themselves proactive through the tasks engine. The user's
 motivating examples: a daily psycho journal with analysis, grocery management,
 and a planning advisor — all three ship as editable seed rows. Every design
 point below is a user decision from 2026-07-27.
@@ -29,13 +29,13 @@ Self-correction guidelines:          ← self-improvement (global)
 ```
 
 Both the live reply path (`server/telegram/process-update.ts`) and the
-scheduled-task fire path (`features/scheduled-tasks/server/fire.ts`) compose
+task fire path (`features/tasks/server/fire.ts`) compose
 this identically, and both bind the chat as the MCP tool context — the
 load-bearing integration: a specialist's self-scheduled check-in wakes up *as
 the specialist*, with its toolkit scoped to the firing chat, not as the generic
-bot. To make that real, scheduled-task fires now run with the full registered
-toolset (`chatCompletionWithTools`), so a fired digest can query its own
-entries mid-fire; executed tool calls are recorded on the fire trace.
+bot. To make that real, task fires run with the full registered toolset
+(`chatCompletionWithTools`), so a fired digest can query its own entries
+mid-fire; executed tool calls are recorded on the fire trace.
 
 ## Activation
 
@@ -91,8 +91,8 @@ specialist is active in this chat" result when there is none:
 ## Proactivity
 
 No engine of its own: a specialist keeps itself proactive by scheduling tasks
-through the existing scheduled-tasks tools ("keep a daily 21:00 check-in
-scheduled"), and fires deliver through the existing poller + `sendChatMessage`.
+through the existing tasks tools ("keep a daily 21:00 check-in scheduled"), and
+fires deliver through the existing poller's outbound tools (`send_message`).
 Analysis is not a separate engine either — "how was my week" is the model
 querying its own entries, and digests are self-scheduled tasks.
 
@@ -148,5 +148,5 @@ memory documents actually get polluted.
 gating DM vs group, scope-flag queries, caps, entries browser, trace
 recording), `server/mcp-tools.test.ts` (the no-active-specialist result, save
 normalization, switch relaying), `features/bot-messaging/server/prompt.test.ts`
-(stacking order), `features/scheduled-tasks/server/fire.test.ts` (fire-path
+(stacking order), `features/tasks/server/fire.test.ts` (fire-path
 composition + tool-context binding).

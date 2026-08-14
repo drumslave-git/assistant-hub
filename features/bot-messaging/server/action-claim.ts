@@ -20,7 +20,7 @@ import type { ChatMessage } from "@/server/llm/client";
  * run only when the whole turn made **zero** tool calls, and the correction is
  * shown only after the lie exists, with the lie in front of it — the one form of
  * the instruction the model has not already ignored this turn. Same shape and
- * same reasoning as the rule-turn enforcement in `features/chat-rules/format.ts`,
+ * same reasoning as the task-turn enforcement in `features/tasks/format.ts`,
  * which was written against the same failure on a narrower path.
  *
  * Why an LLM and not a word list: "was anything asserted as done" is a question

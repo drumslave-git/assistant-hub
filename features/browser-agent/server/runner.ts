@@ -53,7 +53,7 @@ import type { AgentToolContext, CollectedFile, DownloadOutcome } from "./tools";
 
 /**
  * The browser-agent runner: an in-process queue pump, the same operating model as
- * the scheduled-tasks poller (recorded background-job decision). A single run
+ * the tasks poller (recorded background-job decision). A single run
  * executes at a time; the queue is the `browser_agent_runs` table. Enqueuers
  * signal via `signal.ts`, and a crash-safety sweep at boot fails any run left
  * `running` by a previous process.

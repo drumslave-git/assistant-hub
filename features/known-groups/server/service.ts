@@ -65,7 +65,7 @@ export async function listGroups(db: DrizzleDb = getDb()): Promise<KnownGroupSum
 
 /**
  * Who belongs to which group, across every group, for a view that already has
- * the user profiles it needs to label them (the chat-rules page's per-group
+ * the user profiles it needs to label them (the tasks page's per-group
  * people picker).
  */
 export async function listMemberships(

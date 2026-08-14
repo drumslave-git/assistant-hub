@@ -14,7 +14,7 @@ import { getMemoryJobInfo, type MemoryJobInfo } from "@/features/memory/server/s
 import {
   getTaskSchedulerInfo,
   type TaskSchedulerJobInfo,
-} from "@/features/scheduled-tasks/server/scheduler";
+} from "@/features/tasks/server/scheduler";
 import {
   getSelfImprovementJobInfo,
   type SelfImprovementJobInfo,
@@ -118,16 +118,17 @@ export function messageIndexJobView(status: IdleJobStatus, pending: number): Job
   };
 }
 
-/** Scheduled-tasks poller — `paused` is a policy state the ticker can't know. */
+/** Tasks poller — `paused` is a policy state the ticker can't know. */
 export function taskJobView(info: TaskSchedulerJobInfo | null): JobView {
-  if (info == null) return errored("scheduled-tasks", "Task poller", "/scheduled-tasks");
+  if (info == null) return errored("tasks", "Task poller", "/tasks");
   return {
-    id: "scheduled-tasks",
+    id: "tasks",
     title: "Task poller",
-    description: "Fires scheduled tasks at their wall-clock time and delivers them to their chat.",
+    description:
+      "Fires timed tasks at their wall-clock time; the model decides what each fire sends.",
     activity: info.paused ? "paused" : intervalJobActivity(info.status),
-    href: "/scheduled-tasks",
-    runEndpoint: "/api/scheduled-tasks/run",
+    href: "/tasks",
+    runEndpoint: "/api/tasks/run",
     runDisabled: info.paused || info.overdue === 0,
     notice: info.paused
       ? "Firing is paused: maintenance mode is on. Due tasks are skipped, not dropped."

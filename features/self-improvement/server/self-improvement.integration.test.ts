@@ -442,7 +442,7 @@ describe("self-reflection (reflectOnFeedback)", () => {
   });
 
   it("reflects on a proactively-sent message from the trace that delivered it", async () => {
-    // A scheduled-task fire has no incoming message to key on, so it settles on
+    // A task fire has no incoming message to key on, so it settles on
     // what it delivered — the reacted message itself, not a reply anchor.
     await seedExchange();
     await ctx.db.insert(chatMessages).values({
@@ -454,7 +454,7 @@ describe("self-reflection (reflectOnFeedback)", () => {
       sentAt: new Date("2026-07-14T12:00:00Z"),
     });
     const fire = await startTrace({
-      feature: "scheduled-tasks",
+      feature: "tasks",
       action: "fire",
       trigger: { kind: "cron", actor: CHAT_ID, correlationId: "task-uuid" },
     });

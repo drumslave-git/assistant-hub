@@ -189,11 +189,12 @@ rounds and a final answer — three kinds of work with completely different cost
 profiles, previously averaged into one number that moved with the mix rather than
 with any actual request.
 
-The kinds: `addressing-check`, `chat-rule-match`, `reply-tool-turn`, `reply-final`,
+The kinds: `addressing-check`, `task-match`, `reply-tool-turn`, `reply-final`,
 `vision-describe`, `voice-transcribe`, `history-summarize`, `memory-extract`,
 `memory-consolidate`, `insight-hour`, `insight-rollup`, `browser-agent-turn`,
-`browser-agent-report`, `scheduled-task-fire`, `self-improve-analyze`,
-`self-improve-reflect`.
+`browser-agent-report`, `task-fire`, `self-improve-analyze`,
+`self-improve-reflect` (plus the retired `chat-rule-match` and
+`scheduled-task-fire`, kept so pre-merge traces still label).
 
 Model performance on the Analytics page groups trace rounds by model **and** by
 call kind, which is only possible because this id is on the event.
@@ -323,7 +324,7 @@ bot-vs-participant distinction and the self-authored-only warning are unchanged.
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `reply_to_message` | `message_id` | Attach this turn's reply to an earlier message in this chat instead of the one being answered |
+| `reply_to_message` | `message_id`, `text` | Attach what is said to an earlier message: in a reply turn it retargets the turn's own reply (`text` empty); in a task fire it delivers `text` as a reply to that message |
 
 Pointing at *one* message. When the answer names several, citing their `#<id>`s in
 an ordinary sentence is the better shape — the delivery layer turns each cited id
@@ -354,33 +355,35 @@ proactively, which scope a fact about a person belongs in (`user` for someone th
 chat knows, `general` for anyone else), and that facts must be self-contained and
 one per call.
 
-### Chat rules — `mcp-tools-chat-rules`
+### Tasks — `mcp-tools-tasks`
 
-Standing instructions for the current chat — see
-[chat-rules.md](../features/chat-rules.md). Writes are gated in the service
-(self-serve in a DM, owner-only in a group); global rules are read-only here. A
-group rule may name the people it applies to, by ids copied from the roster in
-the group context — never resolved from a name in code.
-
-| Tool | Input | Purpose |
-| --- | --- | --- |
-| `rules_list` | — | This chat's rules with their ids and audience, plus the global ones |
-| `rules_create` | `text`, `trigger`, `user_ids` | Save a standing rule for this chat, for everyone or for named people |
-| `rules_update` | `id`, `text?`, `trigger?`, `enabled?`, `user_ids?`, `applies_to_everyone?` | Reword, retrigger, re-target, or pause/resume a rule |
-| `rules_delete` | `id` | Remove a rule for good |
-
-### Scheduled tasks — `mcp-tools-scheduled-tasks`
+Standing rules and timed jobs for the current chat, one toolkit — see
+[tasks.md](../features/tasks.md). Gates live in the service, per family:
+standing (`message`/`on-reply`) kinds are self-serve in a DM and owner-only in
+a group; timed kinds are open to create and creator-or-owner to mutate. Global
+tasks are read-only here. A group standing task may name the people it applies
+to, by ids copied from the roster in the group context — never resolved from a
+name in code.
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `tasks_create` | `instruction`, `schedule_kind`, `time`, `weekdays`, `date` | Schedule a reminder for **this** chat |
-| `tasks_update` | `id` + any changed field | Author-scoped edit |
-| `tasks_delete` | `id` | Author-scoped cancel |
-| `tasks_list` | — | This chat's tasks with ids, schedules and next run times |
-| `tasks_get` | `id` | One task |
+| `tasks_list` | — | This chat's tasks with ids, triggers, and audience, plus the global ones |
+| `tasks_get` | `id` | One task, including its saved context |
+| `tasks_create` | `instruction`, `trigger`, `context`, `user_ids`, `every_minutes`, `delay_minutes`, `time`, `weekdays`, `date` | Save a standing rule or a timed job for **this** chat |
+| `tasks_update` | `id` + any changed field, `applies_to_everyone` | Reword, retime, re-target, or pause/resume |
+| `tasks_delete` | `id` | Remove a task for good |
 
-Not owner-gated (a recorded decision, unlike the MVP): any participant may create
-tasks. Authorship is what limits mutation.
+The toolkit's second registrar owns the **outbound** delivery tool:
+
+| Tool | Input | Purpose |
+| --- | --- | --- |
+| `send_message` | `text` | **Task fires only** — deliver a standalone message to the task's chat |
+
+A timed fire's completion text is never sent; only `send_message` (and
+`reply_to_message`, below) deliver. `getToolset({ outbound: true })` — asked
+only by the task scheduler — is what offers `send_message` at all; a reply turn
+never sees it, and its handler refuses without the fire's `deliver` context
+binding.
 
 ### Web — `mcp-tools-browser-agent`
 

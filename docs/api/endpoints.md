@@ -210,26 +210,28 @@ writing it is an upsert and there is nothing to address individually.
 | `GET` | `/api/vision/backfill` | `{ status: IdleJobStatus, pending: number }` |
 | `POST` | `/api/vision/backfill` | The same, after triggering a run |
 
-## Scheduled tasks
+## Tasks
 
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
-| `GET` | `/api/scheduled-tasks` | — | `{ tasks: ScheduledTask[] }` |
-| `POST` | `/api/scheduled-tasks` | `{ chatId, threadId?, instruction, scheduleKind, timeOfDay, weekdays?, runDate?, enabled? }` | The created task — **201** |
-| `PATCH` | `/api/scheduled-tasks/{id}` | Any subset of the editable fields, ≥1 | The updated task |
-| `DELETE` | `/api/scheduled-tasks/{id}` | — | `{ deleted: true }` |
-| `GET` | `/api/scheduled-tasks/run` | — | `TaskSchedulerJobInfo` |
-| `POST` | `/api/scheduled-tasks/run` | — | The same, after one immediate tick |
+| `GET` | `/api/tasks` | — | `Task[]` |
+| `POST` | `/api/tasks` | `{ chatId (null = global), threadId?, instruction, triggerKind, context?, targetUserIds?, everyMinutes?, delayMinutes?, scheduleKind?, timeOfDay?, weekdays?, runDate?, enabled? }` | The created task — **201** |
+| `PATCH` | `/api/tasks/{id}` | Any subset of the editable fields, ≥1 | The updated task |
+| `DELETE` | `/api/tasks/{id}` | — | `{ deleted: true }` |
+| `GET` | `/api/tasks/run` | — | `TaskSchedulerJobInfo` |
+| `POST` | `/api/tasks/run` | — | The same, after one immediate tick |
 
 `TaskSchedulerJobInfo` = `{ status, paused, overdue, nextRunAt, asOf }`. `paused` is
-`true` while maintenance mode is on — due tasks stay due and deliver once it ends.
+`true` while maintenance mode is on — due tasks stay due and fire once it ends.
 
-A dashboard-created task has `createdByUserId: null`, so the chat tools (which are
-author-scoped) cannot mutate it — except for the owner, who is exempt from the
-author rule and may cancel or edit any task in a chat they are in. Schedule
-coherence — a `once` task needs a
-`runDate`, a `weekly` task needs `weekdays` — is enforced by the service, which also
-computes `nextRunAt` in the operator timezone.
+`triggerKind` selects the family and which fields apply: `message`/`on-reply`
+(standing rules — may be global, may carry `targetUserIds` in a group),
+`interval` (`everyMinutes`), `timeout` (`delayMinutes`), `schedule`
+(`timeOfDay` + `weekdays`/`runDate`). Trigger coherence and `nextRunAt` (in the
+operator timezone) are computed by the service. A dashboard-created task has
+`createdByUserId: null`, so the chat tools cannot mutate a timed one — except
+for the owner, who is exempt and may cancel or edit any task in a chat they are
+in.
 
 ## Self-improvement
 
@@ -364,12 +366,12 @@ DELETE /api/memory/general
 GET    /api/vision/backfill
 POST   /api/vision/backfill
 
-GET    /api/scheduled-tasks
-POST   /api/scheduled-tasks
-PATCH  /api/scheduled-tasks/{id}
-DELETE /api/scheduled-tasks/{id}
-GET    /api/scheduled-tasks/run
-POST   /api/scheduled-tasks/run
+GET    /api/tasks
+POST   /api/tasks
+PATCH  /api/tasks/{id}
+DELETE /api/tasks/{id}
+GET    /api/tasks/run
+POST   /api/tasks/run
 
 GET    /api/self-improvement
 POST   /api/self-improvement/run

@@ -49,7 +49,7 @@ function clip(text: string, max: number): string {
  * same message, so an unscoped "latest trace on this message" would sooner
  * return the feedback menu — or the previous reflection, reading itself.
  */
-const PRODUCER_FEATURES = [FEATURES["bot-messaging"].id, FEATURES["scheduled-tasks"].id];
+const PRODUCER_FEATURES = [FEATURES["bot-messaging"].id, FEATURES.tasks.id];
 
 /**
  * The trace of the turn that produced a bot message, or null when there is none

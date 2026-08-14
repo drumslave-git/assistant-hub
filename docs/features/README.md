@@ -14,14 +14,13 @@ Feature ids are the ones in `lib/features.ts` — the same strings that appear a
 | Bot messaging | `bot-messaging` | Overview (bot control) | [bot-messaging.md](bot-messaging.md) |
 | Personalities | `personalities` | `/personalities` | [personalities.md](personalities.md) |
 | Specialists | `specialists`, `mcp-tools-specialists` | `/specialists` | [specialists.md](specialists.md) |
-| Chat rules | `chat-rules`, `mcp-tools-chat-rules` | `/rules` | [chat-rules.md](chat-rules.md) |
+| Tasks (standing rules + timed jobs) | `tasks`, `mcp-tools-tasks` | `/tasks` | [tasks.md](tasks.md) |
 | History | `history`, `history-summaries` | `/history` | [history.md](history.md) |
 | Memory | `memory`, `memory-extraction` | `/memory` | [memory.md](memory.md) |
 | Vision | `vision`, `vision-backfill` | `/vision` | [vision.md](vision.md) |
 | Voice | `voice` | `/vision` | [voice.md](voice.md) |
 | Image generation | `mcp-tools-image-gen` | `/tools`, `/vision` | [image-generation.md](image-generation.md) |
 | Browser agent (all web access) | `browser-agent`, `mcp-tools-browser-agent`, `ytdlp-updater` | `/browser` | [browser-agent.md](browser-agent.md) |
-| Scheduled tasks | `scheduled-tasks`, `mcp-tools-scheduled-tasks` | `/scheduled-tasks` | [scheduled-tasks.md](scheduled-tasks.md) |
 | Self-improvement | `user-feedback`, `self-improvement` | `/self-improvement` | [self-improvement.md](self-improvement.md) |
 | Analytics | `analytics`, `analytics-insights` | `/analytics` | [analytics.md](analytics.md) |
 | Users and groups | `known-users`, `known-groups`, `mcp-tools-known-users` | `/users`, `/groups` | [known-users-and-groups.md](known-users-and-groups.md) |
@@ -43,7 +42,7 @@ message. In prompt order:
 | Personality | Personalities | When one is active |
 | Specialist role | Specialists | When one is active in this chat |
 | Self-correction guidelines | Self-improvement | When any version exists |
-| Standing chat rules | Chat rules | When the chat (or the global set) has any |
+| Standing tasks (rules) | Tasks | When the chat (or the global set) has any |
 | Chat context (roster, group notes) | Users and groups | When there is anything to inject |
 | Long-term memory | Memory | When the bot knows anything about the people here |
 | Sender preferences | Self-improvement | When the sender has a version |
@@ -56,6 +55,14 @@ message. In prompt order:
 
 The full assembly and the reasoning behind the ordering are in
 [the Telegram pipeline](../architecture/telegram-pipeline.md#stage-6--composing-the-reply).
+
+## Merged features
+
+**Chat rules** and **Scheduled tasks** merged into the single **Tasks** feature
+(user decision, 2026-08-13): a task is one instruction plus one trigger
+(`message` / `on-reply` / `interval` / `timeout` / `schedule`), and timed fires
+deliver through the outbound tools instead of a hardcoded send. See
+[tasks.md](tasks.md).
 
 ## Dropped features
 

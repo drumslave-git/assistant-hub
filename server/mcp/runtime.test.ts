@@ -60,6 +60,6 @@ describe("loadMcpRegistry", () => {
     const rebuilt = await loadMcpRegistry();
 
     expect(Array.isArray(rebuilt.registeredToolNames)).toBe(true);
-    expect(rebuilt.registeredToolNames).toContain("rules_create");
+    expect(rebuilt.registeredToolNames).toContain("tasks_create");
   });
 });

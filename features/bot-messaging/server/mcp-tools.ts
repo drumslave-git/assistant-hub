@@ -8,24 +8,23 @@ import { getChatMessagesByTelegramIds } from "@/features/history/server/reposito
 import { tryGetToolContext } from "@/server/mcp/context";
 
 /**
- * How the bot's reply is *delivered*, exposed as an MCP tool.
+ * How what the bot says is *attached*, exposed as an MCP tool. One name, two
+ * execution contexts, one user-facing concept — "what I am saying is about that
+ * particular message":
  *
- * A reply normally lands under the message that prompted it, which is right
- * almost always. It is wrong in one recurring case: somebody asks the bot to find
- * an earlier message ("where's that photo of the front door?"). Answering under
- * the question leaves the person to scroll for the thing they asked about, while
- * a Telegram reply aimed at the found message *is* the answer — it quotes it and
- * taps straight through to it.
+ *  - **Answering someone** (the reply pipeline): the turn already produces
+ *    exactly one reply, so the tool moves that reply's target instead of
+ *    sending anything. A tool that sent its own message here would produce
+ *    two, the second left saying "here it is" about nothing.
+ *  - **Executing a task** (a timed fire, marked by the context's `deliver`
+ *    binding): the turn's own text is never delivered, so here the tool *is*
+ *    the delivery — it sends the given text as a Telegram reply to the target
+ *    message (its sibling `send_message`, offered only in fires, sends
+ *    standalone messages).
  *
- * So this tool moves the turn's reply target. It does not send anything: the turn
- * still produces exactly one message, written the way the model was going to write
- * it, just pointed somewhere else. That is deliberate — a tool that sent its own
- * message would produce two, and the second (the turn's real reply) would be left
- * saying "here it is" about nothing.
- *
- * The id is checked against this chat's mirror before it is accepted. A wrong id
- * is a live failure, not a silent one: Telegram refuses `reply_parameters`
- * pointing at a message it cannot find, which would cost the whole reply.
+ * The id is checked against this chat's mirror before it is accepted in either
+ * mode. A wrong id is a live failure, not a silent one: Telegram refuses
+ * `reply_parameters` pointing at a message it cannot find.
  */
 
 export const REPLY_TO_MESSAGE_TOOL = "reply_to_message";
@@ -33,17 +32,16 @@ export const REPLY_TO_MESSAGE_TOOL = "reply_to_message";
 export const BOT_MESSAGING_TOOL_NAMES = [REPLY_TO_MESSAGE_TOOL];
 
 const REPLY_TO_MESSAGE_DESCRIPTION =
-  "Send this turn's reply as a Telegram reply to an earlier message in this chat, instead of " +
-  "to the message you are answering. Give it the #<id> of that earlier message. " +
-  "Use it whenever your answer is ABOUT one particular earlier message — someone asked you to " +
-  "find a photo, a link, or something that was said, and you found it. Pointing at it is what " +
-  "makes the answer usable: the chat sees your reply attached to that message and can tap " +
-  "through to it. " +
-  "Only use an id you actually saw in this conversation or got back from a lookup — never a " +
-  "guessed or edited number. " +
-  "It changes where your reply lands, nothing else: write your reply as normal (\"here it " +
-  "is\"), do not describe the message you are pointing at as though you were quoting it, and " +
-  "call this once — a later call replaces the earlier target.";
+  "Attach what you are saying to one specific earlier message in this chat, as a Telegram " +
+  "reply that quotes it and taps through to it. Give it the #<id> of that message. Use it " +
+  "whenever your answer is ABOUT one particular earlier message — someone asked you to find a " +
+  "photo, a link, or something that was said, and you found it; or a task has you acting on a " +
+  "specific message. Only use an id you actually saw in this conversation or got back from a " +
+  "lookup — never a guessed or edited number. " +
+  "When you are ANSWERING someone, it changes where your reply lands, nothing else: write your " +
+  "reply as normal, leave 'text' empty, and call this once — a later call replaces the earlier " +
+  "target. When you are EXECUTING A TASK (nobody messaged you), nothing you merely write is " +
+  "sent anywhere, so pass the message to deliver in 'text' — this call is what sends it.";
 
 const replyToMessageOutputSchema = {
   ok: z.boolean(),
@@ -51,7 +49,7 @@ const replyToMessageOutputSchema = {
   message_id: z.number().int().nullable(),
 };
 
-/** Refusal text shared by both ways the target can be unusable. */
+/** Refusal text shared by every way the target can be unusable. */
 function refusal(text: string) {
   return {
     content: [{ type: "text" as const, text }],
@@ -76,24 +74,29 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
             "The Telegram message id to attach your reply to — the number in the #<id> anchor " +
               "of the message you are pointing at.",
           ),
+        text: z
+          .string()
+          .default("")
+          .describe(
+            "Executing a task: the message text to deliver as the reply (required there — " +
+              "only this call sends it). Answering someone: leave empty — your own reply is " +
+              "the message being redirected.",
+          ),
       },
       outputSchema: replyToMessageOutputSchema,
       annotations: {
-        // Nothing is read or written: it only redirects a message this turn was
-        // going to send anyway.
         readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
       },
     },
-    async ({ message_id }) => {
+    async ({ message_id, text }) => {
       const context = tryGetToolContext();
-      const setReplyTarget = context?.setReplyTarget;
-      // No sink bound → this turn sends no reply anyone can aim (e.g. a
-      // scheduled-task fire). Say so plainly rather than accepting the call and
-      // having the model tell the chat it pointed at something.
-      if (!context || !setReplyTarget) {
+      if (!context || (!context.setReplyTarget && !context.deliver)) {
+        // No sink bound → this turn sends no reply anyone can aim. Say so
+        // plainly rather than accepting the call and having the model tell the
+        // chat it pointed at something.
         return refusal(
           "There is no reply to attach in this context. Answer normally and do not say you " +
             "pointed at a message.",
@@ -108,7 +111,29 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
         );
       }
 
-      setReplyTarget(message_id);
+      // A task fire: the tool IS the delivery. `deliver` wins over a (never
+      // co-bound) retarget sink, and an empty text is a usable error rather than
+      // an empty message in the chat.
+      if (context.deliver) {
+        if (!text.trim()) {
+          return refusal(
+            "Pass the message to deliver in 'text' — while executing a task, only this call " +
+              "sends anything.",
+          );
+        }
+        const { messageId } = await context.deliver(text, { replyToMessageId: message_id });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Reply sent (id ${messageId}) to message #${message_id}.`,
+            },
+          ],
+          structuredContent: { ok: true, message_id },
+        };
+      }
+
+      context.setReplyTarget!(message_id);
       return {
         content: [
           {

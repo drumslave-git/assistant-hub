@@ -1,6 +1,6 @@
 import "server-only";
 
-import { computeNextRun } from "@/features/scheduled-tasks/schedule";
+import { computeNextScheduleRun } from "@/features/tasks/schedule";
 import {
   DEFAULT_DAILY_JOBS_RUN_TIME,
   getDailyJobsRunTime,
@@ -96,7 +96,7 @@ export function createDailyScheduler(config: DailySchedulerConfig): DailySchedul
       if (
         !isDailyRunDue({ timeOfDay: runTime, now, timeZone: timezone, lastRunAt: s.lastDailyRunAt })
       ) {
-        const next = computeNextRun({ scheduleKind: "daily", timeOfDay: runTime }, now, timezone);
+        const next = computeNextScheduleRun({ scheduleKind: "daily", timeOfDay: runTime }, now, timezone);
         return { summary: `waiting${next ? ` (next run ${next.toISOString()})` : ""}` };
       }
       s.lastDailyRunAt = now;
@@ -155,7 +155,7 @@ export function createDailyScheduler(config: DailySchedulerConfig): DailySchedul
       // tick); otherwise it is the next daily occurrence.
       const next = due
         ? now
-        : computeNextRun({ scheduleKind: "daily", timeOfDay: runTime }, now, timezone);
+        : computeNextScheduleRun({ scheduleKind: "daily", timeOfDay: runTime }, now, timezone);
       return {
         status: s.scheduler.getStatus(),
         nextRunAt: next ? next.toISOString() : null,
