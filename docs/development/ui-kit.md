@@ -38,6 +38,8 @@ files.
 | `Input`, `Textarea`, `Select`, `Label` | Form controls. `Select` is a native select with a chevron affordance |
 | `PageHeader` | Page title, description, actions |
 | `Fab` | The page's one main action, pinned bottom-right. **Replaces** the inline button rather than shadowing it, and carries that button's state (`busy`, plus a short `status` pill) — a floating button that swallowed the only copy of the feedback would make a failed save look like nothing happened. See [below](#the-floating-action-button) |
+| `Modal` | Dialog for forms and confirmations, on the native `<dialog>` + `showModal()`. See [below](#modals) |
+| `useConfirm` | `window.confirm()`, replaced. Promise-shaped, so it drops into the call sites that used the native one. See [below](#modals) |
 | `Pagination` | Offset pagination for a server-rendered list. Presentational — the caller supplies `hrefFor(offset)`, so every page stays a real URL and the control works in a Server Component. Renders nothing when the list fits on one page |
 | `Progress` | Clamped 0–100% meter |
 | `ScrollArea` | Caps a growing section at a fraction of the viewport and scrolls **inside** the panel, so one dense list never stretches the page |
@@ -171,6 +173,51 @@ Mechanics worth knowing before adding a seventh:
   transformed ancestor, and the mobile drawer at `z-40` correctly covers it. `AppShell`
   carries the bottom padding that stops it covering the last row of a page, reserved on
   every page rather than only the ones with a Fab.
+
+### Modals
+
+Every create/edit form and every destructive confirmation opens in a `Modal`
+(user decision, 2026-08-14). The pages underneath are lists: an inline create card
+sat above the list permanently, and an inline edit expanded a row and pushed
+everything below it down the page while you typed.
+
+`Modal` is built on the **native `<dialog>`** driven by `showModal()`. That is not
+a style preference — the platform supplies four things a hand-rolled overlay has to
+reimplement and usually gets wrong:
+
+| | |
+| --- | --- |
+| Focus containment | No focus trap of our own |
+| Inert background | A control behind the dialog cannot be tabbed to or clicked |
+| Escape | Handled, and routed back through `onClose` so React state stays authoritative |
+| Top layer | Above every stacking context — including the `fixed` `Fab`, which a `z-index` overlay would have had to out-rank |
+
+Two things that will bite whoever touches it:
+
+- **`m-auto` is load-bearing.** A native dialog is centred by the UA's own
+  `margin: auto`, and Tailwind's preflight zeroes every margin — without it the
+  dialog opens in the top-left corner.
+- **`busy` blocks dismissal** while a write is in flight. A half-submitted create
+  that vanishes to a stray Escape leaves no way to know whether it landed.
+
+The convention for a CRUD page: **one** dialog component serving create *and*
+edit, mounted only while open and `key`ed by its target, so its fields are seeded
+once per opening and never carry the previous row's text. The two paths then
+cannot drift apart — where they genuinely differ (a backend edit sends a
+changed-only patch; a task's chat is fixed after creation) the difference is
+visible in one file.
+
+On a tabbed page, put the `Fab` and the dialog **inside the owning tab's panel**.
+`Tabs` keeps inactive panels mounted but `hidden`, which takes a `fixed` child out
+of rendering too — so "New specialist" correctly disappears on the Entries tab
+with no extra wiring.
+
+`useConfirm` replaces `window.confirm()` for destructive actions. Beyond looking
+like the rest of the dashboard, the reason it had to go: browsers let a user
+suppress the native dialog for the session, so a delete guard can silently stop
+appearing and nobody notices it left. Give the confirmation the fact that makes it
+worth reading — which roles use the backend, how many chats lose the specialist,
+the task's own instruction — not "Are you sure?".
 
 ## Theming
 

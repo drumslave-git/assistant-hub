@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarClock, Check, Pencil, Plus, Trash2, X } from "lucide-react";
+import { CalendarClock, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
@@ -10,7 +10,6 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardFooter,
   CardHeader,
   CardTitle,
   Checkbox,
@@ -18,10 +17,12 @@ import {
   Fab,
   Field,
   Input,
+  Modal,
   ScrollArea,
   Select,
   Switch,
   Textarea,
+  useConfirm,
 } from "@/components/ui";
 import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
 import { Timestamp } from "@/components/time/Timestamp";
@@ -383,86 +384,152 @@ function AudienceField({
   );
 }
 
-/* -------------------------------- create form ------------------------------ */
+/* ---------------------------------- dialog --------------------------------- */
 
 function isPromptKind(kind: TriggerKind): boolean {
   return isPromptTask({ triggerKind: kind });
 }
 
-function CreateForm({ chats }: { chats: TaskChat[] }) {
+/** Which task the dialog is editing, or that it is closed. */
+type DialogState = { kind: "closed" } | { kind: "create" } | { kind: "edit"; task: Task };
+
+/**
+ * The one task form. Mounted only while open and keyed by its target, so the
+ * fields are seeded once per opening and never carry a previous task's trigger.
+ *
+ * Create and edit differ in exactly one place, and it is a real difference: the
+ * **chat** is chosen when creating and fixed afterwards. Moving a task between
+ * chats is a delete plus a create, so a task's chat can never change under the
+ * people who agreed to it — which is why the field simply is not rendered here.
+ */
+function TaskDialog({
+  task,
+  chats,
+  onClose,
+}: {
+  /** The task being edited, or null to create one. */
+  task: Task | null;
+  chats: TaskChat[];
+  onClose: () => void;
+}) {
   const router = useRouter();
-  const [scope, setScope] = useState<string>(chats[0]?.chatId ?? GLOBAL);
-  const [instruction, setInstruction] = useState("");
-  const [context, setContext] = useState("");
-  const [trigger, setTrigger] = useState<TriggerFields>(EMPTY_TRIGGER);
-  const [targetUserIds, setTargetUserIds] = useState<string[]>([]);
-  const [state, setState] = useState<"idle" | "saving" | { error: string }>("idle");
+  const editing = task !== null;
+  const [scope, setScope] = useState<string>(
+    editing ? (task.chatId ?? GLOBAL) : (chats[0]?.chatId ?? GLOBAL),
+  );
+  const [instruction, setInstruction] = useState(task?.instruction ?? "");
+  const [context, setContext] = useState(task?.context ?? "");
+  const [trigger, setTrigger] = useState<TriggerFields>(
+    task ? triggerFieldsOf(task) : EMPTY_TRIGGER,
+  );
+  const [targetUserIds, setTargetUserIds] = useState<string[]>(task?.targetUserIds ?? []);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const promptKind = isPromptKind(trigger.triggerKind);
   const scopeChat = scope === GLOBAL ? null : chats.find((c) => c.chatId === scope);
   const members = promptKind && scopeChat?.kind === "group" ? scopeChat.members : [];
 
-  async function create() {
-    setState("saving");
+  async function save() {
+    setBusy(true);
+    setError(null);
     try {
-      const res = await fetch("/api/tasks", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          chatId: scope === GLOBAL ? null : scope,
-          instruction: instruction.trim(),
-          context: !promptKind && context.trim() ? context.trim() : null,
-          targetUserIds: members.length > 0 ? targetUserIds : [],
-          ...triggerPayload(trigger),
-        }),
-      });
+      const res = editing
+        ? await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              instruction: instruction.trim(),
+              ...(promptKind ? {} : { context: context.trim() ? context.trim() : null }),
+              // Only when it changed: a task with no audience control (global,
+              // DM, timed) must not send its empty list back as a change.
+              ...(sameTargets(targetUserIds, task.targetUserIds) ? {} : { targetUserIds }),
+              ...triggerPayload(trigger),
+            }),
+          })
+        : await fetch("/api/tasks", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              chatId: scope === GLOBAL ? null : scope,
+              instruction: instruction.trim(),
+              context: !promptKind && context.trim() ? context.trim() : null,
+              targetUserIds: members.length > 0 ? targetUserIds : [],
+              ...triggerPayload(trigger),
+            }),
+          });
       if (!res.ok) {
-        setState({ error: await readError(res) });
+        setError(await readError(res));
         return;
       }
-      setInstruction("");
-      setContext("");
-      setTargetUserIds([]);
-      setState("idle");
+      onClose();
       router.refresh();
     } catch {
-      setState({ error: "Network error — could not reach the server" });
+      setError("Network error — could not reach the server");
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>New task</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <Modal
+      open
+      onClose={onClose}
+      busy={busy}
+      size="lg"
+      title={editing ? "Edit task" : "New task"}
+      description={
+        promptKind
+          ? "A standing rule the bot applies to messages in the chat."
+          : "A timed task. The model decides what, if anything, it sends when it fires."
+      }
+      footer={
+        <>
+          {error ? <p className="mr-auto text-sm text-danger">{error}</p> : null}
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            onClick={save}
+            disabled={
+              busy || instruction.trim().length < 2 || (!promptKind && scope === GLOBAL)
+            }
+          >
+            {busy ? "Saving…" : editing ? "Save changes" : "Create task"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {editing ? null : (
+          <Field
+            id="task-chat"
+            label="Chat"
+            hint={
+              promptKind
+                ? "The chat the rule holds in. Global rules apply in every chat, on top of that chat's own."
+                : "The chat the task fires into. A timed task needs a concrete chat."
+            }
+          >
+            {({ id, describedBy }) => (
+              <Select
+                id={id}
+                aria-describedby={describedBy}
+                value={scope}
+                onChange={(e) => setScope(e.target.value)}
+              >
+                {promptKind ? <option value={GLOBAL}>Every chat (global)</option> : null}
+                {chats.map((chat) => (
+                  <option key={chat.chatId} value={chat.chatId}>
+                    {chat.kind === "group" ? "Group" : "DM"} · {chat.label}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        )}
         <Field
-          id="new-task-chat"
-          label="Chat"
-          hint={
-            promptKind
-              ? "The chat the rule holds in. Global rules apply in every chat, on top of that chat's own."
-              : "The chat the task fires into. A timed task needs a concrete chat."
-          }
-        >
-          {({ id, describedBy }) => (
-            <Select
-              id={id}
-              aria-describedby={describedBy}
-              value={scope}
-              onChange={(e) => setScope(e.target.value)}
-            >
-              {promptKind ? <option value={GLOBAL}>Every chat (global)</option> : null}
-              {chats.map((chat) => (
-                <option key={chat.chatId} value={chat.chatId}>
-                  {chat.kind === "group" ? "Group" : "DM"} · {chat.label}
-                </option>
-              ))}
-            </Select>
-          )}
-        </Field>
-        <Field
-          id="new-task-instruction"
+          id="task-instruction"
           label="Instruction"
           hint="Write it as a complete instruction to the bot, naming both what triggers it and what to do."
         >
@@ -472,24 +539,22 @@ function CreateForm({ chats }: { chats: TaskChat[] }) {
               aria-describedby={describedBy}
               rows={3}
               value={instruction}
-              onChange={(e) => {
-                setInstruction(e.target.value);
-                setState("idle");
-              }}
+              onChange={(e) => setInstruction(e.target.value)}
               placeholder="e.g. When someone posts a link to a social network video, download it and send the file to the chat."
+              autoFocus
             />
           )}
         </Field>
-        <TriggerInputs idPrefix="new-task" value={trigger} onChange={setTrigger} />
+        <TriggerInputs idPrefix="task" value={trigger} onChange={setTrigger} />
         <AudienceField
-          idPrefix="new-task"
+          idPrefix="task"
           members={members}
           value={targetUserIds}
           onChange={setTargetUserIds}
         />
         {!promptKind ? (
           <Field
-            id="new-task-context"
+            id="task-context"
             label="Context (optional)"
             hint="Background the fire relies on — a fire sees no chat transcript, only this."
           >
@@ -505,17 +570,8 @@ function CreateForm({ chats }: { chats: TaskChat[] }) {
             )}
           </Field>
         ) : null}
-        <Fab
-          label="Create task"
-          busyLabel="Creating…"
-          icon={<Plus className="h-4 w-4" />}
-          onClick={create}
-          busy={state === "saving"}
-          disabled={instruction.trim().length < 2 || (!promptKind && scope === GLOBAL)}
-          status={typeof state === "object" ? { tone: "danger", text: state.error } : null}
-        />
-      </CardContent>
-    </Card>
+      </div>
+    </Modal>
   );
 }
 
@@ -528,155 +584,50 @@ function TaskCard({
   members,
   overdue,
   paused,
+  onEdit,
+  onDelete,
 }: {
   task: Task;
   chatLabel: string;
   authorLabel: string;
-  /** The roster of the task's group, for the audience badge + editor. */
+  /** The roster of the task's group, for the audience badge. */
   members: TaskChatMember[];
   /** The task's run instant has passed and it still has not fired. */
   overdue: boolean;
   /** Firing is paused for every task (maintenance mode) — the likely reason. */
   paused: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
 }) {
   const router = useRouter();
-  const [editing, setEditing] = useState(false);
-  const [instruction, setInstruction] = useState(task.instruction);
-  const [context, setContext] = useState(task.context ?? "");
-  const [trigger, setTrigger] = useState<TriggerFields>(triggerFieldsOf(task));
-  const [targetUserIds, setTargetUserIds] = useState<string[]>(task.targetUserIds);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const promptKind = isPromptKind(trigger.triggerKind);
   // Someone who has left the roster still has to be readable here, or the task
   // would show fewer people than it actually applies to.
   const audience = task.targetUserIds.map(
     (userId) => members.find((m) => m.userId === userId)?.label ?? `User ${userId}`,
   );
 
-  function resetEdit() {
-    setInstruction(task.instruction);
-    setContext(task.context ?? "");
-    setTrigger(triggerFieldsOf(task));
-    setTargetUserIds(task.targetUserIds);
-    setError(null);
-    setEditing(false);
-  }
-
-  async function mutate(run: () => Promise<Response>, after?: () => void) {
+  async function toggleEnabled() {
     setBusy(true);
     setError(null);
     try {
-      const res = await run();
+      const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: !task.enabled }),
+      });
       if (!res.ok) {
         setError(await readError(res));
         return;
       }
-      after?.();
       router.refresh();
     } catch {
       setError("Network error — could not reach the server");
     } finally {
       setBusy(false);
     }
-  }
-
-  const patch = (body: Record<string, unknown>) =>
-    fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-  const save = () =>
-    mutate(
-      () =>
-        patch({
-          instruction: instruction.trim(),
-          ...(promptKind ? {} : { context: context.trim() ? context.trim() : null }),
-          // Only when it changed: a task with no audience control (global, DM,
-          // timed) must not send its empty list back as a change.
-          ...(sameTargets(targetUserIds, task.targetUserIds) ? {} : { targetUserIds }),
-          ...triggerPayload(trigger),
-        }),
-      () => setEditing(false),
-    );
-
-  const toggleEnabled = () => mutate(() => patch({ enabled: !task.enabled }));
-
-  const remove = () => {
-    if (!confirm(`Delete this task? "${task.instruction}"`)) return;
-    return mutate(() =>
-      fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" }),
-    );
-  };
-
-  if (editing) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Edit task</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Field id={`edit-instruction-${task.id}`} label="Instruction">
-            {({ id }) => (
-              <Textarea
-                id={id}
-                rows={3}
-                value={instruction}
-                onChange={(e) => setInstruction(e.target.value)}
-              />
-            )}
-          </Field>
-          <TriggerInputs idPrefix={`edit-${task.id}`} value={trigger} onChange={setTrigger} />
-          {promptKind ? (
-            <AudienceField
-              idPrefix={`edit-${task.id}`}
-              members={members}
-              value={targetUserIds}
-              onChange={setTargetUserIds}
-            />
-          ) : (
-            <Field
-              id={`edit-context-${task.id}`}
-              label="Context (optional)"
-              hint="Background the fire relies on — a fire sees no chat transcript, only this."
-            >
-              {({ id, describedBy }) => (
-                <Textarea
-                  id={id}
-                  aria-describedby={describedBy}
-                  value={context}
-                  onChange={(e) => setContext(e.target.value)}
-                  rows={3}
-                />
-              )}
-            </Field>
-          )}
-          {error ? <p className="text-sm text-danger">{error}</p> : null}
-        </CardContent>
-        <CardFooter>
-          <Button
-            size="sm"
-            onClick={save}
-            disabled={busy || instruction.trim().length < 2}
-            leftIcon={<Check className="h-4 w-4" />}
-          >
-            {busy ? "Saving…" : "Save"}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={resetEdit}
-            disabled={busy}
-            leftIcon={<X className="h-4 w-4" />}
-          >
-            Cancel
-          </Button>
-        </CardFooter>
-      </Card>
-    );
   }
 
   return (
@@ -721,7 +672,7 @@ function TaskCard({
           <Button
             size="icon"
             variant="ghost"
-            onClick={() => setEditing(true)}
+            onClick={onEdit}
             disabled={busy}
             aria-label="Edit task"
           >
@@ -730,7 +681,7 @@ function TaskCard({
           <Button
             size="icon"
             variant="ghost"
-            onClick={remove}
+            onClick={onDelete}
             disabled={busy}
             aria-label="Delete task"
           >
@@ -788,7 +739,34 @@ export function TasksManager({
 }) {
   useLiveRefresh("tasks");
   const timezone = useTimezone();
+  const router = useRouter();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [filter, setFilter] = useState<string>(ALL);
+  const [dialog, setDialog] = useState<DialogState>({ kind: "closed" });
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function remove(task: Task) {
+    const ok = await confirm({
+      title: "Delete this task?",
+      // The instruction is the only thing that identifies a task to a reader,
+      // so the confirmation has to quote it rather than say "this task".
+      body: `"${task.instruction}" — the bot stops acting on it immediately. This cannot be undone.`,
+      confirmLabel: "Delete task",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setDeleteError(null);
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+      if (!res.ok) {
+        setDeleteError(await readError(res));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setDeleteError("Network error — could not reach the server");
+    }
+  }
 
   const chatOf = (chatId: string | null) =>
     chatId === null ? null : chats.find((c) => c.chatId === chatId);
@@ -817,7 +795,7 @@ export function TasksManager({
 
       <p className="text-sm text-muted">Operator timezone: {timezone}</p>
 
-      <CreateForm chats={chats} />
+      {deleteError ? <p className="text-sm text-danger">{deleteError}</p> : null}
 
       <Field
         id="tasks-filter"
@@ -847,7 +825,7 @@ export function TasksManager({
         <EmptyState
           icon={CalendarClock}
           title="No tasks here yet"
-          description="Create one above, or let the people in a chat set one by telling the bot."
+          description="Create one, or let the people in a chat set one by telling the bot."
         />
       ) : (
         <ScrollArea className="space-y-4">
@@ -864,10 +842,29 @@ export function TasksManager({
               }
               overdue={isOverdue(task)}
               paused={job.paused}
+              onEdit={() => setDialog({ kind: "edit", task })}
+              onDelete={() => void remove(task)}
             />
           ))}
         </ScrollArea>
       )}
+
+      <Fab
+        label="New task"
+        icon={<Plus className="h-4 w-4" />}
+        onClick={() => setDialog({ kind: "create" })}
+      />
+
+      {dialog.kind !== "closed" ? (
+        <TaskDialog
+          key={dialog.kind === "edit" ? dialog.task.id : "new"}
+          task={dialog.kind === "edit" ? dialog.task : null}
+          chats={chats}
+          onClose={() => setDialog({ kind: "closed" })}
+        />
+      ) : null}
+
+      {confirmDialog}
     </div>
   );
 }

@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  Check,
-  GraduationCap,
-  Inbox,
-  Pencil,
-  Plus,
-  Trash2,
-  X,
-} from "lucide-react";
+import { GraduationCap, Inbox, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
@@ -21,13 +13,13 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardFooter,
   CardHeader,
   CardTitle,
   EmptyState,
   Fab,
   Field,
   Input,
+  Modal,
   ScrollArea,
   Select,
   Table,
@@ -38,6 +30,7 @@ import {
   TableRow,
   Tabs,
   Textarea,
+  useConfirm,
 } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
 import {
@@ -157,122 +150,48 @@ function ScopeFields({
   );
 }
 
-function CreateForm({ atLimit }: { atLimit: boolean }) {
-  const router = useRouter();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [dataScope, setDataScope] = useState<DataScope>("per-chat");
-  const [state, setState] = useState<"idle" | "saving" | { error: string }>("idle");
+/** Which specialist the dialog is editing, or that it is closed. */
+type DialogState = { kind: "closed" } | { kind: "create" } | { kind: "edit"; specialist: Specialist };
 
-  async function create() {
-    setState("saving");
-    try {
-      const res = await fetch("/api/specialists", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), description, instructions, dataScope }),
-      });
-      if (!res.ok) {
-        setState({ error: await readError(res) });
-        return;
-      }
-      setName("");
-      setDescription("");
-      setInstructions("");
-      setDataScope("per-chat");
-      setState("idle");
-      router.refresh();
-    } catch {
-      setState({ error: "Network error — could not reach the server" });
-    }
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>New specialist</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <Field id="new-specialist-name" label="Name">
-          {({ id }) => (
-            <Input
-              id={id}
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                setState("idle");
-              }}
-              placeholder="e.g. Daily psycho journal"
-              disabled={atLimit}
-            />
-          )}
-        </Field>
-        <ScopeFields
-          idPrefix="new-specialist"
-          description={description}
-          setDescription={setDescription}
-          instructions={instructions}
-          setInstructions={setInstructions}
-          dataScope={dataScope}
-          setDataScope={setDataScope}
-          disabled={atLimit}
-        />
-        <Fab
-          label="Create specialist"
-          busyLabel="Creating…"
-          icon={<Plus className="h-4 w-4" />}
-          onClick={create}
-          busy={state === "saving"}
-          disabled={atLimit || name.trim() === ""}
-          status={
-            atLimit
-              ? { tone: "muted", text: `Limit of ${MAX_SPECIALISTS} reached` }
-              : typeof state === "object"
-                ? { tone: "danger", text: state.error }
-                : null
-          }
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-function SpecialistCard({
+/**
+ * The one specialist form. Mounted only while open and keyed by its target, so
+ * the fields are seeded once per opening and never carry a previous one's text.
+ */
+function SpecialistDialog({
   specialist,
-  activeChatCount,
+  onClose,
 }: {
-  specialist: Specialist;
-  activeChatCount: number;
+  /** The specialist being edited, or null to create one. */
+  specialist: Specialist | null;
+  onClose: () => void;
 }) {
   const router = useRouter();
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(specialist.name);
-  const [description, setDescription] = useState(specialist.description);
-  const [instructions, setInstructions] = useState(specialist.instructions);
-  const [dataScope, setDataScope] = useState<DataScope>(specialist.dataScope);
+  const [name, setName] = useState(specialist?.name ?? "");
+  const [description, setDescription] = useState(specialist?.description ?? "");
+  const [instructions, setInstructions] = useState(specialist?.instructions ?? "");
+  const [dataScope, setDataScope] = useState<DataScope>(specialist?.dataScope ?? "per-chat");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function resetEdit() {
-    setName(specialist.name);
-    setDescription(specialist.description);
-    setInstructions(specialist.instructions);
-    setDataScope(specialist.dataScope);
-    setError(null);
-    setEditing(false);
-  }
+  const editing = specialist !== null;
 
-  async function mutate(run: () => Promise<Response>, after?: () => void) {
+  async function save() {
     setBusy(true);
     setError(null);
     try {
-      const res = await run();
+      const res = await fetch(
+        editing ? `/api/specialists/${encodeURIComponent(specialist.id)}` : "/api/specialists",
+        {
+          method: editing ? "PATCH" : "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: name.trim(), description, instructions, dataScope }),
+        },
+      );
       if (!res.ok) {
         setError(await readError(res));
         return;
       }
-      after?.();
+      onClose();
       router.refresh();
     } catch {
       setError("Network error — could not reach the server");
@@ -281,75 +200,63 @@ function SpecialistCard({
     }
   }
 
-  const save = () =>
-    mutate(
-      () =>
-        fetch(`/api/specialists/${encodeURIComponent(specialist.id)}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: name.trim(), description, instructions, dataScope }),
-        }),
-      () => setEditing(false),
-    );
-
-  const remove = () => {
-    if (
-      !confirm(
-        `Delete specialist "${specialist.name}"? Its chat activations and stored entries are deleted with it. This cannot be undone.`,
-      )
-    )
-      return;
-    return mutate(() =>
-      fetch(`/api/specialists/${encodeURIComponent(specialist.id)}`, { method: "DELETE" }),
-    );
-  };
-
-  if (editing) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Edit specialist</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Field id={`edit-name-${specialist.id}`} label="Name">
-            {({ id }) => (
-              <Input id={id} value={name} onChange={(e) => setName(e.target.value)} />
-            )}
-          </Field>
-          <ScopeFields
-            idPrefix={`edit-${specialist.id}`}
-            description={description}
-            setDescription={setDescription}
-            instructions={instructions}
-            setInstructions={setInstructions}
-            dataScope={dataScope}
-            setDataScope={setDataScope}
-          />
-          {error ? <p className="text-sm text-danger">{error}</p> : null}
-        </CardContent>
-        <CardFooter>
-          <Button
-            size="sm"
-            onClick={save}
-            disabled={busy || name.trim() === ""}
-            leftIcon={<Check className="h-4 w-4" />}
-          >
-            {busy ? "Saving…" : "Save"}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={resetEdit}
-            disabled={busy}
-            leftIcon={<X className="h-4 w-4" />}
-          >
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      busy={busy}
+      size="lg"
+      title={editing ? `Edit ${specialist.name}` : "New specialist"}
+      description="A role the bot can take on in a chat, with its own instructions and its own store of entries."
+      footer={
+        <>
+          {error ? <p className="mr-auto text-sm text-danger">{error}</p> : null}
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-        </CardFooter>
-      </Card>
-    );
-  }
+          <Button onClick={save} disabled={busy || name.trim() === ""}>
+            {busy ? "Saving…" : editing ? "Save changes" : "Create specialist"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field id="specialist-name" label="Name">
+          {({ id }) => (
+            <Input
+              id={id}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Daily journal"
+              autoFocus
+            />
+          )}
+        </Field>
+        <ScopeFields
+          idPrefix="specialist"
+          description={description}
+          setDescription={setDescription}
+          instructions={instructions}
+          setInstructions={setInstructions}
+          dataScope={dataScope}
+          setDataScope={setDataScope}
+        />
+      </div>
+    </Modal>
+  );
+}
 
+function SpecialistCard({
+  specialist,
+  activeChatCount,
+  onEdit,
+  onDelete,
+}: {
+  specialist: Specialist;
+  activeChatCount: number;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -368,8 +275,7 @@ function SpecialistCard({
           <Button
             size="icon"
             variant="ghost"
-            onClick={() => setEditing(true)}
-            disabled={busy}
+            onClick={onEdit}
             aria-label={`Edit ${specialist.name}`}
           >
             <Pencil className="h-4 w-4" />
@@ -377,8 +283,7 @@ function SpecialistCard({
           <Button
             size="icon"
             variant="ghost"
-            onClick={remove}
-            disabled={busy}
+            onClick={onDelete}
             aria-label={`Delete ${specialist.name}`}
           >
             <Trash2 className="h-4 w-4 text-danger" />
@@ -390,13 +295,107 @@ function SpecialistCard({
           <p className="text-sm text-foreground">{specialist.description}</p>
         ) : null}
         {specialist.instructions.trim() ? (
-          <p className="whitespace-pre-wrap text-sm text-muted">{specialist.instructions}</p>
+          <p className="text-sm whitespace-pre-wrap text-muted">{specialist.instructions}</p>
         ) : (
           <p className="text-sm text-faint">No instructions — name and description only.</p>
         )}
-        {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * The CRUD tab. It owns the dialog and confirm state, so the Fab lives inside
+ * this panel — the shared Tabs keeps inactive panels mounted but `hidden`,
+ * which takes the fixed button out of rendering too. A "New specialist" button
+ * floating over the Entries tab would otherwise have nothing to do with it.
+ */
+function SpecialistsTab({
+  specialists,
+  activeCounts,
+}: {
+  specialists: Specialist[];
+  activeCounts: Map<string, number>;
+}) {
+  const router = useRouter();
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [state, setState] = useState<DialogState>({ kind: "closed" });
+  const [error, setError] = useState<string | null>(null);
+
+  const atLimit = specialists.length >= MAX_SPECIALISTS;
+
+  async function remove(specialist: Specialist) {
+    const activeIn = activeCounts.get(specialist.id) ?? 0;
+    const ok = await confirm({
+      title: `Delete "${specialist.name}"?`,
+      // The entries are the part worth pausing over: they are this specialist's
+      // accumulated data, and nothing else in the app holds a copy.
+      body: `Its stored entries are deleted with it${
+        activeIn > 0
+          ? `, and it stops being active in ${activeIn} ${activeIn === 1 ? "chat" : "chats"}`
+          : ""
+      }. This cannot be undone.`,
+      confirmLabel: "Delete specialist",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/specialists/${encodeURIComponent(specialist.id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        setError(await readError(res));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError("Network error — could not reach the server");
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
+
+      {specialists.length === 0 ? (
+        <EmptyState
+          icon={GraduationCap}
+          title="No specialists yet"
+          description="Create a specialist, then activate it for a chat on the assignments tab."
+        />
+      ) : (
+        <ScrollArea className="space-y-4">
+          {specialists.map((s) => (
+            <SpecialistCard
+              key={s.id}
+              specialist={s}
+              activeChatCount={activeCounts.get(s.id) ?? 0}
+              onEdit={() => setState({ kind: "edit", specialist: s })}
+              onDelete={() => void remove(s)}
+            />
+          ))}
+        </ScrollArea>
+      )}
+
+      <Fab
+        label="New specialist"
+        icon={<Plus className="h-4 w-4" />}
+        onClick={() => setState({ kind: "create" })}
+        disabled={atLimit}
+        status={atLimit ? { tone: "muted", text: `Limit of ${MAX_SPECIALISTS} reached` } : null}
+      />
+
+      {state.kind !== "closed" ? (
+        <SpecialistDialog
+          key={state.kind === "edit" ? state.specialist.id : "new"}
+          specialist={state.kind === "edit" ? state.specialist : null}
+          onClose={() => setState({ kind: "closed" })}
+        />
+      ) : null}
+
+      {confirmDialog}
+    </div>
   );
 }
 
@@ -634,28 +633,7 @@ export function SpecialistsManager({
         {
           id: "specialists",
           label: "Specialists",
-          content: (
-            <div className="space-y-6">
-              <CreateForm atLimit={specialists.length >= MAX_SPECIALISTS} />
-              {specialists.length === 0 ? (
-                <EmptyState
-                  icon={GraduationCap}
-                  title="No specialists yet"
-                  description="Create a specialist above, then activate it for a chat on the assignments tab."
-                />
-              ) : (
-                <ScrollArea className="space-y-4">
-                  {specialists.map((s) => (
-                    <SpecialistCard
-                      key={s.id}
-                      specialist={s}
-                      activeChatCount={activeCounts.get(s.id) ?? 0}
-                    />
-                  ))}
-                </ScrollArea>
-              )}
-            </div>
-          ),
+          content: <SpecialistsTab specialists={specialists} activeCounts={activeCounts} />,
         },
         {
           id: "assignments",
