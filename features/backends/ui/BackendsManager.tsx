@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Pencil, Plug, Plus, Server, Trash2, X } from "lucide-react";
+import { Pencil, Plug, Plus, Server, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -10,13 +10,14 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardFooter,
   CardHeader,
   CardTitle,
   EmptyState,
   Fab,
   Field,
   Input,
+  Modal,
+  useConfirm,
 } from "@/components/ui";
 import { readApiError } from "@/lib/api-error";
 import { DEFAULT_LLM_BACKEND, llmBackendLabel, type LlmBackendId } from "@/lib/llm-backend";
@@ -28,7 +29,12 @@ import { BackendTypeField } from "./BackendTypeField";
  * catalog the settings roles pick from, and test any entry — one call proves
  * the host answers and the key is accepted, and doubles as the model preview.
  * Each mutation calls the backends API, then `router.refresh()` re-reads the
- * server-rendered list. Built from the shared UI-kit primitives.
+ * server-rendered list.
+ *
+ * Writing a backend happens in a modal (user decision, 2026-08-14): one form for
+ * create and edit, so the two cannot drift apart — they already differ in the
+ * only place they must (an edit sends a changed-only patch and keeps the stored
+ * key unless the field is touched).
  */
 
 type TestState =
@@ -118,66 +124,129 @@ function useTest() {
   return { state, run, reset: () => setState({ kind: "idle" }) };
 }
 
-function CreateForm() {
+/** Which backend the dialog is editing, or that it is closed. */
+type DialogState = { kind: "closed" } | { kind: "create" } | { kind: "edit"; backend: Backend };
+
+/**
+ * The one backend form. Mounted only while open and keyed by its target, so the
+ * fields are seeded once per opening and never carry a previous backend's URL.
+ */
+function BackendDialog({
+  backend,
+  onClose,
+  onSaved,
+}: {
+  /** The backend being edited, or null to create one. */
+  backend: Backend | null;
+  onClose: () => void;
+  /** Reports models the save cleared, so the page can say so after the dialog goes. */
+  onSaved: (clearedModels: string[]) => void;
+}) {
   const router = useRouter();
-  const [name, setName] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  const [name, setName] = useState(backend?.name ?? "");
+  const [baseUrl, setBaseUrl] = useState(backend?.baseUrl ?? "");
   const [apiKey, setApiKey] = useState("");
-  const [type, setType] = useState<LlmBackendId>(DEFAULT_LLM_BACKEND);
-  const [state, setState] = useState<"idle" | "saving" | { error: string }>("idle");
+  const [keyDirty, setKeyDirty] = useState(false);
+  const [type, setType] = useState<LlmBackendId>(backend?.type ?? DEFAULT_LLM_BACKEND);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const test = useTest();
 
-  async function create() {
-    setState("saving");
+  const editing = backend !== null;
+
+  async function save() {
+    setBusy(true);
+    setError(null);
     try {
-      const res = await fetch("/api/backends", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name: name.trim(),
-          baseUrl: baseUrl.trim(),
-          ...(apiKey.trim() !== "" ? { apiKey: apiKey.trim() } : {}),
-          type,
-        }),
-      });
-      if (!res.ok) {
-        setState({ error: await readApiError(res) });
-        return;
+      if (editing) {
+        // Changed-only: an untouched key field must not overwrite the stored key
+        // with an empty one, which is why `keyDirty` exists rather than a compare.
+        const patch: Record<string, unknown> = {
+          ...(name.trim() !== backend.name ? { name: name.trim() } : {}),
+          ...(baseUrl.trim() !== backend.baseUrl ? { baseUrl: baseUrl.trim() } : {}),
+          ...(keyDirty ? { apiKey: apiKey.trim() === "" ? null : apiKey.trim() } : {}),
+          ...(type !== backend.type ? { type } : {}),
+        };
+        if (Object.keys(patch).length === 0) {
+          onClose();
+          return;
+        }
+        const res = await fetch(`/api/backends/${encodeURIComponent(backend.id)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        if (!res.ok) {
+          setError(await readApiError(res));
+          return;
+        }
+        const { data } = (await res.json()) as {
+          data: { backend: Backend; clearedModels: string[] };
+        };
+        onSaved(data.clearedModels);
+      } else {
+        const res = await fetch("/api/backends", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: name.trim(),
+            baseUrl: baseUrl.trim(),
+            ...(apiKey.trim() !== "" ? { apiKey: apiKey.trim() } : {}),
+            type,
+          }),
+        });
+        if (!res.ok) {
+          setError(await readApiError(res));
+          return;
+        }
+        onSaved([]);
       }
-      setName("");
-      setBaseUrl("");
-      setApiKey("");
-      setType(DEFAULT_LLM_BACKEND);
-      test.reset();
-      setState("idle");
+      onClose();
       router.refresh();
     } catch {
-      setState({ error: "Network error — could not reach the server" });
+      setError("Network error — could not reach the server");
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>New backend</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <Field id="new-backend-name" label="Name" hint="How Settings refers to this endpoint.">
+    <Modal
+      open
+      onClose={onClose}
+      busy={busy}
+      title={editing ? `Edit ${backend.name}` : "New backend"}
+      description="An OpenAI-compatible endpoint the Settings roles can point at."
+      footer={
+        <>
+          {error ? <p className="mr-auto text-sm text-danger">{error}</p> : null}
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            onClick={save}
+            disabled={busy || name.trim() === "" || baseUrl.trim() === ""}
+          >
+            {busy ? "Saving…" : editing ? "Save changes" : "Create backend"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field id="backend-name" label="Name" hint="How Settings refers to this endpoint.">
           {({ id, describedBy }) => (
             <Input
               id={id}
               aria-describedby={describedBy}
               value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                setState("idle");
-              }}
+              onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Home Ollama"
+              autoFocus
             />
           )}
         </Field>
         <Field
-          id="new-backend-url"
+          id="backend-url"
           label="OpenAI-compatible API URL"
           hint="e.g. https://api.openai.com/v1 or http://localhost:11434/v1"
         >
@@ -191,16 +260,19 @@ function CreateForm() {
               onChange={(e) => {
                 setBaseUrl(e.target.value);
                 test.reset();
-                setState("idle");
               }}
               placeholder="https://api.openai.com/v1"
             />
           )}
         </Field>
         <Field
-          id="new-backend-key"
+          id="backend-key"
           label="API key"
-          hint="Optional — required by hosted providers, not by local ones. Stored securely; never shown again."
+          hint={
+            editing
+              ? "Stored securely; never shown again. Leave untouched to keep the current key; clear the field to remove it."
+              : "Optional — required by hosted providers, not by local ones. Stored securely; never shown again."
+          }
         >
           {({ id, describedBy }) => (
             <Input
@@ -211,14 +283,19 @@ function CreateForm() {
               value={apiKey}
               onChange={(e) => {
                 setApiKey(e.target.value);
+                setKeyDirty(true);
                 test.reset();
               }}
-              placeholder="optional"
+              placeholder={
+                editing && backend.apiKeyConfigured && !keyDirty
+                  ? "•••••••• (configured)"
+                  : "optional"
+              }
             />
           )}
         </Field>
         <BackendTypeField
-          idPrefix="newBackend"
+          idPrefix="backendDialog"
           value={type}
           onChange={setType}
           baseUrl={baseUrl.trim() === "" ? null : baseUrl.trim()}
@@ -228,195 +305,32 @@ function CreateForm() {
           disabled={baseUrl.trim() === ""}
           onTest={() =>
             void test.run({
+              ...(editing ? { backendId: backend.id } : {}),
               baseUrl: baseUrl.trim(),
-              ...(apiKey.trim() !== "" ? { apiKey: apiKey.trim() } : {}),
+              ...(keyDirty || !editing
+                ? { apiKey: apiKey.trim() === "" ? null : apiKey.trim() }
+                : {}),
               type,
             })
           }
         />
-        <Fab
-          label="Create backend"
-          busyLabel="Creating…"
-          icon={<Plus className="h-4 w-4" />}
-          onClick={create}
-          busy={state === "saving"}
-          disabled={name.trim() === "" || baseUrl.trim() === ""}
-          status={typeof state === "object" ? { tone: "danger", text: state.error } : null}
-        />
-      </CardContent>
-    </Card>
+      </div>
+    </Modal>
   );
 }
 
-function BackendCard({ backend, inUseBy }: { backend: Backend; inUseBy: string[] }) {
-  const router = useRouter();
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(backend.name);
-  const [baseUrl, setBaseUrl] = useState(backend.baseUrl);
-  const [apiKey, setApiKey] = useState("");
-  const [keyDirty, setKeyDirty] = useState(false);
-  const [type, setType] = useState<LlmBackendId>(backend.type);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [clearedModels, setClearedModels] = useState<string[]>([]);
+function BackendCard({
+  backend,
+  inUseBy,
+  onEdit,
+  onDelete,
+}: {
+  backend: Backend;
+  inUseBy: string[];
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   const test = useTest();
-
-  function resetEdit() {
-    setName(backend.name);
-    setBaseUrl(backend.baseUrl);
-    setApiKey("");
-    setKeyDirty(false);
-    setType(backend.type);
-    setError(null);
-    setEditing(false);
-  }
-
-  async function save() {
-    setBusy(true);
-    setError(null);
-    setClearedModels([]);
-    try {
-      const patch: Record<string, unknown> = {
-        ...(name.trim() !== backend.name ? { name: name.trim() } : {}),
-        ...(baseUrl.trim() !== backend.baseUrl ? { baseUrl: baseUrl.trim() } : {}),
-        ...(keyDirty ? { apiKey: apiKey.trim() === "" ? null : apiKey.trim() } : {}),
-        ...(type !== backend.type ? { type } : {}),
-      };
-      if (Object.keys(patch).length === 0) {
-        setEditing(false);
-        return;
-      }
-      const res = await fetch(`/api/backends/${encodeURIComponent(backend.id)}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      if (!res.ok) {
-        setError(await readApiError(res));
-        return;
-      }
-      const { data } = (await res.json()) as {
-        data: { backend: Backend; clearedModels: string[] };
-      };
-      setClearedModels(data.clearedModels);
-      setEditing(false);
-      setApiKey("");
-      setKeyDirty(false);
-      router.refresh();
-    } catch {
-      setError("Network error — could not reach the server");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remove() {
-    if (!confirm(`Delete backend "${backend.name}"? This cannot be undone.`)) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/backends/${encodeURIComponent(backend.id)}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) {
-        setError(await readApiError(res));
-        return;
-      }
-      router.refresh();
-    } catch {
-      setError("Network error — could not reach the server");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (editing) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Edit backend</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Field id={`edit-name-${backend.id}`} label="Name">
-            {({ id }) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} />}
-          </Field>
-          <Field id={`edit-url-${backend.id}`} label="OpenAI-compatible API URL">
-            {({ id }) => (
-              <Input
-                id={id}
-                type="url"
-                inputMode="url"
-                value={baseUrl}
-                onChange={(e) => {
-                  setBaseUrl(e.target.value);
-                  test.reset();
-                }}
-              />
-            )}
-          </Field>
-          <Field
-            id={`edit-key-${backend.id}`}
-            label="API key"
-            hint="Stored securely; never shown again. Leave untouched to keep the current key; clear the field to remove it."
-          >
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                type="password"
-                autoComplete="off"
-                value={apiKey}
-                onChange={(e) => {
-                  setApiKey(e.target.value);
-                  setKeyDirty(true);
-                  test.reset();
-                }}
-                placeholder={backend.apiKeyConfigured && !keyDirty ? "•••••••• (configured)" : "optional"}
-              />
-            )}
-          </Field>
-          <BackendTypeField
-            idPrefix={`edit-${backend.id}`}
-            value={type}
-            onChange={setType}
-            baseUrl={baseUrl.trim() === "" ? null : baseUrl.trim()}
-          />
-          <TestConnection
-            state={test.state}
-            disabled={baseUrl.trim() === ""}
-            onTest={() =>
-              void test.run({
-                backendId: backend.id,
-                baseUrl: baseUrl.trim(),
-                ...(keyDirty ? { apiKey: apiKey.trim() === "" ? null : apiKey.trim() } : {}),
-                type,
-              })
-            }
-          />
-          {error ? <p className="text-sm text-danger">{error}</p> : null}
-        </CardContent>
-        <CardFooter>
-          <Button
-            size="sm"
-            onClick={save}
-            disabled={busy || name.trim() === "" || baseUrl.trim() === ""}
-            leftIcon={<Check className="h-4 w-4" />}
-          >
-            {busy ? "Saving…" : "Save"}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={resetEdit}
-            disabled={busy}
-            leftIcon={<X className="h-4 w-4" />}
-          >
-            Cancel
-          </Button>
-        </CardFooter>
-      </Card>
-    );
-  }
 
   return (
     <Card>
@@ -434,8 +348,7 @@ function BackendCard({ backend, inUseBy }: { backend: Backend; inUseBy: string[]
           <Button
             size="icon"
             variant="ghost"
-            onClick={() => setEditing(true)}
-            disabled={busy}
+            onClick={onEdit}
             aria-label={`Edit ${backend.name}`}
           >
             <Pencil className="h-4 w-4" />
@@ -443,8 +356,7 @@ function BackendCard({ backend, inUseBy }: { backend: Backend; inUseBy: string[]
           <Button
             size="icon"
             variant="ghost"
-            onClick={remove}
-            disabled={busy}
+            onClick={onDelete}
             aria-label={`Delete ${backend.name}`}
           >
             <Trash2 className="h-4 w-4 text-danger" />
@@ -457,13 +369,6 @@ function BackendCard({ backend, inUseBy }: { backend: Backend; inUseBy: string[]
           {backend.apiKeyConfigured ? "API key configured" : "No API key"}
         </p>
         <TestConnection state={test.state} onTest={() => void test.run({ backendId: backend.id })} />
-        {clearedModels.length > 0 ? (
-          <p className="text-sm text-warning">
-            Cleared {clearedModels.join(", ")} — not served by the new endpoint. Pick replacements
-            in Settings when ready.
-          </p>
-        ) : null}
-        {error ? <p className="text-sm text-danger">{error}</p> : null}
       </CardContent>
     </Card>
   );
@@ -477,23 +382,90 @@ export function BackendsManager({
   /** Settings roles pointing at each backend id (for the in-use badge). */
   inUse: Record<string, string[]>;
 }) {
+  const router = useRouter();
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [state, setState] = useState<DialogState>({ kind: "closed" });
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function remove(backend: Backend) {
+    const roles = inUse[backend.id] ?? [];
+    const ok = await confirm({
+      title: `Delete "${backend.name}"?`,
+      // The in-use list is the whole reason this confirm is worth reading: it is
+      // the difference between deleting a spare and unplugging the chat model.
+      body:
+        roles.length > 0
+          ? `It is currently used by: ${roles.join(", ")}. Those roles will have no endpoint until you point them somewhere else.`
+          : "The endpoint is removed from the catalog. This cannot be undone.",
+      confirmLabel: "Delete backend",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/backends/${encodeURIComponent(backend.id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        setError(await readApiError(res));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError("Network error — could not reach the server");
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <CreateForm />
+      {/* Reported here rather than on the card: the save closes the dialog and
+          the models it cleared belong to Settings roles, not to this row. */}
+      {notice ? <p className="text-sm text-warning">{notice}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
 
       {backends.length === 0 ? (
         <EmptyState
           icon={Server}
           title="No backends yet"
-          description="Add an OpenAI-compatible endpoint above, then pick it for the chat and other roles in Settings."
+          description="Add an OpenAI-compatible endpoint, then pick it for the chat and other roles in Settings."
         />
       ) : (
         <div className="space-y-4">
           {backends.map((backend) => (
-            <BackendCard key={backend.id} backend={backend} inUseBy={inUse[backend.id] ?? []} />
+            <BackendCard
+              key={backend.id}
+              backend={backend}
+              inUseBy={inUse[backend.id] ?? []}
+              onEdit={() => setState({ kind: "edit", backend })}
+              onDelete={() => void remove(backend)}
+            />
           ))}
         </div>
       )}
+
+      <Fab
+        label="New backend"
+        icon={<Plus className="h-4 w-4" />}
+        onClick={() => setState({ kind: "create" })}
+      />
+
+      {state.kind !== "closed" ? (
+        <BackendDialog
+          key={state.kind === "edit" ? state.backend.id : "new"}
+          backend={state.kind === "edit" ? state.backend : null}
+          onClose={() => setState({ kind: "closed" })}
+          onSaved={(clearedModels) =>
+            setNotice(
+              clearedModels.length > 0
+                ? `Cleared ${clearedModels.join(", ")} — not served by the new endpoint. Pick replacements in Settings when ready.`
+                : null,
+            )
+          }
+        />
+      ) : null}
+
+      {confirmDialog}
     </div>
   );
 }
