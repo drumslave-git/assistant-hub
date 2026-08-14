@@ -256,6 +256,11 @@ a delay, or on the calendar). Create, edit, enable/disable and delete, filter
 by chat, and trigger "run due now". Times are local wall-clock in the operator
 timezone.
 
+Two tasks that say the same thing at the same time are refused as the duplicate
+they are — for standing rules on the wording alone, for timed ones on the wording
+plus the trigger and its timing. The same wording at a different time is a
+separate job and goes through.
+
 A task is an **instruction**, not a canned message. A timed fire runs the model
 with the full toolset, and *the model decides what to send* — nothing is
 delivered automatically, so "check X and only message if something changed" is

@@ -111,8 +111,9 @@ export const TASKS_CREATE_DESCRIPTION =
   "saying you would do it: a message of yours agreeing is NOT the task being saved, and a task " +
   "never stored through this tool does not exist no matter how often you promised it. Someone " +
   "repeating the same instruction is telling you they do not believe it took effect — call the " +
-  "tool, do not reassure them again. Calling it twice is safe: a standing rule that is already " +
-  "there is left exactly as it is and the result says so. If you want to know what is actually " +
+  "tool, do not reassure them again. Calling it twice is safe: a rule already in force, or a " +
+  "reminder already scheduled with the same wording for the same time, is left exactly as it is " +
+  "and the result says so — you never end up with two copies. If you want to know what is actually " +
   "stored, call tasks_list — that result is the only evidence; your own earlier messages are " +
   "not. Tell the person what you saved once it is stored.";
 
@@ -378,11 +379,18 @@ export function registerTasksMcpTools(server: McpServer): void {
         if (failure) return failure;
         // A repeat is a success, not a conflict — the asked-for state is in force.
         if (result.status === "exists") {
-          return textResult(
-            `That rule is already in force for this chat (${describeTrigger(result.task)}), ` +
-              `unchanged: ${result.task.instruction}`,
-            { ok: true, task: taskView(result.task), already_present: true },
-          );
+          const kept = isPromptTask(result.task)
+            ? `That rule is already in force for this chat (${describeTrigger(result.task)}), ` +
+              `unchanged: ${result.task.instruction}`
+            : `That exact task is already scheduled for this chat ` +
+              `(${describeTrigger(result.task)}), unchanged — a second copy was NOT created: ` +
+              `${result.task.instruction}` +
+              (result.task.nextRunAt ? `\nNext run: ${result.task.nextRunAt}` : "");
+          return textResult(kept, {
+            ok: true,
+            task: taskView(result.task),
+            already_present: true,
+          });
         }
         // The same standing rule asked for with a different set of people: the
         // rule stays, its audience is what changed.

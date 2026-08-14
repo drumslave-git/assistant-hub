@@ -144,28 +144,30 @@ export async function countPromptTasksInScope(
 }
 
 /**
- * The **enabled** prompt-composed task with this exact instruction in a scope
- * (case-insensitive), or null. Lets the chat path answer "that rule is already
- * in force" with the task itself instead of a bare conflict; the same
- * instruction twice is just noise in every prompt. Timed tasks are exempt —
- * "remind me to drink water" twice is two reminders, not noise.
+ * The **enabled** tasks in a scope whose instruction is exactly this text
+ * (case-insensitive), restricted to `kinds`, oldest first. The raw material of
+ * the duplicate guard: the caller decides what *else* makes two tasks the same
+ * one — for prompt kinds nothing does (the text is the rule, and the same rule
+ * twice is noise in every prompt), for timed kinds the trigger and its timing
+ * must match too (same words at a different time is a different job).
  *
- * Paused rows are skipped, because the guard is a prompt budget and a paused
- * task is in no prompt. It is also what keeps the chat honest: "already in
- * force" about a rule the operator switched off would be a lie, and the
- * alternative — refusing with a reason — would tell the chat about a task it is
- * never shown (user decision, 2026-08-14).
+ * Paused rows are skipped, because the guard is about what is in force and a
+ * paused task is not. It is also what keeps the chat honest: "already there"
+ * about a task the operator switched off would be a lie, and the alternative —
+ * refusing with a reason — would tell the chat about a task it is never shown
+ * (user decision, 2026-08-14).
  */
-export async function getActivePromptTaskByInstruction(
+export async function findActiveTasksByInstruction(
   db: DrizzleDb,
   chatId: string | null,
   instruction: string,
+  kinds: TriggerKind[],
   exceptId?: string,
-): Promise<Task | null> {
+): Promise<Task[]> {
   const parts = [
     scopeWhere(chatId),
     eq(tasks.enabled, true),
-    inArray(tasks.trigger, PROMPT_TRIGGER_KINDS),
+    inArray(tasks.trigger, kinds),
     sql`lower(${tasks.instruction}) = lower(${instruction})`,
   ];
   if (exceptId) parts.push(sql`${tasks.id} <> ${exceptId}`);
@@ -173,8 +175,8 @@ export async function getActivePromptTaskByInstruction(
     .select()
     .from(tasks)
     .where(and(...parts))
-    .limit(1);
-  return rows[0] ? mapRow(rows[0]) : null;
+    .orderBy(...byAge);
+  return rows.map(mapRow);
 }
 
 /** Insert a task with an app-generated id. Returns the stored record. */

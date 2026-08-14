@@ -221,6 +221,23 @@ from garbled pseudo-syntax is a call the model never actually made, and tool
 selection stays the model's. What the loop acts on is the mechanical fact that the
 round produced nothing at all.
 
+**What is asked depends on whether the turn has already run tools.** With nothing
+run yet, the notice above is true and the tools stay offered — the missing thing
+may well be a call. Once a call has run, the loop appends
+`EMPTY_ROUND_AFTER_WORK_NOTICE` (the work above is done, what is missing is the
+answer) and asks the round **with the tools withheld**, the same request the
+stall guard makes, but not flagged `loopDetected` — the model is not stuck, it
+just went quiet.
+
+That split is what stops a *replayed side effect* (trace `796852a6…`,
+2026-08-14): the model answered and called `tasks_create` in one round, the next
+round came back empty (two output tokens), and the old notice told it "Nothing
+was run and nobody received anything". Acting sensibly on a false premise, it
+made the identical call again — two identical reminders three seconds apart. A
+retry is safe for a round that did nothing and unsafe for one that did
+something, so the two cannot share a notice; and withholding the tool is a
+stronger guarantee than telling a model not to repeat itself.
+
 ## Call kinds
 
 `features/analytics/llm-call-kind.ts` is the taxonomy of LLM calls the app makes,

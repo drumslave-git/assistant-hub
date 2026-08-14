@@ -85,6 +85,10 @@ bot no longer knows about at all, so asking it about one gets you "no such task"
 The delivered message is written fresh each time rather than replayed, so a daily
 reminder does not read identically every day.
 
+Asking for the same reminder twice does not give you two: the same wording for the
+same time is treated as the one you already have. Same wording at a *different*
+time is a second reminder, as it should be.
+
 ### Look something up
 
 > "What's the latest on X?"

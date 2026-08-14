@@ -24,13 +24,15 @@ import {
   isPromptTask,
   isTimedTask,
   isVisibleFromChat,
+  PROMPT_TRIGGER_KINDS,
+  TIMED_TRIGGER_KINDS,
   type Task,
   type TriggerKind,
 } from "../types";
 import {
   countPromptTasksInScope,
   deleteTask,
-  getActivePromptTaskByInstruction,
+  findActiveTasksByInstruction,
   getTaskById,
   insertTask,
   listTasks,
@@ -184,6 +186,19 @@ function normalizeTriggerOrThrow(input: Parameters<typeof normalizeTrigger>[0]) 
 }
 
 /**
+ * The canonical trigger, or null when the input does not describe one. For
+ * lookups that run *before* the write path validates: an unusable trigger has
+ * nothing to match against, and the write it precedes reports the real error.
+ */
+function normalizedTriggerOrNull(input: Parameters<typeof normalizeTrigger>[0]) {
+  try {
+    return normalizeTrigger(input);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Guard who a task may name: only a group-scoped prompt task can single people
  * out, and only people the bot has actually seen in that group. Both are
  * mechanical facts — a chat id's sign, and a row in the group roster — so a
@@ -214,19 +229,77 @@ async function assertTargetsAllowed(
   }
 }
 
-/** Guard the per-scope cap and duplicate instruction for prompt kinds. */
-async function assertPromptWritable(
+/** The fields that, with the instruction, decide whether two tasks are one task. */
+type TaskIdentity = { instruction: string } & Pick<
+  Task,
+  "triggerKind" | "everyMinutes" | "delayMinutes" | "timeOfDay" | "weekdays" | "runDate"
+>;
+
+/** Whether two weekday sets name the same days, order aside. */
+function sameWeekdays(a: number[] | null, b: number[] | null): boolean {
+  const left = [...(a ?? [])].sort();
+  const right = [...(b ?? [])].sort();
+  return left.length === right.length && left.every((day, i) => day === right[i]);
+}
+
+/** Whether two tasks fire on exactly the same terms. */
+function sameTrigger(a: Omit<TaskIdentity, "instruction">, b: Omit<TaskIdentity, "instruction">): boolean {
+  return (
+    a.triggerKind === b.triggerKind &&
+    a.everyMinutes === b.everyMinutes &&
+    a.delayMinutes === b.delayMinutes &&
+    a.timeOfDay === b.timeOfDay &&
+    a.runDate === b.runDate &&
+    sameWeekdays(a.weekdays, b.weekdays)
+  );
+}
+
+/**
+ * The task in force that `candidate` would duplicate, or null.
+ *
+ * A prompt task is a duplicate on its **wording alone** — the text is the rule,
+ * and any trigger kind carrying it says the same thing twice in the same prompt.
+ * A timed task must also agree on the **trigger and its timing** (user decision,
+ * 2026-08-14): "remind me at 9" and "remind me at 18:00" are two jobs, but the
+ * same words at the same time is one job asked for twice. That reverses the
+ * earlier "two reminders, not noise" exemption, which cost a live pair of
+ * identical reminders three seconds apart (trace `796852a6…`).
+ */
+async function findDuplicateTask(
   db: DrizzleDb,
   chatId: string | null,
-  instruction: string,
+  candidate: TaskIdentity,
+  exceptId?: string,
+): Promise<Task | null> {
+  const kinds = isPromptTask(candidate) ? PROMPT_TRIGGER_KINDS : TIMED_TRIGGER_KINDS;
+  const matches = await findActiveTasksByInstruction(
+    db,
+    chatId,
+    candidate.instruction,
+    kinds,
+    exceptId,
+  );
+  if (isPromptTask(candidate)) return matches[0] ?? null;
+  return matches.find((task) => sameTrigger(task, candidate)) ?? null;
+}
+
+/** Guard the per-scope cap (prompt kinds) and the duplicate rule (every kind). */
+async function assertWritable(
+  db: DrizzleDb,
+  chatId: string | null,
+  candidate: TaskIdentity,
   exceptId?: string,
 ): Promise<void> {
-  if (!exceptId && (await countPromptTasksInScope(db, chatId)) >= MAX_PROMPT_TASKS_PER_SCOPE) {
+  if (
+    isPromptTask(candidate) &&
+    !exceptId &&
+    (await countPromptTasksInScope(db, chatId)) >= MAX_PROMPT_TASKS_PER_SCOPE
+  ) {
     throw ApiError.conflict(
       `At most ${MAX_PROMPT_TASKS_PER_SCOPE} standing tasks are allowed for ${scopeLabel(chatId)}`,
     );
   }
-  if (await getActivePromptTaskByInstruction(db, chatId, instruction, exceptId)) {
+  if (await findDuplicateTask(db, chatId, candidate, exceptId)) {
     throw ApiError.conflict("That task already exists here");
   }
 }
@@ -290,9 +363,7 @@ export async function createTaskService(
         { ...input, triggerKind: kind },
         now,
       );
-      if (isPromptTask({ triggerKind: kind })) {
-        await assertPromptWritable(db, input.chatId, instruction);
-      }
+      await assertWritable(db, input.chatId, { instruction, ...normalized });
       await trace.event({
         type: "input",
         message: "create task",
@@ -357,9 +428,6 @@ export async function editTaskService(
 
       const instruction =
         patch.instruction !== undefined ? validateInstruction(patch.instruction) : current.instruction;
-      if (isPromptTask({ triggerKind: kind }) && patch.instruction !== undefined) {
-        await assertPromptWritable(db, current.chatId, instruction, id);
-      }
       const context = isTimedTask({ triggerKind: kind })
         ? patch.context !== undefined
           ? validateContext(patch.context)
@@ -386,6 +454,13 @@ export async function editTaskService(
         },
         now,
       );
+      // Checked against the *edited* shape, so a reword or a retime cannot land
+      // a task on top of one already in force — and only when the result will be
+      // enabled: a task being paused duplicates nothing, and refusing there would
+      // block the operator's way of resolving a pair that already exists.
+      if (enabled) {
+        await assertWritable(db, current.chatId, { instruction, ...normalized }, id);
+      }
 
       const record = await updateTask(db, id, {
         instruction,
@@ -573,20 +648,24 @@ export async function createTaskFromChat(
   const targetUserIds = [
     ...new Set((input.targetUserIds ?? []).map((id) => id.trim()).filter(Boolean)),
   ];
-  if (isPromptTask(input)) {
-    // Idempotent from chat (see `TaskWriteResult.exists`): the same standing
-    // task again is the state the caller asked for, so report it as reached.
-    const existing = await getActivePromptTaskByInstruction(db, input.chatId, instruction);
-    if (existing) {
-      // …unless it is asked for with a different set of people. That is not the
-      // stored state, so reporting "already in force" would be a lie about the
-      // one thing that changed; amend it instead and say so.
-      if (sameTargets(existing.targetUserIds, targetUserIds)) {
-        return { status: "exists", task: existing };
-      }
+  // Idempotent from chat (see `TaskWriteResult.exists`): the same task again is
+  // the state the caller asked for, so report it as reached rather than as a
+  // conflict. Normalized first, so "9:00" and "09:00" are recognized as the one
+  // schedule they are; invalid timing skips the lookup and is rejected properly
+  // by the create below.
+  const trigger = normalizedTriggerOrNull({ ...input, triggerKind: input.triggerKind });
+  const existing = trigger
+    ? await findDuplicateTask(db, input.chatId, { instruction, ...trigger })
+    : null;
+  if (existing) {
+    // …unless a standing task is asked for with a different set of people. That
+    // is not the stored state, so reporting "already in force" would be a lie
+    // about the one thing that changed; amend it instead and say so.
+    if (isPromptTask(input) && !sameTargets(existing.targetUserIds, targetUserIds)) {
       const task = await editTaskService(existing.id, { targetUserIds }, traceTrigger, db);
       return { status: "updated", task };
     }
+    return { status: "exists", task: existing };
   }
   try {
     const task = await createTaskService(

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -9,6 +11,7 @@ import { upsertSettings } from "@/features/settings/server/repository";
 import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
+import { insertTask } from "./repository";
 import { MAX_PROMPT_TASKS_PER_SCOPE, type UpdateTaskInput } from "./schema";
 import {
   createTaskFromChat,
@@ -234,16 +237,85 @@ describe("dashboard CRUD", () => {
     await expect(create({ instruction: "answer BRIEFLY." })).resolves.toBeTruthy();
   });
 
-  it("caps standing tasks per scope, leaving timed tasks uncapped and un-deduplicated", async () => {
+  it("caps standing tasks per scope, leaving timed tasks uncapped", async () => {
     for (let i = 0; i < MAX_PROMPT_TASKS_PER_SCOPE; i++) {
       await create({ instruction: `Rule ${i}.` });
     }
     await expect(create({ instruction: "One too many." })).rejects.toMatchObject({ status: 409 });
-    // Timed tasks are not part of the prompt budget: same text twice is two
-    // reminders, and the cap does not apply.
+    // Timed tasks are not part of the prompt budget — they cost nothing until
+    // they fire, so the cap does not apply to them.
     const timed = { triggerKind: "interval", everyMinutes: 60 };
-    await expect(create({ instruction: "Check the feed.", ...timed })).resolves.toBeTruthy();
-    await expect(create({ instruction: "Check the feed.", ...timed })).resolves.toBeTruthy();
+    for (let i = 0; i < MAX_PROMPT_TASKS_PER_SCOPE + 1; i++) {
+      await expect(create({ instruction: `Check feed ${i}.`, ...timed })).resolves.toBeTruthy();
+    }
+  });
+
+  /**
+   * Same wording *and* the same timing is one job asked for twice (user
+   * decision, 2026-08-14, after trace `796852a6…` left two identical reminders
+   * three seconds apart). Same wording at a different time is two jobs.
+   */
+  it("refuses a timed task identical to one in force, and allows a differently timed one", async () => {
+    const daily = { triggerKind: "schedule", timeOfDay: "09:00" };
+    await create({ instruction: "Post the standup prompt.", ...daily });
+
+    await expect(create({ instruction: "post the STANDUP prompt.", ...daily })).rejects.toMatchObject({
+      status: 409,
+    });
+    await expect(
+      create({ instruction: "Post the standup prompt.", triggerKind: "schedule", timeOfDay: "18:00" }),
+    ).resolves.toBeTruthy();
+    await expect(
+      create({ instruction: "Post the standup prompt.", triggerKind: "interval", everyMinutes: 60 }),
+    ).resolves.toBeTruthy();
+  });
+
+  it("recognizes the same clock time however it was written", async () => {
+    await create({ instruction: "Water the plants.", triggerKind: "schedule", timeOfDay: "09:00" });
+    await expect(
+      create({ instruction: "Water the plants.", triggerKind: "schedule", timeOfDay: "9:00" }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("refuses an edit that would retime a task onto one already in force", async () => {
+    await create({ instruction: "Ping us.", triggerKind: "interval", everyMinutes: 30 });
+    const second = await create({ instruction: "Ping us.", triggerKind: "interval", everyMinutes: 45 });
+
+    await expect(
+      editTaskService(second.id, { everyMinutes: 30 }, trigger, ctx.db),
+    ).rejects.toMatchObject({ status: 409 });
+    // Its own row never counts against it: an edit that changes something else
+    // still goes through.
+    await expect(
+      editTaskService(second.id, { instruction: "Ping us twice." }, trigger, ctx.db),
+    ).resolves.toBeTruthy();
+  });
+
+  it("still lets an operator pause one of a pair that predates the rule", async () => {
+    const task = await create({ instruction: "Ping us.", triggerKind: "interval", everyMinutes: 30 });
+    // A second identical row, as one stored before duplicates were refused —
+    // pausing must stay the way out of that, not be blocked by it.
+    await insertTask(ctx.db, randomUUID(), {
+      chatId: GROUP,
+      threadId: null,
+      createdByUserId: null,
+      source: "dashboard",
+      instruction: "Ping us.",
+      context: null,
+      triggerKind: "interval",
+      targetUserIds: [],
+      everyMinutes: 30,
+      delayMinutes: null,
+      timeOfDay: null,
+      weekdays: null,
+      runDate: null,
+      enabled: true,
+      nextRunAt: new Date(),
+    });
+
+    await expect(
+      editTaskService(task.id, { enabled: false }, trigger, ctx.db),
+    ).resolves.toMatchObject({ enabled: false });
   });
 
   it("computes each timed kind's next run at creation", async () => {
@@ -449,6 +521,36 @@ describe("chat-side gate — timed kinds (creator or owner)", () => {
       expect(result.task).toMatchObject({ source: "chat", createdByUserId: OTHER_USER });
       expect(result.task.nextRunAt).not.toBeNull();
     }
+  });
+
+  /**
+   * The production shape of the duplicate (trace `796852a6…`): the model made
+   * the identical call twice in one turn. A repeat reports the task it already
+   * scheduled — a conflict here would teach it to reassure in prose instead of
+   * calling, which is the failure `TaskWriteResult.exists` exists to prevent.
+   */
+  it("answers a repeated identical timed create with the task already scheduled", async () => {
+    const first = await createTaskFromChat(timedInput(OTHER_USER), chatTrigger, ctx.db);
+    const again = await createTaskFromChat(timedInput(OTHER_USER), chatTrigger, ctx.db);
+
+    expect(first.status).toBe("created");
+    expect(again).toMatchObject({
+      status: "exists",
+      task: { id: first.status === "created" ? first.task.id : "" },
+    });
+    expect(await getChatVisibleTasks(GROUP, ctx.db)).toHaveLength(1);
+  });
+
+  it("still lets the same reminder be scheduled for a different time", async () => {
+    await createTaskFromChat(timedInput(OTHER_USER), chatTrigger, ctx.db);
+    const later = await createTaskFromChat(
+      { ...timedInput(OTHER_USER), delayMinutes: 90 },
+      chatTrigger,
+      ctx.db,
+    );
+
+    expect(later.status).toBe("created");
+    expect(await getChatVisibleTasks(GROUP, ctx.db)).toHaveLength(2);
   });
 
   it("lets only the creator or the owner change or cancel it", async () => {

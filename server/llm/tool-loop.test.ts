@@ -675,6 +675,74 @@ describe("a round that produces nothing", () => {
     expect(result.content).toBe("real");
   });
 
+  /**
+   * Trace `796852a6…`: the model answered *and* called `tasks_create` in one
+   * round, the next round came back empty, the retry told it "nothing was run" —
+   * and it made the identical call again. Two reminders, three seconds apart.
+   */
+  describe("once the turn has already run tools", () => {
+    const created = () =>
+      calls([
+        toolCall("c1", "tasks_create", { instruction: "remind me about the game", trigger: "timeout" }),
+      ]);
+
+    it("asks for the answer with the tools withheld, so the call cannot be replayed", async () => {
+      const complete = vi.fn().mockResolvedValueOnce(created()).mockResolvedValueOnce(answer(""));
+      const completeFinal = vi.fn().mockResolvedValue(answer("Saved. I'll remind you."));
+      const callTool = vi.fn().mockResolvedValue(okResult("Task saved for this chat"));
+      const seen: number[] = [];
+
+      const result = await runToolLoop({
+        seed: [{ role: "user", content: "remind me in a couple of days" }],
+        complete,
+        completeFinal,
+        callTool,
+        onEmptyRound: (attempt) => void seen.push(attempt),
+      });
+
+      expect(callTool).toHaveBeenCalledOnce();
+      expect(completeFinal).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ content: "Saved. I'll remind you.", rounds: 3 });
+      // Not a stall — the work is done, only the answer was missing.
+      expect(result.loopDetected).toBe(false);
+      expect(seen).toEqual([1]);
+    });
+
+    it("tells the model the work already ran, rather than that nothing did", async () => {
+      const complete = vi.fn().mockResolvedValueOnce(created()).mockResolvedValueOnce(answer(""));
+      const completeFinal = vi.fn().mockResolvedValue(answer("done"));
+
+      await runToolLoop({
+        seed: [],
+        complete,
+        completeFinal,
+        callTool: vi.fn().mockResolvedValue(okResult("Task saved for this chat")),
+      });
+
+      const sent = completeFinal.mock.calls[0][0] as { role: string; content: string }[];
+      const notice = sent[sent.length - 1];
+      expect(notice.role).toBe("system");
+      expect(notice.content).toContain("DID run");
+      expect(notice.content).not.toContain("Nothing was run");
+    });
+
+    it("falls back to re-asking with tools when the caller offers no tools-free round", async () => {
+      const complete = vi
+        .fn()
+        .mockResolvedValueOnce(created())
+        .mockResolvedValueOnce(answer(""))
+        .mockResolvedValueOnce(answer("answered anyway"));
+
+      const result = await runToolLoop({
+        seed: [],
+        complete,
+        callTool: vi.fn().mockResolvedValue(okResult("Task saved for this chat")),
+      });
+
+      expect(result.content).toBe("answered anyway");
+    });
+  });
+
   it("does not re-ask a round that emitted a tool call but no text", async () => {
     // Normal: a tool turn has no content by design.
     const complete = vi

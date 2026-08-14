@@ -94,10 +94,13 @@ export interface RunToolLoopParams {
   /** Hard cap on model rounds; unset = unbounded (progress guard still applies). */
   maxRounds?: number;
   /**
-   * Runs one round with the tools taken away — the forced final answer when the
-   * stall guard or round cap stops the loop. A degraded answer from what the
-   * model already gathered beats a hard failure. Unset = the stall surfaces
-   * as-is (empty content, `loopDetected`).
+   * Runs one round with the tools taken away. Used for the forced final answer
+   * when the stall guard or round cap stops the loop — a degraded answer from
+   * what the model already gathered beats a hard failure — and for an empty
+   * round that followed real work, where withholding the tools is what stops a
+   * replayed mutation (see {@link EMPTY_ROUND_AFTER_WORK_NOTICE}). Unset = the
+   * stall surfaces as-is (empty content, `loopDetected`), and an empty round is
+   * re-asked with the tools still offered.
    */
   completeFinal?: CompleteRound;
   /**
@@ -187,6 +190,28 @@ export const EMPTY_ROUND_NOTICE =
   "tool call written out inside your thinking is not one and never runs. Do it now: either make " +
   "the tool call for real, or write the plain answer. Do not describe what you are about to do " +
   "instead of doing it.";
+
+/**
+ * Shown instead of {@link EMPTY_ROUND_NOTICE} when the turn has already executed
+ * tool calls — and shown to a round with the **tools withheld**, because at that
+ * point the only thing missing is the answer.
+ *
+ * Production trace `796852a6…` (2026-08-14): the model answered *and* called
+ * `tasks_create` in one round, the next round came back completely empty (two
+ * output tokens, no content, no calls), and the notice above told it "Nothing
+ * was run and nobody received anything" — false, and the model did the sensible
+ * thing with a false premise: it made the same `tasks_create` call again. Two
+ * identical reminders, three seconds apart.
+ *
+ * A retry is safe for a round that did nothing and unsafe for one that did
+ * something, so the two cases cannot share a notice — and telling a model not to
+ * repeat a mutation is weaker than not offering it the tool.
+ */
+export const EMPTY_ROUND_AFTER_WORK_NOTICE =
+  "Your last turn produced nothing: no message and no tool call. The tool calls earlier in this " +
+  "turn DID run — their results are above, and the work they did is done. Nothing needs doing " +
+  "again, and calling the same tool a second time would repeat that work for real. What is " +
+  "missing is your answer to the person: write it now, in plain words, from the results above.";
 
 /**
  * Map `items` through `fn` with at most `limit` in flight, results in input
@@ -284,13 +309,15 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
   const sendable = (): ChatCompletionMessageParam[] =>
     params.compact ? params.compact([...conversation]) : conversation;
 
-  // The stall guard or round cap stopped the loop: the model is stuck or out of
-  // budget. With a completeFinal, ask once more — tools withheld — for an answer
-  // from what it already has; the result stays flagged so callers can tell a
-  // forced answer from a real one.
-  const forceFinal = async (): Promise<ToolLoopResult> => {
+  // Ask once more with the tools withheld, for an answer from what the model
+  // already has. Two callers, distinguished by `stalled`: the stall guard and
+  // the round cap (the model is stuck or out of budget — the result stays
+  // flagged so callers can tell a forced answer from a real one), and an empty
+  // round that followed real work (not a stall: the work is done, only the
+  // answer is missing).
+  const forceAnswer = async (stalled: boolean): Promise<ToolLoopResult> => {
     if (!params.completeFinal) {
-      return { content: "", usage, latencyMs, rounds, responseBody: lastRaw, loopDetected: true };
+      return { content: "", usage, latencyMs, rounds, responseBody: lastRaw, loopDetected: stalled };
     }
     const round = await params.completeFinal(sendable());
     rounds += 1;
@@ -303,13 +330,13 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
       latencyMs,
       rounds,
       responseBody: round.raw,
-      loopDetected: true,
+      loopDetected: stalled,
     };
   };
 
   for (;;) {
     if (params.maxRounds != null && rounds >= params.maxRounds) {
-      return forceFinal();
+      return forceAnswer(true);
     }
 
     const round = await params.complete(sendable());
@@ -322,12 +349,22 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
     // A round that asked for no tools is the answer; anything else is a tool turn.
     await params.onRound?.(round, { index: rounds - 1, isFinal: toolCalls.length === 0 });
 
-    // Neither an answer nor a tool call: nothing the chat can receive, and no
-    // work started. Ask once more before giving up — see EMPTY_ROUND_NOTICE.
+    // Neither an answer nor a tool call: nothing the chat can receive. Ask once
+    // more before giving up — but *what* is asked depends on whether this turn
+    // has already run tools. Nothing has run yet: re-ask with the tools, since
+    // the missing thing may well be a call (EMPTY_ROUND_NOTICE). Work has run:
+    // re-ask with the tools withheld, because the only thing missing is the
+    // answer and an identical call replayed after a glitch does its work twice
+    // for real (EMPTY_ROUND_AFTER_WORK_NOTICE, trace `796852a6…`).
     if (toolCalls.length === 0 && !round.content.trim() && emptyRounds < MAX_EMPTY_ROUND_RETRIES) {
       emptyRounds += 1;
-      conversation.push({ role: "system", content: EMPTY_ROUND_NOTICE });
+      const afterWork = seen.size > 0 && params.completeFinal != null;
+      conversation.push({
+        role: "system",
+        content: afterWork ? EMPTY_ROUND_AFTER_WORK_NOTICE : EMPTY_ROUND_NOTICE,
+      });
       await params.onEmptyRound?.(emptyRounds);
+      if (afterWork) return forceAnswer(false);
       continue;
     }
 
@@ -347,7 +384,7 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
     if (introducesNew) {
       stalls = 0;
     } else if ((stalls += 1) >= MAX_STALL_ROUNDS) {
-      return forceFinal();
+      return forceAnswer(true);
     }
 
     conversation.push(round.assistantMessage);

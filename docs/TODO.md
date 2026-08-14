@@ -28,6 +28,65 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Two identical reminders from one turn (`done` pending live verification, 2026-08-14)
+
+Operator report with the dashboard screenshot: two byte-identical `timeout` tasks,
+next runs three seconds apart. Trace `796852a6…` says it was not the tasks feature:
+
+1. Round 1: the model answered **and** called `tasks_create` — the task was saved.
+2. Round 2: the provider returned a completely empty message (haiku-4.5, two
+   output tokens, no content, no calls).
+3. The loop's empty-round retry appended `EMPTY_ROUND_NOTICE` — *"Nothing was run
+   and nobody received anything"* — which was **false**, and the model did the
+   sensible thing with a false premise: it made the identical call again.
+4. Round 4 answered, and the chat got one confirmation for two reminders.
+
+### What shipped
+
+- `server/llm/tool-loop.ts`: the empty-round retry now branches on whether the
+  turn has run tools. Nothing yet → unchanged (`EMPTY_ROUND_NOTICE`, tools still
+  offered; the `ef8634e5…` case). Work already done → `EMPTY_ROUND_AFTER_WORK_NOTICE`
+  and the round is asked with the **tools withheld**, so the answer is the only
+  thing it can produce. `forceFinal` became `forceAnswer(stalled)`: the same
+  tools-free round, flagged `loopDetected` only when it really is a stall.
+- Tasks (user decision, 2026-08-14, in answer to "do you also want a guard inside
+  `tasks_create`?"): **identical timed tasks are refused outright**, reversing the
+  "two reminders, not noise" exemption. `findDuplicateTask` is now the one rule
+  for both families — prompt kinds on wording alone, timed kinds on wording plus
+  the normalized trigger and timing (`sameTrigger`), so `9:00` and `09:00` are the
+  one schedule they are. From chat a repeat answers "already scheduled,
+  unchanged — a second copy was NOT created"; the dashboard gets its 409.
+- The check also runs on **edits** (`assertWritable(…, exceptId)`), so a reword or
+  a retime cannot land on top of a task in force — except when the edit is a
+  pause, which duplicates nothing and is how an operator resolves a pair that
+  predates the rule.
+
+### Proof
+
+Files: `server/llm/tool-loop.ts` (+ tests), `features/tasks/server/{service,repository,mcp-tools}.ts`,
+`features/tasks/server/tasks.integration.test.ts`, docs (`architecture/llm-and-mcp.md`,
+`features/tasks.md`, `operations/{operator-guide,using-the-bot}.md`).
+
+Lint and typecheck clean. Unit suite **1133 passed / 26 skipped**;
+`tasks.integration.test.ts` 29 passed.
+
+New tests: the loop withholds the tools after an empty round that followed work
+(the call runs exactly once, `loopDetected` false), its notice says the work DID
+run, and a caller without a tools-free round still falls back to re-asking. Tasks:
+an identical timed create is a 409 from the dashboard and `exists` from chat, a
+differently timed one still goes through, `9:00` matches `09:00`, an edit cannot
+retime onto a twin, and a pause is never blocked by one.
+
+### Remaining risks / operator steps
+
+- **The two rows from the trace are still in production.** Delete one on `/tasks`.
+- **Not yet observed live.** The loop path only shows up when a provider returns
+  an empty round, which is rare — the trace warn step (`round produced no answer
+  and no tool call — asking again`) is the signal to watch, and it should now
+  never be followed by a repeated mutating call.
+- Timed dedup is a behaviour change for chat users: "remind me to check the oven
+  in 5 minutes" twice in a row now yields one reminder. Deliberate.
+
 ## A paused task leaked into the chat (`done` pending live verification, 2026-08-14)
 
 Operator report with a group screenshot: asked to call off a task, the bot had

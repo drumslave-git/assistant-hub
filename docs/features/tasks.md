@@ -27,7 +27,8 @@ The two **families** share the row but not the rules:
   (`chat_id null` — applies in every chat on top of the chat's own), may name
   the people they apply to, and carry no saved context (they run inside a live
   turn that has its own).
-- **Timed kinds** are the old scheduled tasks: uncapped, chat-bound (a fire
+- **Timed kinds** are the old scheduled tasks: uncapped (they cost nothing until
+  they fire) but **deduplicated on wording *and* timing**, chat-bound (a fire
   needs somewhere to speak), carry an optional `context` gathered at creation
   (a fire sees no transcript), and keep the one-shot retry lifecycle — a failed
   due one-shot retries on later ticks up to **5 attempts**, then is disabled,
@@ -178,12 +179,36 @@ and a denial is returned, never thrown, so the model relays the refusal:
   user decision, 2026-08-07), judged on the turn's *authority*.
 
 A task of another chat is invisible (`not_found`); a global task is visible but
-read-only from chat. Creating a **standing** task from chat is idempotent: the
-same instruction again returns "already in force, unchanged" (trace
-`f33e1ede…`, 2026-07-29 — a tool that punishes a repeat teaches the model to
-reassure in prose instead of calling), while the same instruction with a
-*different audience* amends the audience and says so. The dashboard still gets
-a 409 for duplicates — an operator must see a no-op for what it is.
+read-only from chat.
+
+## Creating the same task twice
+
+Creating from chat is **idempotent**: the same task again returns the one
+already in force, unchanged (trace `f33e1ede…`, 2026-07-29 — a tool that
+punishes a repeat teaches the model to reassure in prose instead of calling),
+while a standing task asked for with a *different audience* amends the audience
+and says so. The dashboard gets a 409 for the same cases — an operator must see
+a no-op for what it is.
+
+What makes two tasks one task differs by family (`findDuplicateTask`):
+
+| Family | Identical when | Because |
+| --- | --- | --- |
+| Prompt | The **wording** matches, whichever prompt kind carries it | The text is the rule; twice in one prompt is noise |
+| Timed | The wording **and** the trigger with its timing match | "Remind me at 9" and "at 18:00" are two jobs; the same words at the same time is one job asked for twice |
+
+Timed dedup replaced an exemption ("two reminders, not noise") after it cost a
+live pair of identical reminders three seconds apart (user decision, 2026-08-14
+— trace `796852a6…`). The timing is compared **normalized**, so `9:00` and
+`09:00` are the one schedule they are. Only tasks in force are compared: a
+paused row blocks nothing (see below), and an edit is checked the same way
+against its edited shape — except when it is being paused, which duplicates
+nothing and is how an operator resolves a pair that predates the rule.
+
+The root cause of that trace was not the tasks feature: the model answered *and*
+called `tasks_create` in one round, the next round came back empty, and the tool
+loop's retry notice told it nothing had run — so it made the same call again.
+The loop no longer says that; see `docs/architecture/llm-and-mcp.md`.
 
 ## Paused tasks belong to the operator
 
@@ -285,7 +310,7 @@ calls are traced under `mcp-tools-tasks`.
 | `features/tasks/server/matcher.test.ts` | Match prompt (audience prefix, sender line, two-step structure) and every fail-closed citation path |
 | `features/tasks/server/live-matcher.integration.test.ts` | `LLM_LIVE=1`: a real classifier fires a person-only task for its person and nobody else, and a content condition still binds |
 | `features/tasks/server/fire.test.ts` | The delivery inversion: `deliver` binding, quiet fires, delivery-failure semantics, history mirroring |
-| `features/tasks/server/tasks.integration.test.ts` | Scopes, caps, duplicates, targeting, per-kind timing and gates, chat-side idempotence, paused-task invisibility, traces |
+| `features/tasks/server/tasks.integration.test.ts` | Scopes, caps, per-family duplicates (wording, and timing for timed kinds), targeting, per-kind timing and gates, chat-side idempotence, paused-task invisibility, traces |
 | `features/tasks/server/mcp-tools.test.ts` | The toolkit boundary: reads go through the chat-visible service, an invisible id reads as unknown, and no tool can pause anything |
 | `features/tasks/server/scheduler.integration.test.ts` | The due-run loop: settle per kind, quiet fires, one-shot retry/disable |
 | `features/mcp-tools/server/service.test.ts` | The delivery carve-out: an ordinary reply turn sees neither tool, a `message` turn sees only `reply_to_message`, a fire only `send_message`, and never both |
