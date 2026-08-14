@@ -108,8 +108,11 @@ export function Modal({
         if (event.target === ref.current) dismiss();
       }}
       className={cn(
-        "w-[calc(100vw-2rem)] rounded-xl border border-border bg-surface p-0 text-foreground shadow-2xl",
-        "backdrop:bg-black/60 open:animate-none",
+        // `m-auto` is load-bearing: a native <dialog> is centred by the UA's own
+        // `margin: auto`, and Tailwind's preflight zeroes every margin, which
+        // parks the dialog in the top-left corner.
+        "m-auto w-[calc(100vw-2rem)] rounded-xl border border-border bg-surface p-0 text-foreground shadow-2xl",
+        "backdrop:bg-black/60",
         SIZES[size],
       )}
     >
