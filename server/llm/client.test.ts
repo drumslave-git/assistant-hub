@@ -567,3 +567,79 @@ describe("servedModelOf", () => {
     }
   });
 });
+
+describe("listModels against a Google backend", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("lists via the native route with x-goog-api-key, following its pagination", async () => {
+    const requests: Array<{ url: URL; headers: Headers }> = [];
+    vi.stubGlobal("fetch", async (url: URL | string, init?: RequestInit) => {
+      const u = new URL(String(url));
+      requests.push({ url: u, headers: new Headers(init?.headers) });
+      // Google paginates with `pageToken`/`nextPageToken`, and namespaces ids.
+      const body = u.searchParams.get("pageToken")
+        ? { models: [{ name: "models/gemini-c" }] }
+        : { models: [{ name: "models/gemini-b" }, { name: "models/gemini-a" }], nextPageToken: "p2" };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const { listModels } = await import("./client");
+    const models = await listModels({
+      baseUrl: "https://generativelanguage.googleapis.com",
+      apiKey: "goog-key",
+      backend: "google",
+    });
+
+    // The `models/` namespace belongs to this route, not to the model: every
+    // other route — and every stored selection — uses the bare id.
+    expect(models).toEqual(["gemini-a", "gemini-b", "gemini-c"]);
+    // `/v1beta`, not the `/v1` every OpenAI-shaped backend gets.
+    expect(requests[0].url.pathname).toBe("/v1beta/models");
+    expect(requests[0].headers.get("x-goog-api-key")).toBe("goog-key");
+    expect(requests[0].headers.get("authorization")).toBeNull();
+    expect(requests[1].url.searchParams.get("pageToken")).toBe("p2");
+  });
+
+  it("reads the message out of Google's array-wrapped error body", async () => {
+    // The shape the operator's failing reply actually returned: a single-element
+    // array, which every `{error:{message}}` reader misses.
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify([
+            { error: { code: 400, message: "API key not valid", status: "INVALID_ARGUMENT" } },
+          ]),
+          { status: 400 },
+        ),
+    );
+
+    const { listModels } = await import("./client");
+    await expect(
+      listModels({
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+        apiKey: "bad",
+        backend: "google",
+      }),
+    ).rejects.toMatchObject({
+      code: "service_unavailable",
+      message: "LLM endpoint error (400): API key not valid",
+    });
+  });
+
+  it("versions the base URL the way Gemini does, and leaves an explicit one alone", async () => {
+    const { toGoogleBaseUrl } = await import("./client");
+    expect(toGoogleBaseUrl("https://generativelanguage.googleapis.com")).toBe(
+      "https://generativelanguage.googleapis.com/v1beta",
+    );
+    expect(toGoogleBaseUrl("https://generativelanguage.googleapis.com/")).toBe(
+      "https://generativelanguage.googleapis.com/v1beta",
+    );
+    // An operator who pinned a version said something specific.
+    expect(toGoogleBaseUrl("https://proxy.invalid/v1alpha")).toBe("https://proxy.invalid/v1alpha");
+    expect(toGoogleBaseUrl("https://proxy.invalid/v1")).toBe("https://proxy.invalid/v1");
+  });
+});

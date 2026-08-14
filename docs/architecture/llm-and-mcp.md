@@ -22,12 +22,20 @@ Each of the four non-chat clients falls back to the chat role's backend when the
 role has none of its own — an embedding model usually comes from a different
 model and sometimes a different host, but often enough the same one serves both.
 
-One backend type does not speak these OpenAI routes at all: a backend declared
-`anthropic` rides the AI SDK's native Anthropic provider for chat
-(`server/llm/provider.ts` picks the provider per connection) and a native
-`x-api-key` `/v1/models` listing (`client.ts`); the non-chat clients refuse it
-with a named error, since Anthropic serves no embeddings, image, or audio
-routes.
+Two backend types do not speak these OpenAI routes at all, and each rides the AI
+SDK's native provider (`server/llm/provider.ts` picks the provider per
+connection) plus its own model listing in `client.ts`:
+
+- **`anthropic`** — native Messages API, `x-api-key` listing. The non-chat
+  clients refuse it with a named error, since Anthropic serves no embeddings,
+  image, or audio routes.
+- **`google`** — the Generative Language API at `/v1beta`, `x-goog-api-key`
+  listing (`pageToken` paging, ids namespaced `models/…` and stripped here).
+  Chat, embeddings and images all resolve natively; speech and
+  transcriptions-mode audio refuse with a named error, since neither sits on an
+  OpenAI audio route. Gemini is reachable through an OpenAI-compatibility layer
+  too, but the native provider carries thought signatures as a first-class field
+  and resolves the thinking knob per model, which that layer does neither.
 
 `classifier.ts` is not a sixth client but a call *shape* over `client.ts`: the
 reasoning mode and token budget every per-message classification uses (addressing
@@ -67,10 +75,18 @@ Notable constraints, each learned the hard way:
   functionCall parts`) — so on a tool-using bot, every reply that touched a tool
   failed. The signature travels on the call itself, as `extra_content` in the
   conversation's OpenAI shape (`LoopToolCall` in `transport.ts`), and is handed
-  back to the provider as `providerOptions.google.thoughtSignature`. The two
-  halves of the SDK key it differently — the response files it under the
-  provider's own name, the request reads only `google` — so the transport bridges
-  them rather than naming one key.
+  back to the provider as `providerOptions.google.thoughtSignature` — which is
+  what both the native Google provider and the OpenAI-compatibility layer read.
+  On the compatibility layer the two halves of the SDK key it differently (the
+  response files it under the provider's own name, the request reads only
+  `google`), so the transport bridges them rather than naming one key.
+- **A knob can be per model, not per backend.** "Do not think" is
+  `thinkingBudget: 0` on Gemini 2.5, `thinkingLevel: "minimal"` on Gemini 3, and
+  impossible on 2.5 Pro — so no fixed body field is right for more than one
+  model. `LlmBackendAdapter.reasoningSetting` is the seam: the adapter states the
+  intent in the SDK's normalized vocabulary and the provider resolves it against
+  the model id it was handed, instead of this layer copying a mapping that goes
+  stale with every model release.
 - **Where a turn may sit is the server's rule, not the caller's.** Anthropic
   accepts a `system` turn inside `messages` only where it precedes an assistant
   turn or ends the array, while the reply prompt interleaves system turns for

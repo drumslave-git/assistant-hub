@@ -70,6 +70,17 @@ describe("detectBackend", () => {
     expect(seen).toEqual([]);
   });
 
+  it("identifies Gemini by hostname alone, without sending a single probe", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      seen.push(String(url));
+      return new Response("nope", { status: 404 });
+    });
+    const result = await detectBackend("https://generativelanguage.googleapis.com/v1beta");
+    expect(result.backend).toBe("google");
+    expect(seen).toEqual([]);
+  });
+
   it("suggests nothing when no server names itself, leaving the choice alone", async () => {
     stubRoutes({});
     const result = await detectBackend("https://host.invalid/v1");

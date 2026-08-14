@@ -64,8 +64,14 @@ export async function detectBackend(baseUrl: string): Promise<BackendDetection> 
 
   // Anthropic serves no unauthenticated fingerprint route (every native path
   // wants a key), but it does not need one: the hostname is the signature.
-  if (new URL(origin).hostname === "api.anthropic.com") {
+  const hostname = new URL(origin).hostname;
+  if (hostname === "api.anthropic.com") {
     return { backend: "anthropic", detail: "Anthropic API (api.anthropic.com)" };
+  }
+  // Same for Gemini: every native path wants a key, and the hostname says which
+  // API this is more reliably than any probe could.
+  if (hostname === "generativelanguage.googleapis.com") {
+    return { backend: "google", detail: "Google Gemini API (generativelanguage.googleapis.com)" };
   }
 
   const ollama = await probe(origin, "/api/version");

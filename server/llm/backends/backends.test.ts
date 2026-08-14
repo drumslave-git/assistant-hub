@@ -75,6 +75,22 @@ describe("thinking control differs per backend", () => {
     expect(chatBodyExtrasFor("anthropic", { reasoning: "low" })).toEqual({});
   });
 
+  it("Google states the intent instead of a field, because its knob is per model", () => {
+    // `thinkingBudget: 0` (2.5) and `thinkingLevel: "minimal"` (Gemini 3) are
+    // both 400s on the other family, so no fixed body field can be right. The
+    // provider resolves it against the model id — see `reasoningSetting`.
+    expect(chatBodyExtrasFor("google", { reasoning: "off" })).toEqual({});
+    expect(adapterFor("google").reasoningSetting!({ reasoning: "off" })).toBe("none");
+    expect(adapterFor("google").reasoningSetting!({ reasoning: "low" })).toBe("low");
+    expect(adapterFor("google").reasoningSetting!({ reasoning: "default" })).toBeUndefined();
+  });
+
+  it("no other backend claims the SDK-level reasoning setting", () => {
+    for (const id of LLM_BACKEND_IDS.filter((backend) => backend !== "google")) {
+      expect(adapterFor(id).reasoningSetting).toBeUndefined();
+    }
+  });
+
   it("leaves the model alone when no reasoning preference was expressed", () => {
     for (const id of LLM_BACKEND_IDS) {
       expect(chatBodyExtrasFor(id, {})).toEqual({});
@@ -127,6 +143,28 @@ describe("reasoning text is read wherever the backend puts it", () => {
     expect(readReasoningFor("anthropic", raw)).toBe("step one\nstep two");
   });
 
+  it("reads Gemini's thinking off the parts flagged as thoughts", () => {
+    // Native `generateContent`: thinking is an ordinary text part carrying
+    // `thought: true`, interleaved with the answer — not a separate field.
+    const raw = {
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              { text: "weighing it", thought: true },
+              { text: "the answer" },
+            ],
+          },
+        },
+      ],
+    };
+    expect(readReasoningFor("google", raw)).toBe("weighing it");
+    expect(readReasoningFor("google", { candidates: [{ content: { parts: [{ text: "hi" }] } }] })).toBeNull();
+    expect(readReasoningFor("google", { choices: [{ message: { content: "hi" } }] })).toBeNull();
+    expect(readReasoningFor("google", null)).toBeNull();
+  });
+
   it("returns null for an Anthropic response with no or empty thinking blocks", () => {
     // Opus 4.7+ omit the text by default — the block is there, the text empty.
     expect(
@@ -144,6 +182,7 @@ describe("context overflow", () => {
     expect(truncatesOnOverflow("llamacpp")).toBe(false);
     expect(truncatesOnOverflow("vllm")).toBe(false);
     expect(truncatesOnOverflow("anthropic")).toBe(false);
+    expect(truncatesOnOverflow("google")).toBe(false);
     expect(truncatesOnOverflow("openai-compatible")).toBe(false);
   });
 
@@ -159,9 +198,28 @@ describe("context overflow", () => {
       true,
     );
   });
+
+  it("adds Gemini's overflow phrasing, which carries no 'context' word either", () => {
+    const patterns = adapterFor("google").contextOverflowPatterns;
+    expect(
+      patterns.some((p) =>
+        p.test("The input token count (1200000) exceeds the maximum number of tokens allowed (1048576)."),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("served model identity", () => {
+  it("strips the namespace Gemini's listing adds, so one model is not two", () => {
+    // The listing answers `models/gemini-2.5-flash`; every other route, and the
+    // stored selection, use the bare id.
+    const google = adapterFor("google");
+    expect(google.normalizeServedModelId("models/gemini-2.5-flash")).toBe(
+      google.normalizeServedModelId("gemini-2.5-flash"),
+    );
+    expect(google.normalizeServedModelId("models/gemini-2.5-flash")).toContain("gemini-2.5-flash");
+  });
+
   it("folds Ollama tag case, which the dashboard was counting as two models", () => {
     const ollama = adapterFor("ollama");
     expect(ollama.normalizeServedModelId("gemma3:26B")).toBe("gemma3:26b");

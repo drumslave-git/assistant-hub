@@ -4,18 +4,24 @@
 
 The operator's catalog of LLM endpoints. Each backend is one named
 server — base URL, optional API key, and which inference server answers there
-(`ollama`, `llamacpp`, `vllm`, `anthropic`, or generic; see the
+(`ollama`, `llamacpp`, `vllm`, `anthropic`, `google`, or generic; see the
 backend-normalization layer in [LLM & MCP](../architecture/llm-and-mcp.md)).
-Most types speak the OpenAI wire shape; `anthropic` is the exception — it rides
-the native Anthropic API (`x-api-key` auth, native `/v1/models` listing) and
-serves the chat-shaped roles only (chat, vision, browser agent, classifiers,
-background); embeddings, images, speech and transcription-mode audio refuse it
-with a named error, and its adapter also rearranges the prompt's interleaved
-system turns into the placement the native API allows (see
-[LLM & MCP](../architecture/llm-and-mcp.md)). A Gemini endpoint is configured as
-a generic OpenAI-compatible backend; the thought signature it attaches to every
-tool call is carried back automatically, without which no tool-using reply
-completes. The settings roles (chat,
+Most types speak the OpenAI wire shape; two do not:
+
+- **`anthropic`** — the native Anthropic API (`x-api-key` auth, native
+  `/v1/models` listing), serving the chat-shaped roles only (chat, vision,
+  browser agent, classifiers, background); embeddings, images, speech and
+  transcription-mode audio refuse it with a named error. Its adapter also
+  rearranges the prompt's interleaved system turns into the placement the native
+  API allows.
+- **`google`** — the native Gemini API (`x-goog-api-key` auth, `/v1beta`,
+  native listing), serving chat, embeddings and images; speech and
+  transcriptions-mode audio refuse it with a named error. Detect recognizes
+  `generativelanguage.googleapis.com` by hostname. The thought signature Gemini
+  attaches to every tool call is carried back automatically — without it, no
+  tool-using reply completes.
+
+The settings roles (chat,
 embeddings, images, speech, audio, vision, browser agent) reference backends by
 id instead of carrying their own URL/key copies — one server, entered once,
 picked everywhere.

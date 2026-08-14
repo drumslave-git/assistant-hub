@@ -28,6 +28,84 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Google (Gemini) as a native backend type (`done` pending key-in-hand verification, 2026-08-14)
+
+User decision, 2026-08-14, immediately after the thought-signature fix below:
+use `@ai-sdk/google` rather than keep reaching Gemini through its
+OpenAI-compatibility layer. Same shape as the Anthropic backend that shipped
+earlier the same day.
+
+### What shipped
+
+- **New backend id `google`** (`lib/llm-backend.ts`, labeled "Google (Gemini)"):
+  plain-text column, no migration. Zod enums, the Backends UI and the OpenAPI
+  enum pick it up from `LLM_BACKEND_IDS`.
+- **Native provider** (`@ai-sdk/google` 4.0.44, new dependency): `createProvider`
+  branches on the backend and returns `languageModel` / `embeddingModel` /
+  `imageModel` — Gemini serves all three, so unlike Anthropic none of them
+  refuse. `providerOptionsName` returns `google`. `toGoogleBaseUrl` (new, beside
+  `toOpenAiBaseUrl`) appends `/v1beta` rather than `/v1` and leaves an
+  explicitly versioned URL alone.
+- **`LlmBackendAdapter.reasoningSetting`** (new optional member, implemented only
+  by `google`): expresses the reasoning intent through the SDK's normalized
+  setting instead of a body field, because Gemini's off-switch is
+  `thinkingBudget: 0` on 2.5, `thinkingLevel: "minimal"` on Gemini 3 and
+  impossible on 2.5 Pro — a fixed field would be a 400 on whichever family it was
+  not written for. The provider already resolves it against the model id; this
+  layer would otherwise have to copy that mapping and keep it current.
+  `chatBodyExtras` for `google` therefore returns `{}`.
+- **Adapter**: `readReasoning` reads native `candidates[].content.parts[]` with
+  `thought: true` (Gemini interleaves thinking as flagged text parts — no
+  separate field); overflow pattern `/input token count/i` (Google's phrasing
+  carries no "context" word), behavior `error`; `normalizeServedModelId` strips
+  the listing's `models/` namespace so one model is not counted as two.
+- **Native listing** (`listGoogleModels`): `GET /v1beta/models?pageSize=1000`
+  with `x-goog-api-key`, following `nextPageToken`, ids de-namespaced, errors
+  mapped to the shared `LLM endpoint error (status): detail` wording — including
+  Google's **array-wrapped** `[{error:{message}}]` body, which every
+  `{error:{message}}` reader misses.
+- **Detect** recognizes `generativelanguage.googleapis.com` by hostname with
+  zero probes, like Anthropic.
+- **Speech and transcriptions-mode audio refuse with a named error**
+  (`createOpenAiClient`): Gemini has both capabilities but neither sits on an
+  OpenAI audio route, and those two roles are the only ones that reach that
+  client.
+- Docs: `configuration.md`, `features/backends.md`,
+  `architecture/llm-and-mcp.md`, `api/openapi.yaml`.
+
+### Proof
+
+Lint clean; typecheck clean; `next build` clean. Unit: `server/llm` 155/155,
+full suite 1082 passed / the same 21 pre-existing yt-dlp + media-download
+Windows failures. Integration: backends + settings + status 59/59 against real
+Postgres. New tests, all against the real provider with a stubbed fetch rather
+than a mock of it:
+
+- The **same call** produces `thinkingConfig: {thinkingBudget: 0}` on
+  `gemini-2.5-flash` and `{thinkingLevel: "minimal"}` on `gemini-3-pro-preview`
+  — the per-model resolution reaching the wire, which is the entire reason
+  `reasoningSetting` exists.
+- A two-round `chatCompletionWithTools` on the native provider: round 1's
+  `functionCall` carries `thoughtSignature`, and round 2's `contents` replays it.
+- Listing: `/v1beta/models`, `x-goog-api-key` with no `Authorization`,
+  `pageToken` paging, `models/` stripped, and the array-wrapped 400 read.
+- Adapter: native thought parts, overflow phrasing, namespace folding, and that
+  no other backend claims `reasoningSetting`.
+
+### Remaining risks / operator steps
+
+- **Not yet exercised with a real key** — the assistant handles none. Create the
+  backend with the key: Test connection should list `gemini-*` ids; then point
+  the chat role at it and run the Settings chat probe and a tool-using message.
+- **The dropdown was not seen in a browser**: no dev server was running, and a
+  restart drops the preview's login, which the assistant cannot restore. The
+  option is data-driven from `LLM_BACKENDS` and the build is clean, but the
+  visual check is the operator's.
+- The overflow phrasing is Google's documented wording, **not** observed live;
+  if a real overflow reads differently, the pattern is the place to fix.
+- Vision, browser agent and the two aux roles inherit the chat backend as usual,
+  so pointing chat at Gemini moves them too unless they are set explicitly.
+
 ## Tool calls and system turns broke on hosted backends (`done` pending live verification, 2026-08-14)
 
 Two operator reports the same day, both 400s that killed the whole reply, both

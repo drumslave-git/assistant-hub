@@ -76,7 +76,7 @@ OpenAI-compatible server:
 | `name` | string (≤100) | Display name, unique case-insensitively |
 | `baseUrl` | URL (≤500) | The OpenAI-compatible endpoint (e.g. `…/v1`) |
 | `apiKey` | secret | Optional; write-only, exposed as `apiKeyConfigured` |
-| `type` | enum | Which inference server answers there (`ollama`, `llamacpp`, `vllm`, `anthropic`, `openai-compatible`) — feeds the backend-normalization adapters. A **Detect** button fingerprints the endpoint as a suggestion; the operator picks. `anthropic` speaks the native Anthropic API (chat/vision roles only; API key required) |
+| `type` | enum | Which inference server answers there (`ollama`, `llamacpp`, `vllm`, `anthropic`, `google`, `openai-compatible`) — feeds the backend-normalization adapters. A **Detect** button fingerprints the endpoint as a suggestion; the operator picks. Two speak a native API rather than the OpenAI wire shape: `anthropic` (chat-shaped roles only; API key required) and `google` (chat, embeddings and images; API key required) |
 
 Each backend card has **Test connection** — one `/v1/models` call that proves
 the host answers and the key is accepted, and doubles as the model-list

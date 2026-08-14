@@ -293,6 +293,71 @@ const anthropic: LlmBackendAdapter = {
 };
 
 /**
+ * Google (Gemini) — the second backend that does not speak the OpenAI wire
+ * shape. `@ai-sdk/google` (selected in `../provider`) owns the translation to
+ * the native Generative Language API; what lives here is the same behavioral
+ * seam as every other adapter.
+ *
+ * The thinking knob is the interesting one, and it is why
+ * {@link LlmBackendAdapter.reasoningSetting} exists: "do not think" is
+ * `thinkingBudget: 0` on Gemini 2.5, `thinkingLevel: "minimal"` on Gemini 3, and
+ * not expressible at all on 2.5 Pro (its budget has a floor). A body field fixed
+ * here would be a 400 on whichever model it was not written for, so the intent is
+ * handed to the provider, which resolves it against the model id it was given.
+ * `chatBodyExtras` therefore adds nothing: everything this backend needs to be
+ * told is already said.
+ */
+const google: LlmBackendAdapter = {
+  id: "google",
+  chatBodyExtras(): Record<string, JsonValue> {
+    return {};
+  },
+  reasoningSetting(intent: ChatRequestIntent) {
+    switch (intent.reasoning) {
+      case "off":
+        return "none";
+      case "low":
+        return "low";
+      default:
+        return undefined;
+    }
+  },
+  readReasoning(raw) {
+    // A native `generateContent` response: thinking arrives as ordinary text
+    // parts flagged `thought: true`, interleaved with the answer's parts —
+    // there is no `choices[0].message` and no separate reasoning field.
+    const body = raw as { candidates?: unknown } | null | undefined;
+    if (!body || !Array.isArray(body.candidates)) return null;
+    const text = body.candidates
+      .flatMap((candidate) => {
+        const parts = (candidate as { content?: { parts?: unknown } })?.content?.parts;
+        return Array.isArray(parts) ? parts : [];
+      })
+      .filter(
+        (part): part is { thought: true; text: string } =>
+          !!part &&
+          typeof part === "object" &&
+          (part as { thought?: unknown }).thought === true &&
+          typeof (part as { text?: unknown }).text === "string",
+      )
+      .map((part) => part.text.trim())
+      .filter(Boolean)
+      .join("\n");
+    return text || null;
+  },
+  // Gemini reports an oversized prompt as "The input token count (N) exceeds
+  // the maximum number of tokens allowed (M)" — no "context" word anywhere, so
+  // the shared concept matcher cannot see it.
+  contextOverflowPatterns: [/input token count/i, /exceeds the maximum number of tokens/i],
+  contextOverflowBehavior: "error",
+  normalizeServedModelId(raw) {
+    // The listing namespaces ids as `models/gemini-…` while every other route
+    // takes the bare id; both must group as one model.
+    return normalizeModelName(raw.replace(/^models\//, ""));
+  },
+};
+
+/**
  * Generic OpenAI-compatible — including OpenAI itself.
  *
  * Claims nothing beyond the published spec. `reasoning_effort` is in that spec,
@@ -325,5 +390,6 @@ export const LLM_BACKEND_ADAPTERS = {
   llamacpp,
   vllm,
   anthropic,
+  google,
   "openai-compatible": generic,
 } as const;

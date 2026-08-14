@@ -2233,7 +2233,7 @@ components:
 
     BackendType:
       type: string
-      enum: [ollama, llamacpp, vllm, anthropic, openai-compatible]
+      enum: [ollama, llamacpp, vllm, anthropic, google, openai-compatible]
       description: Which inference server answers at the endpoint (drives the backend-normalization adapters).
 
     BackendCreate:

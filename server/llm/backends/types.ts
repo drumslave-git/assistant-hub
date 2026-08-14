@@ -45,6 +45,13 @@ export interface ChatRequestIntent {
 }
 
 /**
+ * The AI SDK's own normalized reasoning setting — the one a provider translates
+ * into its native knob *per model*. See
+ * {@link LlmBackendAdapter.reasoningSetting}.
+ */
+export type SdkReasoningSetting = "none" | "minimal" | "low" | "medium" | "high";
+
+/**
  * How a backend behaves when a request exceeds the model's context window.
  *
  * The distinction is not cosmetic. `error` backends let the caller react — the
@@ -77,6 +84,23 @@ export interface LlmBackendAdapter {
    * reasoning on the live bot, so this is what makes that cost observable.
    */
   readReasoning(rawResponse: unknown): string | null;
+
+  /**
+   * Expresses {@link ChatRequestIntent.reasoning} through the SDK's normalized
+   * setting instead of {@link chatBodyExtras}, for a provider that maps that
+   * setting to its native knob **per model**.
+   *
+   * Only Gemini needs this so far, and it needs it badly: "do not think" is
+   * `thinkingConfig.thinkingBudget: 0` on the 2.5 family, `thinkingLevel:
+   * "minimal"` on Gemini 3, and impossible on 2.5 Pro — sending the wrong one is
+   * a 400, so a fixed body field cannot be right for more than one model at a
+   * time. The provider already resolves this against the model id it was handed,
+   * which is knowledge this layer would otherwise have to copy and keep current.
+   *
+   * Returns undefined when the intent should leave the model's default alone.
+   * Unset (every other backend) means the intent is expressed as body fields.
+   */
+  reasoningSetting?(intent: ChatRequestIntent): SdkReasoningSetting | undefined;
 
   /**
    * Rewrites the assembled conversation into an arrangement this backend will

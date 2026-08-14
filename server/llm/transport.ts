@@ -268,6 +268,9 @@ export async function completeRound(
   const provider = createProvider(conn);
 
   const extras = adapter.chatBodyExtras({ reasoning: input.reasoning });
+  // A backend whose provider gates the thinking knob per model is told the
+  // intent instead of the field — see `LlmBackendAdapter.reasoningSetting`.
+  const reasoningSetting = adapter.reasoningSetting?.({ reasoning: input.reasoning });
   // Where a turn may sit is the server's rule, not the caller's: a backend that
   // constrains it rearranges here, once, for every path that sends a message.
   const messages = adapter.normalizeMessages?.(input.messages) ?? input.messages;
@@ -283,6 +286,7 @@ export async function completeRound(
     // the message, the history, and the persona. Collapsing them into one
     // leading block would silently change what the model weighs most.
     allowSystemInMessages: true,
+    ...(reasoningSetting ? { reasoning: reasoningSetting } : {}),
     ...(input.tools ? { tools: toToolSet(input.tools) } : {}),
     ...(input.maxTokens !== undefined ? { maxOutputTokens: input.maxTokens } : {}),
     // One round per call: the loop decides whether there is another, because it

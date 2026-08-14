@@ -397,6 +397,33 @@ describe("chatCompletion end to end, only the network stubbed", () => {
     expect(illegal).toEqual([]);
   });
 
+  /**
+   * Gemini's off-switch is not one field: `thinkingBudget: 0` on the 2.5 family,
+   * `thinkingLevel: "minimal"` on Gemini 3, and a 400 if the wrong one is sent.
+   * That is the whole reason the adapter hands the *intent* to the provider
+   * instead of naming a body field — so what has to be asserted is the two
+   * different bodies coming out of the same call, on the wire.
+   */
+  it.each([
+    ["gemini-2.5-flash", { thinkingBudget: 0 }],
+    ["gemini-3-pro-preview", { thinkingLevel: "minimal" }],
+  ])("resolves 'do not think' per model on Google: %s", async (model, expected) => {
+    const { chatCompletion } = await import("./client");
+    const captured: { body?: Record<string, unknown> } = {};
+    stubEndpoint(captured, {
+      candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+    });
+
+    await chatCompletion(
+      { baseUrl: "https://generativelanguage.invalid", apiKey: "goog-key", backend: "google" },
+      { model, messages: [{ role: "user", content: "hi" }], reasoning: "off" },
+    );
+
+    const generationConfig = captured.body?.generationConfig as { thinkingConfig?: unknown };
+    expect(generationConfig.thinkingConfig).toEqual(expected);
+  });
+
   it("names a context overflow from the endpoint's own error body", async () => {
     const { chatCompletion, isContextOverflowError } = await import("./client");
     vi.stubGlobal("fetch", async () =>
@@ -501,6 +528,70 @@ describe("a signed tool call survives the round trip to the wire", () => {
       id: "call_1",
       extra_content: { google: { thought_signature: "sig-abc" } },
     });
+  });
+});
+
+/**
+ * The same round trip as above, on the native Gemini provider — where the
+ * signature is a first-class field rather than an `extra_content` blob, and
+ * where an unsigned replay is the failure the provider itself warns about.
+ */
+describe("a signed tool call survives the round trip on the native Google provider", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("replays the thought signature on the round that re-sends the call", async () => {
+    const { chatCompletionWithTools } = await import("./tool-loop");
+    const bodies: Array<Record<string, unknown>> = [];
+    const rounds = [
+      {
+        content: {
+          role: "model",
+          parts: [
+            {
+              functionCall: { id: "call_1", name: "memory_save", args: { text: "likes tea" } },
+              thoughtSignature: "sig-abc",
+            },
+          ],
+        },
+        finishReason: "STOP",
+      },
+      { content: { role: "model", parts: [{ text: "noted" }] }, finishReason: "STOP" },
+    ];
+    vi.stubGlobal("fetch", async (_url: URL | string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          candidates: [rounds[Math.min(bodies.length - 1, rounds.length - 1)]],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const result = await chatCompletionWithTools(
+      { baseUrl: "https://generativelanguage.invalid", apiKey: "goog-key", backend: "google" },
+      {
+        model: "gemini-3-pro-preview",
+        messages: [{ role: "user", content: "remember that I like tea" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "memory_save",
+              description: "save a fact",
+              parameters: { type: "object", properties: { text: { type: "string" } } },
+            },
+          },
+        ],
+        callTool: async () => ({ text: "saved", isError: false }),
+      },
+    );
+
+    expect(result.content).toBe("noted");
+    expect(bodies).toHaveLength(2);
+    const contents = bodies[1].contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+    const call = contents.flatMap((turn) => turn.parts).find((part) => "functionCall" in part);
+    expect(call?.thoughtSignature).toBe("sig-abc");
   });
 });
 

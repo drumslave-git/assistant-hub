@@ -24,6 +24,7 @@ export const LLM_BACKEND_IDS = [
   "llamacpp",
   "vllm",
   "anthropic",
+  "google",
   "openai-compatible",
 ] as const;
 
@@ -77,6 +78,11 @@ export const LLM_BACKENDS: LlmBackendOption[] = [
     id: "anthropic",
     label: "Anthropic (Claude)",
     hint: "Native Anthropic API — not OpenAI-compatible. Chat and vision roles only; requires an API key.",
+  },
+  {
+    id: "google",
+    label: "Google (Gemini)",
+    hint: "Native Gemini API — not OpenAI-compatible. Chat, embeddings and images; requires an API key.",
   },
   {
     id: "openai-compatible",

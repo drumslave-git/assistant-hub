@@ -209,6 +209,21 @@ export function toOpenAiBaseUrl(base: string): string {
 }
 
 /**
+ * The same normalization for a native Gemini endpoint, whose versioned path is
+ * `/v1beta` rather than `/v1` — appending `/v1` there (what every other backend
+ * gets) would point every call at a route that does not exist.
+ *
+ * An explicitly versioned URL is left alone: `v1beta` is the API this app is
+ * written against, but an operator pinning `/v1` or a newer `/v1alpha` has said
+ * something specific and it is not this function's place to overrule them.
+ */
+export function toGoogleBaseUrl(base: string): string {
+  const host = base.trim().replace(/\/+$/, "");
+  if (!host) throw ApiError.badRequest("LLM base URL is required");
+  return /\/v1(beta|alpha)?\d*$/.test(host) ? host : `${host}/v1beta`;
+}
+
+/**
  * Rewrite a non-OpenAI-shaped error body into the shape the SDK understands, so
  * the server's own explanation survives.
  *
@@ -265,7 +280,8 @@ async function fetchWithErrorDetail(
 
 /** Construct an OpenAI SDK client for an OpenAI-compatible endpoint. */
 export function createOpenAiClient(conn: LlmConnection): OpenAI {
-  if (toLlmBackendId(conn.backend) === "anthropic") {
+  const backend = toLlmBackendId(conn.backend);
+  if (backend === "anthropic") {
     // The routes this client speaks (audio speech/transcriptions, the generic
     // model listing) do not exist on Anthropic; chat rides the native provider
     // (`./provider`) and the listing has its own native path. Reaching this
@@ -273,6 +289,14 @@ export function createOpenAiClient(conn: LlmConnection): OpenAI {
     // cannot serve it — name that instead of relaying a 404.
     throw ApiError.badRequest(
       "Anthropic backends serve chat models only — pick a different backend for this role",
+    );
+  }
+  if (backend === "google") {
+    // Gemini has speech synthesis and takes audio as chat input, but neither
+    // sits on an OpenAI audio route — and the roles that reach this client are
+    // exactly those two. Chat, embeddings and images ride the native provider.
+    throw ApiError.badRequest(
+      "Google backends serve chat, embedding and image models — pick a different backend for this role",
     );
   }
   return new OpenAI({
@@ -607,9 +631,9 @@ export async function listModels(
   conn: LlmConnection,
   timeoutMs: number = LIST_MODELS_TIMEOUT_MS,
 ): Promise<string[]> {
-  if (toLlmBackendId(conn.backend) === "anthropic") {
-    return listAnthropicModels(conn, timeoutMs);
-  }
+  const backend = toLlmBackendId(conn.backend);
+  if (backend === "anthropic") return listAnthropicModels(conn, timeoutMs);
+  if (backend === "google") return listGoogleModels(conn, timeoutMs);
   try {
     const page = await createOpenAiClient(conn).models.list({ timeout: timeoutMs });
     const seen = new Set<string>();
@@ -617,6 +641,64 @@ export async function listModels(
       const id = (entry.id ?? "").trim();
       if (id) seen.add(id);
     }
+    return [...seen].sort((a, b) => a.localeCompare(b));
+  } catch (err) {
+    throw toLlmError(err, conn.baseUrl);
+  }
+}
+
+/**
+ * Gemini's model listing. `GET /v1beta/models` is the native Generative
+ * Language API: the key rides an `x-goog-api-key` header (not `Authorization`),
+ * paging is `pageToken`/`nextPageToken`, and every id comes back namespaced as
+ * `models/gemini-…`.
+ *
+ * The prefix is stripped here because the prefix is a property of *this route*,
+ * not of the model: `generateContent` and the SDK both take the bare id, and a
+ * stored `models/…` selection would fail to match the served id everywhere it
+ * is compared. Same contract as {@link listModels}: distinct ids, sorted, clean
+ * {@link ApiError} on failure.
+ */
+async function listGoogleModels(conn: LlmConnection, timeoutMs: number): Promise<string[]> {
+  const base = toGoogleBaseUrl(conn.baseUrl);
+  const seen = new Set<string>();
+  try {
+    let pageToken: string | null = null;
+    do {
+      const url = new URL(`${base}/models`);
+      url.searchParams.set("pageSize", "1000");
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      const res = await fetch(url, {
+        headers: { "x-goog-api-key": conn.apiKey?.trim() ?? "" },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let detail = text;
+        try {
+          // Google answers errors as `{error:{message}}` — and, on some routes,
+          // as a single-element *array* of that. Both are read, because the
+          // array form is what the operator's failing reply actually returned.
+          const parsed = JSON.parse(text) as unknown;
+          const first = Array.isArray(parsed) ? parsed[0] : parsed;
+          const message = (first as { error?: { message?: unknown } })?.error?.message;
+          if (typeof message === "string" && message.trim()) detail = message;
+        } catch {
+          // Not JSON — the raw text is the message.
+        }
+        const code = res.status === 401 || res.status === 403 ? "bad_request" : "service_unavailable";
+        throw new ApiError(code, `LLM endpoint error (${res.status}): ${detail || res.statusText}`);
+      }
+      const body = (await res.json()) as {
+        models?: Array<{ name?: string }>;
+        nextPageToken?: string | null;
+      };
+      for (const entry of body.models ?? []) {
+        const id = (entry.name ?? "").trim().replace(/^models\//, "");
+        if (id) seen.add(id);
+      }
+      pageToken = body.nextPageToken?.trim() || null;
+    } while (pageToken);
     return [...seen].sort((a, b) => a.localeCompare(b));
   } catch (err) {
     throw toLlmError(err, conn.baseUrl);
