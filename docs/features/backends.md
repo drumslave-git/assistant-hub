@@ -27,6 +27,14 @@ embeddings, images, speech, audio, vision, browser agent) reference backends by
 id instead of carrying their own URL/key copies — one server, entered once,
 picked everywhere.
 
+**Base URLs are versioned, not `/v1`-ed.** A URL that ends in any API version
+segment (`/v1`, `/v4`, `/v1beta`) is used exactly as typed; `/v1` is appended
+only when there is no version at all, so `http://host:11434` and
+`http://host:11434/v1` stay the same endpoint. "OpenAI-compatible" says nothing
+about which version a vendor serves the routes under — appending `/v1` to a
+hosted endpoint at `…/api/paas/v4` used to 404 every call as
+`/v4/v1/chat/completions`.
+
 ## CRUD
 
 `features/backends` follows the standard feature contract: zod schemas,

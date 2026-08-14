@@ -201,11 +201,25 @@ export function sanitizeRequestBodyForTrace<T>(body: T): T {
   return { ...body, messages: sanitizeMessagesForTrace(messages as ChatMessage[]) };
 }
 
-/** Normalize any base URL to its OpenAI-compatible `/v1` form. */
+/**
+ * A base URL that already ends in an API version segment — `/v1`, `/v4`,
+ * `/v1beta`, `/v2alpha1`. Not just `/v1`: "OpenAI-compatible" says nothing about
+ * which version a vendor serves the routes under, and a hosted GLM endpoint
+ * serving them at `…/api/paas/v4` turned every call into
+ * `/v4/v1/chat/completions` — a 404 on an endpoint that was configured
+ * correctly.
+ */
+const VERSIONED_PATH = /\/v\d+(?:[a-z]+\d*)?$/i;
+
+/**
+ * Normalize a base URL to its versioned form, appending `/v1` only when the
+ * operator gave no version at all (`http://host:11434`). A URL that names its
+ * own version is left exactly as typed.
+ */
 export function toOpenAiBaseUrl(base: string): string {
   const host = base.trim().replace(/\/+$/, "");
   if (!host) throw ApiError.badRequest("LLM base URL is required");
-  return host.endsWith("/v1") ? host : `${host}/v1`;
+  return VERSIONED_PATH.test(host) ? host : `${host}/v1`;
 }
 
 /**
@@ -220,7 +234,7 @@ export function toOpenAiBaseUrl(base: string): string {
 export function toGoogleBaseUrl(base: string): string {
   const host = base.trim().replace(/\/+$/, "");
   if (!host) throw ApiError.badRequest("LLM base URL is required");
-  return /\/v1(beta|alpha)?\d*$/.test(host) ? host : `${host}/v1beta`;
+  return VERSIONED_PATH.test(host) ? host : `${host}/v1beta`;
 }
 
 /**

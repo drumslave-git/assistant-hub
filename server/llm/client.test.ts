@@ -121,6 +121,28 @@ describe("toOpenAiBaseUrl", () => {
     expect(toOpenAiBaseUrl("http://localhost:11434///")).toBe("http://localhost:11434/v1");
   });
 
+  // A vendor serving the OpenAI routes under its own version answered
+  // `/v4/v1/chat/completions` with a 404 while the URL was configured correctly.
+  it("leaves any other version segment alone", () => {
+    expect(toOpenAiBaseUrl("https://api.example.com/api/paas/v4")).toBe(
+      "https://api.example.com/api/paas/v4",
+    );
+    expect(toOpenAiBaseUrl("https://api.example.com/api/paas/v4/")).toBe(
+      "https://api.example.com/api/paas/v4",
+    );
+    expect(toOpenAiBaseUrl("https://proxy.invalid/v2beta")).toBe("https://proxy.invalid/v2beta");
+  });
+
+  // `/v1` is appended for a path that merely ends in a "v"-ish word.
+  it("still versions a path with no version segment", () => {
+    expect(toOpenAiBaseUrl("https://gateway.invalid/openai")).toBe(
+      "https://gateway.invalid/openai/v1",
+    );
+    expect(toOpenAiBaseUrl("https://gateway.invalid/vision")).toBe(
+      "https://gateway.invalid/vision/v1",
+    );
+  });
+
   it("rejects a blank URL", () => {
     expect(() => toOpenAiBaseUrl("   ")).toThrow();
   });
