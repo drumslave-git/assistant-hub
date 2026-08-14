@@ -191,7 +191,11 @@ function systemText(message: ChatCompletionMessageParam): string {
  * satisfied the *placement* rule those newer models publish ("precede an
  * 'assistant' message or end the array"), which is a rule about where a
  * supported turn may sit — so every reply kept failing on the models that do not
- * support one at all.
+ * support one at all. Measured against the live API on 2026-08-14, that is most
+ * of them: of the ten models the operator's key lists, only `claude-fable-5`,
+ * `claude-opus-4-8`, `claude-opus-5` and `claude-sonnet-5` accept a
+ * mid-conversation system turn; Haiku 4.5, Sonnet 4.5/4.6 and Opus 4.5/4.6/4.7
+ * all answer the 400 above.
  *
  * This app interleaves system turns deliberately (see `composeMessages` in
  * `features/bot-messaging/server/service.ts`): the per-chat blocks sit above the

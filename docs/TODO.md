@@ -227,11 +227,37 @@ so the pre-fix code fails them:
   message text, and the `anthropic-beta` header never asks for
   `mid-conversation-system`. `stubEndpoint` now captures headers.
 
+### Live verification (2026-08-14, operator's key on a local dev backend)
+
+The operator added the Anthropic backend to dev, so the fix was run against the
+real API — the app's own `chatCompletion` / `chatCompletionWithTools`, not a
+hand-rolled request — with the reply prompt's exact shape (leading system run,
+transcript user turn, four interleaved directives, the message to answer):
+
+- **All 10 models the key lists answered it**, each with `system-msgs=0` on the
+  wire and no `anthropic-beta: mid-conversation-system`: `claude-fable-5`,
+  `claude-haiku-4-5-20251001`, `claude-opus-4-5-20251101`, `claude-opus-4-6`,
+  `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-5`,
+  `claude-sonnet-4-5-20250929`, `claude-sonnet-4-6`, `claude-sonnet-5`.
+- **The tool-loop path** (the one that produced the operator's trace) also
+  answered on `claude-haiku-4-5-20251001`.
+- **The pre-fix arrangement reproduces the report exactly** — the same prompt
+  with the directives left as a trailing system block returns
+  `AI_APICallError: role 'system' is not supported on this model`.
+- **The capability survey settles why placement was the wrong rule**: only
+  `claude-fable-5`, `claude-opus-4-8`, `claude-opus-5` and `claude-sonnet-5`
+  accept a mid-conversation system turn. Haiku 4.5, Sonnet 4.5/4.6 and Opus
+  4.5/4.6/4.7 — six of ten — reject it, so the old rewrite was broken on most of
+  the range, not on one unlucky model.
+
+The probe was a temporary vitest file, deleted after the run; the key was read
+from the dev DB into an env var and never printed.
+
 ### Remaining risks / operator steps
 
-- **Not yet observed against the live endpoint** (the assistant holds no key):
-  send one group message with the chat role pointed at the Anthropic backend and
-  read the trace — the request body's `messages` must contain no `system` role.
+- **Not yet observed end-to-end through Telegram** — the wire is proven per
+  model, but no real reply has gone out on this backend. Point the chat role at
+  it and send one group message if that last mile matters.
 - Worth reading that first live reply for tone: the language/time directives are
   now user-turn text on this backend, which models weigh slightly differently
   than a system turn. If the language directive stops holding on Anthropic, that
