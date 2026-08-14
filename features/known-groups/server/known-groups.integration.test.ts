@@ -204,8 +204,14 @@ describe("getGroupContext", () => {
     expect(context?.memberCount).toBe(2);
     expect(context?.content).toContain('group "Family"');
     expect(context?.content).toContain("About this group: Keep it casual");
-    expect(context?.content).toContain("Ada (@testuser) — also known as: Cap, Chief");
-    expect(context?.content).toContain("Bob Jones");
+    // The whole line, id included. The id is not decoration: it is the only
+    // thing a per-person task can be written against, and the block itself
+    // tells the model never to guess one — so a roster that reached the prompt
+    // without ids would leave it inventing them.
+    expect(context?.content).toContain("- Ada (@testuser) [user id 1] — also known as: Cap, Chief");
+    // No aliases → the label and id, and nothing trailing.
+    expect(context?.content).toContain("- Bob Jones [user id 2]");
+    expect(context?.content).not.toContain("- Bob Jones [user id 2] —");
   });
 
   it("returns null for a group with no members and no notes", async () => {
