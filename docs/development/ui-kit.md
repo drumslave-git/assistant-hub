@@ -27,7 +27,6 @@ files.
 
 | Primitive | Notes |
 | --- | --- |
-| `Avatar` | Falls back to initials. Uses a plain `<img>`, not `next/image`, because avatars are remote/user-supplied and unoptimized by design |
 | `Badge` | Compact status pill; `dot` adds a leading status dot |
 | `Button` | `asChild` renders onto the child element (e.g. a Next `<Link>`) instead of a `<button>` |
 | `Calendar` | Selects a **period**, not an instant — day, week (returns its Monday), month, or year — and marks which periods hold data. Presentational and generic |

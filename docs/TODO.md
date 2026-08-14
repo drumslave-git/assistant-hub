@@ -28,6 +28,130 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## The top bar was three-quarters decoration (`done`, 2026-08-15)
+
+User report, 2026-08-15: *"we have dummy header. search does nothing,
+notification icon does nothing, we have icon for user profile for whatever
+reason - also does nothing"*. All three were shell scaffolding: an `<Input>`
+with no handler, a `<Button>` with no `onClick`, and an `Avatar` hardcoded to
+`name="Operator"`.
+
+**User decision (2026-08-15):** remove the bell and the avatar; make the search
+box real, over the existing history hybrid index.
+
+### What shipped
+
+- **Bell and avatar removed.** The bell had nothing to show — failures that
+  matter reach `SystemAlerts`, which is deliberately the *only* global alert
+  surface ("this surface must stay rare to stay loud") — and there are no user
+  accounts to have a profile for, only the one password-holding operator whose
+  sign-out is already its own button. `components/ui/Avatar.tsx` had no other
+  consumer and is **deleted** (barrel export and `ui-kit.md` row with it).
+- **`searchChatMessagesHybrid` takes `chatId: string | null`.** Null searches
+  every chat — what an operator needs, since which chat a message was in is
+  often what they came to find out. The bot's tools always pass their bound
+  chat; the existing "never returns another chat's messages" test pins that.
+- **`features/history/server/search.ts`** — `searchHistoryMessages`, the
+  operator entry point: embeds the query when a model is configured (degrades to
+  the lexical halves when not), then resolves each hit for a human reader — the
+  sender's known-user label instead of a numeric id, and the id of the trace
+  that handled that turn.
+- **`components/search/SearchBox.tsx`** — one client component shared by the top
+  bar and the results page, pushing `/search?q=…` so a search is a real URL, as
+  the trace filters and pagination already do.
+- **`/search`** (`app/(dashboard)/search/page.tsx` + `MessageSearchResults`) —
+  columns mirror `ChatHistoryTable` plus the chat the hit came from.
+
+Decisions taken in implementation (defaults, not asked):
+
+- **No `/api/history/search` route.** The page is a Server Component reading the
+  service directly; a route handler with no consumer is surface to maintain and
+  document for nothing.
+- **The page does not live-refresh**, breaking the dashboard's usual rule. A
+  result set answers a question asked once, and the shared hook would re-run the
+  search — an embedding call each time — on every incoming message, reshuffling
+  rows under the reader. The query is in the URL, so a reload is one keystroke.
+- **Results are labelled the *closest* messages, not matching ones, capped at
+  25.** With embeddings configured the vector pool always returns its nearest N
+  whether or not any are close, so every query fills the page. The alternative
+  was a similarity floor, which is a magic number tuned blind; saying what the
+  ranking actually is costs nothing and cannot be wrong.
+- **A hidden `<button type="submit">`.** A form whose only control is a text
+  field does not submit on Enter in every browser (it did not under the preview
+  harness), and never for someone driving it with assistive technology.
+- **`useSearchParams` in the top bar is wrapped in `Suspense`** — it is rendered
+  by the dashboard layout, so without the boundary any statically rendered page
+  under that layout fails the production build.
+- **Vision descriptions are clamped to three lines in the results table** (CSS,
+  nothing cut server-side): one runs to a paragraph and would push every other
+  hit off the screen.
+
+### Proof
+
+Files: `components/layout/Topbar.tsx`, `components/search/SearchBox.tsx`,
+`components/ui/{index.ts,Avatar.tsx}` (deleted), `app/(dashboard)/search/page.tsx`,
+`features/history/server/{search.ts,search-repository.ts,service.ts}`,
+`features/history/ui/MessageSearchResults.tsx`,
+`features/history/server/search-index.integration.test.ts`,
+docs (`features/history.md`, `development/ui-kit.md`).
+
+Lint, typecheck and `next build` clean (`/search` in the route table). Unit suite
+**1143 passed / 26 skipped, 0 failed**. Integration: `features/history` **69
+passed / 4 skipped**, `search-index.integration.test.ts` 16 (4 new — a null chat
+searches every chat, a deleted message stays out of a cross-chat search, a hit
+resolves its chat and named sender for the dashboard, and an all-whitespace query
+answers with nothing rather than everything).
+
+**Verified live** against the operator's running dev server (attached, not
+restarted): the top bar now carries only search, theme and sign-out; a search
+navigates to `/search?q=…`; results span two different chats with known-user
+labels resolved, unknown senders left as ids, and trace links where a trace is
+still stored; an uncaptioned photo is found by its vision description; and
+`/search` with no query shows the prompt state.
+
+### Remaining risks / operator steps
+
+- The media-kind badge on a hit is **not exercised live**: the messages in dev
+  that have descriptions carry them inside `chat_messages.content` (imported
+  history) rather than in a `message_media` row, so `mediaKind` was null for
+  every hit seen. The conditional is trivial, but it has not rendered.
+- Cross-chat search reads the whole index rather than one chat's slice. Indexed
+  (HNSW + GIN), and if anything the vector half suits it better than the
+  filtered form, but it has only been run against this installation's data.
+- `/search` is reachable from the top bar and nothing else — there is no sidebar
+  entry, and the box is hidden below `sm` (the page carries its own there).
+
+## The honesty gate cannot judge a retrospective turn (`todo` — observing, 2026-08-15)
+
+Operator trace `0e0a924f…` (`bot-messaging` / `reply`, 2026-08-14 21:37Z). The
+user asked *"what do you mean?"* about the bot's previous message, the bot
+explained what that message had been, and the gate read the explanation as a
+fresh claim — retried, got the same explanation, suppressed it, and answered a
+clarifying question with the ⚠️ system notice. 53 seconds, two generations, no
+answer.
+
+Why it cannot come out otherwise as written:
+
+1. The gate sees only `request` + `reply` (`buildActionClaimMessages`), never the
+   conversation. Its own exemption — *"describes what someone ELSE did, or what
+   happened earlier in the conversation"* — is therefore unreachable: a
+   first-person past-tense recap is indistinguishable from a fresh claim, and the
+   `someone ELSE` clause anchors the bullet to third parties.
+2. `ACTION_CLAIM_ENFORCEMENT_DIRECTIVE` offers two options that both fail on this
+   shape. There is no tool to call (the "action" is a message already written),
+   and "say plainly you did not do it" contradicts what the bot did write. The
+   second strike is guaranteed.
+
+Not entirely a false positive: the claim (*"marked it as complete"*) was itself
+confabulated about the previous turn, which only wrote `👍 Done.` to a `hello`.
+That earlier turn is the deeper bug and is in a different trace.
+
+**Proposed fix, not implemented — user decision 2026-08-15: observe first.**
+Split the exemption bullet so recounting one's own earlier messages is explicitly
+`none` and only claims about *this* turn count, and pass the assistant's previous
+message into `ActionClaimInput` so the judge can see what the past tense refers
+to.
+
 ## Two identical reminders from one turn (`done` pending live verification, 2026-08-14)
 
 Operator report with the dashboard screenshot: two byte-identical `timeout` tasks,

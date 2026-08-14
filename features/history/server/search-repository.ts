@@ -239,11 +239,17 @@ function mapPoolRow(row: PoolRow): Omit<MessageSearchMatch, "score"> {
  *
  * RRF combines them by *rank*, so three incomparable scales (cosine distance,
  * `ts_rank`, none at all) never have to be normalized against each other.
+ *
+ * `chatId: null` searches every chat at once — what the operator's dashboard
+ * search does, since they are looking for a message without necessarily knowing
+ * which conversation it was in. The bot's own `history_search` always passes the
+ * chat it is bound to: a chat may never read another's messages.
  */
 export async function searchChatMessagesHybrid(
   db: DrizzleDb,
   params: {
-    chatId: string;
+    /** The chat to search, or null for every chat (operator-side search only). */
+    chatId: string | null;
     queryText: string;
     queryVector: number[] | null;
     limit: number;
@@ -265,16 +271,17 @@ export async function searchChatMessagesHybrid(
   // with "malformed array literal".
   const authorFilter = authorIds.length > 0 ? sql`and cm.user_id in (${authorIds})` : sql``;
   const kindFilter = kinds.length > 0 ? sql`and mm.kind in (${kinds})` : sql``;
+  const chatFilter = params.chatId != null ? sql`and cm.chat_id = ${params.chatId}` : sql``;
 
-  /** The chat's visible messages joined to the two things a hit needs to explain itself. */
+  /** The visible messages in scope, joined to the two things a hit needs to explain itself. */
   const source = sql`
     from chat_messages cm
     left join chat_message_search s
       on s.chat_id = cm.chat_id and s.telegram_message_id = cm.telegram_message_id
     left join message_media mm
       on mm.chat_id = cm.chat_id and mm.telegram_message_id = cm.telegram_message_id
-    where cm.chat_id = ${params.chatId}
-      and cm.deleted_at is null
+    where cm.deleted_at is null
+      ${chatFilter}
       ${authorFilter}
       ${kindFilter}
   `;

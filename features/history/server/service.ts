@@ -438,7 +438,7 @@ export async function getHistoryOverview(db: DrizzleDb = getDb()): Promise<ChatS
  * service), so a user row uses its own Telegram id and an assistant row uses the
  * message it replied to (the incoming turn). Null when there is no anchor.
  */
-function traceCorrelationFor(record: ChatMessageRecord): string | null {
+export function traceCorrelationFor(record: ChatMessageRecord): string | null {
   const anchor = record.role === "assistant" ? record.replyToMessageId : record.telegramMessageId;
   return anchor != null ? `${record.chatId}:${anchor}` : null;
 }

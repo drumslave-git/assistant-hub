@@ -1,15 +1,17 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { insertMedia, markDescribed } from "@/features/vision/server/repository";
 import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
 
 import { buildSearchableText, runMessageIndexing } from "./index-messages";
+import { searchHistoryMessages } from "./search";
 import {
   countMessagesNeedingIndex,
   searchChatMessagesHybrid,
   type MessageSearchMatch,
 } from "./search-repository";
-import { recordIncomingMessage } from "./service";
+import { markMessageDeleted, recordIncomingMessage } from "./service";
 
 /**
  * The scenario this whole path exists for: somebody posts a photo with no caption,
@@ -26,6 +28,7 @@ import { recordIncomingMessage } from "./service";
  */
 
 const CHAT = "-1001";
+const OTHER_CHAT = "-1002";
 const ALEX = "100";
 const BEA = "200";
 
@@ -261,11 +264,82 @@ describe("message search index", () => {
 
   it("never returns another chat's messages", async () => {
     await recordIncomingMessage(
-      { chatId: "-1002", telegramMessageId: 91, userId: ALEX, content: "a door elsewhere", sentAt: new Date() },
+      { chatId: OTHER_CHAT, telegramMessageId: 91, userId: ALEX, content: "a door elsewhere", sentAt: new Date() },
       ctx.db,
     );
     await runMessageIndexing({}, ctx.db);
     expect(await search("door")).toEqual([]);
+  });
+
+  it("searches every chat when given no chat at all", async () => {
+    // The operator's search: they are looking for a message, and which chat it
+    // was in is often the thing they came to find out. Only the dashboard may
+    // pass null — a chat-bound tool always names its own chat, as the test above
+    // pins.
+    await recordIncomingMessage(
+      { chatId: CHAT, telegramMessageId: 131, userId: ALEX, content: "the door is stuck", sentAt: new Date() },
+      ctx.db,
+    );
+    await recordIncomingMessage(
+      { chatId: OTHER_CHAT, telegramMessageId: 132, userId: BEA, content: "a door elsewhere", sentAt: new Date() },
+      ctx.db,
+    );
+    await runMessageIndexing({}, ctx.db);
+
+    const hits = await searchChatMessagesHybrid(ctx.db, {
+      chatId: null,
+      queryText: "door",
+      queryVector: null,
+      limit: 20,
+    });
+    expect(hits.map((h) => h.chatId).sort()).toEqual([CHAT, OTHER_CHAT]);
+  });
+
+  it("keeps a deleted message out of a cross-chat search", async () => {
+    await recordIncomingMessage(
+      { chatId: OTHER_CHAT, telegramMessageId: 141, userId: BEA, content: "a door elsewhere", sentAt: new Date() },
+      ctx.db,
+    );
+    await runMessageIndexing({}, ctx.db);
+    await markMessageDeleted(OTHER_CHAT, 141, ctx.db);
+
+    const hits = await searchChatMessagesHybrid(ctx.db, {
+      chatId: null,
+      queryText: "door",
+      queryVector: null,
+      limit: 20,
+    });
+    expect(hits).toEqual([]);
+  });
+
+  it("resolves a hit for a human reader — every chat, named sender", async () => {
+    // What the dashboard's search box calls. No embedding model is configured
+    // here, so this also pins that the operator's search degrades to its lexical
+    // halves rather than failing.
+    await upsertKnownUser(ctx.db, {
+      userId: BEA,
+      username: "bea",
+      firstName: "Bea",
+      lastName: null,
+    });
+    await recordIncomingMessage(
+      { chatId: OTHER_CHAT, telegramMessageId: 151, userId: BEA, content: "the door is stuck", sentAt: new Date() },
+      ctx.db,
+    );
+    await runMessageIndexing({}, ctx.db);
+
+    const hits = await searchHistoryMessages({ query: "door" }, ctx.db);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].chatId).toBe(OTHER_CHAT);
+    expect(hits[0].senderLabel).toContain("Bea");
+  });
+
+  it("answers an empty search with nothing rather than everything", async () => {
+    await recordIncomingMessage(
+      { chatId: CHAT, telegramMessageId: 161, userId: ALEX, content: "hello", sentAt: new Date() },
+      ctx.db,
+    );
+    expect(await searchHistoryMessages({ query: "   " }, ctx.db)).toEqual([]);
   });
 
   it("leaves nothing due once it has run", async () => {

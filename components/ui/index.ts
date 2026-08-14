@@ -2,7 +2,6 @@
  * UI kit barrel. Import primitives from "@/components/ui" so feature code has a
  * single, stable entry point for the shared design system.
  */
-export { Avatar } from "./Avatar";
 export { Badge, type BadgeTone } from "./Badge";
 export {
   Button,

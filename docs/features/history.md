@@ -1,7 +1,7 @@
 # History
 
-**Feature ids:** `history`, `history-summaries` · **Dashboard:** `/history` ·
-**SSE topic:** `history` · **Priority 3**
+**Feature ids:** `history`, `history-summaries` · **Dashboard:** `/history`,
+`/search` · **SSE topic:** `history` · **Priority 3**
 
 Two layers of conversation memory with opposite properties:
 
@@ -174,10 +174,36 @@ message (whose transcript plays the role of the description).
 | `/history` | Chats with stored history, each linking to its mirror |
 | `/history/{chatId}` | The full stored conversation (Messages tab) and the chat's topic summaries grouped by day (Summaries tab), plus the summary job card |
 | `/history/transfer` | CSV import/export |
+| `/search` | Message search across every chat — where the top bar's search box lands |
 
 The summaries view shows the **message ids**, not hidden: they are what the bot
 follows back to originals, so an operator debugging a bad recall can check a
 topic's claim against the mirror in the Messages tab.
+
+### Message search
+
+`/search` runs `searchHistoryMessages` over the same
+[hybrid index](#search-index) the bot's `history_search` reads, so an operator
+finds a photo by what is in it exactly as the bot does. Two differences, both
+because the reader is a person and not a model:
+
+- **Every chat at once.** `searchChatMessagesHybrid` takes `chatId: null` for
+  this. Only the dashboard may pass it — a chat-bound tool always names its own
+  chat, because one chat may never read another's messages.
+- **Hits are resolved for reading**: the sender's known-user label instead of a
+  numeric id, and the id of the trace that handled that turn, so a found message
+  is one click from why the bot answered the way it did.
+
+The query lives in the URL (`/search?q=…`), so a search is shareable and survives
+a refresh. The page does **not** live-refresh, unlike the status views: a result
+set answers a question asked once, and re-running it on every incoming message
+would spend an embedding call to reshuffle rows under the reader.
+
+Results are labelled the *closest* messages, not the matching ones, and capped at
+25. With an embedding model configured the semantic half always returns its
+nearest N whether or not any of them are close, so every query fills the page and
+the tail is loosely related by construction. Ranking puts the real matches on
+top; the copy says so rather than implying a match that is not there.
 
 ## CSV transfer
 
@@ -237,5 +263,6 @@ imported hours are picked up by the next insight run.
 Unit: `csv.test.ts`, `summary.test.ts`, `server/format.test.ts`,
 `server/batched-completion.test.ts`.
 Integration: `server/history.integration.test.ts`,
-`server/summarize.integration.test.ts`, `server/transfer.integration.test.ts`,
-`server/tool-selection.integration.test.ts`.
+`server/search-index.integration.test.ts` (the index, the hybrid search and the
+dashboard's cross-chat search), `server/summarize.integration.test.ts`,
+`server/transfer.integration.test.ts`, `server/tool-selection.integration.test.ts`.
