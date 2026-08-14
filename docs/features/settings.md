@@ -69,7 +69,7 @@ on the chat role — a fired task is a real message to a person.
 ## The form
 
 `SettingsForm` is a Client Component with one tab per concern — **Models** (all
-nine roles above, as stacked sections), **Telegram** (bot token, owner,
+nine roles above, one card each), **Telegram** (bot token, owner,
 maintenance mode), **General** (timezone, daily run time, browser download cap),
 **Integrations** (Tavily) and **Security** (password change; its own endpoint
 and button) — and **one** Save button below them that persists every changed
@@ -80,10 +80,17 @@ The nine roles share a tab rather than having one each (user decision,
 chat backend, so repointing Chat can invalidate a model belonging to a role the
 operator is not looking at. On separate tabs that consequence was real but
 invisible — the warning existed, on a tab nobody had a reason to open. Stacked,
-the effect of a chat change appears where it happens, a jump-link row and a
-per-section summary line (the model in use, "Chat model", "Off", or the stale
-one) keep nine sections scannable, and a banner at the top of the tab names
-every role whose model the effective backend does not serve.
+the effect of a chat change appears where it happens, and a banner at the top of
+the tab names every role whose model the effective backend does not serve.
+
+Each role is its own `Card` (`muted`, since the form already sits inside one)
+rather than a divider-separated section — nine settings behind dividers read as
+one long form, and a card gives each role an edge so it is obvious where the
+thing being edited starts and stops. A jump-link row sits above them, and each
+card header carries a badge with what the role is set to: the model name
+(`primary` — an explicit choice), "Chat model"/"Off" (`neutral` — inheriting or
+deliberately off), or the stale selection (`warning`, the one state needing
+action, which also tints the card's border).
 
 The form sends **only changed fields**, and the service depends on that: a model
 absent from the patch is a *stored* selection. When the same patch repoints the

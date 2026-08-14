@@ -4,7 +4,22 @@ import { Check, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { Button, Field, Input, Select, Switch, Tabs, type TabItem } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Field,
+  Input,
+  Select,
+  Switch,
+  Tabs,
+  type BadgeTone,
+  type TabItem,
+} from "@/components/ui";
 import type { Backend } from "@/features/backends/server/schema";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import type { KnownUser } from "@/features/known-users/server/schema";
@@ -125,17 +140,21 @@ interface RoleBlock {
 }
 
 /**
- * What a role is currently set to, for the section heading — the line that makes
- * nine stacked sections scannable without opening each one.
+ * What a role is currently set to, as the badge on its card header — the line
+ * that makes nine stacked cards scannable without opening each one.
+ *
+ * The three tones carry the distinction that matters: `primary` is an explicit
+ * choice, `neutral` is a role running on the chat model or deliberately off, and
+ * `warning` is the one state needing action.
  */
-function roleSummary(block: RoleBlock): { text: string; tone: "ok" | "muted" | "warn" } {
+function roleSummary(block: RoleBlock): { text: string; tone: BadgeTone } {
   const model = block.spec.role.model.trim();
-  if (block.stale) return { text: `${model} — not served`, tone: "warn" };
-  if (model) return { text: model, tone: "ok" };
-  if (block.spec.fallsBackToChat) return { text: "Chat model", tone: "muted" };
+  if (block.stale) return { text: `${model} — not served`, tone: "warning" };
+  if (model) return { text: model, tone: "primary" };
+  if (block.spec.fallsBackToChat) return { text: "Chat model", tone: "neutral" };
   // Chat is the one role that neither falls back nor is optional.
-  if (block.spec.inherit === false) return { text: "No model selected", tone: "warn" };
-  return { text: "Off", tone: "muted" };
+  if (block.spec.inherit === false) return { text: "No model selected", tone: "warning" };
+  return { text: "Off", tone: "neutral" };
 }
 
 export function SettingsForm({
@@ -912,32 +931,28 @@ export function SettingsForm({
         ))}
       </nav>
 
-      <div className="divide-y divide-border">
+      {/* One card per role. Dividers made nine settings read as one long form;
+          a card gives each role its own edge, so it is obvious where the thing
+          you are editing starts and stops. `muted` because the whole form
+          already sits inside a Card — a nested plain one would be invisible. */}
+      <div className="space-y-4">
         {roleBlocks.map((block) => {
           const summary = roleSummary(block);
           return (
-            <section
+            <Card
               key={block.spec.id}
+              muted
               id={`role-${block.spec.id}`}
-              className="scroll-mt-6 space-y-4 py-6 first:pt-0 last:pb-0"
+              className={cn("scroll-mt-6", block.stale && "border-warning/40")}
             >
-              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h3 className="text-base font-semibold text-foreground">{block.spec.label}</h3>
-                <span
-                  className={cn(
-                    "text-xs",
-                    summary.tone === "warn"
-                      ? "text-warning"
-                      : summary.tone === "ok"
-                        ? "text-muted"
-                        : "text-faint",
-                  )}
-                >
-                  {summary.text}
-                </span>
-              </div>
-              {block.content}
-            </section>
+              <CardHeader>
+                <CardTitle className="text-base">{block.spec.label}</CardTitle>
+                <CardAction>
+                  <Badge tone={summary.tone}>{summary.text}</Badge>
+                </CardAction>
+              </CardHeader>
+              <CardContent>{block.content}</CardContent>
+            </Card>
           );
         })}
       </div>
