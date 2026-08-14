@@ -173,6 +173,73 @@ than a mock of it:
 - Vision, browser agent and the two aux roles inherit the chat backend as usual,
   so pointing chat at Gemini moves them too unless they are set explicitly.
 
+## Anthropic replies still 400'd after the system-placement fix (`done` pending live verification, 2026-08-14)
+
+Operator trace bundle (`bot-messaging` / `reply`, trace
+`48e51578-…`, 11:22:35 GMT): the reply died in 962 ms with
+
+    LLM endpoint error (400): role 'system' is not supported on this model
+
+on `claude-haiku-4-5-20251001`. The addressing analyzer and verifier (a separate
+vLLM role) had both answered fine; the failure is the reply request itself, and
+it is the *same* prompt shape the previous entry addressed.
+
+**Diagnosis.** Placement was never the whole rule. A `system` turn inside
+`messages` is a **model-gated capability** on the native API: `@ai-sdk/anthropic`
+emits one — and adds the `mid-conversation-system-2026-04-07` beta — for every
+system block that is not the leading one, and lifts only the leading block into
+the top-level `system` field. Models that have that capability publish the
+placement rule the last fix obeyed ("precede an 'assistant' message or end the
+array"); Haiku/Sonnet 4.5 and older do not have it at all and reject the role
+outright. So the previous rewrite produced a request that is legal on new models
+and impossible on the operator's.
+
+### What shipped
+
+- `toAnthropicSystemPlacement` → **`toAnthropicSystemTurns`**
+  (`server/llm/backends/adapters.ts`). The leading run is passed through
+  untouched (the provider hoists it into `system`; the KV-cache prefix depends on
+  it not moving). Every later run is merged and handed over as a **`user` turn in
+  its composed position** — no reordering at all, since the provider folds
+  consecutive user turns into one Anthropic user message, so the directives
+  arrive as their own text blocks immediately before the message they are about.
+  An all-empty run is dropped (an empty text block is its own 400).
+- Two semantic notes. The role change is the one real change: a directive after
+  the prefix is now read as part of the conversation rather than as a standing
+  instruction — the strongest delivery this API offers for a turn that cannot be
+  a system turn, and valid on every Claude model, no beta involved. And the
+  previous fix's *other* change is reverted by this one: the per-turn directives
+  no longer move to after the message they are about, so Anthropic now sees them
+  in the same order as every other backend.
+
+### Proof
+
+Lint clean; typecheck clean. `server/llm` 156/156; full unit suite 1084 passed /
+the same 21 pre-existing yt-dlp + media-download Windows failures. Tests updated
+so the pre-fix code fails them:
+
+- `backends.test.ts` — the rule predicate now reads "no system turn after the
+  prefix" (it previously encoded the placement rule that produced this 400);
+  plus the enforcement-retry conversion and the empty-run drop.
+- `transport.test.ts` — the wire body on a stubbed native endpoint: `system`
+  holds the **whole** leading run, `messages` roles are `user, assistant, user`
+  with no `system` message at all, the directive blocks still precede the
+  message text, and the `anthropic-beta` header never asks for
+  `mid-conversation-system`. `stubEndpoint` now captures headers.
+
+### Remaining risks / operator steps
+
+- **Not yet observed against the live endpoint** (the assistant holds no key):
+  send one group message with the chat role pointed at the Anthropic backend and
+  read the trace — the request body's `messages` must contain no `system` role.
+- Worth reading that first live reply for tone: the language/time directives are
+  now user-turn text on this backend, which models weigh slightly differently
+  than a system turn. If the language directive stops holding on Anthropic, that
+  is where to look — not in the composer, which is unchanged.
+- Traces record no backend id, so which backend produced a failing request has to
+  be inferred from the model name. Worth adding to the request event if this
+  costs another diagnosis round.
+
 ## Tool calls and system turns broke on hosted backends (`done` pending live verification, 2026-08-14)
 
 Two operator reports the same day, both 400s that killed the whole reply, both
@@ -207,7 +274,9 @@ about it were never carried.
   what would regress silently if the provider were ever renamed. The loop already
   appends the call object verbatim, so nothing else changed.
 - **`LlmBackendAdapter.normalizeMessages`** (`server/llm/backends/types.ts`,
-  optional; only `anthropic` implements it): `toAnthropicSystemPlacement` merges
+  optional; only `anthropic` implements it) — **superseded by the entry above**,
+  which replaced the rewrite described here after it 400'd on a 4.5-class model:
+  `toAnthropicSystemPlacement` merges
   each run of consecutive system turns into one block and moves a block that
   would sit in front of user turns to just after them, where it precedes the
   assistant's answer or ends the array. Nothing is dropped and relative order is

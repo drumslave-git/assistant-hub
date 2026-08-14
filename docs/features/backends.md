@@ -12,8 +12,9 @@ Most types speak the OpenAI wire shape; two do not:
   `/v1/models` listing), serving the chat-shaped roles only (chat, vision,
   browser agent, classifiers, background); embeddings, images, speech and
   transcription-mode audio refuse it with a named error. Its adapter also
-  rearranges the prompt's interleaved system turns into the placement the native
-  API allows.
+  delivers the prompt's interleaved system turns the way the native API accepts
+  them on every model: the leading run becomes the top-level `system` field, and
+  every later one is sent as a `user` turn in the same position.
 - **`google`** — the native Gemini API (`x-goog-api-key` auth, `/v1beta`,
   native listing), serving chat, embeddings and images; speech and
   transcriptions-mode audio refuse it with a named error. Detect recognizes

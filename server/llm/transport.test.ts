@@ -288,9 +288,13 @@ describe("chatCompletion end to end, only the network stubbed", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   /** Stub global fetch (what the provider uses when given none) and record the body. */
-  function stubEndpoint(captured: { body?: Record<string, unknown> }, completion: unknown) {
+  function stubEndpoint(
+    captured: { body?: Record<string, unknown>; headers?: Headers },
+    completion: unknown,
+  ) {
     vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
       captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      captured.headers = new Headers(init?.headers);
       return new Response(JSON.stringify(completion), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -347,19 +351,24 @@ describe("chatCompletion end to end, only the network stubbed", () => {
   });
 
   /**
-   * The second live 400 of 2026-08-14, on the Anthropic backend:
+   * The two live 400s on the Anthropic backend, 2026-08-14:
    *
-   *   LLM endpoint error (400): messages.1: role 'system' must precede an
-   *   'assistant' message or end the array
+   *   messages.1: role 'system' must precede an 'assistant' message or end the
+   *   array
+   *   role 'system' is not supported on this model
+   *
+   * The second arrived on `claude-haiku-4-5-20251001` *after* the placement was
+   * corrected, because placement was never the whole rule: a system turn inside
+   * `messages` is a capability, and that model does not have it.
    *
    * The adapter's rewrite is unit-tested on its own; what this adds is the half
-   * no pure test can see — that the native provider really does put those turns
-   * on the wire as `system` messages in that order, instead of hoisting or
-   * reordering them itself.
+   * no pure test can see — that the native provider hoists the prefix into
+   * `system` and emits no `system` message at all for what follows, whatever
+   * beta it might otherwise have reached for.
    */
   it("sends Anthropic a legal arrangement of the interleaved system turns", async () => {
     const { chatCompletion } = await import("./client");
-    const captured: { body?: Record<string, unknown> } = {};
+    const captured: { body?: Record<string, unknown>; headers?: Headers } = {};
     stubEndpoint(captured, {
       id: "msg_1",
       type: "message",
@@ -386,15 +395,25 @@ describe("chatCompletion end to end, only the network stubbed", () => {
       },
     );
 
-    const sent = captured.body?.messages as Array<{ role: string }>;
-    // The prompt prefix went where a prefix belongs, and the per-turn directives
-    // survived as their own turn rather than being folded into the user's words.
+    const sent = captured.body?.messages as Array<{ role: string; content: unknown }>;
+    // The prompt prefix went where a prefix belongs — the whole leading run,
+    // not just its first turn.
     expect(JSON.stringify(captured.body?.system)).toContain("persona");
-    expect(sent.map((m) => m.role)).toEqual(["user", "assistant", "user", "system"]);
-    const illegal = sent.filter(
-      (m, i) => m.role === "system" && i !== sent.length - 1 && sent[i + 1]?.role !== "assistant",
+    expect(JSON.stringify(captured.body?.system)).toContain("memory");
+    // Nothing that follows is a `system` message, on any model.
+    expect(sent.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    // The directives are still their own blocks, still ahead of the message they
+    // are about — the provider folded the two user turns into one message.
+    expect(JSON.stringify(sent.at(-1)?.content)).toContain("Reply in English.");
+    expect(JSON.stringify(sent.at(-1)?.content)).toContain("now");
+    expect(
+      JSON.stringify(sent.at(-1)?.content).indexOf("Reply in English."),
+    ).toBeLessThan(JSON.stringify(sent.at(-1)?.content).indexOf('"now"'));
+    // The beta that a mid-conversation system turn would have required is never
+    // asked for, so a model that lacks it is never sent one.
+    expect(captured.headers?.get("anthropic-beta") ?? "").not.toContain(
+      "mid-conversation-system",
     );
-    expect(illegal).toEqual([]);
   });
 
   /**

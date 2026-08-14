@@ -177,38 +177,54 @@ function systemText(message: ChatCompletionMessageParam): string {
 }
 
 /**
- * Rearrange system turns to Anthropic's placement rule, keeping every word.
+ * Deliver every system turn somewhere Anthropic accepts it, keeping every word
+ * and every position.
  *
- * The native API accepts a `system` turn inside `messages` only where it
- * "must precede an 'assistant' message or end the array" — anywhere else is a
- * flat 400 (`messages.1: role 'system' must precede an 'assistant' message or
- * end the array`), which fails the whole reply.
+ * The native API has exactly one unconditional home for instructions: the
+ * top-level `system` field, which the provider fills from the system turns at
+ * the head of the conversation. A `system` turn *inside* `messages` is a
+ * model-gated capability — the provider emits one (and asks for the
+ * `mid-conversation-system` beta) whenever a system turn follows any other
+ * turn, and a model without it answers
+ * `LLM endpoint error (400): role 'system' is not supported on this model`
+ * (live, `claude-haiku-4-5-20251001`, 2026-08-14). The previous rewrite here
+ * satisfied the *placement* rule those newer models publish ("precede an
+ * 'assistant' message or end the array"), which is a rule about where a
+ * supported turn may sit — so every reply kept failing on the models that do not
+ * support one at all.
  *
  * This app interleaves system turns deliberately (see `composeMessages` in
  * `features/bot-messaging/server/service.ts`): the per-chat blocks sit above the
  * history window so the endpoint can reuse its KV-cache prefix, and the per-turn
  * directives sit directly below it so the instruction about "now" is the last
- * thing read before the message being answered. Both clusters are followed by a
- * `user` turn, so on Anthropic *every* reply failed, tools or not.
+ * thing read before the message being answered.
  *
- * Two mechanical moves, no content dropped and no relative order changed:
+ * So one mechanical rewrite, no content dropped, no reordering at all:
  *
- * - a run of consecutive system turns is merged into one block, so a run cannot
- *   break the rule on its own second element;
- * - a block that would sit in front of user turns moves to just after them,
- *   where it either precedes the assistant's answer or ends the array. The
- *   leading block has nothing before it and stays put — the provider lifts it
- *   into the top-level `system` field, which is where a prompt prefix belongs.
+ * - the leading run stays exactly where it is — the provider lifts it into
+ *   `system`, which is where a prompt prefix belongs and what the KV-cache
+ *   prefix depends on;
+ * - every later run is merged and handed over as a `user` turn in the same
+ *   position. The provider folds consecutive user turns into one Anthropic user
+ *   message, so the directives arrive as their own text blocks immediately
+ *   before the message they are about — the order every other backend gets.
  *
- * The move is the one semantic change, and it goes the way the placement was
- * already reaching: a directive that had to outrank the message it is about now
- * sits after that message instead of before it.
+ * The role change is the one semantic change: a directive after the prefix is
+ * read as part of the conversation rather than as a standing instruction. That
+ * is the strongest delivery this API offers for a turn that cannot be a system
+ * turn, and unlike the placement rewrite it is valid on every Claude model.
  */
-export function toAnthropicSystemPlacement(
+export function toAnthropicSystemTurns(
   messages: ChatCompletionMessageParam[],
 ): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [];
   let i = 0;
+  // The prefix: consecutive system turns at the very top, passed through
+  // untouched for the provider to hoist.
+  while (i < messages.length && messages[i].role === "system") {
+    out.push(messages[i]);
+    i += 1;
+  }
   while (i < messages.length) {
     if (messages[i].role !== "system") {
       out.push(messages[i]);
@@ -221,17 +237,9 @@ export function toAnthropicSystemPlacement(
       if (text) run.push(text);
       i += 1;
     }
-    const merged: ChatCompletionMessageParam = { role: "system", content: run.join("\n\n") };
-    // Carry the user turn(s) this block was placed in front of over it, so the
-    // block lands where the API allows one. A leading block has none, and a
-    // block already followed by an assistant turn is legal where it stands.
-    if (out.length > 0) {
-      while (i < messages.length && messages[i].role === "user") {
-        out.push(messages[i]);
-        i += 1;
-      }
-    }
-    out.push(merged);
+    // An all-empty run leaves nothing to send: an empty text block is its own
+    // 400, and a turn with no words was never carrying an instruction.
+    if (run.length > 0) out.push({ role: "user", content: run.join("\n\n") });
   }
   return out;
 }
@@ -259,7 +267,7 @@ const anthropic: LlmBackendAdapter = {
   chatBodyExtras(intent: ChatRequestIntent): Record<string, JsonValue> {
     return intent.reasoning === "off" ? { thinking: { type: "disabled" } } : {};
   },
-  normalizeMessages: toAnthropicSystemPlacement,
+  normalizeMessages: toAnthropicSystemTurns,
   readReasoning(raw) {
     // The raw body is a native Messages response: `content` is an array of
     // blocks, and thinking arrives as `{type: "thinking", thinking: "…"}`

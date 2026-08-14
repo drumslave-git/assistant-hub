@@ -255,21 +255,24 @@ describe("adapterFor", () => {
 
 /**
  * The reply prompt interleaves system turns on purpose, and Anthropic is the one
- * backend with a rule about where they may sit — so the arrangement it sends is
- * asserted against that rule directly, message by message, rather than against a
- * hand-copied expected array that would stop meaning anything if the prompt
- * gained a block.
+ * backend that cannot take them there — a system turn after the prefix is a
+ * model-gated capability, and a model without it rejects the role outright. So
+ * the arrangement it sends is asserted against that rule directly, message by
+ * message, rather than against a hand-copied expected array that would stop
+ * meaning anything if the prompt gained a block.
  */
 describe("system-turn placement is rewritten only where the server demands it", () => {
-  /** Anthropic's rule: a system turn precedes an assistant turn, or ends the array. */
+  /**
+   * Anthropic's rule: the only system turns are the leading run the provider
+   * hoists into the top-level `system` field. Anything later is a
+   * mid-conversation system message, which
+   * `role 'system' is not supported on this model` rejects on 4.5 and older.
+   */
   function violations(messages: ChatCompletionMessageParam[]): number[] {
+    const prefix = messages.findIndex((message) => message.role !== "system");
+    if (prefix === -1) return [];
     return messages.flatMap((message, index) =>
-      message.role === "system" &&
-      index !== 0 &&
-      index !== messages.length - 1 &&
-      messages[index + 1]?.role !== "assistant"
-        ? [index]
-        : [],
+      message.role === "system" && index > prefix ? [index] : [],
     );
   }
 
@@ -304,23 +307,44 @@ describe("system-turn placement is rewritten only where the server demands it", 
     // endpoint's KV-cache reuse depends on it not moving.
     expect(sent[0]).toMatchObject({ role: "system" });
     expect(String(sent[0].content)).toContain("persona");
-    // The per-turn directives now sit after the message they are about, which is
-    // the only legal spot and the one with the most recency.
-    expect(sent.at(-1)).toMatchObject({ role: "system" });
-    expect(String(sent.at(-1)!.content)).toContain("Reply in English.");
-    expect(sent.at(-2)).toEqual({ role: "user", content: "now" });
+    // The per-turn directives keep their composed position, directly before the
+    // message they are about, and are handed over as the only role this API
+    // accepts there.
+    expect(sent.at(-1)).toEqual({ role: "user", content: "now" });
+    expect(sent.at(-2)).toMatchObject({ role: "user" });
+    expect(String(sent.at(-2)!.content)).toContain("Reply in English.");
   });
 
-  it("leaves a directive that already precedes an assistant turn where it is", () => {
+  it("hands a directive after the prefix over as a user turn, wherever it sits", () => {
     // The enforcement retry: the model's own empty-handed answer, then the
-    // correction. Both spots are legal already, so nothing may move.
+    // correction. Legal placement under the newer models' rule — and still a
+    // system turn the older ones refuse, so it converts like any other.
     const enforced: ChatCompletionMessageParam[] = [
       { role: "system", content: "persona" },
       { role: "user", content: "do it" },
       { role: "assistant", content: "I will" },
       { role: "system", content: "you did not" },
     ];
-    expect(adapterFor("anthropic").normalizeMessages!(enforced)).toEqual(enforced);
+    expect(adapterFor("anthropic").normalizeMessages!(enforced)).toEqual([
+      { role: "system", content: "persona" },
+      { role: "user", content: "do it" },
+      { role: "assistant", content: "I will" },
+      { role: "user", content: "you did not" },
+    ]);
+  });
+
+  it("drops a run that carries no words rather than sending an empty turn", () => {
+    // An empty text block is its own 400, and a turn with nothing in it was
+    // never carrying an instruction.
+    const blank: ChatCompletionMessageParam[] = [
+      { role: "system", content: "persona" },
+      { role: "user", content: "hi" },
+      { role: "system", content: "   " },
+    ];
+    expect(adapterFor("anthropic").normalizeMessages!(blank)).toEqual([
+      { role: "system", content: "persona" },
+      { role: "user", content: "hi" },
+    ]);
   });
 
   it("is not applied to backends that never asked for it", () => {

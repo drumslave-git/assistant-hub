@@ -87,14 +87,17 @@ Notable constraints, each learned the hard way:
   intent in the SDK's normalized vocabulary and the provider resolves it against
   the model id it was handed, instead of this layer copying a mapping that goes
   stale with every model release.
-- **Where a turn may sit is the server's rule, not the caller's.** Anthropic
-  accepts a `system` turn inside `messages` only where it precedes an assistant
-  turn or ends the array, while the reply prompt interleaves system turns for
-  prompt-cache reuse and recency. `LlmBackendAdapter.normalizeMessages` is the
-  seam: the Anthropic adapter merges each run of system turns into one block and
-  moves a block that would sit in front of user turns to just after them. Content
-  and relative order are preserved; only that one adjacency changes. Every other
-  backend leaves it unset and is sent the conversation exactly as assembled.
+- **Which roles a turn may use is the server's rule, not the caller's.**
+  Anthropic takes instructions in a top-level `system` field, filled from the
+  system turns at the head of the conversation; a `system` turn *inside*
+  `messages` is a model-gated capability (`role 'system' is not supported on this
+  model` — a 400 on 4.5 and older), while the reply prompt interleaves system
+  turns for prompt-cache reuse and recency. `LlmBackendAdapter.normalizeMessages`
+  is the seam: the Anthropic adapter passes the leading run through for the
+  provider to hoist and hands every later run over as a `user` turn in the same
+  position. Content and order are preserved; only that role changes, and it
+  changes to the one this API accepts on every model. Every other backend leaves
+  it unset and is sent the conversation exactly as assembled.
 
 ## Deadlines and retries
 
