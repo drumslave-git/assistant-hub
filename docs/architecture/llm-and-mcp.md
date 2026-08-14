@@ -302,6 +302,17 @@ The consequences are structural, not advisory:
   not part of the exemption. Owner status is resolved from the turn's authority,
   the same way the browser agent's download rights are.
 
+The storage itself is a `globalThis` singleton, like the registry and the bot
+manager. Next evaluates the same server module in several bundles
+(instrumentation, where the poller and the schedulers run, and the app/Route
+Handler bundle behind the dashboard), and dev hot reload adds another copy each
+time — but the registry that holds the tool handlers outlives all of them. A
+storage owned by a module instance is therefore bound in one copy and read from
+another, and every tool fails with "no chat is bound" however correctly the
+pipeline bound the turn. Keying the storage by name instead of by module
+identity is what keeps the binding a fact about the process rather than about
+load order.
+
 ### Tool tracing
 
 Every MCP tool call is recorded **twice**, on purpose:

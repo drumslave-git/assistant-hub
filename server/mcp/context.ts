@@ -85,11 +85,39 @@ export interface McpToolContext {
   deliveryKind?: "reply" | "send";
 }
 
-const storage = new AsyncLocalStorage<McpToolContext>();
+const STORE_KEY = Symbol.for("llm-tg-bot.mcp.tool-context");
+
+/**
+ * The one storage for this process, pinned to `globalThis` like every other
+ * cross-bundle singleton here (`server/mcp/runtime.ts`,
+ * `server/telegram/bot-manager.ts`).
+ *
+ * A module-level `AsyncLocalStorage` is one storage *per module instance*, and
+ * Next evaluates the same server file in more than one bundle: instrumentation
+ * (where the Telegram poller and the task scheduler run) and the app/Route
+ * Handler bundle (where the dashboard runs), plus a fresh copy on every dev hot
+ * reload. The MCP registry is deliberately a global singleton that outlives all
+ * of that, so its tool handlers keep reading whichever copy's storage existed
+ * when it was built — while a turn driven from another bundle binds a different
+ * one. The turn's chat is then simply not there, and every context-reading tool
+ * fails with "no chat is bound" no matter how correctly the pipeline bound it
+ * (traces `62e74a24…` `set_message_reaction` and `dd9a9130…` `tasks_create`,
+ * 2026-08-14, where the bot told the chat the action was impossible).
+ *
+ * One storage per process, keyed by a name rather than by module identity,
+ * removes the failure mode instead of leaving it to load order.
+ */
+function storage(): AsyncLocalStorage<McpToolContext> {
+  const g = globalThis as typeof globalThis & {
+    [STORE_KEY]?: AsyncLocalStorage<McpToolContext>;
+  };
+  if (!g[STORE_KEY]) g[STORE_KEY] = new AsyncLocalStorage<McpToolContext>();
+  return g[STORE_KEY];
+}
 
 /** Run `fn` with the given tool context bound for any tool calls it triggers. */
 export function runWithToolContext<T>(context: McpToolContext, fn: () => Promise<T>): Promise<T> {
-  return storage.run(context, fn);
+  return storage().run(context, fn);
 }
 
 /**
@@ -97,7 +125,7 @@ export function runWithToolContext<T>(context: McpToolContext, fn: () => Promise
  * — a programming error (a tool ran without the runtime binding a turn).
  */
 export function getToolContext(): McpToolContext {
-  const context = storage.getStore();
+  const context = storage().getStore();
   if (!context) {
     throw new Error("MCP tool called outside a tool context — no chat is bound");
   }
@@ -110,5 +138,5 @@ export function getToolContext(): McpToolContext {
  * gracefully rather than throw when a call happens outside a turn (e.g. in tests).
  */
 export function tryGetToolContext(): McpToolContext | null {
-  return storage.getStore() ?? null;
+  return storage().getStore() ?? null;
 }
