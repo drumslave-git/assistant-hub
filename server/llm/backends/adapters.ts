@@ -15,10 +15,10 @@ import type { ChatRequestIntent, JsonValue, LlmBackendAdapter } from "./types";
  * snake-case `reasoning_effort` here would be silently overwritten by the unset
  * typed option and never reach the endpoint. It is pinned by a test.
  *
- * The five backend adapters, deliberately in one file: their value is in being
+ * The seven backend adapters, deliberately in one file: their value is in being
  * comparable. Reading them side by side is how you see that "turn thinking off"
- * is four different requests, which is the fact that kept breaking the bot on
- * every backend switch.
+ * is a different request on nearly every one of them, which is the fact that
+ * kept breaking the bot on every backend switch.
  *
  * Each mapping below is what the backend's own documentation specifies. None of
  * them can be proven from this repository — only a live endpoint can confirm the
@@ -370,6 +370,59 @@ const google: LlmBackendAdapter = {
 };
 
 /**
+ * Z.ai (GLM).
+ *
+ * OpenAI-shaped on the wire — tool calls arrive as native `tool_calls`, thinking
+ * as `reasoning_content` — so it rides the shared provider. What it does *not*
+ * share is where anything sits or which knob works, all measured against the
+ * live endpoint on `glm-4.7-flash`, one prompt, identical answer every time:
+ *
+ * | body                                             | reasoning_content |
+ * | ------------------------------------------------ | ----------------- |
+ * | (nothing)                                        | present           |
+ * | `reasoning_effort: "none"` / `"low"`             | **present**       |
+ * | `chat_template_kwargs: {enable_thinking: false}` | **present**       |
+ * | `thinking: {type: "disabled"}`                   | absent            |
+ *
+ * The two middle rows are the reason this adapter exists: the generic adapter
+ * sends `reasoning_effort` and would report the intent as honored, while GLM
+ * ignores the field and keeps billing reasoning tokens for every classifier
+ * verdict. Only the vendor flag stops it, and it is all-or-nothing — there is no
+ * "think less", so `low` is dropped rather than approximated with `off`.
+ *
+ * Both routes live directly off the configured base (`…/api/paas/v4`); a `/v1`
+ * beneath it is a 404. The listing is the exception — see
+ * {@link LlmBackendAdapter.modelListingBaseUrl}.
+ */
+const zai: LlmBackendAdapter = {
+  id: "zai",
+  chatBodyExtras(intent: ChatRequestIntent): Record<string, JsonValue> {
+    return intent.reasoning === "off" ? { thinking: { type: "disabled" } } : {};
+  },
+  readReasoning(raw) {
+    return readMessageField(raw, ["reasoning_content", "reasoning"]);
+  },
+  modelListingBaseUrl(base) {
+    // `/models` answers with a subset (8 ids when `/v1/models` had 14, a strict
+    // superset including the vision, flash and `:free` variants). Chat serves
+    // every id in the larger list — the smaller one is not what the endpoint
+    // can do, only what that path reports.
+    const host = base.trim().replace(/\/+$/, "");
+    return host.endsWith("/v1") ? host : `${host}/v1`;
+  },
+  // "Prompt exceeds max length" (code 1261) at 400 — no "context" word, so the
+  // shared concept matcher cannot see it. The window is named by a different
+  // error: max_tokens is rejected outside [1, 131072].
+  contextOverflowPatterns: [/prompt exceeds max length/i],
+  contextOverflowBehavior: "error",
+  normalizeServedModelId(raw) {
+    // Exact ids, case preserved, and the suffix is meaningful: `glm-4.5-air` and
+    // `glm-4.5-air:free` are separately served and separately billed.
+    return normalizeModelName(raw);
+  },
+};
+
+/**
  * Generic OpenAI-compatible — including OpenAI itself.
  *
  * Claims nothing beyond the published spec. `reasoning_effort` is in that spec,
@@ -403,5 +456,6 @@ export const LLM_BACKEND_ADAPTERS = {
   vllm,
   anthropic,
   google,
+  zai,
   "openai-compatible": generic,
 } as const;

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { imagePart } from "@/test/__mocks__/vision";
 import {
@@ -186,10 +186,18 @@ vi.mock("./transport", () => ({
 
 // The OpenAI SDK is still mocked: its error classes are what
 // `isRetryableLlmError` and `toLlmError` classify on the non-transport paths.
+/** Every `new OpenAI({...})` this file's code under test performs, in order. */
+const openAiOptions: Array<{ baseURL?: string }> = [];
+/** The listing the mocked SDK answers with; per-test where the ids matter. */
+const modelsList = vi.fn(async () => ({ data: [] as Array<{ id: string }> }));
+
 vi.mock("openai", () => {
   class OpenAI {
+    constructor(options: { baseURL?: string }) {
+      openAiOptions.push(options);
+    }
     chat = { completions: { create: createMock } };
-    models = { list: vi.fn() };
+    models = { list: modelsList };
   }
   class APIError extends Error {
     status?: number;
@@ -663,5 +671,34 @@ describe("listModels against a Google backend", () => {
     // An operator who pinned a version said something specific.
     expect(toGoogleBaseUrl("https://proxy.invalid/v1alpha")).toBe("https://proxy.invalid/v1alpha");
     expect(toGoogleBaseUrl("https://proxy.invalid/v1")).toBe("https://proxy.invalid/v1");
+  });
+});
+
+describe("listModels asks where the backend keeps its catalog", () => {
+  beforeEach(() => {
+    openAiOptions.length = 0;
+    modelsList.mockResolvedValue({ data: [] });
+  });
+
+  it("lists from the chat base on a backend that keeps both together", async () => {
+    modelsList.mockResolvedValue({ data: [{ id: "llama-3" }] });
+    const { listModels } = await import("./client");
+    await expect(listModels({ baseUrl: "http://host.invalid:11434", backend: "ollama" })).resolves.toEqual(
+      ["llama-3"],
+    );
+    expect(openAiOptions.at(-1)?.baseURL).toBe("http://host.invalid:11434/v1");
+  });
+
+  // Z.ai serves a *subset* on the chat base: 8 ids there against 14 on the
+  // listing path, missing the very model the operator had configured. Listing
+  // from the wrong one is silent — a shorter list looks like a smaller catalog,
+  // not like a bug — and the settings form then clears that model on save.
+  it("lists Z.ai from its own catalog path, not the base chat completes on", async () => {
+    modelsList.mockResolvedValue({ data: [{ id: "glm-4.7-flash" }, { id: "glm-4.6" }] });
+    const { listModels } = await import("./client");
+    await expect(
+      listModels({ baseUrl: "https://api.z.ai/api/paas/v4", apiKey: "key", backend: "zai" }),
+    ).resolves.toEqual(["glm-4.6", "glm-4.7-flash"]);
+    expect(openAiOptions.at(-1)?.baseURL).toBe("https://api.z.ai/api/paas/v4/v1");
   });
 });

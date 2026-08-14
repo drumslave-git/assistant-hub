@@ -70,6 +70,20 @@ describe("detectBackend", () => {
     expect(seen).toEqual([]);
   });
 
+  it("identifies Z.ai by hostname, which no probe could do", async () => {
+    // It speaks the OpenAI shape, so every fingerprint route that separates the
+    // self-hosted servers is silent here — and getting it wrong costs reasoning
+    // tokens on every call, since its thinking flag is the only one it honors.
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      seen.push(String(url));
+      return new Response("nope", { status: 404 });
+    });
+    const result = await detectBackend("https://api.z.ai/api/paas/v4");
+    expect(result.backend).toBe("zai");
+    expect(seen).toEqual([]);
+  });
+
   it("identifies Gemini by hostname alone, without sending a single probe", async () => {
     const seen: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {

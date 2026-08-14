@@ -648,8 +648,13 @@ export async function listModels(
   const backend = toLlmBackendId(conn.backend);
   if (backend === "anthropic") return listAnthropicModels(conn, timeoutMs);
   if (backend === "google") return listGoogleModels(conn, timeoutMs);
+  // A backend whose catalog does not sit beside its chat routes says so; every
+  // other one lists from the base it completes on.
+  const listingBase = adapterFor(backend).modelListingBaseUrl?.(conn.baseUrl) ?? conn.baseUrl;
   try {
-    const page = await createOpenAiClient(conn).models.list({ timeout: timeoutMs });
+    const page = await createOpenAiClient({ ...conn, baseUrl: listingBase }).models.list({
+      timeout: timeoutMs,
+    });
     const seen = new Set<string>();
     for (const entry of page.data ?? []) {
       const id = (entry.id ?? "").trim();

@@ -116,6 +116,22 @@ export interface LlmBackendAdapter {
   normalizeMessages?(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[];
 
   /**
+   * Where this backend's model listing hangs off, given the configured base URL,
+   * when it is **not** the base the chat routes use.
+   *
+   * Unset for every server that serves `/models` beside `/chat/completions`,
+   * which is what OpenAI-compatibility implies. It exists because a vendor may
+   * serve two catalogs on two paths: Z.ai answers `/models` with a subset and
+   * `/v1/models` with the full list, while chat exists *only* off the base — so
+   * a listing taken from the chat base silently hides models the endpoint will
+   * happily complete with, and the settings form then flags the operator's
+   * working model as "not served" and clears it on save.
+   *
+   * A pure string→string map, like everything else here: no fetch, no SDK.
+   */
+  modelListingBaseUrl?(base: string): string;
+
+  /**
    * Backend-specific context-overflow phrasings, tried in addition to (never
    * instead of) the shared concept matcher in `../client`. Empty when the shared
    * matcher already covers this backend.

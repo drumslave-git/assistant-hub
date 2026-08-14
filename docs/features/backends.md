@@ -22,6 +22,13 @@ Most types speak the OpenAI wire shape; two do not:
   attaches to every tool call is carried back automatically — without it, no
   tool-using reply completes.
 
+`zai` (Z.ai / GLM) does speak the OpenAI wire shape, but pick it rather than
+Generic: its thinking flag is the only one it honors, and its model listing
+lives on `/v1/models` while chat lives on the base — typed as Generic, the
+catalog comes back a subset and the settings form clears a working model on
+save. Detect recognizes `api.z.ai` by hostname, which is the only way to tell it
+apart from any other OpenAI-compatible host.
+
 The settings roles (chat,
 embeddings, images, speech, audio, vision, browser agent) reference backends by
 id instead of carrying their own URL/key copies — one server, entered once,

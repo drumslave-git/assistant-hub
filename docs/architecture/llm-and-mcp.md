@@ -37,6 +37,20 @@ connection) plus its own model listing in `client.ts`:
   too, but the native provider carries thought signatures as a first-class field
   and resolves the thinking knob per model, which that layer does neither.
 
+A third type speaks the OpenAI routes but not from the same base:
+
+- **`zai`** — Z.ai (GLM). Chat, tools and `reasoning_content` are the ordinary
+  OpenAI shape off the configured base (`…/api/paas/v4`), so the shared provider
+  serves it. Two things are not ordinary. Thinking stops **only** on
+  `thinking: {type: "disabled"}` — `reasoning_effort` and
+  `chat_template_kwargs` are accepted and ignored, so a generic-typed row keeps
+  paying reasoning tokens on every classifier call. And the model catalog lives
+  on `/v1/models` while chat lives on the base: the base's own `/models`
+  answers with a strict subset (8 ids against 14, missing the vision, flash and
+  `:free` variants that chat completes with), so the listing is taken from
+  `modelListingBaseUrl` — the one adapter hook for a catalog that is not beside
+  the chat routes.
+
 `classifier.ts` is not a sixth client but a call *shape* over `client.ts`: the
 reasoning mode and token budget every per-message classification uses (addressing
 analyzer and verifier, chat-rule match, honesty gate). It lives on its own so the

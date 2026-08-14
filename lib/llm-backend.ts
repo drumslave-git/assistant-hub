@@ -25,6 +25,7 @@ export const LLM_BACKEND_IDS = [
   "vllm",
   "anthropic",
   "google",
+  "zai",
   "openai-compatible",
 ] as const;
 
@@ -83,6 +84,11 @@ export const LLM_BACKENDS: LlmBackendOption[] = [
     id: "google",
     label: "Google (Gemini)",
     hint: "Native Gemini API — not OpenAI-compatible. Chat, embeddings and images; requires an API key.",
+  },
+  {
+    id: "zai",
+    label: "Z.ai (GLM)",
+    hint: "OpenAI-shaped, but thinking only stops on its own flag and the model listing sits on a separate path.",
   },
   {
     id: "openai-compatible",

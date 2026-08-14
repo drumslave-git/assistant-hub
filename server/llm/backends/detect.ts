@@ -73,6 +73,12 @@ export async function detectBackend(baseUrl: string): Promise<BackendDetection> 
   if (hostname === "generativelanguage.googleapis.com") {
     return { backend: "google", detail: "Google Gemini API (generativelanguage.googleapis.com)" };
   }
+  // Z.ai speaks the OpenAI shape, so no probe here can tell it apart from a
+  // generic endpoint — and the difference matters (its thinking flag, and a
+  // model listing that lives off a different path than chat).
+  if (hostname === "api.z.ai") {
+    return { backend: "zai", detail: "Z.ai GLM API (api.z.ai)" };
+  }
 
   const ollama = await probe(origin, "/api/version");
   if (ollama && typeof ollama.version === "string") {

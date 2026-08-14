@@ -85,6 +85,23 @@ describe("thinking control differs per backend", () => {
     expect(adapterFor("google").reasoningSetting!({ reasoning: "default" })).toBeUndefined();
   });
 
+  // Measured live on glm-4.7-flash, same prompt each time: `reasoning_effort`
+  // ("none" and "low") and `chat_template_kwargs: {enable_thinking: false}` both
+  // came back *with* `reasoning_content`; only the vendor flag removed it. The
+  // generic adapter's spec-only body is therefore silently ignored here.
+  it("Z.ai only stops thinking on its own flag, not on reasoning_effort", () => {
+    expect(chatBodyExtrasFor("zai", { reasoning: "off" })).toEqual({
+      thinking: { type: "disabled" },
+    });
+    const body = chatBodyExtrasFor("zai", { reasoning: "off" });
+    expect(body).not.toHaveProperty("reasoningEffort");
+    expect(body).not.toHaveProperty("chat_template_kwargs");
+  });
+
+  it('Z.ai drops "low" — the flag is all-or-nothing, and off is not what was asked', () => {
+    expect(chatBodyExtrasFor("zai", { reasoning: "low" })).toEqual({});
+  });
+
   it("no other backend claims the SDK-level reasoning setting", () => {
     for (const id of LLM_BACKEND_IDS.filter((backend) => backend !== "google")) {
       expect(adapterFor(id).reasoningSetting).toBeUndefined();
@@ -117,6 +134,7 @@ describe("reasoning text is read wherever the backend puts it", () => {
     const raw = completionWithReasoning("reasoning_content", "deliberating elsewhere");
     expect(readReasoningFor("vllm", raw)).toBe("deliberating elsewhere");
     expect(readReasoningFor("llamacpp", raw)).toBe("deliberating elsewhere");
+    expect(readReasoningFor("zai", raw)).toBe("deliberating elsewhere");
   });
 
   it("returns null rather than throwing on a body with no reasoning", () => {
@@ -183,6 +201,7 @@ describe("context overflow", () => {
     expect(truncatesOnOverflow("vllm")).toBe(false);
     expect(truncatesOnOverflow("anthropic")).toBe(false);
     expect(truncatesOnOverflow("google")).toBe(false);
+    expect(truncatesOnOverflow("zai")).toBe(false);
     expect(truncatesOnOverflow("openai-compatible")).toBe(false);
   });
 
@@ -206,6 +225,38 @@ describe("context overflow", () => {
         p.test("The input token count (1200000) exceeds the maximum number of tokens allowed (1048576)."),
       ),
     ).toBe(true);
+  });
+
+  // The live 400: {"error":{"code":"1261","message":"Prompt exceeds max length"}}
+  it("adds Z.ai's overflow phrasing, which names no context either", () => {
+    const patterns = adapterFor("zai").contextOverflowPatterns;
+    expect(patterns.some((p) => p.test("Prompt exceeds max length"))).toBe(true);
+  });
+});
+
+describe("model listing location", () => {
+  // Measured: `/api/paas/v4/models` answered with 8 ids, `/api/paas/v4/v1/models`
+  // with 14 — a strict superset including glm-4.7-flash, which chat completes
+  // with. Listing from the chat base would hide it from the settings form and
+  // clear a working selection on save.
+  it("sends Z.ai's listing to the path that reports the full catalog", () => {
+    const zai = adapterFor("zai");
+    expect(zai.modelListingBaseUrl!("https://api.z.ai/api/paas/v4")).toBe(
+      "https://api.z.ai/api/paas/v4/v1",
+    );
+    expect(zai.modelListingBaseUrl!("https://api.z.ai/api/paas/v4/")).toBe(
+      "https://api.z.ai/api/paas/v4/v1",
+    );
+    // Idempotent: an operator who already typed the listing path keeps it.
+    expect(zai.modelListingBaseUrl!("https://api.z.ai/api/paas/v4/v1")).toBe(
+      "https://api.z.ai/api/paas/v4/v1",
+    );
+  });
+
+  it("leaves every other backend listing from the base it completes on", () => {
+    for (const id of LLM_BACKEND_IDS.filter((backend) => backend !== "zai")) {
+      expect(adapterFor(id).modelListingBaseUrl).toBeUndefined();
+    }
   });
 });
 

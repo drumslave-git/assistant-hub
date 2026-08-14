@@ -1518,7 +1518,12 @@ Remaining risks:
   in exchange for never clearing on unproven absence.
 - A backend that serves a model while omitting it from `/v1/models` would get its
   selection cleared; not observed on Ollama/llama.cpp/vLLM, and the operator is
-  told exactly what was cleared and why.
+  told exactly what was cleared and why. **Observed on Z.ai, 2026-08-14**: its
+  chat base lists 8 ids while `/v1/models` lists 14 (a superset, including the
+  configured `glm-4.7-flash`, which chat completes with). Fixed for that vendor
+  by `LlmBackendAdapter.modelListingBaseUrl` rather than by weakening the stale
+  check — the listing was wrong, not the clearing. Any future backend with two
+  catalogs needs the same hook.
 
 ## Find a photo and reply to it (`done` pending production deploy + live verification, 2026-08-07)
 
