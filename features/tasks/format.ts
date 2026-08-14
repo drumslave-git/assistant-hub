@@ -59,12 +59,15 @@ export function buildStandingTasksBlock(tasks: readonly PromptTask[]): string | 
 export function buildTaskTriggerDirective(tasks: readonly PromptTask[]): string {
   const listed = tasks.filter((task) => task.instruction.trim());
   return (
-    "Nobody in this chat addressed you in the current message. You are answering it only because " +
+    "Nobody in this chat addressed you in the current message. You are acting on it only because " +
     "these standing rules match it:\n" +
     listed.map(taskLine).join("\n") +
-    "\n\nDo exactly what those rules require for this message and nothing else — call the tools they " +
-    "call for, and keep any text to the short confirmation the action warrants. Do not greet anyone, " +
-    "do not comment on the conversation, and do not answer anything that was not asked of you."
+    "\n\nNothing you merely write in your answer is sent to the chat in this turn. If a rule calls " +
+    "for saying something, say it by calling reply_to_message — that call is what delivers it, " +
+    "attached to the message above. Call the other tools a rule needs as well (looking something " +
+    "up, downloading, remembering). Do exactly what those rules require for this message and " +
+    "nothing else: do not greet anyone, do not comment on the conversation, and do not answer " +
+    "anything that was not asked of you."
   );
 }
 
@@ -88,15 +91,16 @@ export function buildTaskTriggerDirective(tasks: readonly PromptTask[]): string 
  * the same thing anyway.
  */
 export const TASK_ENFORCEMENT_DIRECTIVE =
-  "STOP. The answer you just gave called no tool at all, so nothing was done — you only wrote that " +
-  "it was. That message will not be sent. This turn exists solely because a standing rule matched " +
-  "the message, and a rule that asks for an action is carried out by calling the tool that performs " +
-  "it, in this turn, and in no other way.\n\n" +
+  "STOP. The answer you just gave called no tool at all, so nothing happened and nothing was sent — " +
+  "text written in your answer does not reach the chat in this turn. This turn exists solely " +
+  "because a standing rule matched the message, and a rule is carried out by calling a tool, in " +
+  "this turn, and in no other way.\n\n" +
   "Answer once more, and pick one of exactly two things:\n" +
-  "- Call the tool the rule requires now. Do not describe the call, do not say you are about to make " +
-  "it, do not report its result before you have one — make the call.\n" +
-  "- Or, if no tool available to you can do what the rule asks, reply with one short sentence saying " +
-  "plainly that you could not do it and why. That is an honest answer and an acceptable one.\n\n" +
+  "- Call the tool the rule requires now. If the rule is to say something, that tool is " +
+  "reply_to_message and the words go in its 'text'. Do not describe the call, do not say you are " +
+  "about to make it, do not report its result before you have one — make the call.\n" +
+  "- Or, if no tool available to you can do what the rule asks, say so in one short sentence. That " +
+  "is an honest answer and an acceptable one.\n\n" +
   "Repeating your previous answer, or any other claim that the action happened, is not among your " +
   "options.";
 

@@ -207,11 +207,10 @@ async function runTick(ctx?: IntervalRunContext): Promise<{ summary: string }> {
     const [timezone, personalityPrompt, toolset] = await Promise.all([
       getTimezone().catch(() => "UTC"),
       getActivePersonalityPrompt().catch(() => null),
-      // Fires run with the full toolset plus the outbound tools — the one turn
-      // that carries them, because delivery happens only through them. No tools
-      // registered → plain completion (the fire then simply cannot send, and
-      // records a quiet fire).
-      getToolset({ outbound: true }).catch(() => null),
+      // A fire delivers only through `send_message`: nothing triggered it, so
+      // there is no message to reply to. No tools registered → plain completion
+      // (the fire then simply cannot send, and records a quiet fire).
+      getToolset({ delivery: "send" }).catch(() => null),
     ]);
     return runDueTasks({
       timezone,

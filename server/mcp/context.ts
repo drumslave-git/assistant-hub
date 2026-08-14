@@ -54,22 +54,6 @@ export interface McpToolContext {
    */
   collectImage?: (base64: string) => void;
   /**
-   * Aims this turn's reply at an earlier message instead of the one being
-   * answered. Set by the tool that lets the bot point at something it found ("here
-   * it is" landing under the photo somebody asked for), so the answer arrives as a
-   * Telegram reply to *that* message and taps through to it.
-   *
-   * A sink rather than a tool-result field, for the same reason `collectImage` is
-   * one: this changes how the pipeline *delivers* the turn, which is not something
-   * the model's own answer text can carry. The pipeline validates nothing here —
-   * the tool has already checked the id belongs to this chat, and the delivery
-   * falls back to the triggering message if Telegram refuses the target.
-   *
-   * Absent when the turn has no reply to aim (e.g. a scheduled-task fire). A tool
-   * must treat that as "cannot point at a message here" and say so.
-   */
-  setReplyTarget?: (telegramMessageId: number) => void;
-  /**
    * Notifies the turn that `browse_web` enqueued a background browsing run.
    * The reply pipeline uses it to treat this turn's reply as a transient
    * acknowledgement: delivered silently, and deleted once the run posts its own
@@ -78,20 +62,27 @@ export interface McpToolContext {
    */
   onBrowserRunEnqueued?: (runId: string) => void;
   /**
-   * Outbound delivery for a **task fire** — the one turn where the model's own
-   * text is never sent and the outbound tools (`send_message`,
-   * `reply_to_message`) are how anything reaches the chat. Bound only by the
-   * fire (user decision, 2026-08-13: the model decides what a task sends, not
-   * a hardcoded delivery); its absence is what makes those tools refuse in an
-   * ordinary reply turn, whose reply already delivers itself.
+   * Outbound delivery for a **task-driven turn** — the turns where the model's
+   * own text is never sent and a delivery tool is the only way anything reaches
+   * the chat (user decision, 2026-08-13: the model decides what a task sends,
+   * not a hardcoded delivery). Its absence is what makes those tools refuse in
+   * an ordinary reply turn, whose reply already delivers itself.
    *
-   * Resolves the delivered Telegram message id. `replyToMessageId` attaches
-   * the message as a Telegram reply to an existing message of this chat.
+   * How the message lands is the **binding's** decision, not the model's, which
+   * is why this takes only the text. A turn opened by a `message` task replies
+   * to the message that triggered it; a timed fire has no such message and sends
+   * standalone. The model never picks a target, so it can never aim one wrong.
+   *
+   * Resolves the delivered Telegram message id.
    */
-  deliver?: (
-    text: string,
-    opts?: { replyToMessageId?: number },
-  ) => Promise<{ messageId: number }>;
+  deliver?: (text: string) => Promise<{ messageId: number }>;
+  /**
+   * Which delivery tool this turn offers, so the tool that is *not* offered can
+   * still refuse coherently if a stale registry hands it to the model anyway.
+   * `reply` — a `message`-triggered turn, answering the message that opened it.
+   * `send` — a timed fire, speaking into the chat unprompted.
+   */
+  deliveryKind?: "reply" | "send";
 }
 
 const storage = new AsyncLocalStorage<McpToolContext>();

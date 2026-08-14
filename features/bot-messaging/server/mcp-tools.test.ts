@@ -48,7 +48,7 @@ function handlers() {
 }
 
 function toolHandler() {
-  return handlers()[REPLY_TO_MESSAGE_TOOL] as (args: { message_id: number }) => Promise<ToolResult>;
+  return handlers()[REPLY_TO_MESSAGE_TOOL] as (args: { text: string }) => Promise<ToolResult>;
 }
 
 function reactionHandler() {
@@ -70,72 +70,87 @@ function mirroredOwn(telegramMessageId: number) {
 }
 
 describe("reply_to_message", () => {
-  it("moves the turn's reply target to the requested message", async () => {
-    mockedLookup.mockResolvedValue(mirrored(4321));
-    const targets: number[] = [];
+  /** A turn opened by a `message` task: the one kind that may reply. */
+  function replyTurn(sent: string[]) {
+    return {
+      chatId: "-100",
+      deliveryKind: "reply" as const,
+      deliver: async (text: string) => {
+        sent.push(text);
+        return { messageId: 555 };
+      },
+    };
+  }
 
-    const result = await runWithToolContext(
-      { chatId: "-100", setReplyTarget: (id) => targets.push(id) },
-      () => toolHandler()({ message_id: 4321 }),
+  it("delivers the text and reports the sent message's own id", async () => {
+    const sent: string[] = [];
+
+    const result = await runWithToolContext(replyTurn(sent), () =>
+      toolHandler()({ text: "you are wrong about that" }),
     );
 
-    expect(targets).toEqual([4321]);
-    expect(result.structuredContent).toEqual({ ok: true, message_id: 4321 });
-    // The chat sees the quote, so telling the model to quote it too would double it.
-    expect(result.content[0].text).toContain("no need to quote");
+    expect(sent).toEqual(["you are wrong about that"]);
+    expect(result.structuredContent).toEqual({ ok: true, message_id: 555 });
   });
 
-  it("scopes the lookup to the bound chat, never a chat the model names", async () => {
-    mockedLookup.mockResolvedValue(mirrored(7));
-    await runWithToolContext({ chatId: "-100", setReplyTarget: () => {} }, () =>
-      toolHandler()({ message_id: 7 }),
-    );
-    expect(mockedLookup).toHaveBeenCalledWith(expect.anything(), "-100", [7]);
+  it("sends once per call, so two calls are two messages", async () => {
+    const sent: string[] = [];
+    const handler = toolHandler();
+
+    await runWithToolContext(replyTurn(sent), async () => {
+      await handler({ text: "first" });
+      await handler({ text: "second" });
+    });
+
+    expect(sent).toEqual(["first", "second"]);
   });
 
-  it("refuses an id that is not in this chat, and moves nothing", async () => {
-    // The failure this prevents: Telegram rejects a send whose reply target it
-    // cannot find, so a guessed id would cost the whole reply.
-    mockedLookup.mockResolvedValue([] as never);
-    const targets: number[] = [];
-
-    const result = await runWithToolContext(
-      { chatId: "-100", setReplyTarget: (id) => targets.push(id) },
-      () => toolHandler()({ message_id: 999 }),
+  it("refuses in an ordinary reply turn, where the answer is already the message", async () => {
+    // The turn that has no delivery binding is the one whose own text is on its
+    // way to the chat; delivering here too would post the reply twice.
+    const result = await runWithToolContext({ chatId: "-100" }, () =>
+      toolHandler()({ text: "hello" }),
     );
 
-    expect(targets).toEqual([]);
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("No message #999 in this chat");
+    expect(result.content[0].text).toContain("your own answer is the message");
     expect(result.structuredContent).toEqual({ ok: false, message_id: null });
   });
 
-  it("refuses when the turn has no reply to aim, without touching the database", async () => {
-    mockedLookup.mockClear();
-
-    // A bound turn with no sink — e.g. a text-only scheduled-task fire.
-    const result = await runWithToolContext({ chatId: "-100" }, () =>
-      toolHandler()({ message_id: 4321 }),
+  it("refuses in a fire, which has no message to reply to", async () => {
+    // A stale registry can hand the model the wrong delivery tool. Answering
+    // "replied to the message" in a turn where no message triggered anything is
+    // exactly the quiet lie the refusals exist to prevent, so the binding's kind
+    // is checked, not merely its presence.
+    const sent: string[] = [];
+    const result = await runWithToolContext(
+      {
+        chatId: "-100",
+        deliveryKind: "send",
+        deliver: async (text: string) => {
+          sent.push(text);
+          return { messageId: 1 };
+        },
+      },
+      () => toolHandler()({ text: "hello" }),
     );
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("no reply to attach");
-    expect(mockedLookup).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
   });
 
-  it("lets a later call replace an earlier target", async () => {
-    mockedLookup.mockResolvedValue(mirrored(1));
-    const targets: number[] = [];
-    const handler = toolHandler();
+  it("needs no message id, so there is none for the model to get wrong", async () => {
+    // The regression this pins: the tool used to take a `message_id` plus an
+    // optional `text` that one of its two modes silently discarded, which is how
+    // a whole reply ended up in a dropped argument (trace 224ef60a…).
+    mockedLookup.mockClear();
+    const sent: string[] = [];
 
-    await runWithToolContext({ chatId: "-100", setReplyTarget: (id) => targets.push(id) }, async () => {
-      await handler({ message_id: 1 });
-      await handler({ message_id: 2 });
-    });
+    await runWithToolContext(replyTurn(sent), () => toolHandler()({ text: "hi" }));
 
-    // The pipeline reads the last value written, so the tool needs no state of
-    // its own — but the contract is worth pinning, since the description says so.
-    expect(targets).toEqual([1, 2]);
+    expect(sent).toEqual(["hi"]);
+    // No target to validate means no lookup to perform.
+    expect(mockedLookup).not.toHaveBeenCalled();
   });
 });
 

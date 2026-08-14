@@ -49,15 +49,16 @@ const rollChanceOutputSchema = {
 };
 
 /**
- * A uniform draw from [0, 100).
+ * A uniform draw from [0, 100), in hundredths of a percent.
  *
  * `randomInt` over a fixed number of steps rather than `Math.random() * 100`:
  * it is drawn from a CSPRNG with rejection sampling, so the distribution has no
  * modulo bias, and the step count is explicit instead of being whatever the
- * engine's float happens to give.
+ * engine's float happens to give. The largest draw is 99.99, so a roll can never
+ * print as 100 — see {@link ROLL_STEPS}.
  */
 function roll(): number {
-  return (randomInt(0, ROLL_STEPS) / ROLL_STEPS) * MAX_PERCENT;
+  return randomInt(0, ROLL_STEPS) / (ROLL_STEPS / MAX_PERCENT);
 }
 
 /** Register the randomness MCP tools on the shared server. */

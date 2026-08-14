@@ -28,6 +28,86 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Task turns deliver through a tool (`done` pending live verification, 2026-08-14)
+
+Two operator traces, one root cause. A `message` task — *"from time to time,
+comment on a message, from a perspective that…"* — matched, and:
+
+- `d1c01591…`: the model wrote the comment, called no tool (correctly — it had
+  none it could use), was retried, wrote it again, and the **correct answer was
+  suppressed** in favour of the "could not carry out" notice.
+- `224ef60a…`: cornered by `TASK_ENFORCEMENT_DIRECTIVE` into calling *something*,
+  the model reached for `reply_to_message` and put the whole comment in its
+  `text` — which the reply path discarded, since there that tool only retargets.
+  The turn died on `LLM returned an empty response`, twice.
+
+The enforcement guard's premise — "the only way anything is done is a tool call"
+— was false for a task whose action is to **speak**, because in a reply turn the
+model's own text was the delivery and no delivery tool was offered.
+
+User decisions (2026-08-14, after two rounds of clarification):
+
+1. **Any task-opened turn behaves like a fire**: its own text is never delivered,
+   and a delivery tool is the only path to the chat. Plain addressed replies are
+   unchanged.
+2. **Both tools, selected by trigger**: `message` → `reply_to_message`,
+   timed → `send_message`. An ordinary reply turn gets neither.
+3. **No target choice**: both take `text` and nothing else. The runtime decides
+   where the message lands.
+
+### What shipped
+
+- `getToolset({ delivery?: "reply" | "send" })` replaces `{ outbound }`, offering
+  **at most one** delivery tool per turn.
+- `McpToolContext.deliver` is now `(text) => …` (the `replyToMessageId` option is
+  gone) and is joined by `deliveryKind`. Handlers check the kind, not merely the
+  binding's presence — a hot-reloaded registry can hand the model the wrong tool,
+  and a fire answering "replied to the message" about a message that never
+  existed is the quiet lie the refusals exist to prevent.
+- `reply_to_message` lost `message_id`; `setReplyTarget` is deleted from the
+  context, and `replyTargetMessageId` collapsed into the triggering id.
+- `process-update.ts` sets `taskOpenedTurn` on the same pass that resolves the
+  task authority, binds `deliver` (reply to the triggering message, mirrored into
+  history via the new shared `recordDeliveredMessage`), and asks for the reply
+  toolset.
+- `service.ts` returns before the send when `taskDirective` is set. A task turn
+  that called a *non*-delivery tool settles quietly on purpose: a rule whose
+  action was "download the file" owes the chat nothing further.
+- Both directives rewritten — the trigger directive names `reply_to_message` and
+  says plainly that written text is not sent; the enforcement directive likewise.
+
+### Proof
+
+Lint, typecheck, `next build` clean. Unit suite **1147 tests, 1126 passed / 21
+failed** — the same two pre-existing Windows-only yt-dlp files.
+
+New/rewritten tests: the reply tool delivers and reports the sent id, sends once
+per call, and refuses in both an ordinary turn and a fire (kind checked, not just
+presence), plus a regression test that it needs no id at all; `getToolset` offers
+neither / only-reply / only-send and **never both**; the fire sends standalone and
+binds `deliveryKind: "send"`; the task turn settles without calling `sendReply`;
+both directives are pinned on the clauses that matter.
+
+**A real bug my own test caught in `roll_chance`** (shipped hours earlier): the
+displayed roll was rounded, so a draw of 99.999 printed `rolled 100 < 100` — a
+verdict contradicting itself on the one tool whose output is otherwise
+unverifiable. The draw is now made at display precision (hundredths of a percent),
+so the number shown *is* the number compared.
+
+### Remaining risks / operator steps
+
+- **Not yet observed live.** The whole point is a behaviour change in a group
+  chat: send a message that matches a `message` task and confirm the bot replies
+  under it, exactly once, and that the trace shows a `reply_to_message` call
+  rather than a suppressed answer.
+- A message task that calls **no** tool at all still gets the notice and a failed
+  trace. That is now correct, but it means a badly-worded rule the model cannot
+  act on is noisier than silence.
+- `recent_deliveries` (wording variation) is fed by the fire path only; a
+  `message` task's replies do not accumulate there. Not obviously wrong — a
+  message task varies with the message it answers — but worth revisiting if the
+  bot starts repeating itself on a busy rule.
+
 ## Dashboard rework: Overview, Settings, Debug (`done` pending live verification, 2026-08-14)
 
 User report, 2026-08-14: Overview tiles "hard to read, not structured", the

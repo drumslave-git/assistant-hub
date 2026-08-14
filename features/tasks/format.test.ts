@@ -85,6 +85,15 @@ describe("buildTaskTriggerDirective", () => {
     // The narrowing clause: a task-opened turn is not an invitation to chat.
     expect(directive).toMatch(/nothing else/i);
   });
+
+  it("names the tool that delivers, since the turn's own text does not", () => {
+    // A task-opened turn sends nothing it merely writes. Without this the model
+    // answers in prose, the answer goes nowhere, and the enforcement guard
+    // suppresses a turn that was trying to comply (traces d1c01591…/224ef60a…).
+    const directive = buildTaskTriggerDirective([{ instruction: "Comment on the message." }]);
+    expect(directive).toMatch(/nothing you merely write/i);
+    expect(directive).toContain("reply_to_message");
+  });
 });
 
 describe("TASK_ENFORCEMENT_DIRECTIVE", () => {
@@ -93,8 +102,11 @@ describe("TASK_ENFORCEMENT_DIRECTIVE", () => {
     // calling *something* picks the wrong tool, and "I could not" is a correct
     // answer to a task no available tool can carry out.
     expect(TASK_ENFORCEMENT_DIRECTIVE).toMatch(/called no tool/i);
-    expect(TASK_ENFORCEMENT_DIRECTIVE).toMatch(/will not be sent/i);
-    expect(TASK_ENFORCEMENT_DIRECTIVE).toMatch(/could not do it/i);
+    // The turn's own text never reaches the chat, so the correction has to say
+    // that outright — a model told only "call a tool" writes the answer again.
+    expect(TASK_ENFORCEMENT_DIRECTIVE).toMatch(/nothing was sent/i);
+    expect(TASK_ENFORCEMENT_DIRECTIVE).toMatch(/reply_to_message/);
+    expect(TASK_ENFORCEMENT_DIRECTIVE).toMatch(/honest answer/i);
   });
 });
 

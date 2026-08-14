@@ -1469,14 +1469,19 @@ describe("handleIncomingMessage — a rule turn that called no tool", () => {
     expect(second.slice(0, first.length)).toEqual(first);
   });
 
-  it("delivers the retry's answer when the retry calls the tool", async () => {
+  it("settles the turn without sending its own text once the retry calls a tool", async () => {
     const d = deps({ applyStandingTasks: matched(), generateReply: actsOnSecondAsking() });
 
     const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);
 
     expect(out).toEqual({ status: "replied", text: "on it" });
     expect(d.generateReply).toHaveBeenCalledTimes(2);
-    expect(d.sendReply).toHaveBeenCalledWith("on it");
+    // A task-opened turn delivers through `reply_to_message`, so the pipeline
+    // sends nothing of its own (user decision, 2026-08-14). "on it" is the
+    // model's working-out, not a message: sending it here would post the reply
+    // twice on a rule that *did* say something, and post chatter on one whose
+    // action was a download.
+    expect(d.sendReply).not.toHaveBeenCalled();
     expect(recorder.succeed).toHaveBeenCalled();
   });
 

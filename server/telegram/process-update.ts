@@ -312,13 +312,18 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
    */
   let taskAuthorityUserId: string | null = null;
   /**
-   * Which message this turn's reply is attached to. Defaults to the one being
-   * answered; the `reply_to_message` tool moves it to an earlier message when the
-   * answer is about that message ("here it is" landing under the photo somebody
-   * asked for). Scoped to this one message's collaborators, like the authority
-   * above — never module state.
+   * Whether a `message` task opened this turn — set by `applyStandingTasks` on
+   * the same pass that sets the authority above, and read when the toolset and
+   * tool context are resolved.
+   *
+   * It changes how the turn *delivers*: a task-opened turn does not send its own
+   * text at all (user decision, 2026-08-14). It gets `reply_to_message` and the
+   * model's call is the delivery, which is what makes the "a task turn must call
+   * a tool" guard true rather than a guess — before this, a task whose action was
+   * simply to say something had no tool it could honestly call, and its correct
+   * answer was suppressed (trace `d1c01591…`).
    */
-  let replyTargetMessageId = currentMessageId;
+  let taskOpenedTurn = false;
   /** A matched `message` task can open a turn nobody addressed the bot in. */
   const canOpenTurn = messageTasks.length > 0;
 
@@ -342,6 +347,33 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
       // cosmetic — the acknowledgement simply stays in the chat
     }
   };
+
+  /**
+   * Mirror one delivered assistant message into history and settle any browsing
+   * acknowledgement it just became.
+   *
+   * Shared by the two ways a message leaves this turn — the pipeline delivering
+   * the model's answer, and a task-opened turn delivering through the
+   * `reply_to_message` tool. A tool-delivered message that skipped the mirror
+   * would be invisible to every later read of the thread: history search, the
+   * next turn's context window, and the reaction tool's own target check.
+   */
+  const recordDeliveredMessage = async (telegramMessageId: number, content: string) => {
+    try {
+      await recordAssistantMessage({
+        chatId,
+        telegramMessageId,
+        content,
+        replyToMessageId: currentMessageId,
+      });
+    } finally {
+      // After the mirror write (so a stale-on-arrival ack soft-deletes the row
+      // it just created), but regardless of its success — losing the
+      // registration would leave the ack standing forever.
+      await registerBrowserRunAck(telegramMessageId);
+    }
+  };
+
   /**
    * A matched task can lend rights only if its author had rights to lend, and
    * only to somebody who does not already have them — so the owner's own
@@ -471,25 +503,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     // Best-effort — a lookup failure resolves null rather than dropping the reply.
     loadSenderPreferences:
       senderId != null ? () => getPreferencesContext(senderId).catch(() => null) : undefined,
-    async recordReply(input) {
-      try {
-        await recordAssistantMessage({
-          chatId,
-          telegramMessageId: input.telegramMessageId,
-          content: input.content,
-          // Where the reply actually landed, which is the message being answered
-          // unless a tool aimed it elsewhere. The service passes the incoming id
-          // (it does not know about retargeting), and a mirror that disagreed
-          // with Telegram would mislead every later read of the thread.
-          replyToMessageId: replyTargetMessageId,
-        });
-      } finally {
-        // After the mirror write (so a stale-on-arrival ack soft-deletes the
-        // row it just created), but regardless of its success — losing the
-        // registration would leave the ack standing forever.
-        await registerBrowserRunAck(input.telegramMessageId);
-      }
-    },
+    recordReply: (input) => recordDeliveredMessage(input.telegramMessageId, input.content),
     generateReply:
       overrides?.generateReply ??
       (async (messages: ChatMessage[], onToolCall, onRequest, onRound, onRetry, onEmptyRound) => {
@@ -502,7 +516,10 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
         // No tools registered → a single inference (cache-friendly path). A reply
         // that needs no tool still costs one inference even when tools are offered.
-        const toolset = await getToolset();
+        // A turn a `message` task opened delivers through `reply_to_message`;
+        // an ordinary reply turn is offered no delivery tool at all, because
+        // its own text is already on its way to the chat.
+        const toolset = await getToolset(taskOpenedTurn ? { delivery: "reply" } : undefined);
         if (!toolset) {
           const result = await chatCompletion(conn, {
             model: runtime.model,
@@ -544,11 +561,24 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             messageUrls: extractMessageUrls(messageText),
             threadId,
             collectImage,
-            // Lets a tool aim the reply at an earlier message. Delivery-only —
-            // the answer itself is still whatever the model writes.
-            setReplyTarget: (telegramMessageId) => {
-              replyTargetMessageId = telegramMessageId;
-            },
+            // A task-opened turn sends nothing of its own, so this binding is
+            // the only way it reaches the chat. Where the message lands is
+            // decided here, not by the model: under the message that triggered
+            // the task. Absent on an ordinary turn, which makes the delivery
+            // tools refuse there even if a stale registry offers one.
+            ...(taskOpenedTurn
+              ? {
+                  deliveryKind: "reply" as const,
+                  deliver: async (text: string) => {
+                    const sent = await transport.sendReply(text, {
+                      replyToMessageId: currentMessageId,
+                      threadId,
+                    });
+                    await recordDeliveredMessage(sent.messageId, text);
+                    return { messageId: sent.messageId };
+                  },
+                }
+              : {}),
             onBrowserRunEnqueued: (runId) => enqueuedBrowserRuns.push(runId),
           },
           () =>
@@ -682,6 +712,12 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             if (matched.length === 0) return null;
             // Only a `message` task may open a turn nobody addressed.
             const opening = matched.filter((task) => task.triggerKind === "message");
+            // Read below when the toolset and tool context are resolved: this is
+            // the turn that delivers through `reply_to_message` instead of by
+            // answering. Set here for the same reason the authority is — this
+            // closure is the only place that knows, and the service awaits it
+            // before generating.
+            taskOpenedTurn = opening.length > 0;
             return {
               taskIds: verdict.matchedIds,
               directive: opening.length > 0 ? buildTaskTriggerDirective(opening) : null,
@@ -690,7 +726,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         : undefined,
     async sendReply(text: string) {
       return transport.sendReply(text, {
-        replyToMessageId: replyTargetMessageId,
+        replyToMessageId: currentMessageId,
         // A turn that enqueued a browsing run replies only with an "on it"
         // acknowledgement — no ping; the run's own report is the notification.
         silent: enqueuedBrowserRuns.length > 0,
@@ -710,7 +746,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           if (audio) {
             try {
               const sent = await transport.sendVoice(audio, {
-                replyToMessageId: replyTargetMessageId,
+                replyToMessageId: currentMessageId,
                 ...(threadId != null ? { threadId } : {}),
               });
               return { messageId: sent.messageId, asVoice: true };
@@ -719,7 +755,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             }
           }
           const sent = await transport.sendReply(text, {
-            replyToMessageId: replyTargetMessageId,
+            replyToMessageId: currentMessageId,
             silent: enqueuedBrowserRuns.length > 0,
             linkableMessageIds: await resolveLinkableMessageIds(chatId, text),
           });

@@ -9,30 +9,24 @@ import { TELEGRAM_REACTION_EMOJI, toTelegramReactionEmoji } from "@/lib/telegram
 import { getToolContext, tryGetToolContext } from "@/server/mcp/context";
 
 /**
- * The two ways the bot addresses a *particular message* rather than the chat at
- * large: attaching what it says to that message (`reply_to_message`), and
- * putting a reaction on it (`set_message_reaction`). Both are chat-bound through
- * the tool context and both check the target against this chat's history mirror
- * before acting, so the model can never aim either at another conversation or at
- * an id it invented.
+ * `reply_to_message` — how a **message-triggered task** says something back, and
+ * `set_message_reaction` — how the bot puts a reaction badge on a message. Both
+ * are chat-bound through the tool context, so neither can act on another
+ * conversation.
  *
- * `reply_to_message` — how what the bot says is attached. One name, two
- * execution contexts, one user-facing concept — "what I am saying is about that
- * particular message":
+ * `reply_to_message` takes **text and nothing else**. Which message it lands
+ * under is the runtime's decision (the message that triggered the task), not the
+ * model's. That is deliberate, and it replaced a version that took a
+ * `message_id` plus an optional `text`, where the tool retargeted in a reply turn
+ * and delivered in a fire. The dual mode cost a real outage: pushed to "call the
+ * tool the rule requires", the model put its whole answer into the `text` of a
+ * retarget call, which the reply path discarded, and the turn died with nothing
+ * to send (trace `224ef60a…`, 2026-08-14). A parameter that is silently ignored
+ * in one of two modes is a trap; there is now no parameter and no second mode.
  *
- *  - **Answering someone** (the reply pipeline): the turn already produces
- *    exactly one reply, so the tool moves that reply's target instead of
- *    sending anything. A tool that sent its own message here would produce
- *    two, the second left saying "here it is" about nothing.
- *  - **Executing a task** (a timed fire, marked by the context's `deliver`
- *    binding): the turn's own text is never delivered, so here the tool *is*
- *    the delivery — it sends the given text as a Telegram reply to the target
- *    message (its sibling `send_message`, offered only in fires, sends
- *    standalone messages).
- *
- * The id is checked against this chat's mirror before it is accepted in either
- * mode. A wrong id is a live failure, not a silent one: Telegram refuses
- * `reply_parameters` pointing at a message it cannot find.
+ * Its sibling `send_message` (owned by tasks) is the same shape for a timed
+ * fire, which has no triggering message to reply to. Exactly one of the two is
+ * offered per turn, decided by the trigger.
  */
 
 export const REPLY_TO_MESSAGE_TOOL = "reply_to_message";
@@ -40,25 +34,24 @@ export const SET_MESSAGE_REACTION_TOOL = "set_message_reaction";
 
 export const BOT_MESSAGING_TOOL_NAMES = [REPLY_TO_MESSAGE_TOOL, SET_MESSAGE_REACTION_TOOL];
 
+/** Telegram's own per-message cap, matching `send_message`'s. */
+const MAX_REPLY_LENGTH = 4000;
+
 const REPLY_TO_MESSAGE_DESCRIPTION =
-  "Attach what you are saying to one specific earlier message in this chat, as a Telegram " +
-  "reply that quotes it and taps through to it. Give it the #<id> of that message. Use it " +
-  "whenever your answer is ABOUT one particular earlier message — someone asked you to find a " +
-  "photo, a link, or something that was said, and you found it; or a task has you acting on a " +
-  "specific message. Only use an id you actually saw in this conversation or got back from a " +
-  "lookup — never a guessed or edited number. " +
-  "When you are ANSWERING someone, it changes where your reply lands, nothing else: write your " +
-  "reply as normal, leave 'text' empty, and call this once — a later call replaces the earlier " +
-  "target. When you are EXECUTING A TASK (nobody messaged you), nothing you merely write is " +
-  "sent anywhere, so pass the message to deliver in 'text' — this call is what sends it.";
+  "Reply to the message that triggered this rule. Text you merely write in your answer is NOT " +
+  "sent anywhere — this call is what delivers it, as a Telegram reply attached to that message, " +
+  "so the chat sees what you are responding to and there is no need to quote or describe it. " +
+  "Call it once per message you want to appear; several calls send several replies. If the rule " +
+  "turns out to require nothing this time, simply do not call it — saying nothing is a valid " +
+  "outcome and never an error.";
 
 const replyToMessageOutputSchema = {
   ok: z.boolean(),
-  /** The message the reply will be attached to, when one was accepted. */
+  /** The delivered message's own id, when the send succeeded. */
   message_id: z.number().int().nullable(),
 };
 
-/** Refusal text shared by every way the target can be unusable. */
+/** Refusal shape for the reply tool. */
 function refusal(text: string) {
   return {
     content: [{ type: "text" as const, text }],
@@ -66,6 +59,10 @@ function refusal(text: string) {
     isError: true,
   };
 }
+
+const NOT_A_REPLY_TURN =
+  "Replying to a message is only available while a rule triggered by a message is running. " +
+  "In this turn your own answer is the message — just write it.";
 
 const SET_MESSAGE_REACTION_DESCRIPTION =
   "Put one of Telegram's reaction emoji on a specific message in this chat — the small emoji " +
@@ -104,85 +101,34 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
       title: "Reply to an earlier message",
       description: REPLY_TO_MESSAGE_DESCRIPTION,
       inputSchema: {
-        message_id: z
-          .number()
-          .int()
-          .positive()
-          .describe(
-            "The Telegram message id to attach your reply to — the number in the #<id> anchor " +
-              "of the message you are pointing at.",
-          ),
         text: z
           .string()
-          .default("")
-          .describe(
-            "Executing a task: the message text to deliver as the reply (required there — " +
-              "only this call sends it). Answering someone: leave empty — your own reply is " +
-              "the message being redirected.",
-          ),
+          .min(1)
+          .max(MAX_REPLY_LENGTH)
+          .describe("The reply text, exactly as the chat should read it"),
       },
       outputSchema: replyToMessageOutputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false,
       },
     },
-    async ({ message_id, text }) => {
+    async ({ text }) => {
       const context = tryGetToolContext();
-      if (!context || (!context.setReplyTarget && !context.deliver)) {
-        // No sink bound → this turn sends no reply anyone can aim. Say so
-        // plainly rather than accepting the call and having the model tell the
-        // chat it pointed at something.
-        return refusal(
-          "There is no reply to attach in this context. Answer normally and do not say you " +
-            "pointed at a message.",
-        );
+      // Two guards, deliberately: `deliver` is the capability, `deliveryKind` is
+      // which of the two delivery tools this turn meant to offer. A registry
+      // that survived a hot reload can hand the model the wrong one, and a fire
+      // answering "replied to the message" about a message that never existed is
+      // exactly the kind of quiet lie the tool refusals exist to prevent.
+      if (!context?.deliver || context.deliveryKind !== "reply") {
+        return refusal(NOT_A_REPLY_TURN);
       }
-
-      const [found] = await getChatMessagesByTelegramIds(getDb(), context.chatId, [message_id]);
-      if (!found) {
-        return refusal(
-          `No message #${message_id} in this chat. Do not guess ids — look the message up again ` +
-            "and use an id from the result, or answer without pointing at one.",
-        );
-      }
-
-      // A task fire: the tool IS the delivery. `deliver` wins over a (never
-      // co-bound) retarget sink, and an empty text is a usable error rather than
-      // an empty message in the chat.
-      if (context.deliver) {
-        if (!text.trim()) {
-          return refusal(
-            "Pass the message to deliver in 'text' — while executing a task, only this call " +
-              "sends anything.",
-          );
-        }
-        const { messageId } = await context.deliver(text, { replyToMessageId: message_id });
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Reply sent (id ${messageId}) to message #${message_id}.`,
-            },
-          ],
-          structuredContent: { ok: true, message_id },
-        };
-      }
-
-      context.setReplyTarget!(message_id);
+      const { messageId } = await context.deliver(text);
       return {
-        content: [
-          {
-            type: "text" as const,
-            text:
-              `Your reply will be attached to message #${message_id}. Write it normally — the ` +
-              "chat sees it as a reply to that message, so there is no need to quote or " +
-              "describe it.",
-          },
-        ],
-        structuredContent: { ok: true, message_id },
+        content: [{ type: "text" as const, text: `Reply sent (id ${messageId}).` }],
+        structuredContent: { ok: true, message_id: messageId },
       };
     },
   );

@@ -368,7 +368,7 @@ bot-vs-participant distinction and the self-authored-only warning are unchanged.
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `reply_to_message` | `message_id`, `text` | Attach what is said to an earlier message: in a reply turn it retargets the turn's own reply (`text` empty); in a task fire it delivers `text` as a reply to that message |
+| `reply_to_message` | `text` | **`message`-triggered task turns only** — reply to the message that triggered the task. The target is the runtime's decision, so there is no id for the model to get wrong |
 | `set_message_reaction` | `message_id`, `emoji`, `big` | Put one of Telegram's reaction emoji on a message of this chat (empty `emoji` takes it back off) |
 
 Both act on **one message of the bound chat**, and both check the id against the
@@ -450,13 +450,18 @@ The toolkit's second registrar owns the **outbound** delivery tool:
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `send_message` | `text` | **Task fires only** — deliver a standalone message to the task's chat |
+| `send_message` | `text` | **Timed fires only** — send a standalone message to the task's chat |
 
-A timed fire's completion text is never sent; only `send_message` (and
-`reply_to_message`, below) deliver. `getToolset({ outbound: true })` — asked
-only by the task scheduler — is what offers `send_message` at all; a reply turn
-never sees it, and its handler refuses without the fire's `deliver` context
-binding.
+A task-driven turn's completion text is never sent; a delivery tool is the only
+path to the chat, and a turn is offered **at most one** of the two:
+`reply_to_message` for a `message`-triggered turn (it is acting on a message, so
+the answer belongs under it) and `send_message` for a timed fire (nothing
+triggered it, so there is nothing to reply to). An ordinary reply turn gets
+neither — its own text already delivers itself.
+
+`getToolset({ delivery })` decides which; the handlers additionally check the
+context binding's **kind**, so a stale registry cannot let a fire claim it
+replied to a message that never existed.
 
 ### Web — `mcp-tools-browser-agent`
 

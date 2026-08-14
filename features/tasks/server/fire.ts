@@ -86,10 +86,7 @@ export interface FireDeps {
    * `deliver` binding, records each send on the trace, and mirrors it into
    * history — the outbound tools call the wrapper, never this directly.
    */
-  send: (
-    text: string,
-    opts: { threadId?: number | null; replyToMessageId?: number },
-  ) => Promise<{ messageId: number }>;
+  send: (text: string, opts: { threadId?: number | null }) => Promise<{ messageId: number }>;
   /** Mirror a delivered message into history (best-effort). */
   recordReply?: (input: {
     chatId: string;
@@ -149,9 +146,8 @@ export function buildTaskDirectiveMessage(
     contextBlock +
     `You are acting on your own here — nobody sent a message, and nothing you merely write in your ` +
     `answer reaches the chat. Anything the people here should see must be sent with the ` +
-    `send_message tool (or reply_to_message when it is about one specific earlier message). Use ` +
-    `your other tools first when the directive needs them (looking something up, downloading, ` +
-    `checking history).\n` +
+    `send_message tool. Use your other tools first when the directive needs them (looking ` +
+    `something up, downloading, checking history).\n` +
     `- When the directive is a reminder or a nudge, send ONE short, natural, in-character chat ` +
     `message that *performs* it. Do NOT restate the directive as an instruction. Never write ` +
     `"remind X to …" — say what you would actually tell them (directive "remind me to call mom" → ` +
@@ -224,21 +220,19 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
     const sent: string[] = [];
     const sentIds: number[] = [];
     let deliveryFailures = 0;
-    const deliver = async (text: string, opts?: { replyToMessageId?: number }) => {
+    // A fire sends standalone: nothing triggered it, so there is no message to
+    // attach to (user decision, 2026-08-14 — a `message` task replies, a timed
+    // one sends). The model never names a target, so it can never aim one wrong.
+    const deliver = async (text: string) => {
       try {
-        const { messageId } = await deps.send(text, {
-          threadId: task.threadId,
-          replyToMessageId: opts?.replyToMessageId,
-        });
+        const { messageId } = await deps.send(text, { threadId: task.threadId });
         sent.push(text);
         sentIds.push(messageId);
         await trace.event({
           type: "output",
           level: "success",
-          message: opts?.replyToMessageId
-            ? `send message (reply to #${opts.replyToMessageId})`
-            : "send message",
-          data: { content: text, messageId, replyToMessageId: opts?.replyToMessageId ?? null },
+          message: "send message",
+          data: { content: text, messageId },
         });
         // Mirror into history so the sent message is part of the conversation
         // and future context. Best-effort — never fail a delivered message.
@@ -270,6 +264,7 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
           chatId: task.chatId!,
           userId: task.createdByUserId ?? null,
           threadId: task.threadId ?? null,
+          deliveryKind: "send",
           deliver,
         },
         () =>

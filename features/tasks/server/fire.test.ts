@@ -102,16 +102,29 @@ describe("fireTask", () => {
     });
   });
 
-  it("passes a reply target through to the raw send", async () => {
+  it("sends standalone, with no reply target for the model to choose", async () => {
+    // A fire has no triggering message, so there is nothing to attach to. The
+    // model names no target and the binding offers none — which is what keeps a
+    // fire from claiming it replied to something that never existed.
     const send = vi.fn().mockResolvedValue({ messageId: 9 });
     const complete = vi.fn().mockImplementation(async () => {
-      await tryGetToolContext()!.deliver!("about that", { replyToMessageId: 123 });
+      await tryGetToolContext()!.deliver!("about that");
       return { content: "ok", model: "m", latencyMs: 1 };
     });
 
     await fireTask(task(), deps({ complete, send }));
 
-    expect(send).toHaveBeenCalledWith("about that", { threadId: null, replyToMessageId: 123 });
+    expect(send).toHaveBeenCalledWith("about that", { threadId: null });
+  });
+
+  it("binds the send delivery kind, so the reply tool refuses in a fire", async () => {
+    const complete = vi.fn().mockImplementation(async () => {
+      expect(tryGetToolContext()!.deliveryKind).toBe("send");
+      return { content: "ok", model: "m", latencyMs: 1 };
+    });
+
+    await fireTask(task(), deps({ complete }));
+    expect(complete).toHaveBeenCalled();
   });
 
   it("treats a fire that sends nothing as a quiet success, not a failure", async () => {

@@ -33,25 +33,37 @@ The two **families** share the row but not the rules:
   due one-shot retries on later ticks up to **5 attempts**, then is disabled,
   never deleted; a fired one-shot is deleted, spent.
 
-## How a fire executes — no hardcoded sending
+## How a task delivers — no hardcoded sending
 
-A timed fire runs a full tool loop, exactly like a reply turn plus the
-**outbound tools** — and nothing else delivers (user decision, 2026-08-13). The
-completion's final text is traced, never sent:
+A **task-driven turn** sends nothing it merely writes. Its completion text is
+traced, and a message reaches the chat only through a delivery tool (user
+decision, 2026-08-13). Which tool depends on what started the turn (user
+decision, 2026-08-14):
 
-- `send_message` (tasks feature, fires only) sends a standalone message to the
-  task's chat.
-- `reply_to_message` (bot-messaging, every turn) attaches what is said to one
-  earlier message; in a fire it *is* the delivery, in a reply it retargets the
-  reply as before. One tool name, one user-facing concept, dispatched on the
-  context's `deliver` binding.
+| Turn | Delivery tool | Why |
+| --- | --- | --- |
+| Ordinary reply (someone addressed the bot) | none | Its own answer *is* the message; a send tool would double-send |
+| `message` task opened the turn | `reply_to_message` | It is acting on a message somebody posted, so the answer belongs under it |
+| Timed fire | `send_message` | Nothing triggered it, so there is nothing to reply to |
 
-The fire binds `deliver` on the MCP tool context
-(`server/mcp/context.ts`); `getToolset({ outbound: true })` is asked only by the
-scheduler, so a reply turn never even sees `send_message` (its own text already
-delivers itself — offering a send tool there would invite a double-send), and
-the handlers refuse without the binding, so a stale registry cannot smuggle a
-send into a reply either.
+Both tools take **`text` and nothing else**. Where the message lands is the
+runtime's decision, not the model's: `reply_to_message` attaches to the message
+that triggered the task, `send_message` sends standalone. The model never names
+a target, so it can never aim one wrong.
+
+That shape replaced a `reply_to_message` that took a `message_id` plus an
+optional `text`, and retargeted in a reply turn while delivering in a fire. The
+dual mode cost a live outage: pushed by the enforcement directive to "call the
+tool the rule requires", the model put its whole answer into the `text` of a
+retarget call, the reply path discarded it, and the turn died with nothing to
+send (trace `224ef60a…`, 2026-08-14). A parameter silently ignored in one of two
+modes is a trap.
+
+The turn binds `deliver` and `deliveryKind` on the MCP tool context
+(`server/mcp/context.ts`), and `getToolset({ delivery })` offers at most one of
+the two. The handlers check the binding's **kind**, not merely its presence, so a
+registry that survived a hot reload cannot let a fire claim it replied to a
+message that never existed.
 
 **Silence is a feature.** A fire that calls no send tool is a *quiet fire* —
 "check X, message only if Y" is now expressible — recorded as a success with
@@ -80,10 +92,21 @@ deliberately expensive and hard to trigger:
    mean **no match** and the message stays ignored.
 4. On a match, the ordinary reply pipeline runs with a directive injected last
    naming the matched tasks. The turn keeps the full reply machinery — context,
-   vision, the browse-ack flow — and its reply is delivered as a reply to the
-   triggering message. Enforcement is unchanged: a task-opened turn that calls
-   no tool is retried once with `TASK_ENFORCEMENT_DIRECTIVE`, then suppressed
-   with an honest system notice, and the trace fails.
+   vision, the browse-ack flow — but **not** the delivery: it is offered
+   `reply_to_message`, and that call is what speaks. Its own completion text is
+   never sent.
+
+   A task-opened turn that calls no tool is retried once with
+   `TASK_ENFORCEMENT_DIRECTIVE`, then suppressed with an honest system notice,
+   and the trace fails. That guard is only sound because the turn now *has* a
+   tool for saying something. Before, a task whose action was conversational —
+   *"from time to time, comment on a message"* — had nothing it could honestly
+   call, so its correct answer was suppressed and the chat got a "could not
+   carry out" notice instead (trace `d1c01591…`, 2026-08-14).
+
+   Calling a tool other than the delivery one is fine and settles the turn
+   quietly: a rule whose action was "download the file" is carried out by the
+   download and owes the chat nothing further.
 
 Maintenance mode turns the matcher off, exactly as it turns the addressing
 analyzer off. The matcher reads the message's *words*: a bare photo or sticker
@@ -169,8 +192,8 @@ a 409 for duplicates — an operator must see a no-op for what it is.
 | `tasks_create` | `instruction`, `trigger`, `context`, `user_ids`, `every_minutes`, `delay_minutes`, `time`, `weekdays`, `date` | Save a standing rule or a timed job |
 | `tasks_update` | `id` + any of the above, `enabled`, `applies_to_everyone` | Reword, retime, retarget, pause/resume |
 | `tasks_delete` | `id` | Remove a task for good |
-| `send_message` | `text` | **Fires only** — deliver a message to the task's chat |
-| `reply_to_message` | `message_id`, `text` | Attach what is said to an earlier message (bot-messaging; `text` used in fires) |
+| `send_message` | `text` | **Timed fires only** — send a standalone message to the task's chat |
+| `reply_to_message` | `text` | **`message`-triggered turns only** — reply to the message that triggered the task (bot-messaging) |
 | `set_message_reaction` | `message_id`, `emoji`, `big` | React to an earlier message (bot-messaging; every turn — a reaction is not a delivery) |
 
 `tasks_create`'s description is long by design and pinned in tests: it carries
@@ -238,5 +261,5 @@ calls are traced under `mcp-tools-tasks`.
 | `features/tasks/server/fire.test.ts` | The delivery inversion: `deliver` binding, quiet fires, delivery-failure semantics, history mirroring |
 | `features/tasks/server/tasks.integration.test.ts` | Scopes, caps, duplicates, targeting, per-kind timing and gates, chat-side idempotence, traces |
 | `features/tasks/server/scheduler.integration.test.ts` | The due-run loop: settle per kind, quiet fires, one-shot retry/disable |
-| `features/mcp-tools/server/service.test.ts` | The outbound carve-out: reply turns never see `send_message`; fires do |
+| `features/mcp-tools/server/service.test.ts` | The delivery carve-out: an ordinary reply turn sees neither tool, a `message` turn sees only `reply_to_message`, a fire only `send_message`, and never both |
 | `features/bot-messaging/server/service.test.ts` | The task-opened turn: directive placement, enforcement retry + suppression, the addressed-turn authority pass |

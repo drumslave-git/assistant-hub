@@ -100,13 +100,13 @@ Design constraints worth preserving:
   supergroups and channels have a per-message URL; in a basic group or a DM
   nothing is linked. Word hashtags (`#weekend`), URL fragments and citations
   inside code spans are left alone.
-- The reply normally lands under the message it answers. The `reply_to_message`
-  tool moves that target to an earlier message when the answer is *about* that
-  message ("here it is", under the photo somebody asked the bot to find). It
-  changes delivery only — the turn still sends exactly one message — and the id is
-  validated against this chat's mirror before it is accepted. Sends pass
+- The reply always lands under the message it answers. The model cannot move it:
+  the `reply_to_message` tool takes text and nothing else, is offered only to a
+  turn a `message` task opened, and delivers under that task's triggering
+  message. Letting the model pick a target is what produced the outage described
+  in [tasks.md](tasks.md#how-a-task-delivers--no-hardcoded-sending). Sends pass
   `allow_sending_without_reply`, so a target that has since been deleted costs the
-  quote, not the answer, and the mirror records where the reply actually landed.
+  quote, not the answer.
 - **The bot can react to a message** instead of, or alongside, saying something.
   The `set_message_reaction` tool puts one of Telegram's fixed reaction emoji on
   a message of this chat (an empty emoji takes it back off; a bot gets one

@@ -31,14 +31,18 @@ import { getToolset, getToolsView } from "./service";
  * already delivers itself).
  */
 
-const REPLY_TOOLS = [
+/**
+ * Everything a turn gets regardless of how it delivers. The two delivery tools
+ * are deliberately absent: a turn is offered at most one of them, and which one
+ * is decided by the turn, not the model.
+ */
+const COMMON_TOOLS = [
   HISTORY_SEARCH_TOOL,
   HISTORY_GET_IN_RANGE_TOOL,
   HISTORY_GET_BY_MESSAGE_IDS_TOOL,
   HISTORY_RECALL_TOOL,
-  REPLY_TO_MESSAGE_TOOL,
-  // A reaction is not a message, so unlike `send_message` it is offered in
-  // reply turns too — the bot can like the thing it is answering.
+  // A reaction is not a message, so unlike the delivery tools it is offered in
+  // every turn — the bot can like the thing it is answering.
   SET_MESSAGE_REACTION_TOOL,
   UPDATE_USER_ALIASES_TOOL,
   ...TASKS_TOOL_NAMES,
@@ -51,7 +55,7 @@ const REPLY_TOOLS = [
   BROWSE_WEB_TOOL,
 ].sort();
 
-const ALL_TOOLS = [...REPLY_TOOLS, ...TASKS_OUTBOUND_TOOL_NAMES].sort();
+const ALL_TOOLS = [...COMMON_TOOLS, REPLY_TO_MESSAGE_TOOL, ...TASKS_OUTBOUND_TOOL_NAMES].sort();
 
 describe("getToolsView", () => {
   it("lists every registered tool with its owning feature and a description", async () => {
@@ -75,16 +79,37 @@ describe("getToolsView", () => {
 });
 
 describe("getToolset", () => {
-  it("offers a reply turn every tool except the outbound delivery ones", async () => {
-    const toolset = await getToolset();
+  const namesOf = async (options?: Parameters<typeof getToolset>[0]) => {
+    const toolset = await getToolset(options);
     expect(toolset).not.toBeNull();
-    expect(toolset!.tools.map((t) => t.function.name).sort()).toEqual(REPLY_TOOLS);
-    expect(typeof toolset!.callTool).toBe("function");
+    return toolset!.tools.map((t) => t.function.name).sort();
+  };
+
+  it("offers an ordinary reply turn neither delivery tool", async () => {
+    // Its own text is already on its way to the chat; a delivery tool here would
+    // post the answer twice.
+    expect(await namesOf()).toEqual(COMMON_TOOLS);
+    expect(typeof (await getToolset())!.callTool).toBe("function");
   });
 
-  it("offers a task fire the outbound delivery tools on top", async () => {
-    const toolset = await getToolset({ outbound: true });
-    expect(toolset).not.toBeNull();
-    expect(toolset!.tools.map((t) => t.function.name).sort()).toEqual(ALL_TOOLS);
+  it("offers a message-triggered turn the reply tool, and only that one", async () => {
+    expect(await namesOf({ delivery: "reply" })).toEqual(
+      [...COMMON_TOOLS, REPLY_TO_MESSAGE_TOOL].sort(),
+    );
+  });
+
+  it("offers a timed fire the send tool, and only that one", async () => {
+    // A fire has no triggering message, so being able to "reply" to one would be
+    // an offer it could only fulfil by inventing a target.
+    expect(await namesOf({ delivery: "send" })).toEqual(
+      [...COMMON_TOOLS, SEND_MESSAGE_TOOL].sort(),
+    );
+  });
+
+  it("never offers both at once, whichever kind is asked for", async () => {
+    for (const delivery of ["reply", "send"] as const) {
+      const names = await namesOf({ delivery });
+      expect(names.filter((n) => n === REPLY_TO_MESSAGE_TOOL || n === SEND_MESSAGE_TOOL)).toHaveLength(1);
+    }
   });
 });

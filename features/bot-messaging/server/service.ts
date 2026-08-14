@@ -1183,6 +1183,22 @@ export async function handleIncomingMessage(
         }
       }
 
+      // A task-opened turn has already delivered whatever it meant to, through
+      // `reply_to_message` (user decision, 2026-08-14). Its completion text is
+      // the model's working-out, not a message: sending it here would post the
+      // reply twice, once via the tool and once as the turn's own answer.
+      //
+      // Reaching this line means the guard above passed, so at least one tool
+      // ran — but not necessarily a delivery one, and that is deliberate. A rule
+      // whose action was "download the file" is carried out by the download; it
+      // owes the chat nothing further, and staying quiet is the right outcome.
+      if (taskDirective) {
+        await trace.succeed({
+          outputSummary: `task carried out through ${toolCallCount} tool call(s)`,
+        });
+        return { status: "replied", text: reply.content };
+      }
+
       // A long answer is split at natural boundaries and delivered as several
       // messages — Telegram caps one message at 4096 chars, and truncating
       // silently lost content.

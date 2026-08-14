@@ -6,20 +6,21 @@ import { z } from "zod";
 import { getToolContext } from "@/server/mcp/context";
 
 /**
- * The outbound toolkit: how a **task fire** says anything to its chat. A timed
- * fire's completion text is never delivered (user decision, 2026-08-13 — the
- * model decides what a task sends, not a hardcoded delivery), so sending is
- * the only path from a fire to the chat, and staying silent is simply not
- * sending.
+ * The outbound toolkit: how a **timed fire** says anything to its chat. A fire's
+ * completion text is never delivered (user decision, 2026-08-13 — the model
+ * decides what a task sends, not a hardcoded delivery), so sending is the only
+ * path from a fire to the chat, and staying silent is simply not sending.
  *
- * `send_message` here sends a standalone message; its sibling
- * `reply_to_message` (owned by bot-messaging, available in every turn) sends
- * one attached to an earlier message when the fire's context carries the
- * `deliver` binding. `send_message` is deliberately absent from ordinary reply
- * turns twice over: the reply toolset filters it out (`getToolset` — a reply's
- * own text already delivers itself, and a send tool there would double-send),
- * and the handler refuses without the `deliver` binding, so even a stale
- * registry cannot smuggle a send into a reply.
+ * `send_message` is the standalone half of a pair (user decision, 2026-08-14):
+ * a timed fire speaks into the chat unprompted and has nothing to reply to, so
+ * it gets this; a `message`-triggered task is answering the message that opened
+ * it, so it gets `reply_to_message` instead. Exactly one of the two is offered
+ * per turn, and an ordinary reply turn gets neither — its own text is already
+ * the delivery, and a send tool there would double-send.
+ *
+ * That carve-out is enforced twice: `getToolset` withholds the tool, and the
+ * handler refuses without the matching context binding, so even a stale registry
+ * cannot smuggle a send into the wrong kind of turn.
  *
  * The chat is bound per turn via the tool context, like every chat-bound tool:
  * a task can only ever speak into its own chat (user decision, 2026-08-13 — no
@@ -40,9 +41,10 @@ function errorResult(text: string) {
   return { content: [{ type: "text" as const, text }], isError: true as const };
 }
 
-const NOT_A_TASK_TURN =
-  "Message delivery tools are only available while a task is firing. In this turn your own " +
-  "reply is the message — just write it.";
+const NOT_A_SEND_TURN =
+  "Sending a standalone message is only available while a timed task is firing. If you are " +
+  "acting on a message somebody posted, reply to it instead; in an ordinary turn your own " +
+  "answer is the message — just write it.";
 
 /** Register the outbound MCP tools on the shared server. */
 export function registerTasksOutboundMcpTools(server: McpServer): void {
@@ -73,7 +75,9 @@ export function registerTasksOutboundMcpTools(server: McpServer): void {
     },
     async ({ text }) => {
       const ctx = getToolContext();
-      if (!ctx.deliver) return errorResult(NOT_A_TASK_TURN);
+      // `deliver` is the capability; `deliveryKind` is which delivery tool this
+      // turn meant to offer. See the reply tool for why both are checked.
+      if (!ctx.deliver || ctx.deliveryKind !== "send") return errorResult(NOT_A_SEND_TURN);
       const { messageId } = await ctx.deliver(text);
       return textResult(`Message sent (id ${messageId}).`, { ok: true, message_id: messageId });
     },

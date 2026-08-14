@@ -10,14 +10,23 @@
 export const MIN_PERCENT = 0;
 export const MAX_PERCENT = 100;
 
-/** Resolution of a roll: hundredths of a percent, which is finer than any prompt. */
-export const ROLL_STEPS = 1_000_000;
+/**
+ * Steps in a roll: hundredths of a percent, which is finer than any prompt and
+ * is also exactly what the verdict prints.
+ *
+ * Those being the same number is the point. An earlier version drew at a much
+ * finer resolution and rounded for display, which could print `rolled 100 < 100`
+ * from a draw of 99.999 — a verdict that contradicts itself, on the one tool
+ * whose output is otherwise unverifiable. Drawing at display precision means the
+ * number shown *is* the number compared.
+ */
+export const ROLL_STEPS = 10_000;
 
 export interface ChanceOutcome {
   hit: boolean;
   /** The percentage that was asked for. */
   percent: number;
-  /** The roll, on the same 0–100 scale, rounded for display. */
+  /** The roll, on the same 0–100 scale. Already at display precision. */
   roll: number;
   /** The verdict, as the model reads it. */
   text: string;
@@ -36,11 +45,10 @@ export interface ChanceOutcome {
  */
 export function chanceOutcome(percent: number, roll: number): ChanceOutcome {
   const hit = roll < percent;
-  const shown = Math.round(roll * 100) / 100;
   return {
     hit,
     percent,
-    roll: shown,
-    text: hit ? `HIT (rolled ${shown} < ${percent})` : `MISS (rolled ${shown} >= ${percent})`,
+    roll,
+    text: hit ? `HIT (rolled ${roll} < ${percent})` : `MISS (rolled ${roll} >= ${percent})`,
   };
 }
