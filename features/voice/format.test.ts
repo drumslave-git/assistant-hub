@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildTranscribeMessages, parseTranscript, toAudioPart } from "./format";
+import { buildTranscribeMessages, readTranscript, toAudioPart } from "./format";
 import { NO_SPEECH_MARKER, VOICE_TRANSCRIBE_SYSTEM } from "./prompt";
 
 describe("toAudioPart", () => {
@@ -27,17 +27,25 @@ describe("buildTranscribeMessages", () => {
   });
 });
 
-describe("parseTranscript", () => {
+describe("readTranscript", () => {
   it("trims the model output", () => {
-    expect(parseTranscript("  hello there \n")).toBe("hello there");
+    expect(readTranscript("  hello there \n")).toEqual({ kind: "text", text: "hello there" });
   });
 
-  it("maps the no-speech marker to empty (case-insensitive)", () => {
-    expect(parseTranscript(NO_SPEECH_MARKER)).toBe("");
-    expect(parseTranscript("[No Speech]")).toBe("");
+  it("reports the no-speech marker as an answer, not as emptiness (case-insensitive)", () => {
+    expect(readTranscript(NO_SPEECH_MARKER)).toEqual({ kind: "no-speech" });
+    expect(readTranscript("[No Speech]")).toEqual({ kind: "no-speech" });
+  });
+
+  it("separates nothing-came-back from an explicit no-speech answer", () => {
+    expect(readTranscript("")).toEqual({ kind: "empty" });
+    expect(readTranscript("   \n\t ")).toEqual({ kind: "empty" });
   });
 
   it("keeps a transcript that merely contains the marker words", () => {
-    expect(parseTranscript("he said no speech today")).toBe("he said no speech today");
+    expect(readTranscript("he said no speech today")).toEqual({
+      kind: "text",
+      text: "he said no speech today",
+    });
   });
 });

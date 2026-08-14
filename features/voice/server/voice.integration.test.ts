@@ -207,6 +207,48 @@ describe("describeAndStore — voice dispatch", () => {
     expect(result?.description).toBe("(no speech)");
   });
 
+  it("fails instead of storing a blank transcript when the chat model returns nothing", async () => {
+    await seedVoice({ telegramMessageId: 72 });
+    const result = await describeAndStore(
+      { chatId: "5", telegramMessageId: 72 },
+      { complete: async () => fakeComplete("   \n "), target: TARGET },
+      { db: ctx.db },
+    );
+
+    expect(result).toBeNull();
+    const media = await getMediaByMessage(ctx.db, "5", 72);
+    expect(media?.status).toBe("pending");
+    expect(media?.description).toBeNull();
+
+    const traces = await listTraces({ feature: "voice" });
+    expect(traces.traces[0]?.status).toBe("error");
+  });
+
+  it("fails a dedicated STT endpoint that answers with no text, keeping the audio retryable", async () => {
+    await seedVoice({ telegramMessageId: 73 });
+    const result = await describeAndStore(
+      { chatId: "5", telegramMessageId: 73 },
+      {
+        complete: async () => fakeComplete("unused — the STT path must win"),
+        target: TARGET,
+        // What a whisper-class server does on an internal failure it reports as 200.
+        transcribe: async () => ({ text: "", latencyMs: 8, responseBody: { text: "" } }),
+        transcribeTarget: { baseUrl: "https://whisper.example.com/v1", model: "large-v3" },
+      },
+      { db: ctx.db },
+    );
+
+    expect(result).toBeNull();
+    const media = await getMediaByMessage(ctx.db, "5", 73);
+    expect(media?.status).toBe("pending");
+    expect(media?.description).toBeNull();
+    // The bytes must survive, or "retryable" is a word with nothing behind it.
+    expect(media?.dataBase64).toBeTruthy();
+
+    const traces = await listTraces({ feature: "voice" });
+    expect(traces.traces[0]?.status).toBe("error");
+  });
+
   it("records into a passed parent trace instead of opening its own (live reply path)", async () => {
     await seedVoice({ telegramMessageId: 74 });
     const before = (await listTraces({ feature: "voice" })).traces.length;

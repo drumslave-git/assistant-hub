@@ -2,7 +2,7 @@ import "server-only";
 
 import { toFile } from "openai";
 
-import { buildTranscribeMessages, parseTranscript } from "@/features/voice/format";
+import { buildTranscribeMessages } from "@/features/voice/format";
 import { chatCompletion, createOpenAiClient, toLlmError, type LlmConnection } from "./client";
 
 /**
@@ -36,6 +36,12 @@ export interface TranscriptionRuntime extends LlmConnection {
 
 /** What a transcription call produced, shaped for trace recording. */
 export interface TranscriptionResult {
+  /**
+   * What the endpoint said, trimmed and otherwise verbatim — in both modes.
+   * Deliberately unclassified: only the caller can tell an explicit "no speech"
+   * from an empty answer apart from each other (`readTranscript`), and this
+   * layer collapsing them would destroy that distinction before it is asked.
+   */
   text: string;
   latencyMs: number;
   /** Raw response object returned by the endpoint (for Debug bodies). */
@@ -86,7 +92,7 @@ async function transcribeViaChat(
     timeoutMs,
   });
   return {
-    text: parseTranscript(result.content),
+    text: result.content.trim(),
     latencyMs: result.latencyMs,
     responseBody: result.responseBody,
   };

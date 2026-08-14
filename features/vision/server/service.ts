@@ -4,6 +4,7 @@ import type { Message } from "@grammyjs/types";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
+import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import { llmUsageOf, sanitizeMessagesForTrace, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
@@ -14,7 +15,7 @@ import {
   getLlmRuntime,
   getVisionRuntime,
 } from "@/features/settings/server/service";
-import { buildTranscribeMessages, parseTranscript } from "@/features/voice/format";
+import { buildTranscribeMessages, readTranscript } from "@/features/voice/format";
 import { chatCompletion, type LlmPriority } from "@/server/llm/client";
 import { transcribeAudio, type TranscriptionResult } from "@/server/llm/transcription";
 import { toWavForTranscription } from "@/server/media/audio";
@@ -551,9 +552,22 @@ export async function describeAndStore(
         rawText = result.content;
       }
 
-      // "(no speech)" is terminal on purpose: leaving a speechless recording
-      // pending would make the backfill re-transcribe it forever.
-      const transcript = parseTranscript(rawText) || "(no speech)";
+      const outcome = readTranscript(rawText);
+      if (outcome.kind === "empty") {
+        // A transcriber that answers with nothing has failed, whatever status it
+        // dressed the response up in. Storing that would mark the row described,
+        // drop the audio bytes, and make the failure permanent *and* invisible —
+        // the row reads "transcribed" with no content and no pass ever retries it.
+        throw ApiError.serviceUnavailable(
+          deps.transcribe
+            ? "Transcription endpoint returned no text"
+            : "Transcription model returned no text",
+        );
+      }
+      // "(no speech)" is terminal on purpose: the transcriber listened and
+      // reported silence, so leaving the row pending would make the backfill
+      // re-transcribe a speechless recording forever.
+      const transcript = outcome.kind === "no-speech" ? "(no speech)" : outcome.text;
       const stored = await storeDescription(db, trace, media, transcript, {
         message: "voice message transcribed",
       });

@@ -55,6 +55,30 @@ The Settings probe for the audio role transcribes a fraction of a second of
 generated silence rather than checking `/v1/models`, because whisper-class servers
 often serve the transcription route without a model listing.
 
+### Silence is an answer; nothing is a failure
+
+`readTranscript` (`features/voice/format.ts`) classifies what came back into
+three outcomes, and the difference between the last two is the whole point:
+
+| Outcome | Meaning | Stored as |
+| --- | --- | --- |
+| `text` | Speech was transcribed | The transcript, verbatim |
+| `no-speech` | The transcriber listened and reported the `[no speech]` marker — a terminal fact about the audio | `(no speech)`, row `described` |
+| `empty` | Nothing came back at all — a fact about the *call* | Nothing; the transcribe fails, the row stays `pending` |
+
+An endpoint that answers `200` with an empty body has failed, however it dressed
+the response up. Storing that would mark the row `described`, drop the audio
+bytes, and make the failure both permanent and invisible — the operator sees a
+"Transcribed" card with no content and no pass ever retries it. So an `empty`
+outcome throws: the trace records an error, the audio survives, and the backfill
+picks the row up again. Only `no-speech` is terminal, because re-transcribing a
+genuinely silent recording would loop forever.
+
+For the same reason `TranscriptionResult.text` (`server/llm/transcription.ts`)
+is the endpoint's own text, trimmed and otherwise unclassified, in **both**
+modes — a lower layer collapsing the marker to an empty string would destroy the
+distinction before anyone could ask for it.
+
 ## Speaking: text → voice
 
 `features/voice/server/speak.ts`: reply text → MP3 on the configured speech

@@ -30,14 +30,29 @@ export function buildTranscribeMessages(base64: string, format: "wav" | "mp3"): 
 }
 
 /**
- * Normalize a transcription completion into the stored transcript: trimmed, and
- * empty when the model reported no discernible speech (an empty description
- * keeps the row pending, which is the honest state for unreadable audio).
+ * What a transcription attempt actually produced.
+ *
+ * The three cases must stay apart, because two of them look identical as text
+ * and mean opposite things: a transcriber that says {@link NO_SPEECH_MARKER} has
+ * answered (the recording holds no speech — a terminal fact about the audio),
+ * while one that says nothing at all has failed (a fact about the call, which a
+ * retry may well fix). Collapsing both to an empty string is what let a failed
+ * transcription be stored as a finished one.
  */
-export function parseTranscript(content: string): string {
+export type TranscriptOutcome =
+  /** Real speech, trimmed. */
+  | { kind: "text"; text: string }
+  /** The transcriber explicitly reported nothing spoken. Terminal. */
+  | { kind: "no-speech" }
+  /** Nothing came back at all, however the endpoint dressed it up. A failure. */
+  | { kind: "empty" };
+
+/** Classify a transcription completion into its {@link TranscriptOutcome}. */
+export function readTranscript(content: string): TranscriptOutcome {
   const text = content.trim();
-  if (!text || text.toLowerCase() === NO_SPEECH_MARKER) return "";
-  return text;
+  if (!text) return { kind: "empty" };
+  if (text.toLowerCase() === NO_SPEECH_MARKER) return { kind: "no-speech" };
+  return { kind: "text", text };
 }
 
 /**

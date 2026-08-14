@@ -28,6 +28,73 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Voice: why transcription is failing in production (`blocked`, 2026-08-14)
+
+Reported by the operator, 2026-08-14: voice messages come back with no
+transcript. Two distinct symptoms on prod (`/api/health` reports **1.40.0**):
+
+1. Media cards reading "Transcribed" with `(no speech)` and no content
+   (~12:29–12:30 GMT+3).
+2. `voice`/`transcribe` traces ending in `error` at **0 ms / 2 ms / 14 ms**, on
+   three consecutive message ids in the same second (13:06:03 GMT+3) — the
+   vision backfill working a batch.
+
+Symptom 1 is **fixed** (next section): an empty answer was being stored as a
+terminal `(no speech)`. Symptom 2 is the underlying failure and is still
+**unknown** — sub-15 ms means the transcribe threw *before the wire*, so it is
+configuration or a local process, not the endpoint. Candidates, in order:
+
+- `toWavForTranscription` (`features/vision/server/service.ts`) — an ffmpeg
+  spawn/transcode failure. ENOENT fails in single-digit ms, which fits best.
+- `createOpenAiClient` (`server/llm/client.ts`) refusing an `anthropic` audio
+  role in `transcriptions` mode — an instant, named `ApiError`.
+
+**Blocker:** no authenticated access to `/debug`. The Browser pane blocks every
+`/_next/static/*` asset with `net::ERR_BLOCKED_BY_CLIENT` (the `/login`
+document itself is 200), so the page never hydrates and the sign-in form is
+inert; the Claude-in-Chrome extension is not connected either. `/api/health` is
+public and was the only reachable signal.
+
+**Next decision needed:** the operator pastes the error message and event list
+from one 13:06 `transcribe` trace (or its JSON bundle). That one string
+separates ffmpeg-missing from a backend refusal — they read nothing alike.
+Note that symptom 1's fix converts these into *more* such traces rather than
+fewer: failures that were previously laundered into `(no speech)` now surface
+as errors, which is the point.
+
+## Voice: a failed transcription was stored as a finished one (`done`, 2026-08-14)
+
+`parseTranscript` collapsed two opposite outcomes into the same empty string —
+the transcriber explicitly reporting `[no speech]` (a terminal fact about the
+audio) and the transcriber returning nothing at all (a failed call). The caller
+then mapped that single empty string to `(no speech)` and stored it, marking the
+row `described` and dropping the audio bytes. A failure became permanent and
+invisible: a "Transcribed" card with no content that no pass would ever retry.
+The image path one branch above already did the honest thing
+(`skip("empty description")`), so the two disagreed.
+
+- **Files changed:** `features/voice/format.ts` (`parseTranscript` →
+  `readTranscript`, returning a `TranscriptOutcome` discriminated union),
+  `features/vision/server/service.ts` (an `empty` outcome throws
+  `ApiError.serviceUnavailable`, naming endpoint vs model),
+  `server/llm/transcription.ts` (`chat` mode no longer pre-collapses the marker,
+  so `TranscriptionResult.text` means the same thing in both modes),
+  `features/voice/format.test.ts`, `features/voice/server/voice.integration.test.ts`,
+  `docs/features/voice.md`.
+- **Tests:** `format.test.ts` 6/6; `voice.integration.test.ts` 9/9 including two
+  new cases (chat model returns whitespace; dedicated STT answers with no text).
+  Both new tests were confirmed to **fail** against the old behavior with
+  `expected 'described' to be 'pending'` — the operator's exact symptom.
+- **Lint/typecheck:** both clean. Full `npm run test`: 1083 passed, 21 failed —
+  all 21 in `browser-agent` yt-dlp tests, failing identically on a clean tree
+  (yt-dlp is not installed on this machine), unrelated to this change.
+- **Remaining risk:** none to the stored data shape, but the live reply path now
+  takes the "transcription failed" branch (`VOICE_UNAVAILABLE_NOTE`) in cases
+  that previously produced a `(no speech)` transcript — the bot says it could
+  not listen instead of answering a blank. That is the intended behavior. Rows
+  already stored as `(no speech)` by the old code are **not** repaired by this
+  change; they are terminal and their audio bytes are gone.
+
 ## Google (Gemini) as a native backend type (`done` pending key-in-hand verification, 2026-08-14)
 
 User decision, 2026-08-14, immediately after the thought-signature fix below:
