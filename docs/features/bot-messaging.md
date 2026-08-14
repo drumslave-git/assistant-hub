@@ -113,7 +113,10 @@ Design constraints worth preserving:
   reaction per message, so reacting again replaces it). Available in every turn
   — a reply turn and a task fire alike — because a reaction is not a message and
   cannot double-deliver. The target id is validated against the chat's mirror,
-  and a Telegram refusal (an emoji this chat does not allow, a message too old,
+  and the bot's **own** messages are refused there — Telegram would allow the
+  reaction, but a badge on its own message says nothing to anyone (another bot's
+  message is an ordinary participant message and can be reacted to). A Telegram
+  refusal (an emoji this chat does not allow, a message too old,
   the poller down) is relayed to the model rather than swallowed, so it never
   tells the chat it reacted when it did not. A reaction the bot sets cannot feed
   itself: the `message_reaction` handler behind the 👍/👎 feedback loop

@@ -39,7 +39,12 @@ User decisions (2026-08-14):
    not a text delivery, so there is nothing to double-send, and the bot can like
    the message it is answering.
 2. **One message per call** — the model calls the tool again for another message.
-3. **Setting only.** The bot does not gain general awareness of reactions other
+3. **Never on its own messages** (2026-08-14, after the first pass shipped).
+   Telegram allows a bot to react to itself; the tool refuses, because a badge
+   the bot puts on its own message tells nobody anything. Enforced on the
+   mirror's `role` — `assistant` is exactly the bot's own output, so another
+   bot's message (an ordinary `user` row) is still fair game.
+4. **Setting only.** The bot does not gain general awareness of reactions other
    people put on messages; that would need `message_reaction` carried into
    context/history and is not in scope. (Note the narrow read path that already
    exists: 👍/👎 on the bot's own reply drives the self-improvement feedback
@@ -76,13 +81,14 @@ Decisions made in implementation (defaults, not asked):
 ### Proof
 
 Lint clean; typecheck clean. `features/bot-messaging/server/mcp-tools.test.ts`
-12/12 (6 new: reacts on the bound chat only; `❤️` normalized to the API's `❤` on
+14/14 (8 new: reacts on the bound chat only; `❤️` normalized to the API's `❤` on
 the wire; empty emoji removes; an off-list emoji refused **without** calling
 Telegram and with the whole menu in the refusal; unknown id refused without
-calling Telegram; a Telegram `REACTION_INVALID` relayed with "do not claim you
+calling Telegram; an `assistant` row refused while a `user` row with the same
+shape still reacts; a Telegram `REACTION_INVALID` relayed with "do not claim you
 reacted"), plus a compile-time proof the offered set is Telegram's whole
 documented set. `features/mcp-tools`, `server/mcp`, `features/bot-messaging`,
-`features/tasks`: 359/359, including the registry's schema-compat lint and the
+`features/tasks`: 361/361, including the registry's schema-compat lint and the
 tool-inventory test now pinning the new name to `bot-messaging`.
 
 ### Remaining risks / operator steps

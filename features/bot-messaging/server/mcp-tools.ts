@@ -76,8 +76,8 @@ const SET_MESSAGE_REACTION_DESCRIPTION =
   "instead of writing a message that says only that. It is not a substitute for an answer: if " +
   "something was asked of you, react and still answer. Omit 'emoji' to take your reaction back " +
   "off a message. You get one reaction per message, so reacting again replaces the one you had " +
-  "there. Only use an id you actually saw in this conversation or got back from a lookup — " +
-  "never a guessed number.";
+  "there. React only to messages other people sent — never to your own. Only use an id you " +
+  "actually saw in this conversation or got back from a lookup — never a guessed number.";
 
 const setMessageReactionOutputSchema = {
   ok: z.boolean(),
@@ -245,6 +245,16 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
         return reactionRefusal(
           `No message #${message_id} in this chat. Do not guess ids — look the message up again ` +
             "and use an id from the result, or answer without reacting.",
+        );
+      }
+      // Reacting to itself is the one target that is never right: a badge the bot
+      // put on its own message says nothing to anyone, and Telegram would happily
+      // allow it. `assistant` is exactly the bot's own output in the mirror —
+      // another bot's message arrives as an ordinary `user` row and stays fair game.
+      if (found.role === "assistant") {
+        return reactionRefusal(
+          `Message #${message_id} is your own — do not react to what you said yourself. ` +
+            "React to someone else's message, or say what you mean in your answer.",
         );
       }
 

@@ -377,7 +377,11 @@ conversation nor at an id it invented.
 
 `set_message_reaction` is offered in **every** turn, unlike `send_message`: a
 reaction is not a message, so there is nothing to double-deliver, and the bot
-can react to the very message it is answering. The allowed emoji are Telegram's
+can react to the very message it is answering. It refuses one target Telegram
+would happily accept — **its own messages** (an `assistant` row in the mirror),
+because a badge the bot puts on its own message tells nobody anything. Another
+bot's message arrives as an ordinary `user` row and stays fair game. The allowed
+emoji are Telegram's
 fixed set, single-sourced in `lib/telegram.ts` from the Bot API type
 (`TELEGRAM_REACTION_EMOJI`) and carried in the tool's own description. Validity
 is checked in the **handler**, not by a `z.enum`: the local backends this bot

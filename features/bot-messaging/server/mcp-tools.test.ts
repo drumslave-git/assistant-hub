@@ -59,9 +59,14 @@ function reactionHandler() {
   }) => Promise<ToolResult>;
 }
 
-/** A mirrored message, as the lookup returns it (only the id is read). */
+/** A mirrored message from a person, as the lookup returns it (id + role are read). */
 function mirrored(telegramMessageId: number) {
-  return [{ telegramMessageId }] as never;
+  return [{ telegramMessageId, role: "user" }] as never;
+}
+
+/** A mirrored message the bot itself sent. */
+function mirroredOwn(telegramMessageId: number) {
+  return [{ telegramMessageId, role: "assistant" }] as never;
 }
 
 describe("reply_to_message", () => {
@@ -223,6 +228,31 @@ describe("set_message_reaction", () => {
     expect(mockedReact).not.toHaveBeenCalled();
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("No message #999 in this chat");
+  });
+
+  it("refuses to react to the bot's own message", async () => {
+    // Telegram would allow it, so the guard has to live here: a badge the bot
+    // put on its own message tells nobody anything.
+    mockedLookup.mockResolvedValue(mirroredOwn(55));
+
+    const result = await runWithToolContext({ chatId: "-100" }, () =>
+      reactionHandler()({ message_id: 55, emoji: "\u{1F44D}", big: false }),
+    );
+
+    expect(mockedReact).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("is your own");
+    expect(result.structuredContent).toEqual({ ok: false, message_id: null, emoji: null });
+  });
+
+  it("still reacts to another bot's message, which the mirror files as a person's", async () => {
+    mockedLookup.mockResolvedValue(mirrored(56));
+
+    await runWithToolContext({ chatId: "-100" }, () =>
+      reactionHandler()({ message_id: 56, emoji: "\u{1F44D}", big: false }),
+    );
+
+    expect(mockedReact).toHaveBeenCalledWith("-100", 56, "\u{1F44D}", { big: false });
   });
 
   it("relays a Telegram refusal instead of reporting a reaction that never landed", async () => {
