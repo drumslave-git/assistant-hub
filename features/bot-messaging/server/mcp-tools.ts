@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { getDb } from "@/db/drizzle";
 import { getChatMessagesByTelegramIds } from "@/features/history/server/repository";
+import { recordBotReaction } from "@/features/history/server/service";
 import { TELEGRAM_REACTION_EMOJI, toTelegramReactionEmoji } from "@/lib/telegram";
 import { getToolContext, tryGetToolContext } from "@/server/mcp/context";
 
@@ -225,14 +226,31 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
         );
       }
 
+      // Mirror into history so the bot *remembers* reacting: the transcript
+      // renders it on the target line (`[you reacted: 👍]`). Without this the
+      // reaction lived only on Telegram's side, and the very next turn denied
+      // having set it (operator report, 2026-08-15). Its own catch: the
+      // reaction IS on the message — a failed mirror write must not make the
+      // tool claim Telegram refused, only say the memory of it is missing.
+      let recorded = true;
+      try {
+        await recordBotReaction({ chatId, telegramMessageId: message_id, emoji: reaction });
+      } catch {
+        recorded = false;
+      }
+
+      const note = recorded
+        ? ""
+        : " (Warning: the reaction could not be recorded in your history — later turns may not remember it.)";
       return {
         content: [
           {
             type: "text" as const,
-            text: reaction
-              ? `Reacted ${reaction} to message #${message_id}. The chat sees it under that ` +
-                "message, so there is no need to also say that you reacted."
-              : `Removed your reaction from message #${message_id}.`,
+            text:
+              (reaction
+                ? `Reacted ${reaction} to message #${message_id}. The chat sees it under that ` +
+                  "message, so there is no need to also say that you reacted."
+                : `Removed your reaction from message #${message_id}.`) + note,
           },
         ],
         structuredContent: { ok: true, message_id, emoji: reaction },

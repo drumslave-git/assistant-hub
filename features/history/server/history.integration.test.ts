@@ -13,6 +13,7 @@ import {
   getConversationWindow,
   getHistoryOverview,
   recordAssistantMessage,
+  recordBotReaction,
   recordIncomingMessage,
 } from "./service";
 
@@ -102,6 +103,79 @@ describe("getChatHistory", () => {
     const byId = new Map(messages.map((m) => [m.telegramMessageId, m]));
     expect(byId.get(10)?.mediaSuffix).toBe(" [photo: a cat]"); // media message annotated
     expect(byId.get(11)?.mediaSuffix).toBeNull(); // text message unannotated
+  });
+});
+
+describe("bot reactions", () => {
+  /** Seed one human message the bot can react to. */
+  async function seedMessage(telegramMessageId = 598) {
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId, userId: "100", content: "hello", sentAt: TODAY },
+      ctx.db,
+    );
+    return telegramMessageId;
+  }
+
+  /** The rendered transcript of the reply window (or "" when empty). */
+  async function transcript(): Promise<string> {
+    const window = await getConversationWindow({ chatId: "5", now: TODAY }, ctx.db);
+    return String(window.messages[0]?.content ?? "");
+  }
+
+  it("renders the reaction on the target line, replaces on re-react, clears on removal", async () => {
+    const id = await seedMessage();
+
+    // The scenario this exists for: the bot liked a message, the user asked
+    // "did you just like my message?", and the bot — with no record — denied
+    // it. The window now carries the reaction on the exact line it sits under.
+    await recordBotReaction({ chatId: "5", telegramMessageId: id, emoji: "👍" }, ctx.db);
+    expect(await transcript()).toContain(`[#${id}] User 100: hello [you reacted: 👍]`);
+
+    // One reaction per message (Telegram semantics): a re-react replaces.
+    await recordBotReaction({ chatId: "5", telegramMessageId: id, emoji: "🔥" }, ctx.db);
+    const replaced = await transcript();
+    expect(replaced).toContain("[you reacted: 🔥]");
+    expect(replaced).not.toContain("👍");
+
+    // Removing the reaction removes the memory of it — current state only,
+    // exactly what Telegram shows under the message.
+    await recordBotReaction({ chatId: "5", telegramMessageId: id, emoji: null }, ctx.db);
+    expect(await transcript()).not.toContain("[you reacted");
+  });
+
+  it("stacks the reaction after a media suffix on the same line", async () => {
+    const id = await seedMessage(599);
+    await recordBotReaction({ chatId: "5", telegramMessageId: id, emoji: "👍" }, ctx.db);
+
+    const window = await getConversationWindow(
+      {
+        chatId: "5",
+        now: TODAY,
+        loadMediaSuffixes: async () => new Map([[id, " [photo: a cat]"]]),
+      },
+      ctx.db,
+    );
+    expect(String(window.messages[0]?.content)).toContain(
+      `[#${id}] User 100: hello [photo: a cat] [you reacted: 👍]`,
+    );
+  });
+
+  it("annotates the dashboard read with the reaction too", async () => {
+    const id = await seedMessage(600);
+    await recordBotReaction({ chatId: "5", telegramMessageId: id, emoji: "👍" }, ctx.db);
+
+    const messages = await getChatHistory("5", {}, ctx.db);
+    expect(messages.find((m) => m.telegramMessageId === id)?.mediaSuffix).toBe(
+      " [you reacted: 👍]",
+    );
+  });
+
+  it("refuses to remember a reaction on a message that is not mirrored", async () => {
+    // The FK is the guard: a reaction the bot could not have verified against
+    // the mirror (the tool checks first) has nothing to attach to.
+    await expect(
+      recordBotReaction({ chatId: "5", telegramMessageId: 12345, emoji: "👍" }, ctx.db),
+    ).rejects.toThrow();
   });
 });
 

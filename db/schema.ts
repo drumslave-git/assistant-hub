@@ -473,6 +473,46 @@ export type ChatMessageRow = typeof chatMessages.$inferSelect;
 export type ChatMessageInsert = typeof chatMessages.$inferInsert;
 
 /**
+ * The bot's own reaction on a mirrored message — the emoji badge
+ * `set_message_reaction` put there. One row per reacted message (Telegram gives
+ * a bot one reaction per message; re-reacting replaces it, removing deletes the
+ * row), so the table always holds the *current* state, exactly what Telegram
+ * shows under the message.
+ *
+ * This exists because a reaction that lives only on Telegram's side is
+ * invisible to the bot's own memory: it liked a message, the user asked "did
+ * you just like my message?", and the bot — whose transcript had no record —
+ * denied it (operator report, 2026-08-15). The history transcript renders this
+ * row as a suffix on the target line (`[you reacted: 👍]`).
+ *
+ * Deliberately only the bot's own reactions: general awareness of reactions
+ * other people set stays out of scope (user decision, 2026-08-14).
+ */
+export const botReactions = pgTable(
+  "bot_reactions",
+  {
+    chatId: text("chat_id").notNull(),
+    /** The message the reaction sits under. */
+    telegramMessageId: bigint("telegram_message_id", { mode: "number" }).notNull(),
+    /** The reaction emoji currently showing. */
+    emoji: text("emoji").notNull(),
+    /** When the current emoji was set (updated when a re-react replaces it). */
+    reactedAt: timestamp("reacted_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.chatId, t.telegramMessageId] }),
+    // A reaction never outlives the message it sits under.
+    foreignKey({
+      columns: [t.chatId, t.telegramMessageId],
+      foreignColumns: [chatMessages.chatId, chatMessages.telegramMessageId],
+      name: "bot_reactions_message_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export type BotReactionRow = typeof botReactions.$inferSelect;
+
+/**
  * The searchable projection of one mirrored message — what `history_search` looks
  * through, as opposed to what the chat literally contains.
  *

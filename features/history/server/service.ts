@@ -21,6 +21,8 @@ import {
 import { summaryDayBounds, type SummarizableMessage, type SummaryDate } from "../summary";
 import {
   appendChatMessage,
+  deleteBotReaction,
+  getBotReactionsForMessages,
   getChatMessageByTelegramId,
   getChatMessages,
   getChatMessagesForDay,
@@ -29,6 +31,7 @@ import {
   markChatMessageDeleted,
   markMessageProcessed,
   updateChatMessageContent,
+  upsertBotReaction,
   type ChatMessageRecord,
   type ChatSummary,
 } from "./repository";
@@ -158,6 +161,42 @@ export async function recordAssistantMessage(
   });
   if (record) publishEvent(FEATURE.realtimeTopic);
   return record;
+}
+
+/**
+ * Record the bot's own reaction on a message — set/replace with an emoji, or
+ * remove with null. This is what keeps a reaction from being invisible to the
+ * bot's own memory: the transcript renders it as a suffix on the target line
+ * (`[you reacted: 👍]`), so the next turn *knows* it liked the message instead
+ * of denying it (operator report, 2026-08-15). Throws when the target message
+ * is not mirrored; the caller decides how to report that.
+ */
+export async function recordBotReaction(
+  input: { chatId: string; telegramMessageId: number; emoji: string | null },
+  db: DrizzleDb = getDb(),
+): Promise<void> {
+  if (input.emoji) {
+    await upsertBotReaction(db, input.chatId, input.telegramMessageId, input.emoji);
+  } else {
+    await deleteBotReaction(db, input.chatId, input.telegramMessageId);
+  }
+  publishEvent(FEATURE.realtimeTopic);
+}
+
+/**
+ * Transcript suffixes for the bot's reactions on the given messages
+ * (` [you reacted: 👍]`), keyed by Telegram message id — merged into the
+ * recent-history window beside the media suffixes.
+ */
+export async function getBotReactionSuffixesForMessages(
+  chatId: string,
+  telegramMessageIds: number[],
+  db: DrizzleDb = getDb(),
+): Promise<Map<number, string>> {
+  const reactions = await getBotReactionsForMessages(db, chatId, telegramMessageIds);
+  return new Map(
+    [...reactions].map(([id, emoji]) => [id, ` [you reacted: ${emoji}]`]),
+  );
 }
 
 /**
@@ -345,14 +384,27 @@ export async function getConversationWindow(
       ? fetched.slice(fetched.length - params.maxMessages)
       : fetched;
 
+  const ids = records.map((r) => r.telegramMessageId);
   const speakerLabels = await resolveSpeakerLabels(db, records);
   const mediaSuffixes = params.loadMediaSuffixes
-    ? await params.loadMediaSuffixes(records.map((r) => r.telegramMessageId)).catch(() => undefined)
+    ? await params.loadMediaSuffixes(ids).catch(() => undefined)
     : undefined;
+  // The bot's own reactions, appended after any media suffix — so a liked photo
+  // reads ` [photo: …] [you reacted: 👍]`. History's own data, loaded here
+  // rather than injected: every consumer of the window must see them, or the
+  // bot denies reactions it set (operator report, 2026-08-15). Best-effort like
+  // the media suffixes — an unreadable table must not drop the reply.
+  const reactionSuffixes = await getBotReactionSuffixesForMessages(params.chatId, ids, db).catch(
+    () => new Map<number, string>(),
+  );
+  const suffixes = new Map(mediaSuffixes ?? []);
+  for (const [id, suffix] of reactionSuffixes) {
+    suffixes.set(id, `${suffixes.get(id) ?? ""}${suffix}`);
+  }
   const transcript = renderTranscript(records, {
     speakerLabels,
     botLabel: params.botLabel,
-    mediaSuffixes: mediaSuffixes ?? undefined,
+    mediaSuffixes: suffixes,
   });
   return {
     messages: transcript ? [{ role: "user", content: transcript }] : [],
@@ -461,19 +513,29 @@ export async function getChatHistory(
   db: DrizzleDb = getDb(),
 ): Promise<ChatMessageWithTrace[]> {
   const records = await getChatMessages(db, chatId);
+  const ids = records.map((r) => r.telegramMessageId);
   const correlations = records
     .map(traceCorrelationFor)
     .filter((value): value is string => value != null);
   const traceIds = await getLatestTraceIdsByCorrelation(correlations);
   const mediaSuffixes = options.loadMediaSuffixes
-    ? await options.loadMediaSuffixes(records.map((r) => r.telegramMessageId)).catch(() => undefined)
+    ? await options.loadMediaSuffixes(ids).catch(() => undefined)
     : undefined;
+  // The bot's own reactions ride the same annotation slot, after any media
+  // suffix — the dashboard shows the reaction exactly where the transcript
+  // renders it.
+  const reactionSuffixes = await getBotReactionSuffixesForMessages(chatId, ids, db).catch(
+    () => new Map<number, string>(),
+  );
   return records.map((record) => {
     const correlation = traceCorrelationFor(record);
+    const annotation = `${mediaSuffixes?.get(record.telegramMessageId) ?? ""}${
+      reactionSuffixes.get(record.telegramMessageId) ?? ""
+    }`;
     return {
       ...record,
       traceId: correlation ? (traceIds.get(correlation) ?? null) : null,
-      mediaSuffix: mediaSuffixes?.get(record.telegramMessageId) ?? null,
+      mediaSuffix: annotation || null,
     };
   });
 }

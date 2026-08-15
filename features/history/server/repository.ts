@@ -3,7 +3,7 @@ import "server-only";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
-import { chatMessages, type ChatMessageRow } from "@/db/schema";
+import { botReactions, chatMessages, type ChatMessageRow } from "@/db/schema";
 
 /**
  * Typed persistence for the chat-history mirror (`chat_messages`). Pure data
@@ -259,6 +259,58 @@ export async function getChatMessagesSince(
     .where(and(...filters))
     .orderBy(asc(chatMessages.id));
   return rows.map(mapRow);
+}
+
+/**
+ * Set or replace the bot's reaction on a mirrored message (one per message —
+ * Telegram semantics; a re-react replaces). Throws when the target message is
+ * not mirrored (the FK), which callers treat as "nothing to remember it on".
+ */
+export async function upsertBotReaction(
+  db: DrizzleDb,
+  chatId: string,
+  telegramMessageId: number,
+  emoji: string,
+): Promise<void> {
+  await db
+    .insert(botReactions)
+    .values({ chatId, telegramMessageId, emoji, reactedAt: new Date() })
+    .onConflictDoUpdate({
+      target: [botReactions.chatId, botReactions.telegramMessageId],
+      set: { emoji, reactedAt: new Date() },
+    });
+}
+
+/** Remove the bot's reaction from a message (a no-op when none is recorded). */
+export async function deleteBotReaction(
+  db: DrizzleDb,
+  chatId: string,
+  telegramMessageId: number,
+): Promise<void> {
+  await db
+    .delete(botReactions)
+    .where(
+      and(eq(botReactions.chatId, chatId), eq(botReactions.telegramMessageId, telegramMessageId)),
+    );
+}
+
+/** The bot's current reactions on the given messages: telegram id → emoji. */
+export async function getBotReactionsForMessages(
+  db: DrizzleDb,
+  chatId: string,
+  telegramMessageIds: number[],
+): Promise<Map<number, string>> {
+  if (telegramMessageIds.length === 0) return new Map();
+  const rows = await db
+    .select()
+    .from(botReactions)
+    .where(
+      and(
+        eq(botReactions.chatId, chatId),
+        inArray(botReactions.telegramMessageId, telegramMessageIds),
+      ),
+    );
+  return new Map(rows.map((row) => [row.telegramMessageId, row.emoji]));
 }
 
 /**

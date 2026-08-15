@@ -22,10 +22,13 @@ vi.mock("@/db/drizzle", () => ({ getDb: () => ({}) }));
 vi.mock("@/features/history/server/repository", () => ({
   getChatMessagesByTelegramIds: vi.fn(),
 }));
+vi.mock("@/features/history/server/service", () => ({ recordBotReaction: vi.fn() }));
 vi.mock("@/server/telegram/bot-manager", () => ({ reactToChatMessage: vi.fn() }));
 
 const { getChatMessagesByTelegramIds } = await import("@/features/history/server/repository");
 const mockedLookup = vi.mocked(getChatMessagesByTelegramIds);
+const { recordBotReaction } = await import("@/features/history/server/service");
+const mockedRecord = vi.mocked(recordBotReaction);
 const { reactToChatMessage } = await import("@/server/telegram/bot-manager");
 const mockedReact = vi.mocked(reactToChatMessage);
 
@@ -170,6 +173,7 @@ describe("set_message_reaction", () => {
   beforeEach(() => {
     mockedReact.mockReset();
     mockedLookup.mockReset();
+    mockedRecord.mockReset();
   });
 
   it("offers exactly the reactions the Bot API documents", () => {
@@ -177,7 +181,7 @@ describe("set_message_reaction", () => {
     expect(TELEGRAM_REACTION_EMOJI).toContain("\u{1F44D}");
   });
 
-  it("reacts to a message of the bound chat", async () => {
+  it("reacts to a message of the bound chat and records it in history", async () => {
     mockedLookup.mockResolvedValue(mirrored(4321));
 
     const result = await runWithToolContext({ chatId: "-100" }, () =>
@@ -186,6 +190,13 @@ describe("set_message_reaction", () => {
 
     expect(mockedLookup).toHaveBeenCalledWith(expect.anything(), "-100", [4321]);
     expect(mockedReact).toHaveBeenCalledWith("-100", 4321, "\u{1F44D}", { big: false });
+    // The memory of the reaction — without it, the next turn denies having
+    // reacted (operator report, 2026-08-15).
+    expect(mockedRecord).toHaveBeenCalledWith({
+      chatId: "-100",
+      telegramMessageId: 4321,
+      emoji: "\u{1F44D}",
+    });
     expect(result.structuredContent).toEqual({
       ok: true,
       message_id: 4321,
@@ -207,7 +218,7 @@ describe("set_message_reaction", () => {
     expect(mockedReact).toHaveBeenCalledWith("-100", 10, "❤", { big: false });
   });
 
-  it("removes the reaction when no emoji is given", async () => {
+  it("removes the reaction when no emoji is given, clearing the history record too", async () => {
     mockedLookup.mockResolvedValue(mirrored(10));
 
     const result = await runWithToolContext({ chatId: "-100" }, () =>
@@ -215,8 +226,29 @@ describe("set_message_reaction", () => {
     );
 
     expect(mockedReact).toHaveBeenCalledWith("-100", 10, null, { big: false });
+    expect(mockedRecord).toHaveBeenCalledWith({
+      chatId: "-100",
+      telegramMessageId: 10,
+      emoji: null,
+    });
     expect(result.structuredContent).toEqual({ ok: true, message_id: 10, emoji: null });
     expect(result.content[0].text).toContain("Removed your reaction");
+  });
+
+  it("reports success with a warning — never a refusal — when only the history write fails", async () => {
+    // The reaction IS on the message once Telegram accepted it; a failed mirror
+    // write must not make the tool claim Telegram refused. It only says the
+    // memory of it is missing.
+    mockedLookup.mockResolvedValue(mirrored(11));
+    mockedRecord.mockRejectedValue(new Error("db down"));
+
+    const result = await runWithToolContext({ chatId: "-100" }, () =>
+      reactionHandler()({ message_id: 11, emoji: "\u{1F44D}", big: false }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toEqual({ ok: true, message_id: 11, emoji: "\u{1F44D}" });
+    expect(result.content[0].text).toContain("could not be recorded");
   });
 
   it("refuses an emoji Telegram has no reaction for, without calling Telegram", async () => {
@@ -284,5 +316,7 @@ describe("set_message_reaction", () => {
     expect(result.content[0].text).toContain("REACTION_INVALID");
     expect(result.content[0].text).toContain("Do not claim you reacted");
     expect(result.structuredContent).toEqual({ ok: false, message_id: null, emoji: null });
+    // A reaction Telegram refused never happened — nothing to remember.
+    expect(mockedRecord).not.toHaveBeenCalled();
   });
 });
