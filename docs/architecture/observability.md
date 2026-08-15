@@ -91,6 +91,45 @@ Full error messages, **including the `cause` chain**, are recorded: traces are
 operator-facing debug data, never returned to end users, and the cause chain is
 where wrapped failures keep the part that actually explains them.
 
+### LLM calls record themselves
+
+`llm_request` / `llm_response` / tool-call / retry events are recorded by the
+**shared LLM layer**, not by features. `chatCompletion` and
+`chatCompletionWithTools` take an `LlmCallTrace` (`server/llm/client.ts`):
+
+```ts
+await chatCompletion(conn, {
+  model, messages,
+  trace: { recorder: trace, callKind: "memory-extract", label: "batch 1/2" },
+});
+```
+
+Every recorded call then carries the same facts: the **endpoint and backend**
+it went to, the full sanitized request body, each round's raw response with
+usage and its `callKind` (final vs `toolTurnCallKind` in a tool loop), every
+tool call, retries, and empty-round re-asks. Feature code must pass the options
+and record nothing by hand — the previous per-feature recordings drifted until
+background jobs were recording requests with no endpoint at all, which made a
+failing request unattributable (2026-08-15). The one deliberate exception is
+the Settings probes, whose `external_call` exchange *is* their trace's content.
+
+### Correlation
+
+Every trace carries `trigger.correlationId` — the id of the **process** it
+belongs to, filterable at `/debug?correlationId=…`:
+
+| Flow | Correlation |
+| --- | --- |
+| A reply turn | `<chatId>:<messageId>` — stamped on the reply trace and on every `mcp-tools-*` trace its tool calls open (via the tool context) |
+| A task fire | The task id at open, settled to `<chatId>:<sentMessageId>` once delivered |
+| A nightly sweep (memory, summaries) | One `newRunCorrelationId(job)` per run (`memory:20260815-040100`), shared by every chat-day trace it opens |
+| A browsing run | The run id |
+| Anything standalone | Its own trace id (`startTrace` fills it in), so the filter is never empty |
+
+On the Debug list and detail views the feature, status, trigger (kind · actor)
+and correlation are links to the pre-filtered list — `debugFilterHref` in
+`lib/trace.ts` is the one URL builder behind all of them.
+
 ### What gets traced, and what does not
 
 | Traced | Not traced |

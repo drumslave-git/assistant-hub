@@ -132,6 +132,8 @@ These come from repeated correction; violating one is a review comment every tim
 | Bodies are **complete and raw** | The whole system prompt, the whole message list, the whole tool result. Never trimmed or hand-picked |
 | The only exception is binary blobs | Image and audio bytes become a `data:<mime>;base64,<N bytes>` marker; the real media is in `message_media` |
 | Add event *types* to `lib/trace.ts` | Do not invent a per-feature trace shape |
+| **Never hand-record LLM exchanges** | Pass `trace: { recorder, callKind, label? }` to `chatCompletion` / `chatCompletionWithTools`; the shared layer records request (endpoint + full body), rounds, tool calls and retries identically for every feature |
+| A multi-trace flow shares one `correlationId` | A turn stamps `<chatId>:<messageId>` on its tool-call traces; a sweep stamps `newRunCorrelationId(job)` on every trace of the run. A standalone trace self-correlates automatically |
 | Trace what the operator must be able to explain | Including decisions to stay silent. Skip high-volume passive capture |
 
 ## LLM conventions

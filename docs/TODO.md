@@ -28,6 +28,96 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Traces overhaul + reactions memory + vision gate + page speed (`done` pending live verification, 2026-08-15)
+
+One operator report with a screenshot and three trace bundles, six asks — plus
+the standing instruction *"every implementation/behavior have to be unified —
+no per feature special code for things like tracing"*.
+
+### What shipped (four commits: `ed012ac`, `0a3fd58`, `b92d1fa`, `6a415a5`)
+
+1. **One shared LLM-call recording layer.** `chatCompletion` /
+   `chatCompletionWithTools` take `trace: LlmCallTrace` and record the whole
+   exchange — request with **endpoint + backend + model + full sanitized
+   body**, per-round responses with `callKind`, tool calls, retries,
+   empty-round re-asks. All ~17 hand-rolled per-feature `llm_request`
+   recordings are deleted (bot-messaging, classifiers, vision describe/
+   transcribe-via-chat, memory extract/consolidate, summaries, insights,
+   self-improvement, tasks fire, browser agent). This answers "where did this
+   request go? what type?" for traces like `eb0094f0…` (memory-extraction with
+   bare messages). Settings probes keep their deliberate `external_call`
+   probe-report shape. The Debug timeline shows a call-kind chip.
+2. **Correlation on every trace.** `startTrace` self-correlates a trace that
+   was given none; reply turns stamp `<chatId>:<messageId>` onto their
+   `mcp-tools-*` traces via the tool context (was: bare chat id); fires stamp
+   the task id; the memory and summaries sweeps share one
+   `newRunCorrelationId(job)` across every chat-day trace of a run.
+3. **Clickable trace facets.** Feature, status, trigger (kind · actor) and
+   correlation link to the pre-filtered `/debug` list from both the shared
+   list and detail views; `debugFilterHref` in `lib/trace.ts` is the one URL
+   builder; `correlationId`/`triggerKind`/`actor` are real query filters with
+   removable chips in `DebugFilters`.
+4. **Meaningful download names.** `trace-<feature>-<action>-<local time>-<id8>.json`
+   and `traces-<facets>-<local time>.json`, in the operator timezone
+   (`server/trace/filename.ts`, pure + unit-tested).
+5. **The bot remembers its reactions** (trace `0e0a924f…`'s deeper cause: it
+   liked a message and then denied it). New `bot_reactions` table (migration
+   0056, **applied to the dev DB**); `set_message_reaction` mirrors
+   set/replace/remove after Telegram accepts (a failed mirror write reports
+   success + a warning, never a refusal); the reply window and `/history`
+   render `[you reacted: 👍]` on the target line after any media suffix.
+6. **Vision attach gate** (trace `f37d84b9…`: reply 400 on Z.ai glm-4.7-flash,
+   `messages.content.type is invalid`). `chatModelReadsImages()` — raw image
+   parts reach the reply request only when the vision role resolves to the
+   chat connection; otherwise the reply rides the recognition text and the
+   trace step says the images were withheld and why.
+7. **Overview + Settings load time.** `getSystemStatus` behind a 10s
+   single-flight TTL cache (explicit-db/test calls bypass); both pages stream
+   behind Suspense (Overview in three sections, Settings' four reads in
+   parallel behind the shell). Measured warm on the live dev server: Overview
+   shell 211ms / complete 891ms; Settings shell 419ms / complete 1.5s.
+
+### Proof
+
+Lint clean; typecheck clean. Unit suite **1162 passed / 26 skipped, 0 failed**
+(new: shared-recording contract in `server/llm/transport.test.ts`, correlation
+defaults + facet filters in `server/trace/service.test.ts`,
+`server/trace/filename.test.ts`, `lib/trace.test.ts`,
+`features/vision/server/chat-reads-images.test.ts`, reaction recording in
+`mcp-tools.test.ts`, withheld-images pipeline case in `service.test.ts`).
+Integration: history (reaction → transcript/dashboard/FK cases), voice,
+self-improvement, memory, analytics, tasks — all green against real Postgres.
+**`npm run build` not run**: the operator's dev server is live on 3200 and a
+production build kills it; no route/schema surface changed beyond what
+typecheck covers.
+
+**Verified live** against the running dev server (attached, not restarted):
+page streaming timings above; debug facet links and filter chips render; a
+real single-trace download is named
+`trace-history-summaries-summarize-20260815-040012-e99c2e5f.json` (Kyiv time).
+
+### Remaining risks / operator steps
+
+- **Restart the dev/prod process to get the bot-side changes.** The running
+  poller executes boot-time module instances: shared LLM recording, tool-trace
+  correlation, reaction mirroring and the vision gate all take effect on the
+  bot only after a restart (one was already owed for the `tasks_update` schema
+  change). Dashboard/API routes are already fresh per request.
+- Old traces have no correlation (they self-correlate only from now on) and
+  their detail views simply omit the correlation link.
+- The reaction suffix is reply-window + dashboard only; the nightly
+  extraction/summary transcripts don't carry it (their prompts ignore bot
+  lines anyway) — fold it into `loadChatDayTranscript` if it proves wanted.
+- A replied-to media message still downloads its bytes before the gate decides
+  not to attach them — wasted transfer on gated setups, not a correctness
+  issue.
+- The status cache means the Overview can show up to 10s-old probe state
+  between refreshes. Deliberate; the escape hatch is waiting out the window.
+- The `imagesWithheld` path changes real reply behavior on split setups (the
+  operator's): the first live photo+text turn after restart is the thing to
+  watch — expect a text-only request carrying "Recognition of the media
+  above: …".
+
 ## The top bar was three-quarters decoration (`done`, 2026-08-15)
 
 User report, 2026-08-15: *"we have dummy header. search does nothing,

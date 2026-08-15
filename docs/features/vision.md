@@ -26,6 +26,16 @@ an addressed message that also carries text. A media-only message is answered in
 one pass and its media — like unaddressed media — is described later by the
 backfill job.
 
+**Raw images reach the reply request only when the chat model reads images** —
+`chatModelReadsImages()`: true exactly when the vision role resolves to the
+chat connection (unset, or pointed at the same endpoint + model). With vision
+pointed at a separate describer, nothing says the chat model accepts image
+input, and a text-only provider rejects the whole request (Z.ai
+`glm-4.7-flash`: 400 `messages.content.type is invalid`, trace `f37d84b9…`,
+2026-08-15). The reply then rides the recognition text already in the prompt,
+and the trace's "vision media attached" step says the images were withheld and
+why.
+
 ## Detection
 
 `features/vision/detect.ts` (pure) decides *what* file to read and how to hint the
