@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  botReactionSuffix,
   collectUserIds,
   fallbackSpeakerLabel,
   historyWindowStart,
@@ -24,6 +25,7 @@ function record(over: Partial<ChatMessageRecord>): ChatMessageRecord {
     sentAt: "2026-07-12T10:00:00.000Z",
     editedAt: null,
     deletedAt: null,
+    botReaction: null,
     createdAt: "2026-07-12T10:00:00.000Z",
     ...over,
   };
@@ -130,6 +132,27 @@ describe("toTranscriptLine", () => {
       mediaSuffixes: new Map([[999, " [photo]"]]),
     });
     expect(line).toBe("[#10] Alice: hi");
+  });
+
+  it("renders the bot's reaction on the line, after any media suffix", () => {
+    // The reaction is state on the record itself — this one renderer is what
+    // every transcript consumer reads, which is what keeps the bot from
+    // denying a reaction it set (2026-08-15).
+    const line = toTranscriptLine(
+      record({ content: "look", userId: "100", botReaction: "👍" }),
+      {
+        speakerLabels: new Map([["100", "Alice"]]),
+        mediaSuffixes: new Map([[10, " [photo: a red car]"]]),
+      },
+    );
+    expect(line).toBe("[#10] Alice: look [photo: a red car] [you reacted: 👍]");
+  });
+});
+
+describe("botReactionSuffix", () => {
+  it("is the annotation for a reacted record and empty otherwise", () => {
+    expect(botReactionSuffix(record({ botReaction: "🔥" }))).toBe(" [you reacted: 🔥]");
+    expect(botReactionSuffix(record({}))).toBe("");
   });
 });
 

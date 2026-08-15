@@ -276,40 +276,43 @@ export async function ingestGeneratedImage(
  * re-downloads by file id. Returns null when the message has no media or it can't
  * be loaded.
  */
-export async function loadReplyTargetImages(
-  params: { token: string; chatId: string; message: Message },
+/**
+ * Resolve a message's media to TEXT for the reply: its stored description (or
+ * voice transcript), produced right now — describe + store — when the row is
+ * still pending, and ingested first when the message's media was never stored
+ * (a replied-to message from before the bot watched the chat). Raw bytes never
+ * reach a reply request: the vision pass exists precisely so the reply model
+ * reads text (user decision, 2026-08-15). Recording rides the given trace like
+ * the current-media recognize pass.
+ */
+export async function resolveMediaText(
+  params: { token: string; chatId: string; message: Message; trace?: TraceRecorder },
   db: DrizzleDb = getDb(),
-): Promise<{ images: ImagePayload[]; kind: MediaKind; note: string | null } | null> {
+): Promise<{ kind: MediaKind; description: string | null } | null> {
   const detected = detectMessageMedia(params.message);
   if (!detected) return null;
+  const telegramMessageId = params.message.message_id;
 
-  const stored = await getMediaByMessage(db, params.chatId, params.message.message_id).catch(
-    () => null,
-  );
-
-  // A replied-to voice message resolves to its transcript (the chat model reads
-  // text, not audio, in the reply turn). Transcription is eager, so the stored
-  // row almost always has one; without it there is nothing useful to attach.
-  if (detected.isAudio) {
-    if (stored?.description) {
-      return {
-        images: [],
-        kind: detected.kind,
-        note: `Transcript of that voice message: ${stored.description}`,
-      };
-    }
-    return null;
+  let media = await getMediaByMessage(db, params.chatId, telegramMessageId).catch(() => null);
+  if (!media) {
+    const ingested = await ingestMessageMedia(
+      { token: params.token, chatId: params.chatId, telegramMessageId, message: params.message },
+      db,
+    ).catch(() => null);
+    media = ingested?.media ?? null;
   }
+  if (!media) return { kind: detected.kind, description: null };
 
-  // Reuse the stored image(s) — a photo, or a video's full frame sequence — when
-  // present, so a reply to old media needs no re-download or re-extraction.
-  const storedImages = storedMediaImages(stored);
-  if (storedImages) {
-    return { images: storedImages, kind: detected.kind, note: stored?.visionHint ?? null };
-  }
-
-  const loaded = await loadDetectedMedia(params.token, detected);
-  return loaded ? { images: loaded.images, kind: detected.kind, note: loaded.note } : null;
+  const deps = await resolveDescribeDeps().catch(() => null);
+  if (!deps) return { kind: media.kind, description: media.description ?? null };
+  // Reuses an existing description without a call; describes/transcribes a
+  // pending row and stores the result (bytes dropped), exactly like the
+  // current-media pass — one flow for "what does this media say".
+  const described = await describeAndStore({ chatId: params.chatId, telegramMessageId }, deps, {
+    db,
+    ...(params.trace ? { trace: params.trace } : {}),
+  }).catch(() => null);
+  return { kind: media.kind, description: described?.description ?? media.description ?? null };
 }
 
 /** The stored image sequence for a media row (frames for a video, else the single image). */
@@ -412,27 +415,6 @@ export async function resolveDescribeDeps(
           }
         : {}),
   };
-}
-
-/**
- * Whether the CHAT model is the model that reads images — true exactly when the
- * vision role resolves to the same endpoint and model as the chat role (the
- * vision role unset, or pointed at the same thing).
- *
- * This is the gate on attaching raw image parts to a reply request. When the
- * operator points vision at a separate describer, nothing says the chat model
- * accepts image input — and a text-only provider rejects the whole request
- * (Z.ai glm-4.7-flash: `messages.content.type is invalid, allowed values:
- * ['text']`, trace `f37d84b9…`, 2026-08-15). The reply then rides the
- * recognition text, which the describe pass already put into the prompt.
- */
-export async function chatModelReadsImages(): Promise<boolean> {
-  const [chat, vision] = await Promise.all([
-    getLlmRuntime().catch(() => null),
-    getVisionRuntime().catch(() => null),
-  ]);
-  if (!chat || !vision) return false;
-  return chat.baseUrl === vision.baseUrl && chat.model === vision.model;
 }
 
 /** How a describe/transcribe pass records itself and where it reads/writes. */

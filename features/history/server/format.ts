@@ -86,6 +86,17 @@ export interface TranscriptOptions {
   mediaSuffixes?: ReadonlyMap<number, string>;
 }
 
+/**
+ * The bot's-own-reaction annotation for a stored row (` [you reacted: 👍]`), or
+ * "". The reaction is state ON the history record (like an edit), so this is
+ * the ONE renderer every consumer uses — the reply window, the day transcripts,
+ * and the dashboard annotation. A reaction rendered nowhere is a reaction the
+ * bot denies having set (2026-08-15).
+ */
+export function botReactionSuffix(record: Pick<ChatMessageRecord, "botReaction">): string {
+  return record.botReaction ? ` [you reacted: ${record.botReaction}]` : "";
+}
+
 /** Render one stored row as a transcript line. */
 export function toTranscriptLine(record: ChatMessageRecord, options: TranscriptOptions): string {
   const label =
@@ -103,7 +114,9 @@ export function toTranscriptLine(record: ChatMessageRecord, options: TranscriptO
     replyRef,
     content: record.content,
   });
-  return line + (options.mediaSuffixes?.get(record.telegramMessageId) ?? "");
+  return (
+    line + (options.mediaSuffixes?.get(record.telegramMessageId) ?? "") + botReactionSuffix(record)
+  );
 }
 
 /**

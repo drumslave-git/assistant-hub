@@ -15,7 +15,6 @@ vi.mock("@/db/drizzle", () => ({ getDb: () => ({}) }));
 
 import { openPolicy } from "@/test/__mocks__/policy";
 import { BOT, BOT_USER, makeMessage } from "@/test/__mocks__/telegram";
-import { imagePart } from "@/test/__mocks__/vision";
 import {
   recordLlmRequest,
   recordLlmResponse,
@@ -109,32 +108,34 @@ describe("handleIncomingMessage", () => {
   });
 
   it("processes a caption-less media message (empty text but hasVision) like any other", async () => {
-    const imageParts = [imagePart("ABC")];
-    const d = deps({ loadVision: vi.fn().mockResolvedValue({ imageParts }) });
+    const d = deps({
+      loadVision: vi
+        .fn()
+        .mockResolvedValue({ note: "The user sent a photo (no caption). Its content: a cat." }),
+    });
     const out = await handleIncomingMessage(incoming({ text: "", hasVision: true }), d);
     expect(out).toEqual({ status: "replied", text: "hi back" });
     expect(d.generateReply).toHaveBeenCalledOnce();
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(messages.at(-1).content).toEqual([{ type: "text", text: "" }, ...imageParts]);
+    expect(String(messages.at(-1).content)).toContain("a cat");
   });
 
-  it("folds the recognition into the turn text when no images are attached (media-only)", async () => {
+  it("folds the recognition into the turn text (media-only)", async () => {
     const d = deps({
       loadVision: vi.fn().mockResolvedValue({
-        imageParts: [],
         note: "The user sent a photo (no caption). Its content: a red car.",
       }),
     });
     await handleIncomingMessage(incoming({ text: "", hasVision: true }), d);
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
     const userTurn = messages.at(-1);
-    // No image parts → the turn is plain text carrying the recognition.
+    // The reply model reads text, always — raw bytes never ride the request.
     expect(typeof userTurn.content).toBe("string");
     expect(userTurn.content).toContain("a red car");
     const step = recorder.event.mock.calls
       .map((c) => c[0])
-      .find((e) => e.message === "vision media attached");
-    expect(step.data).toEqual({ imageCount: 0, hasNote: true });
+      .find((e) => e.message === "vision context composed");
+    expect(step.data).toEqual({ hasNote: true });
   });
 
   it("ignores un-addressed group chatter without tracing", async () => {
@@ -265,41 +266,13 @@ describe("handleIncomingMessage", () => {
     expect(step).toBeUndefined();
   });
 
-  it("attaches vision image parts to the current user turn and traces the step", async () => {
-    const imageParts = [imagePart("ABC")];
-    const d = deps({
-      loadVision: vi.fn().mockResolvedValue({ imageParts }),
-    });
-    await handleIncomingMessage(incoming({ text: "what is this?" }), d);
-
-    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(messages.at(-1)).toEqual({
-      role: "user",
-      content: [{ type: "text", text: "what is this?" }, ...imageParts],
-    });
-    // The traced request redacts the image bytes.
-    const request = recorder.event.mock.calls
-      .map((c) => c[0])
-      .find((e) => e.type === "llm_request");
-    const tracedUser = request.data.messages.at(-1);
-    expect(tracedUser.content[1].image_url.url).toBe("data:image/jpeg;base64,<3 bytes>");
-    // A vision step records the image count.
-    const step = recorder.event.mock.calls
-      .map((c) => c[0])
-      .find((e) => e.message === "vision media attached");
-    expect(step.data).toEqual({ imageCount: 1, hasNote: false });
-  });
-
-  it("keeps the turn text-only when the loader withheld the raw images, and says why", async () => {
-    // The chat model does not read images (vision runs on a separate model):
-    // the loader returns no image parts, only the recognition note — the turn
-    // must stay a plain string, or a text-only provider 400s the whole reply
-    // (trace `f37d84b9…`, 2026-08-15).
+  it("keeps the turn a plain string with the recognition folded in (text + media)", async () => {
+    // Raw bytes never reach the reply request — the vision pass exists so the
+    // reply model reads text (user decision, 2026-08-15; the old attach path
+    // 400'd wholesale on a text-only chat provider, trace `f37d84b9…`).
     const d = deps({
       loadVision: vi.fn().mockResolvedValue({
-        imageParts: [],
         note: "Recognition of the media above: a dark SUV on a road.",
-        imagesWithheld: true,
       }),
     });
     await handleIncomingMessage(incoming({ text: "what car is this?" }), d);
@@ -307,26 +280,26 @@ describe("handleIncomingMessage", () => {
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
     const userTurn = messages.at(-1);
     expect(typeof userTurn.content).toBe("string");
+    expect(userTurn.content).toContain("what car is this?");
     expect(userTurn.content).toContain("a dark SUV");
     const step = recorder.event.mock.calls
       .map((c) => c[0])
-      .find((e) => e.message === "vision media attached");
-    expect(step.data.imageCount).toBe(0);
-    expect(step.data.imagesWithheld).toContain("does not read images");
+      .find((e) => e.message === "vision context composed");
+    expect(step.data).toEqual({ hasNote: true });
   });
 
-  it("appends the reply note to the text part when media comes from a replied-to image", async () => {
+  it("folds the replied-to media description into the turn text", async () => {
     const d = deps({
       loadVision: vi.fn().mockResolvedValue({
-        imageParts: [imagePart("AB")],
-        note: "The user is asking about the photo they replied to (shown here).",
+        note: "The user is asking about the photo they replied to. Its content: a red car.",
       }),
     });
     await handleIncomingMessage(incoming({ text: "explain" }), d);
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    const userTurn = messages.at(-1);
-    expect(userTurn.content[0].text).toContain("explain");
-    expect(userTurn.content[0].text).toContain("replied to");
+    const content = String(messages.at(-1).content);
+    expect(content).toContain("explain");
+    expect(content).toContain("replied to");
+    expect(content).toContain("a red car");
   });
 
   it("injects the required-language directive as the final system message before the turn", async () => {

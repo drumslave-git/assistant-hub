@@ -23,6 +23,7 @@ function record(over: Partial<ChatMessageRecord> = {}): ChatMessageRecord {
     sentAt: "2026-07-28T10:00:00.000Z",
     editedAt: null,
     deletedAt: null,
+    botReaction: null,
     createdAt: "2026-07-28T10:00:00.000Z",
     ...over,
   };

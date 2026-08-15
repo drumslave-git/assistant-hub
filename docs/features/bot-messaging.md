@@ -134,9 +134,10 @@ then not answered. Chatter rejected by the cheap checks leaves nothing behind.
 
 Event flow: `addressing check` → `system prompt composed` → `chat context loaded`
 → `long-term memory loaded` → `communication preferences loaded` →
-`current turn composed` → `history window loaded` → `vision media attached` →
-`time context` → `language directive` → `llm_request` → `tool: <name>`… →
-`llm_response` → output.
+`current turn composed` → `history window loaded` → `vision context composed` →
+`time context` → `language directive` → `request` → `tool: <name>`… →
+`response` → output. The LLM request/response/tool/retry events are recorded by
+the shared LLM tracing layer (`LlmCallTrace`), not by this feature.
 
 The `addressing check` event carries `matchedText`, `source`, `reason` and
 `botDisplayName`. `matchedText` is the field the "wasn't talking to you" feedback

@@ -61,16 +61,27 @@ no per feature special code for things like tracing"*.
    and `traces-<facets>-<local time>.json`, in the operator timezone
    (`server/trace/filename.ts`, pure + unit-tested).
 5. **The bot remembers its reactions** (trace `0e0a924f…`'s deeper cause: it
-   liked a message and then denied it). New `bot_reactions` table (migration
-   0056, **applied to the dev DB**); `set_message_reaction` mirrors
-   set/replace/remove after Telegram accepts (a failed mirror write reports
-   success + a warning, never a refusal); the reply window and `/history`
-   render `[you reacted: 👍]` on the target line after any media suffix.
-6. **Vision attach gate** (trace `f37d84b9…`: reply 400 on Z.ai glm-4.7-flash,
-   `messages.content.type is invalid`). `chatModelReadsImages()` — raw image
-   parts reach the reply request only when the vision role resolves to the
-   chat connection; otherwise the reply rides the recognition text and the
-   trace step says the images were withheld and why.
+   liked a message and then denied it). **User decision (2026-08-15), reversing
+   the first pass:** the reaction is a *history record*, not a separate table —
+   it lives on the message row (`chat_messages.bot_reaction`/`bot_reacted_at`,
+   state like `edited_at`; migrations 0056+0057, both **applied to the dev
+   DB**, 0057 folds any 0056 rows in before dropping the table).
+   `set_message_reaction` records set/replace/remove after Telegram accepts (a
+   failed record reports success + a warning, never a refusal);
+   `botReactionSuffix` in `format.ts` is the one renderer, so the reply
+   window, the day transcripts, `/history` and search hits all show
+   `[you reacted: 👍]` on the line after any media suffix.
+6. **Raw images never reach a reply request.** **User decision (2026-08-15),
+   reversing the first pass's conditional gate:** the vision pass exists
+   precisely so the reply model reads text. Current media is recognized
+   (describe + store) inside the turn and the reply carries the recognition
+   text; a replied-to media message resolves through `resolveMediaText` to its
+   stored description/transcript — describing it on the spot when pending,
+   ingesting it first when never stored (an upgrade: the old path re-downloaded
+   bytes to attach raw, describing nothing). Fixes trace `f37d84b9…` (Z.ai 400
+   `messages.content.type is invalid`) structurally. `chatModelReadsImages`
+   and the attach plumbing are deleted; only the describe pass and the browser
+   agent's own loop carry images.
 7. **Overview + Settings load time.** `getSystemStatus` behind a 10s
    single-flight TTL cache (explicit-db/test calls bypass); both pages stream
    behind Suspense (Overview in three sections, Settings' four reads in
@@ -105,18 +116,16 @@ real single-trace download is named
   change). Dashboard/API routes are already fresh per request.
 - Old traces have no correlation (they self-correlate only from now on) and
   their detail views simply omit the correlation link.
-- The reaction suffix is reply-window + dashboard only; the nightly
-  extraction/summary transcripts don't carry it (their prompts ignore bot
-  lines anyway) — fold it into `loadChatDayTranscript` if it proves wanted.
-- A replied-to media message still downloads its bytes before the gate decides
-  not to attach them — wasted transfer on gated setups, not a correctness
-  issue.
+- The CSV transfer does not carry the reaction columns, so a re-imported
+  history loses reaction badges (cosmetic; the canonical CSV schema and its
+  import mapping were left untouched).
 - The status cache means the Overview can show up to 10s-old probe state
   between refreshes. Deliberate; the escape hatch is waiting out the window.
-- The `imagesWithheld` path changes real reply behavior on split setups (the
-  operator's): the first live photo+text turn after restart is the thing to
-  watch — expect a text-only request carrying "Recognition of the media
-  above: …".
+- Reply behavior changes for every media turn after restart: the request is
+  always text-only. The first live photo+text turn is the thing to watch —
+  expect "Recognition of the media above: …" in the user turn; a reply to an
+  older *pending* photo now spends a describe call inside the turn (stored, so
+  it is spent once).
 
 ## The top bar was three-quarters decoration (`done`, 2026-08-15)
 

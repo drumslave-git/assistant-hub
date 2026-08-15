@@ -188,6 +188,7 @@ interface PoolRow extends Record<string, unknown> {
   reply_to_message_id: string | number | null;
   sent_at: Date | string;
   edited_at: Date | string | null;
+  bot_reaction: string | null;
   created_at: Date | string;
   indexed_content: string | null;
   media_kind: string | null;
@@ -216,6 +217,7 @@ function mapPoolRow(row: PoolRow): Omit<MessageSearchMatch, "score"> {
     editedAt: row.edited_at ? toIso(row.edited_at) : null,
     // The pools only ever select visible rows, so a hit is never a deleted one.
     deletedAt: null,
+    botReaction: row.bot_reaction ?? null,
     createdAt: toIso(row.created_at),
     indexedContent: row.indexed_content,
     mediaKind: (row.media_kind as MediaKind | null) ?? null,
@@ -287,7 +289,7 @@ export async function searchChatMessagesHybrid(
   `;
   const columns = sql`
     cm.id, cm.chat_id, cm.telegram_message_id, cm.role, cm.user_id, cm.content,
-    cm.reply_to_message_id, cm.sent_at, cm.edited_at, cm.created_at,
+    cm.reply_to_message_id, cm.sent_at, cm.edited_at, cm.bot_reaction, cm.created_at,
     s.content as indexed_content, mm.kind as media_kind
   `;
 

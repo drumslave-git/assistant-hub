@@ -59,14 +59,13 @@ import {
 import { getMemoryContext } from "@/features/memory/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
 import { findReplyMediaMessage, messageHasVisionMedia } from "@/features/vision/detect";
-import { mediaKindLabel, toVisionParts } from "@/features/vision/format";
+import { mediaKindLabel } from "@/features/vision/format";
 import {
-  chatModelReadsImages,
   describeAndStore,
   getMediaSuffixesForMessages,
   ingestMessageMedia,
-  loadReplyTargetImages,
   resolveDescribeDeps,
+  resolveMediaText,
 } from "@/features/vision/server/service";
 import { deliverGeneratedImages } from "@/features/image-gen/server/deliver";
 import {
@@ -88,7 +87,6 @@ import {
 import {
   chatCompletion,
   REPLY_CHAT_COMPLETION_TIMEOUT_MS,
-  type ChatContentPart,
   type ChatMessage,
   type LlmCallTrace,
 } from "@/server/llm/client";
@@ -238,16 +236,17 @@ interface BuildDepsInput {
    */
   enqueuedBrowserRuns: string[];
   visionAttachment: {
-    imageParts: ChatContentPart[];
     note?: string;
     /**
-     * The current message's id when its freshly-ingested media must be recognized
-     * *before* the reply (pass 1 — always, so history stores the description).
-     * Absent for replied-to media, which is not re-described here.
+     * The current message's id when its freshly-ingested media must be
+     * recognized inside the turn (describe + store, so history carries the
+     * description). Absent for replied-to media, which resolves lazily.
      */
     recognizeMessageId?: number;
-    /** Whether to attach the images to the reply (pass 2 — only when the message has text). */
-    attachToReply: boolean;
+    /** True when the current message also carries text (a real question). */
+    hasCaption?: boolean;
+    /** A replied-to media message, resolved to its description inside the turn. */
+    replyTarget?: { token: string; message: Message };
   } | null;
   /**
    * The reply trace, when the runtime opened it before the service runs (a voice
@@ -402,18 +401,21 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     trace,
     // Called only for an addressed message about to be answered (after the
     // addressing/maintenance gates), so recognition here runs exactly when the
-    // flow wants it: recognize → store in history → reply with images + result.
+    // flow wants it: recognize → store in history → reply from the text. Raw
+    // image bytes never reach the reply request — the vision pass exists
+    // precisely so the reply model reads text (user decision, 2026-08-15; the
+    // old attach path 400'd wholesale on a text-only chat provider, trace
+    // `f37d84b9…`).
     loadVision: visionAttachment
       ? async (replyTrace) => {
           const va = visionAttachment;
-          let note = va.note;
-          let description: string | null = null;
-          let mediaLabel = "media";
-          // Pass 1 (always for the current media): recognize it and store the
-          // description on the media row — this drops the stored bytes, so the
-          // /history mirror shows it and there is nothing left to backfill.
-          // Records into the reply trace: the recognition is part of this turn.
+          // Current media: recognize it and store the description on the media
+          // row — this drops the stored bytes, so the /history mirror shows it
+          // and there is nothing left to backfill. Records into the reply
+          // trace: the recognition is part of this turn.
           if (va.recognizeMessageId != null) {
+            let description: string | null = null;
+            let mediaLabel = "media";
             const describeDeps = await resolveDescribeDeps().catch(() => null);
             if (describeDeps) {
               const described = await describeAndStore(
@@ -426,27 +428,38 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
                 mediaLabel = mediaKindLabel(described.kind);
               }
             }
-          }
-          // Pass 2 (conditional): attach the images to the reply only when asked
-          // (the message had text) — and only when the CHAT model is the model
-          // that reads images. With the vision role pointed at a separate
-          // describer, raw image parts in the reply request are what a
-          // text-only chat provider rejects wholesale (trace `f37d84b9…`,
-          // 2026-08-15: Z.ai 400 "messages.content.type is invalid"); the
-          // recognition text above already carries what the image shows.
-          if (va.attachToReply) {
-            if (description) {
-              const recognized = `Recognition of the media above: ${description}`;
-              note = note ? `${note}\n\n${recognized}` : recognized;
+            if (va.hasCaption) {
+              const recognized = description
+                ? `Recognition of the media above: ${description}`
+                : null;
+              const note = [va.note, recognized].filter(Boolean).join("\n\n");
+              return { note: note || undefined };
             }
-            const attachRaw = await chatModelReadsImages().catch(() => false);
-            if (attachRaw) return { imageParts: va.imageParts, note };
-            return { imageParts: [], note, imagesWithheld: true };
+            return {
+              note: description
+                ? `The user sent a ${mediaLabel} (no caption). Its content: ${description}`
+                : va.note,
+            };
           }
-          const recognized = description
-            ? `The user sent a ${mediaLabel} (no caption). Its content: ${description}`
-            : note;
-          return { imageParts: [], note: recognized };
+          // Replied-to media: resolve to its stored description (describing it
+          // right now when still pending, ingesting first when never stored).
+          if (va.replyTarget) {
+            const resolved = await resolveMediaText({
+              token: va.replyTarget.token,
+              chatId,
+              message: va.replyTarget.message,
+              trace: replyTrace,
+            }).catch(() => null);
+            if (!resolved) return { note: va.note };
+            const label = mediaKindLabel(resolved.kind);
+            const base = `The user is asking about the ${label} they replied to.`;
+            return {
+              note: resolved.description
+                ? `${base} Its content: ${resolved.description}`
+                : `${base} (Its content is not available.)`,
+            };
+          }
+          return { note: va.note };
         }
       : undefined,
     // Preserve the forum-topic thread so typing shows in the right place.
@@ -855,12 +868,13 @@ export async function processUpdate(
   // Telegram files. Best-effort — any failure just yields a text-only reply.
   let visionAttachment:
     | {
-        imageParts: ChatContentPart[];
         note?: string;
         /** Current media to describe+store (pass 1). Always set for current media. */
         recognizeMessageId?: number;
-        /** Whether to attach the images to the reply (pass 2). */
-        attachToReply: boolean;
+        /** True when the current message also carries text (a real question). */
+        hasCaption?: boolean;
+        /** A replied-to media message, resolved to its description inside the turn. */
+        replyTarget?: { token: string; message: Message };
       }
     | null = null;
   const isVoiceMessage = Boolean(message.voice);
@@ -939,41 +953,21 @@ export async function processUpdate(
           // bot owns up in a DM. In a group the empty text fails addressing, so
           // no apology barges into the conversation.
           visionAttachment = {
-            imageParts: [],
             note: voiceTranscript ? VOICE_TURN_NOTE : VOICE_UNAVAILABLE_NOTE,
-            attachToReply: false,
           };
-        } else if (ingested && ingested.images.length > 0) {
-          // Pass 1 (always): recognize + store the current media in history.
-          // Pass 2 (conditional): attach the images to the reply only when the
-          // message also carries text (a real question). A media-only message is
-          // answered from the recognition text alone — one vision pass.
+        } else if (ingested?.media && ingested.media.status !== "unavailable") {
+          // The recognize pass (describe + store) runs inside the turn; the
+          // reply reads the recognition text — never the raw bytes.
           visionAttachment = {
-            imageParts: toVisionParts(ingested.images),
             note: ingested.note ?? undefined,
             recognizeMessageId: message.message_id,
-            attachToReply: Boolean(text.trim()),
+            hasCaption: Boolean(text.trim()),
           };
         }
       } else if (replyMedia) {
-        const loaded = await loadReplyTargetImages({ token, chatId, message: replyMedia }).catch(
-          () => null,
-        );
-        // Images attach to the turn; a replied-to voice message resolves to a
-        // transcript note instead (there is nothing to show).
-        if (loaded && (loaded.images.length > 0 || loaded.note)) {
-          const label = mediaKindLabel(loaded.kind);
-          const base =
-            loaded.images.length > 0
-              ? `The user is asking about the ${label} they replied to (shown here).`
-              : `The user is asking about the ${label} they replied to.`;
-          // A replied-to reference is explicit — always show the media to the reply.
-          visionAttachment = {
-            imageParts: toVisionParts(loaded.images),
-            note: loaded.note ? `${base} ${loaded.note}` : base,
-            attachToReply: true,
-          };
-        }
+        // Resolved lazily inside the turn (`loadVision`): only an addressed
+        // message about to be answered pays for the lookup/describe.
+        visionAttachment = { replyTarget: { token, message: replyMedia } };
       }
     }
   }

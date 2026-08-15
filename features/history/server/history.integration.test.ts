@@ -171,11 +171,11 @@ describe("bot reactions", () => {
   });
 
   it("refuses to remember a reaction on a message that is not mirrored", async () => {
-    // The FK is the guard: a reaction the bot could not have verified against
-    // the mirror (the tool checks first) has nothing to attach to.
+    // The reaction is state ON the mirror row — with no row there is nothing to
+    // record it on, and silently succeeding would leave the bot denying it.
     await expect(
       recordBotReaction({ chatId: "5", telegramMessageId: 12345, emoji: "👍" }, ctx.db),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/not mirrored/);
   });
 });
 

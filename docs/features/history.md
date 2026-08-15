@@ -51,11 +51,14 @@ The window is 24 hours (`HISTORY_WINDOW_MS`).
 
 ### The bot's own reactions
 
-When `set_message_reaction` lands a reaction, it is mirrored into
-`bot_reactions` (one row per reacted message — Telegram gives a bot one
-reaction per message, so the table always holds the current state; removal
-deletes the row). The window and the dashboard render it as a suffix on the
-target line, after any media annotation:
+When `set_message_reaction` lands a reaction, it is recorded **on the target
+message's history record** — `chat_messages.bot_reaction` / `bot_reacted_at`,
+state of the row like `edited_at` (user decision, 2026-08-15: a reaction is a
+history record, not a separate table). Telegram gives a bot one reaction per
+message, so the columns hold the current badge: a re-react replaces it,
+removal clears it. `botReactionSuffix` in `format.ts` is the one renderer, so
+every consumer of the record — the reply window, the day transcripts, the
+dashboard, search hits — shows it on the line, after any media annotation:
 
 ```
 [#598] drumslave: hello [you reacted: 👍]
@@ -65,7 +68,8 @@ This exists because a reaction that lived only on Telegram's side was
 invisible to the bot's own memory — it liked a message and then denied having
 done so when asked (2026-08-15). Deliberately only the bot's own reactions;
 awareness of reactions other people set stays out of scope (user decision,
-2026-08-14).
+2026-08-14). The CSV transfer does not carry the columns, so a re-imported
+history loses reaction badges (cosmetic).
 
 *Known limitation, out of scope for now:* forum-topic threads
 (`message_thread_id`) are not stored, so a forum supergroup's topics interleave

@@ -6,7 +6,6 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
 import type {
-  ChatContentPart,
   ChatMessage,
   ChatUsage,
   LlmCallTrace,
@@ -236,19 +235,14 @@ export interface BotMessagingDeps {
     data?: Record<string, unknown>;
   } | null>;
   /**
-   * Load visual media to attach to the current turn (photo/sticker/etc. on the
-   * message, or on a replied-to message). Returns the image content parts to
-   * splice into the user turn plus an optional note (e.g. "asking about the
-   * photo they replied to"); `imagesWithheld` marks a turn whose raw images
-   * were deliberately not attached because the chat model does not read images
-   * (the recognition text stands in). Null when the turn carries no media.
-   * Best-effort — the reply proceeds text-only if this fails.
+   * Resolve the turn's media (photo/sticker/etc. on the message, or on a
+   * replied-to message) to TEXT: the recognition/transcript note to fold into
+   * the user turn. Raw image bytes never reach the reply request — the vision
+   * pass exists precisely so the reply model reads text (user decision,
+   * 2026-08-15). Null when the turn carries no media. Best-effort — the reply
+   * proceeds text-only if this fails.
    */
-  loadVision?: (trace: TraceRecorder) => Promise<{
-    imageParts: ChatContentPart[];
-    note?: string;
-    imagesWithheld?: boolean;
-  } | null>;
+  loadVision?: (trace: TraceRecorder) => Promise<{ note?: string } | null>;
   /** Persist the delivered assistant reply into the history mirror (best-effort). */
   recordReply: (input: {
     content: string;
@@ -780,32 +774,18 @@ export async function handleIncomingMessage(
         data: { messageCount: history.count },
       });
 
-      // Attach the vision media to the current user message so the model reads
-      // them alongside the text.
+      // Fold the vision context (recognition text / transcript note) into the
+      // turn text. Raw image bytes never reach the reply request — the vision
+      // pass exists precisely so the reply model reads text (user decision,
+      // 2026-08-15).
       const userText = currentTurn?.content ?? text;
-      let userContent: string | ChatContentPart[] = userText;
-      // Attach the images when present; otherwise (media-only, answered from the
-      // recognition text) fold the description note into the turn text.
-      if (vision && (vision.imageParts.length > 0 || vision.note)) {
-        const promptText = vision.note ? `${userText}\n\n${vision.note}` : userText;
-        userContent =
-          vision.imageParts.length > 0
-            ? [{ type: "text", text: promptText }, ...vision.imageParts]
-            : promptText;
+      let userContent: string = userText;
+      if (vision) {
+        if (vision.note) userContent = `${userText}\n\n${vision.note}`;
         await trace.event({
           type: "step",
-          message: "vision media attached",
-          data: {
-            imageCount: vision.imageParts.length,
-            hasNote: Boolean(vision.note),
-            ...(vision.imagesWithheld
-              ? {
-                  imagesWithheld:
-                    "raw images not attached — the chat model does not read images " +
-                    "(vision runs on a separate model); the recognition text is in the prompt",
-                }
-              : {}),
-          },
+          message: "vision context composed",
+          data: { hasNote: Boolean(vision.note) },
         });
       }
 

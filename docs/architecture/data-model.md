@@ -29,8 +29,8 @@ known_users ◄──┬── group_members ──► known_groups
 
 chat_messages ── (chat_id, telegram_message_id) ─┬─ message_media ──► media_blobs
                                                  ├─ chat_message_search (search projection)
-                                                 ├─ bot_reactions (the bot's own reaction badge)
-                                                 └─ (mirrors every message)
+                                                 └─ (mirrors every message; carries the
+                                                    bot's own reaction badge)
 chat_summaries        ◄── chat_summary_days        (per-day processing markers)
 memory_extraction_days                             (per-day processing markers)
 chat_hour_insights ──rolls up──► period_insights
@@ -265,14 +265,12 @@ row per frame (a video contributes several sampled frames). Bytes exist **only
 while the media row is `pending`**: describing a row drops them. The repository
 converts to/from base64 so callers never handle `Buffer`s.
 
-### `bot_reactions`
-
-The bot's own reaction badge on a mirrored message — what `set_message_reaction`
-put there, so the transcript can render `[you reacted: 👍]` on the target line
-and the bot remembers reacting (2026-08-15). Composite PK
-`(chat_id, telegram_message_id)` (Telegram: one reaction per message; a re-react
-replaces, removal deletes the row — current state only), `emoji`, `reacted_at`,
-FK to `chat_messages` `ON DELETE CASCADE`.
+The bot's own reaction badge lives **on the message row** —
+`chat_messages.bot_reaction` / `bot_reacted_at`, state of the message like
+`edited_at` (user decision, 2026-08-15: a reaction is a history record, not a
+separate table). Telegram gives a bot one reaction per message, so the columns
+hold the current badge; transcripts render it as `[you reacted: 👍]`, which is
+what keeps the bot from denying a reaction it set.
 
 ---
 
