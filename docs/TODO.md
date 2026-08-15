@@ -116,11 +116,13 @@ real single-trace download is named
 
 ### Remaining risks / operator steps
 
-- **Restart the dev/prod process to get the bot-side changes.** The running
-  poller executes boot-time module instances: shared LLM recording, tool-trace
-  correlation, reaction mirroring and the vision gate all take effect on the
-  bot only after a restart (one was already owed for the `tasks_update` schema
-  change). Dashboard/API routes are already fresh per request.
+- **Dev server restarted (2026-08-16)** — the poller now runs all the bot-side
+  changes (shared LLM recording, correlations, reaction recording, text-only
+  media replies, chat-id actors) plus the `tasks_update` schema change that was
+  already owed a restart. Boot log confirmed the bot autostarted long-polling
+  and `/api/health` is green. **Production still needs its redeploy.** Note:
+  the dev server was restarted from the assistant session's preview runner —
+  if it is found stopped later, `npm run dev` brings it back.
 - Old traces have no correlation (they self-correlate only from now on) and
   their detail views simply omit the correlation link.
 - The CSV transfer does not carry the reaction columns, so a re-imported
