@@ -52,11 +52,18 @@ no per feature special code for things like tracing"*.
    `mcp-tools-*` traces via the tool context (was: bare chat id); fires stamp
    the task id; the memory and summaries sweeps share one
    `newRunCorrelationId(job)` across every chat-day trace of a run.
-3. **Clickable trace facets.** Feature, status, trigger (kind · actor) and
+3. **Clickable trace facets.** Feature, status, trigger kind, actor and
    correlation link to the pre-filtered `/debug` list from both the shared
-   list and detail views; `debugFilterHref` in `lib/trace.ts` is the one URL
-   builder; `correlationId`/`triggerKind`/`actor` are real query filters with
-   removable chips in `DebugFilters`.
+   list and detail views (kind and actor are *separate* links — the actor
+   filters everything a chat/user/job did across kinds); `debugFilterHref` in
+   `lib/trace.ts` is the one URL builder. **User rule (2026-08-15): every URL
+   filter must be a UI control** — `DebugFilters` now carries a Trigger
+   dropdown plus Actor and Correlation text inputs (apply on Enter/blur,
+   clearable), not just click-applied chips. Per-chat-day cron traces
+   (summarize, memory-extract) use the **chat id as the trigger actor** — like
+   task fires; the job's identity is already the trace's feature — so the chat
+   id on those cards is a structured, clickable facet instead of free text in
+   the input summary.
 4. **Meaningful download names.** `trace-<feature>-<action>-<local time>-<id8>.json`
    and `traces-<facets>-<local time>.json`, in the operator timezone
    (`server/trace/filename.ts`, pure + unit-tested).

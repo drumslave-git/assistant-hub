@@ -145,7 +145,11 @@ async function queueNotes(
 export async function extractChatDay(
   params: { chatId: string; extractionDate: SummaryDate },
   deps: ExtractDeps,
-  trigger: TraceTrigger = { kind: "cron", actor: "memory-extraction" },
+  // The actor is the CHAT the day belongs to (like a task fire's), so the chat
+  // id is a clickable, filterable facet (`/debug?actor=<chatId>`) — the job's
+  // own identity is already the trace's feature. User rule, 2026-08-15: every
+  // URL filter is a UI affordance, and ids must be facets, not free text.
+  trigger: TraceTrigger = { kind: "cron", actor: params.chatId },
   db: DrizzleDb = getDb(),
 ): Promise<ExtractDayResult> {
   const trace = await startTrace(
@@ -335,7 +339,7 @@ export async function runMemoryExtraction(
         const result = await extractChatDay(
           { chatId: day.chatId, extractionDate: day.extractionDate },
           deps,
-          { kind: "cron", actor: "memory-extraction", correlationId: runId },
+          { kind: "cron", actor: day.chatId, correlationId: runId },
           db,
         );
         notes += result.noteCount;

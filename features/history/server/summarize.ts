@@ -104,7 +104,9 @@ export interface SummarizeDayResult {
 export async function summarizeChatDay(
   params: { chatId: string; summaryDate: SummaryDate },
   deps: SummarizeDeps,
-  trigger: TraceTrigger = { kind: "cron", actor: "history-summaries" },
+  // The actor is the CHAT the day belongs to — see `extractChatDay`'s note:
+  // ids are clickable facets, and the job's identity is the trace's feature.
+  trigger: TraceTrigger = { kind: "cron", actor: params.chatId },
   db: DrizzleDb = getDb(),
 ): Promise<SummarizeDayResult> {
   const trace = await startTrace(
@@ -289,7 +291,7 @@ export async function runSummarization(
         const result = await summarizeChatDay(
           { chatId: day.chatId, summaryDate: day.summaryDate },
           deps,
-          { kind: "cron", actor: "history-summaries", correlationId: runId },
+          { kind: "cron", actor: day.chatId, correlationId: runId },
           db,
         );
         topics += result.topicCount;

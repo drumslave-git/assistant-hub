@@ -90,17 +90,27 @@ export function TraceDetail({ trace }: { trace: Trace }) {
         <CardContent>
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Meta label="Trigger">
+              {/* Two independent facets, two links — the actor (a chat id,
+                  user id, or job name) filters everything it did, across kinds. */}
               <Link
-                href={debugFilterHref({
-                  triggerKind: trace.trigger.kind,
-                  actor: trace.trigger.actor,
-                })}
+                href={debugFilterHref({ triggerKind: trace.trigger.kind })}
                 className="hover:text-primary hover:underline"
-                title="Show traces with this trigger"
+                title={`Show ${trace.trigger.kind}-triggered traces`}
               >
                 {trace.trigger.kind}
-                {trace.trigger.actor ? ` · ${trace.trigger.actor}` : ""}
               </Link>
+              {trace.trigger.actor ? (
+                <>
+                  {" · "}
+                  <Link
+                    href={debugFilterHref({ actor: trace.trigger.actor })}
+                    className="hover:text-primary hover:underline"
+                    title={`Show every trace for ${trace.trigger.actor}`}
+                  >
+                    {trace.trigger.actor}
+                  </Link>
+                </>
+              ) : null}
             </Meta>
             <Meta label="Correlation">
               {trace.trigger.correlationId ? (

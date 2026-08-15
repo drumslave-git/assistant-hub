@@ -2,28 +2,87 @@
 
 import { X } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 
-import { Label, Select } from "@/components/ui";
+import { Input, Label, Select } from "@/components/ui";
 import { featureLabel, groupedFeatureOptions } from "@/lib/features";
 import {
   debugFilterHref,
   traceStatusSchema,
+  traceTriggerSchema,
   type TraceFilterParams,
   type TraceStatus,
   type TraceTrigger,
 } from "@/lib/trace";
 
 const STATUSES = traceStatusSchema.options;
+const TRIGGER_KINDS = traceTriggerSchema.shape.kind.options;
 
 /**
- * Debug list filters (Client Component). Pushes the selected facets into the
- * URL so the Server Component page re-reads with the filter and the view is
- * shareable/refresh-safe. Pagination resets on any filter change. When `features`
- * is omitted the feature dropdown is hidden.
- *
- * Beyond the two dropdowns, facets that arrive by clicking a trace (correlation,
- * trigger kind, actor) render as removable chips — there is nothing to type for
- * them, only an active filter to see and clear.
+ * One free-text facet control (actor, correlation): applies on Enter or blur,
+ * clears with its × — so typing does not navigate per keystroke, and an active
+ * value arriving from a URL or a clicked facet is visible and editable.
+ * Callers key this by `value`, so a navigation (clicked facet, back button)
+ * remounts the field with the fresh value; local state only bridges keystrokes.
+ */
+function TextFilter({
+  id,
+  label,
+  placeholder,
+  value,
+  onApply,
+}: {
+  id: string;
+  label: string;
+  placeholder: string;
+  value?: string;
+  onApply: (next: string | undefined) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? "");
+
+  const apply = () => {
+    const next = draft.trim() || undefined;
+    if (next !== value) onApply(next);
+  };
+
+  return (
+    <div className="space-y-1">
+      <Label htmlFor={id}>{label}</Label>
+      <div className="relative">
+        <Input
+          id={id}
+          value={draft}
+          placeholder={placeholder}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={apply}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") apply();
+          }}
+          className={value ? "min-w-44 pr-8" : "min-w-44"}
+        />
+        {value ? (
+          <button
+            type="button"
+            aria-label={`Clear ${label.toLowerCase()} filter`}
+            className="absolute top-1/2 right-2 -translate-y-1/2 text-faint hover:text-foreground"
+            onClick={() => onApply(undefined)}
+          >
+            <X className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Debug list filters (Client Component). Every facet the URL accepts is a
+ * control here — feature, status, trigger kind, actor, correlation — because a
+ * filter that only exists as a query parameter is invisible (user rule,
+ * 2026-08-15). Selections push into the URL so the Server Component page
+ * re-reads with the filter and the view is shareable/refresh-safe; pagination
+ * resets on any change. When `features` is omitted the feature dropdown is
+ * hidden (scoped Debug pages).
  */
 export function DebugFilters({
   basePath,
@@ -49,13 +108,6 @@ export function DebugFilters({
   function navigate(next: TraceFilterParams) {
     router.push(debugFilterHref(next, basePath));
   }
-
-  /** The chip row for click-applied facets: label, value, and a clear control. */
-  const chips: Array<{ key: keyof TraceFilterParams; label: string; value: string }> = [
-    ...(correlationId ? [{ key: "correlationId" as const, label: "Correlation", value: correlationId }] : []),
-    ...(triggerKind ? [{ key: "triggerKind" as const, label: "Trigger", value: triggerKind }] : []),
-    ...(actor ? [{ key: "actor" as const, label: "Actor", value: actor }] : []),
-  ];
 
   return (
     <div className="flex flex-wrap items-end gap-3">
@@ -101,25 +153,45 @@ export function DebugFilters({
         </Select>
       </div>
 
-      {chips.map((chip) => (
-        <span
-          key={chip.key}
-          className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
+      <div className="space-y-1">
+        <Label htmlFor="debug-trigger">Trigger</Label>
+        <Select
+          id="debug-trigger"
+          value={triggerKind ?? ""}
+          onChange={(e) =>
+            navigate({
+              ...active,
+              triggerKind: (e.target.value || undefined) as TraceTrigger["kind"] | undefined,
+            })
+          }
+          className="min-w-36"
         >
-          <span className="text-faint">{chip.label}:</span>
-          <span className="max-w-64 truncate font-mono text-xs text-foreground" title={chip.value}>
-            {chip.value}
-          </span>
-          <button
-            type="button"
-            aria-label={`Clear ${chip.label.toLowerCase()} filter`}
-            className="text-faint hover:text-foreground"
-            onClick={() => navigate({ ...active, [chip.key]: undefined })}
-          >
-            <X className="h-3.5 w-3.5" aria-hidden />
-          </button>
-        </span>
-      ))}
+          <option value="">Any trigger</option>
+          {TRIGGER_KINDS.map((kind) => (
+            <option key={kind} value={kind}>
+              {kind}
+            </option>
+          ))}
+        </Select>
+      </div>
+
+      <TextFilter
+        key={`actor:${actor ?? ""}`}
+        id="debug-actor"
+        label="Actor"
+        placeholder="chat / user / job id"
+        value={actor}
+        onApply={(next) => navigate({ ...active, actor: next })}
+      />
+
+      <TextFilter
+        key={`correlation:${correlationId ?? ""}`}
+        id="debug-correlation"
+        label="Correlation"
+        placeholder="process id"
+        value={correlationId}
+        onApply={(next) => navigate({ ...active, correlationId: next })}
+      />
     </div>
   );
 }

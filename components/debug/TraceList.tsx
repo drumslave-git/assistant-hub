@@ -92,20 +92,29 @@ export function TraceList({
                   </p>
                 ) : null}
               </TableCell>
-              <TableCell>
+              <TableCell className="text-muted">
+                {/* Two independent facets, two links: the kind filters every
+                    cron/telegram/... trace, the actor (a chat id, user id, or
+                    job name) filters everything that actor did — across kinds. */}
                 <Link
-                  href={debugFilterHref({
-                    triggerKind: trace.trigger.kind,
-                    actor: trace.trigger.actor,
-                  })}
-                  className="relative z-10 text-muted hover:text-primary hover:underline"
-                  title="Show traces with this trigger"
+                  href={debugFilterHref({ triggerKind: trace.trigger.kind })}
+                  className="relative z-10 hover:text-primary hover:underline"
+                  title={`Show ${trace.trigger.kind}-triggered traces`}
                 >
                   {trace.trigger.kind}
-                  {trace.trigger.actor ? (
-                    <span className="text-faint"> · {trace.trigger.actor}</span>
-                  ) : null}
                 </Link>
+                {trace.trigger.actor ? (
+                  <>
+                    <span className="text-faint"> · </span>
+                    <Link
+                      href={debugFilterHref({ actor: trace.trigger.actor })}
+                      className="relative z-10 text-faint hover:text-primary hover:underline"
+                      title={`Show every trace for ${trace.trigger.actor}`}
+                    >
+                      {trace.trigger.actor}
+                    </Link>
+                  </>
+                ) : null}
               </TableCell>
               <TableCell className="whitespace-nowrap text-muted">
                 <Timestamp iso={trace.startedAt} />
