@@ -317,11 +317,59 @@ async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> 
 }
 
 /**
+ * How long one probe sweep's result serves later reads. The Overview re-renders
+ * on every `traces`/`status`/`bot` event (a LiveIndicator refresh per handled
+ * message), and each render used to re-run the full probe sweep — the page then
+ * waits on the slowest live probe every time (operator report, 2026-08-15:
+ * Overview/Settings load too long). Ten seconds keeps the status honest (still
+ * a real probe, just not per keystroke) while capping the probe pressure; the
+ * escape hatch for "probe NOW" is waiting out the window.
+ */
+const STATUS_CACHE_TTL_MS = 10_000;
+
+interface StatusCacheEntry {
+  at: number;
+  promise: Promise<SystemStatus>;
+}
+
+/** `globalThis` slot, like every cross-bundle singleton here. */
+const STATUS_CACHE_KEY = Symbol.for("llm-tg-bot.status.cache");
+
+function statusCache(): { entry: StatusCacheEntry | null } {
+  const g = globalThis as typeof globalThis & {
+    [STATUS_CACHE_KEY]?: { entry: StatusCacheEntry | null };
+  };
+  if (!g[STATUS_CACHE_KEY]) g[STATUS_CACHE_KEY] = { entry: null };
+  return g[STATUS_CACHE_KEY];
+}
+
+/**
  * Probe the database, the LLM endpoint, the model selection, every optional
  * endpoint, and both filesystem write paths (trace logs and browser-agent
  * downloads).
+ *
+ * Cached briefly and single-flight for default-db calls: concurrent renders
+ * share one sweep, and a render within {@link STATUS_CACHE_TTL_MS} reuses the
+ * last one. A caller passing its own `db` (tests) always probes fresh.
  */
-export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemStatus> {
+export async function getSystemStatus(db?: DrizzleDb): Promise<SystemStatus> {
+  if (db) return probeSystemStatus(db);
+  const cache = statusCache();
+  const now = Date.now();
+  if (cache.entry && now - cache.entry.at < STATUS_CACHE_TTL_MS) {
+    return cache.entry.promise;
+  }
+  const promise = probeSystemStatus(getDb()).catch((err: unknown) => {
+    // A failed sweep must not serve stale for the whole window — retry next read.
+    cache.entry = null;
+    throw err;
+  });
+  cache.entry = { at: now, promise };
+  return promise;
+}
+
+/** The uncached probe sweep behind {@link getSystemStatus}. */
+async function probeSystemStatus(db: DrizzleDb): Promise<SystemStatus> {
   // Both write paths are independent of the DB — probe them first so a DB outage
   // cannot hide a dying volume (each is surfaced on its own), and concurrently
   // since neither touches the other's directory.

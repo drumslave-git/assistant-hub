@@ -9,6 +9,7 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
+import { cache, Suspense } from "react";
 
 import { TraceList } from "@/components/debug";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
@@ -24,6 +25,7 @@ import {
   CardTitle,
   EmptyState,
   PageHeader,
+  Skeleton,
   StatCard,
   StatusCard,
   Tabs,
@@ -44,6 +46,9 @@ import { getBotStatus } from "@/server/telegram/bot-manager";
 // so the overview reflects what actually works, not build-time or env-presence
 // guesses.
 export const dynamic = "force-dynamic";
+
+// One activity read per render pass, shared by the stat row and the tabs.
+const readActivity = cache(() => getOverviewActivity());
 
 interface StatusItem {
   label: string;
@@ -112,16 +117,132 @@ function groupSummary(items: StatusItem[]): { text: string; tone: "error" | "war
  * real `SELECT 1` and a real `/v1/models` probe — plus what the bot has actually
  * been doing ({@link getOverviewActivity}) and whether every background job is
  * still running, so operators see honest state rather than configuration alone.
+ *
+ * Streamed in sections: the shell paints immediately and each section arrives
+ * as its own reads finish, so a slow LLM probe delays the status card — never
+ * the whole page (operator report, 2026-08-15: Overview load too long).
  */
-export default async function OverviewPage() {
+export default function OverviewPage() {
+  return (
+    <>
+      <PageHeader
+        title="Overview"
+        description={`llm-tg-bot dashboard — v${buildInfo.version}`}
+        actions={
+          <>
+            {/* One subscription for the whole page. Every block here re-reads on
+                the same `router.refresh()`, so a second indicator would only add
+                a duplicate refresh of an already expensive render. */}
+            <LiveIndicator topic={OVERVIEW_TOPICS} />
+            <Button asChild variant="outline" leftIcon={<SettingsIcon className="h-4 w-4" />}>
+              <Link href="/settings">Settings</Link>
+            </Button>
+          </>
+        }
+      />
+
+      <Suspense fallback={<StatRowSkeleton />}>
+        <ActivityStatsSection />
+      </Suspense>
+
+      <Suspense fallback={<SectionSkeleton title="System status" />}>
+        <SystemStatusSection />
+      </Suspense>
+
+      <Suspense fallback={<SectionSkeleton title="Activity" />}>
+        <ActivityTabsSection />
+      </Suspense>
+    </>
+  );
+}
+
+/** Shimmer for the 24h stat row while the trace scan runs. */
+function StatRowSkeleton() {
+  return (
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {Array.from({ length: 4 }, (_, i) => (
+        <Skeleton key={i} className="h-24" />
+      ))}
+    </div>
+  );
+}
+
+/** Shimmer card standing in for a streamed section. */
+function SectionSkeleton({ title }: { title: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Skeleton className="h-40" />
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The last-24h stat row — the trace-scan read. */
+async function ActivityStatsSection() {
+  const activity = await readActivity();
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold tracking-tight">
+            Last {OVERVIEW_WINDOW_HOURS} hours
+          </h2>
+          <p className="text-sm text-muted">
+            What the bot actually did, since <Timestamp iso={activity.since} />.
+          </p>
+        </div>
+        <Button asChild variant="outline" size="sm" leftIcon={<BarChart3 className="h-4 w-4" />}>
+          <Link href="/analytics">Analytics</Link>
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard
+          label="Messages handled"
+          value={number(activity.handled)}
+          icon={MessageSquare}
+          accent
+          hint={`${number(activity.replied)} answered`}
+        />
+        <StatCard
+          label="Failures"
+          value={number(activity.failed)}
+          icon={AlertTriangle}
+          hint={
+            activity.failed > 0 ? (
+              <Link href="/debug?status=error" className="text-primary hover:underline">
+                Inspect in Debug
+              </Link>
+            ) : (
+              "No failed replies"
+            )
+          }
+        />
+        <StatCard
+          label="Active people"
+          value={number(activity.activeUsers)}
+          icon={Users}
+          hint={`${number(activity.images)} media described`}
+        />
+        <StatCard
+          label="Tokens"
+          value={compactTokens(activity.promptTokens + activity.completionTokens)}
+          icon={Coins}
+          hint={`${compactTokens(activity.promptTokens)} in · ${compactTokens(activity.completionTokens)} out`}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** The live-probe status card — the slow section, streamed on its own. */
+async function SystemStatusSection() {
   const botStatus = getBotStatus();
-  // Independent reads: a slow LLM probe must not serialize behind a trace scan.
-  const [status, settings, activity, jobs] = await Promise.all([
-    getSystemStatus(),
-    getSettings(),
-    getOverviewActivity(),
-    getAllJobs().catch(() => []),
-  ]);
+  const [status, settings] = await Promise.all([getSystemStatus(), getSettings()]);
   const telegramConfigured = settings.telegramBotTokenConfigured;
 
   const botItem: StatusItem =
@@ -224,6 +345,68 @@ export default async function OverviewPage() {
     status.traces.ok &&
     status.downloads.ok;
 
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>System status</CardTitle>
+          <CardDescription>
+            Live checks against the database, the configured endpoints, and the write paths.
+          </CardDescription>
+        </div>
+        <CardAction>
+          <Badge tone={operational ? "success" : "warning"} dot>
+            {operational ? "Operational" : "Setup needed"}
+          </Badge>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {groups.map((group) => {
+          const summary = groupSummary(group.items);
+          return (
+            <div key={group.title} className="space-y-2">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <h3 className="text-sm font-semibold tracking-tight">{group.title}</h3>
+                <span
+                  className={
+                    summary.tone === "error"
+                      ? "text-xs font-medium text-danger"
+                      : summary.tone === "warn"
+                        ? "text-xs font-medium text-warning"
+                        : "text-xs font-medium text-success"
+                  }
+                >
+                  {summary.text}
+                </span>
+                <span className="text-xs text-faint">{group.description}</span>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {group.items.map((item) => (
+                  <StatusCard
+                    key={item.label}
+                    label={item.label}
+                    value={item.value}
+                    tone={item.tone}
+                    hint={item.hint}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+
+        <div className="flex flex-col gap-2 border-t border-border pt-5">
+          <span className="text-sm font-medium text-foreground">Telegram bot</span>
+          <BotControl initial={botStatus} configured={telegramConfigured} />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The recent/failures/jobs tabs — trace-list and job-board reads. */
+async function ActivityTabsSection() {
+  const [activity, jobs] = await Promise.all([readActivity(), getAllJobs().catch(() => [])]);
   const stuckJobs = jobs.filter((job) => job.activity === "stopped" || job.failed);
   const runningJobs = jobs.filter((job) => job.activity === "running").length;
 
@@ -296,151 +479,25 @@ export default async function OverviewPage() {
   ];
 
   return (
-    <>
-      <PageHeader
-        title="Overview"
-        description={`llm-tg-bot dashboard — v${buildInfo.version}`}
-        actions={
-          <>
-            {/* One subscription for the whole page. Every block here re-reads on
-                the same `router.refresh()`, so a second indicator would only add
-                a duplicate refresh of an already expensive render. */}
-            <LiveIndicator topic={OVERVIEW_TOPICS} />
-            <Button asChild variant="outline" leftIcon={<SettingsIcon className="h-4 w-4" />}>
-              <Link href="/settings">Settings</Link>
-            </Button>
-          </>
-        }
-      />
-
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold tracking-tight">
-              Last {OVERVIEW_WINDOW_HOURS} hours
-            </h2>
-            <p className="text-sm text-muted">
-              What the bot actually did, since <Timestamp iso={activity.since} />.
-            </p>
-          </div>
-          <Button asChild variant="outline" size="sm" leftIcon={<BarChart3 className="h-4 w-4" />}>
-            <Link href="/analytics">Analytics</Link>
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Activity</CardTitle>
+          <CardDescription>
+            {runningJobs > 0
+              ? `${runningJobs} background job${runningJobs === 1 ? "" : "s"} running now.`
+              : "The latest traced actions, anything that failed, and every background job."}
+          </CardDescription>
+        </div>
+        <CardAction>
+          <Button asChild variant="outline" size="sm" leftIcon={<Bug className="h-4 w-4" />}>
+            <Link href="/debug">Debug</Link>
           </Button>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard
-            label="Messages handled"
-            value={number(activity.handled)}
-            icon={MessageSquare}
-            accent
-            hint={`${number(activity.replied)} answered`}
-          />
-          <StatCard
-            label="Failures"
-            value={number(activity.failed)}
-            icon={AlertTriangle}
-            hint={
-              activity.failed > 0 ? (
-                <Link href="/debug?status=error" className="text-primary hover:underline">
-                  Inspect in Debug
-                </Link>
-              ) : (
-                "No failed replies"
-              )
-            }
-          />
-          <StatCard
-            label="Active people"
-            value={number(activity.activeUsers)}
-            icon={Users}
-            hint={`${number(activity.images)} media described`}
-          />
-          <StatCard
-            label="Tokens"
-            value={compactTokens(activity.promptTokens + activity.completionTokens)}
-            icon={Coins}
-            hint={`${compactTokens(activity.promptTokens)} in · ${compactTokens(activity.completionTokens)} out`}
-          />
-        </div>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>System status</CardTitle>
-            <CardDescription>
-              Live checks against the database, the configured endpoints, and the write paths.
-            </CardDescription>
-          </div>
-          <CardAction>
-            <Badge tone={operational ? "success" : "warning"} dot>
-              {operational ? "Operational" : "Setup needed"}
-            </Badge>
-          </CardAction>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {groups.map((group) => {
-            const summary = groupSummary(group.items);
-            return (
-              <div key={group.title} className="space-y-2">
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <h3 className="text-sm font-semibold tracking-tight">{group.title}</h3>
-                  <span
-                    className={
-                      summary.tone === "error"
-                        ? "text-xs font-medium text-danger"
-                        : summary.tone === "warn"
-                          ? "text-xs font-medium text-warning"
-                          : "text-xs font-medium text-success"
-                    }
-                  >
-                    {summary.text}
-                  </span>
-                  <span className="text-xs text-faint">{group.description}</span>
-                </div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  {group.items.map((item) => (
-                    <StatusCard
-                      key={item.label}
-                      label={item.label}
-                      value={item.value}
-                      tone={item.tone}
-                      hint={item.hint}
-                    />
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-
-          <div className="flex flex-col gap-2 border-t border-border pt-5">
-            <span className="text-sm font-medium text-foreground">Telegram bot</span>
-            <BotControl initial={botStatus} configured={telegramConfigured} />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>Activity</CardTitle>
-            <CardDescription>
-              {runningJobs > 0
-                ? `${runningJobs} background job${runningJobs === 1 ? "" : "s"} running now.`
-                : "The latest traced actions, anything that failed, and every background job."}
-            </CardDescription>
-          </div>
-          <CardAction>
-            <Button asChild variant="outline" size="sm" leftIcon={<Bug className="h-4 w-4" />}>
-              <Link href="/debug">Debug</Link>
-            </Button>
-          </CardAction>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <Tabs tabs={activityTabs} />
-        </CardContent>
-      </Card>
-    </>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <Tabs tabs={activityTabs} />
+      </CardContent>
+    </Card>
   );
 }
