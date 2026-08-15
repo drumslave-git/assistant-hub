@@ -61,6 +61,7 @@ import { getToolset } from "@/features/mcp-tools/server/service";
 import { findReplyMediaMessage, messageHasVisionMedia } from "@/features/vision/detect";
 import { mediaKindLabel, toVisionParts } from "@/features/vision/format";
 import {
+  chatModelReadsImages,
   describeAndStore,
   getMediaSuffixesForMessages,
   ingestMessageMedia,
@@ -427,14 +428,20 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             }
           }
           // Pass 2 (conditional): attach the images to the reply only when asked
-          // (the message had text). Otherwise the reply is generated from the
-          // recognition text alone — no images, one vision pass total.
+          // (the message had text) — and only when the CHAT model is the model
+          // that reads images. With the vision role pointed at a separate
+          // describer, raw image parts in the reply request are what a
+          // text-only chat provider rejects wholesale (trace `f37d84b9…`,
+          // 2026-08-15: Z.ai 400 "messages.content.type is invalid"); the
+          // recognition text above already carries what the image shows.
           if (va.attachToReply) {
             if (description) {
               const recognized = `Recognition of the media above: ${description}`;
               note = note ? `${note}\n\n${recognized}` : recognized;
             }
-            return { imageParts: va.imageParts, note };
+            const attachRaw = await chatModelReadsImages().catch(() => false);
+            if (attachRaw) return { imageParts: va.imageParts, note };
+            return { imageParts: [], note, imagesWithheld: true };
           }
           const recognized = description
             ? `The user sent a ${mediaLabel} (no caption). Its content: ${description}`

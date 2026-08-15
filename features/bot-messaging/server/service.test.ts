@@ -290,6 +290,31 @@ describe("handleIncomingMessage", () => {
     expect(step.data).toEqual({ imageCount: 1, hasNote: false });
   });
 
+  it("keeps the turn text-only when the loader withheld the raw images, and says why", async () => {
+    // The chat model does not read images (vision runs on a separate model):
+    // the loader returns no image parts, only the recognition note — the turn
+    // must stay a plain string, or a text-only provider 400s the whole reply
+    // (trace `f37d84b9…`, 2026-08-15).
+    const d = deps({
+      loadVision: vi.fn().mockResolvedValue({
+        imageParts: [],
+        note: "Recognition of the media above: a dark SUV on a road.",
+        imagesWithheld: true,
+      }),
+    });
+    await handleIncomingMessage(incoming({ text: "what car is this?" }), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const userTurn = messages.at(-1);
+    expect(typeof userTurn.content).toBe("string");
+    expect(userTurn.content).toContain("a dark SUV");
+    const step = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "vision media attached");
+    expect(step.data.imageCount).toBe(0);
+    expect(step.data.imagesWithheld).toContain("does not read images");
+  });
+
   it("appends the reply note to the text part when media comes from a replied-to image", async () => {
     const d = deps({
       loadVision: vi.fn().mockResolvedValue({

@@ -414,6 +414,27 @@ export async function resolveDescribeDeps(
   };
 }
 
+/**
+ * Whether the CHAT model is the model that reads images — true exactly when the
+ * vision role resolves to the same endpoint and model as the chat role (the
+ * vision role unset, or pointed at the same thing).
+ *
+ * This is the gate on attaching raw image parts to a reply request. When the
+ * operator points vision at a separate describer, nothing says the chat model
+ * accepts image input — and a text-only provider rejects the whole request
+ * (Z.ai glm-4.7-flash: `messages.content.type is invalid, allowed values:
+ * ['text']`, trace `f37d84b9…`, 2026-08-15). The reply then rides the
+ * recognition text, which the describe pass already put into the prompt.
+ */
+export async function chatModelReadsImages(): Promise<boolean> {
+  const [chat, vision] = await Promise.all([
+    getLlmRuntime().catch(() => null),
+    getVisionRuntime().catch(() => null),
+  ]);
+  if (!chat || !vision) return false;
+  return chat.baseUrl === vision.baseUrl && chat.model === vision.model;
+}
+
 /** How a describe/transcribe pass records itself and where it reads/writes. */
 export interface DescribeAndStoreOptions {
   db?: DrizzleDb;

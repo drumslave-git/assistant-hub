@@ -239,10 +239,16 @@ export interface BotMessagingDeps {
    * Load visual media to attach to the current turn (photo/sticker/etc. on the
    * message, or on a replied-to message). Returns the image content parts to
    * splice into the user turn plus an optional note (e.g. "asking about the
-   * photo they replied to"). Null when the turn carries no media. Best-effort —
-   * the reply proceeds text-only if this fails.
+   * photo they replied to"); `imagesWithheld` marks a turn whose raw images
+   * were deliberately not attached because the chat model does not read images
+   * (the recognition text stands in). Null when the turn carries no media.
+   * Best-effort — the reply proceeds text-only if this fails.
    */
-  loadVision?: (trace: TraceRecorder) => Promise<{ imageParts: ChatContentPart[]; note?: string } | null>;
+  loadVision?: (trace: TraceRecorder) => Promise<{
+    imageParts: ChatContentPart[];
+    note?: string;
+    imagesWithheld?: boolean;
+  } | null>;
   /** Persist the delivered assistant reply into the history mirror (best-effort). */
   recordReply: (input: {
     content: string;
@@ -789,7 +795,17 @@ export async function handleIncomingMessage(
         await trace.event({
           type: "step",
           message: "vision media attached",
-          data: { imageCount: vision.imageParts.length, hasNote: Boolean(vision.note) },
+          data: {
+            imageCount: vision.imageParts.length,
+            hasNote: Boolean(vision.note),
+            ...(vision.imagesWithheld
+              ? {
+                  imagesWithheld:
+                    "raw images not attached — the chat model does not read images " +
+                    "(vision runs on a separate model); the recognition text is in the prompt",
+                }
+              : {}),
+          },
         });
       }
 
