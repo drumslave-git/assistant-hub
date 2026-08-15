@@ -16,12 +16,7 @@ import { getUserLanguage } from "@/features/known-users/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
 import { isGroupChatId, TELEGRAM_MAX_UPLOAD_MB } from "@/lib/telegram";
-import {
-  chatCompletion,
-  llmUsageOf,
-  sanitizeMessagesForTrace,
-  type LlmConnection,
-} from "@/server/llm/client";
+import { chatCompletion, type LlmConnection } from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { publishEvent } from "@/server/realtime/hub";
 import { deleteChatMessage, sendChatFile, sendChatMessage } from "@/server/telegram/bot-manager";
@@ -226,23 +221,13 @@ async function judgeRunOutcome(
   trace: TraceRecorder,
 ): Promise<RunOutcomeVerdict> {
   const messages = buildRunOutcomeMessages({ goal, report });
-  await trace.event({
-    type: "llm_request",
-    message: "run outcome check request",
-    data: { messages },
-  });
   try {
     const result = await chatCompletion(conn, {
       model,
       messages,
       reasoning: "off",
       maxTokens: OUTCOME_CHECK_MAX_TOKENS,
-    });
-    await trace.event({
-      type: "llm_response",
-      message: "run outcome check response",
-      data: result.responseBody ?? { content: result.content },
-      usage: { ...llmUsageOf(result), callKind: "run-outcome-check" },
+      trace: { recorder: trace, callKind: "run-outcome-check", label: "run outcome check" },
     });
     return parseRunOutcomeVerdict(result.content, { report });
   } catch (err) {
@@ -407,29 +392,11 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
       model: runtime.model,
       toolContext,
       requiredLanguage: resolveRequiredLanguage(storedLanguage) ?? null,
-      onRequest: async (requestBody) => {
-        await trace.event({
-          type: "llm_request",
-          message: "browser agent request",
-          // Redact any inline image bytes (none in the seed today, but the
-          // convention must hold if the seed ever carries a screenshot).
-          data: redactRequestImages(requestBody),
-        });
-      },
-      onRound: async (round, report) => {
-        await trace.event({
-          type: "llm_response",
-          message: report.isFinal ? "report round" : "tool round",
-          data: round.raw,
-          usage: {
-            model: runtime.model,
-            promptTokens: round.usage?.promptTokens,
-            completionTokens: round.usage?.completionTokens,
-            totalTokens: round.usage?.totalTokens,
-            latencyMs: round.latencyMs,
-            callKind: report.isFinal ? "browser-agent-report" : "browser-agent-turn",
-          },
-        });
+      trace: {
+        recorder: trace,
+        callKind: "browser-agent-report",
+        toolTurnCallKind: "browser-agent-turn",
+        label: "browser agent",
       },
     });
 
@@ -517,16 +484,6 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
     active = false;
     publishEvent(FEATURE.realtimeTopic);
   }
-}
-
-/** Redact inline image `data:` URLs in a chat-completion request body for traces. */
-function redactRequestImages(body: unknown): unknown {
-  const request = body as { messages?: unknown } | null;
-  if (!request || !Array.isArray(request.messages)) return body;
-  return {
-    ...request,
-    messages: sanitizeMessagesForTrace(request.messages as never),
-  };
 }
 
 /**

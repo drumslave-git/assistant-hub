@@ -107,6 +107,41 @@ describe("getTraceList", () => {
   });
 });
 
+describe("trace correlation", () => {
+  it("stamps every trace with a correlation — its own id when none was given", async () => {
+    const trace = await startTrace(baseInput);
+    await trace.succeed();
+    const detail = await getTraceDetail(trace.id);
+    // A single-trace action correlates to itself, so the Debug correlation
+    // filter always has something to show (operator requirement, 2026-08-15).
+    expect(detail.trigger.correlationId).toBe(trace.id);
+  });
+
+  it("keeps an explicit correlation and filters the list by it", async () => {
+    const run = { kind: "cron" as const, actor: "memory-extraction", correlationId: "memory:run-1" };
+    await seed({ feature: "memory-extraction", trigger: run });
+    await seed({ feature: "memory", trigger: { ...run, kind: "system", actor: "memory" } });
+    await seed(); // unrelated, self-correlated
+
+    const grouped = await getTraceList({ correlationId: "memory:run-1" });
+    expect(grouped.total).toBe(2);
+    expect(grouped.traces.every((t) => t.trigger.correlationId === "memory:run-1")).toBe(true);
+  });
+
+  it("filters by trigger kind and actor", async () => {
+    await seed({ trigger: { kind: "cron", actor: "memory-extraction" } });
+    await seed({ trigger: { kind: "cron", actor: "history-summaries" } });
+    await seed(); // telegram
+
+    const cron = await getTraceList({ triggerKind: "cron" });
+    expect(cron.total).toBe(2);
+
+    const job = await getTraceList({ triggerKind: "cron", actor: "memory-extraction" });
+    expect(job.total).toBe(1);
+    expect(job.traces[0].trigger.actor).toBe("memory-extraction");
+  });
+});
+
 describe("getTraceDetail", () => {
   it("returns the full trace with ordered events", async () => {
     const id = await seed();

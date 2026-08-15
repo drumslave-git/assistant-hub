@@ -12,7 +12,12 @@ import { getActiveSpecialistInstructions } from "@/features/specialists/server/s
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
 import { isGroupChatId } from "@/lib/telegram";
-import { chatCompletion, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import {
+  chatCompletion,
+  type ChatCompletionResult,
+  type ChatMessage,
+  type LlmCallTrace,
+} from "@/server/llm/client";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import {
   createIntervalScheduler,
@@ -28,7 +33,7 @@ import { sendChatMessage } from "@/server/telegram/bot-manager";
 import { buildStandingTasksBlock } from "../format";
 import { computeNextTriggerRun } from "../schedule";
 import { MAX_ONE_SHOT_ATTEMPTS } from "../types";
-import { fireTask, type FireToolCall } from "./fire";
+import { fireTask } from "./fire";
 import {
   deleteTask,
   listDueTasks,
@@ -75,13 +80,10 @@ export interface DueRunDeps {
   personalityPrompt: string | null;
   /**
    * Run the completion (real: `chatCompletionWithTools` with the outbound
-   * toolset). Called inside the task chat's tool context; tool calls are
-   * reported back for the fire trace.
+   * toolset). Called inside the task chat's tool context; the exchange records
+   * itself on the fire trace via the shared LLM tracing layer (`trace`).
    */
-  complete: (
-    messages: ChatMessage[],
-    onToolCall?: (call: FireToolCall) => void | Promise<void>,
-  ) => Promise<ChatCompletionResult>;
+  complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
   /** Raw delivery (real: the bot's `sendChatMessage`); resolves the message id. */
   send: (
     chatId: string,
@@ -215,17 +217,20 @@ async function runTick(ctx?: IntervalRunContext): Promise<{ summary: string }> {
     return runDueTasks({
       timezone,
       personalityPrompt,
-      complete: (messages, onToolCall) =>
+      complete: (messages, trace) =>
         toolset
           ? chatCompletionWithTools(conn, {
               model: runtime.model,
               messages,
               tools: toolset.tools,
               callTool: toolset.callTool,
-              onToolCall: (rec) =>
-                onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
+              ...(trace ? { trace } : {}),
             })
-          : chatCompletion(conn, { model: runtime.model, messages }),
+          : chatCompletion(conn, {
+              model: runtime.model,
+              messages,
+              ...(trace ? { trace } : {}),
+            }),
       send: (chatId, text, opts) => sendChatMessage(chatId, text, opts),
       onProgress: ctx?.reportProgress,
       recordReply: (input) =>

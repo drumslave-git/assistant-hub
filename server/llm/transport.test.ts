@@ -635,3 +635,182 @@ describe("toToolSet", () => {
     expect(toToolSet([])).toBeUndefined();
   });
 });
+
+/**
+ * The shared LLM tracing layer (`LlmCallTrace`): every completion records the
+ * same facts on the trace it serves — which endpoint and backend the call went
+ * to, the full sanitized request body, the raw response with usage and its call
+ * kind. Features pass the options instead of hand-recording events, so these
+ * assertions are the single contract behind every feature's Debug view.
+ */
+describe("the shared LLM tracing layer records the exchange", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  interface RecordedEvent {
+    type?: string;
+    level?: string;
+    message: string;
+    data?: unknown;
+    usage?: Record<string, unknown>;
+  }
+
+  /** A recorder fake capturing every event the layer emits. */
+  function recorder(events: RecordedEvent[]) {
+    return {
+      event: async (input: RecordedEvent) => {
+        events.push(input);
+        return input as never;
+      },
+    };
+  }
+
+  const completion = {
+    id: "1",
+    object: "chat.completion",
+    created: 0,
+    model: "gemma-served",
+    choices: [
+      { index: 0, message: { role: "assistant", content: "described" }, finish_reason: "stop" },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+  };
+
+  it("records request (endpoint + backend + sanitized body) and response (usage + call kind)", async () => {
+    const { chatCompletion } = await import("./client");
+    vi.stubGlobal("fetch", async () =>
+      new Response(JSON.stringify(completion), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const events: RecordedEvent[] = [];
+    const image = `data:image/jpeg;base64,${"a".repeat(64)}`;
+    await chatCompletion(
+      { baseUrl: "https://inference.invalid/v1", apiKey: null, backend: "llamacpp" },
+      {
+        model: "gemma:12b",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "describe this" },
+              { type: "image_url", image_url: { url: image } },
+            ],
+          },
+        ],
+        trace: { recorder: recorder(events), callKind: "vision-describe", label: "describe" },
+      },
+    );
+
+    expect(events.map((e) => [e.type, e.message])).toEqual([
+      ["llm_request", "describe request"],
+      ["llm_response", "describe response"],
+    ]);
+
+    // The request names where it went and carries the whole body — the two
+    // facts the memory-extraction traces were missing (operator report,
+    // 2026-08-15) — with inline image bytes swapped for a size marker.
+    const request = events[0].data as {
+      endpoint: string;
+      backend: string;
+      model: string;
+      messages: Array<{ content: Array<{ image_url?: { url: string } }> }>;
+    };
+    expect(request.endpoint).toBe("https://inference.invalid/v1");
+    expect(request.backend).toBe("llamacpp");
+    expect(request.model).toBe("gemma:12b");
+    const imagePart = request.messages[0].content.find((p) => p.image_url);
+    expect(imagePart?.image_url?.url).toMatch(/^data:image\/jpeg;base64,<\d+ bytes>$/);
+
+    // The response is the provider's raw body, and the usage says what the call
+    // was for — the axis analytics groups on.
+    expect(events[1].data).toMatchObject({ id: "1" });
+    expect(events[1].usage).toMatchObject({
+      model: "gemma:12b",
+      servedModel: "gemma-served",
+      promptTokens: 10,
+      completionTokens: 4,
+      callKind: "vision-describe",
+    });
+  });
+
+  it("records the tool loop: one request, each tool call, per-round responses with their kinds", async () => {
+    const { chatCompletionWithTools } = await import("./tool-loop");
+    const rounds = [
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "memory_save", arguments: '{"text":"likes tea"}' },
+            },
+          ],
+        },
+        finish_reason: "tool_calls",
+      },
+      { message: { role: "assistant", content: "noted" }, finish_reason: "stop" },
+    ];
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      const round = rounds[Math.min(calls, rounds.length - 1)];
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          id: "1",
+          object: "chat.completion",
+          created: 0,
+          model: "m",
+          choices: [round],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const events: RecordedEvent[] = [];
+    await chatCompletionWithTools(
+      { baseUrl: "https://inference.invalid/v1", apiKey: null },
+      {
+        model: "m",
+        messages: [{ role: "user", content: "remember that I like tea" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "memory_save",
+              description: "save a fact",
+              parameters: { type: "object", properties: { text: { type: "string" } } },
+            },
+          },
+        ],
+        callTool: async () => ({ text: "saved", isError: false }),
+        trace: {
+          recorder: recorder(events),
+          callKind: "reply-final",
+          toolTurnCallKind: "reply-tool-turn",
+        },
+      },
+    );
+
+    expect(events.map((e) => [e.type, e.message])).toEqual([
+      ["llm_request", "request"],
+      ["llm_response", "tool turn 1 response"],
+      ["external_call", "tool: memory_save"],
+      ["llm_response", "response"],
+    ]);
+    expect((events[0].data as { endpoint?: string }).endpoint).toBe(
+      "https://inference.invalid/v1",
+    );
+    expect((events[0].data as { tools?: unknown[] }).tools).toHaveLength(1);
+    expect(events[1].usage).toMatchObject({ callKind: "reply-tool-turn" });
+    expect(events[2].data).toMatchObject({
+      args: { text: "likes tea" },
+      result: { text: "saved" },
+    });
+    expect(events[3].usage).toMatchObject({ callKind: "reply-final" });
+  });
+});

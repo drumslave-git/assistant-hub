@@ -6,7 +6,11 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
-import { llmUsageOf, sanitizeMessagesForTrace, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import type {
+  ChatCompletionResult,
+  ChatMessage,
+  LlmCallTrace,
+} from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 
@@ -324,14 +328,11 @@ function storedMediaImages(media: MediaRecord | null): ImagePayload[] | null {
 
 /** Collaborators for the describe pass; injected so it is unit-testable. */
 export interface DescribeDeps {
-  /** Run the describe completion; returns the text plus usage/model for tracing. */
-  complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
   /**
-   * Where `complete` sends the request (base URL + model id), recorded on the
-   * trace's request event — the operator must be able to see which endpoint and
-   * model a describe/transcribe actually hit, especially when it fails.
+   * Run the describe completion. The call records itself (endpoint, model, full
+   * body, usage) on the trace passed via the shared LLM tracing layer.
    */
-  target?: { baseUrl: string; model: string };
+  complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
   /**
    * Dedicated STT for voice rows (`/v1/audio/transcriptions`), present when the
    * operator configured an audio (STT) model in `transcriptions` mode. When
@@ -339,7 +340,10 @@ export interface DescribeDeps {
    * (user decision: support both, whisper preferred when configured).
    */
   transcribe?: (wav: Buffer) => Promise<TranscriptionResult>;
-  /** Where `transcribe` sends the request, recorded like {@link target}. */
+  /**
+   * Where `transcribe` sends the request, recorded on the trace — the STT route
+   * is not a chat completion, so its recording stays at this call site.
+   */
   transcribeTarget?: { baseUrl: string; model: string };
   /**
    * The `input_audio` transcription path's completion: the audio (STT) role's
@@ -348,9 +352,7 @@ export interface DescribeDeps {
    * the vision role its own backend/model. Absent means `complete` serves both
    * (they resolved to the same connection).
    */
-  completeAudio?: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
-  /** Where `completeAudio` sends the request, recorded like {@link target}. */
-  audioTarget?: { baseUrl: string; model: string };
+  completeAudio?: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
 }
 
 /**
@@ -374,8 +376,13 @@ export async function resolveDescribeDeps(
   const chatDiffers =
     chat && (chat.baseUrl !== vision.baseUrl || chat.model !== vision.model);
   return {
-    complete: (messages) => chatCompletion(conn, { model: vision.model, messages, priority }),
-    target: { baseUrl: vision.baseUrl, model: vision.model },
+    complete: (messages, trace) =>
+      chatCompletion(conn, {
+        model: vision.model,
+        messages,
+        priority,
+        ...(trace ? { trace } : {}),
+      }),
     ...(stt && stt.mode === "transcriptions"
       ? {
           transcribe: (wav: Buffer) => transcribeAudio(stt, wav),
@@ -389,21 +396,19 @@ export async function resolveDescribeDeps(
     // points elsewhere.
     ...(stt && stt.mode === "chat"
       ? {
-          completeAudio: (messages) =>
+          completeAudio: (messages: ChatMessage[], trace?: LlmCallTrace) =>
             chatCompletion(
               { baseUrl: stt.baseUrl, apiKey: stt.apiKey, backend: stt.backend },
-              { model: stt.model, messages, priority },
+              { model: stt.model, messages, priority, ...(trace ? { trace } : {}) },
             ),
-          audioTarget: { baseUrl: stt.baseUrl, model: stt.model },
         }
       : chatDiffers
         ? {
-            completeAudio: (messages) =>
+            completeAudio: (messages: ChatMessage[], trace?: LlmCallTrace) =>
               chatCompletion(
                 { baseUrl: chat.baseUrl, apiKey: chat.apiKey, backend: chat.backend },
-                { model: chat.model, messages, priority },
+                { model: chat.model, messages, priority, ...(trace ? { trace } : {}) },
               ),
-            audioTarget: { baseUrl: chat.baseUrl, model: chat.model },
           }
         : {}),
   };
@@ -527,27 +532,11 @@ export async function describeAndStore(
         // `completeAudio` (the chat connection) when the vision role points
         // elsewhere; otherwise `complete` already is the chat connection.
         const completeAudio = deps.completeAudio ?? deps.complete;
-        const audioTarget = deps.audioTarget ?? deps.target;
         const messages = buildTranscribeMessages(wav.toString("base64"), "wav");
-        // The whole request as sent — endpoint, model, and the full
-        // (byte-redacted) body — so a failing transcription names what was
-        // actually called.
-        await trace.event({
-          type: "llm_request",
-          message: "transcribe request",
-          data: {
-            ...(audioTarget ? { endpoint: audioTarget.baseUrl, model: audioTarget.model } : {}),
-            messages: sanitizeMessagesForTrace(messages),
-          },
-        });
-
-        const result = await completeAudio(messages);
-        await trace.event({
-          type: "llm_response",
-          message: "transcribe response",
-          // The provider's raw response body, verbatim (full-raw-bodies rule).
-          data: result.responseBody ?? { content: result.content },
-          usage: { ...llmUsageOf(result), callKind: "voice-transcribe" },
+        const result = await completeAudio(messages, {
+          recorder: trace,
+          callKind: "voice-transcribe",
+          label: "transcribe",
         });
         rawText = result.content;
       }
@@ -587,22 +576,10 @@ export async function describeAndStore(
     // A video/GIF describes from its ordered frame sequence; a still image from
     // its single frame. The hint tells the model the frames are one clip in order.
     const messages = buildDescribeMessages(images, media.visionHint);
-    await trace.event({
-      type: "llm_request",
-      message: "describe request",
-      data: {
-        ...(deps.target ? { endpoint: deps.target.baseUrl, model: deps.target.model } : {}),
-        messages: sanitizeMessagesForTrace(messages),
-      },
-    });
-
-    const result = await deps.complete(messages);
-    await trace.event({
-      type: "llm_response",
-      message: "describe response",
-      // The provider's raw response body, verbatim (full-raw-bodies rule).
-      data: result.responseBody ?? { content: result.content },
-      usage: { ...llmUsageOf(result), callKind: "vision-describe" },
+    const result = await deps.complete(messages, {
+      recorder: trace,
+      callKind: "vision-describe",
+      label: "describe",
     });
 
     const description = result.content.trim();

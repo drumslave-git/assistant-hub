@@ -7,8 +7,12 @@ import { loadChatDayTranscript } from "@/features/history/server/service";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { currentSummaryDate, type SummaryDate } from "@/features/history/summary";
 import { FEATURES } from "@/lib/features";
-import type { TraceTrigger } from "@/lib/trace";
-import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import { newRunCorrelationId, type TraceTrigger } from "@/lib/trace";
+import type {
+  ChatCompletionResult,
+  ChatMessage,
+  LlmCallTrace,
+} from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -69,12 +73,18 @@ const MAX_DAYS_PER_RUN = 2_000;
 /** Collaborators, injected so tests can drive a run deterministically. */
 export interface ExtractDeps {
   /** One LLM pass (real: `chatCompletion` with the configured model). */
-  complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
   /** Operator timezone — the wall clock a "day" is measured against. */
   timeZone: string;
   now?: () => Date;
   /** Publish live per-day progress to the scheduler (drives the Jobs dashboard). */
   onProgress?: (progress: JobProgress | null) => void;
+  /**
+   * Correlation shared by every trace of one nightly run (the scheduler runs
+   * extraction and consolidation under one id). Absent → the run generates its
+   * own, so a standalone extraction is still internally correlated.
+   */
+  runCorrelationId?: string;
 }
 
 /** Outcome of extracting one chat-day. */
@@ -297,6 +307,9 @@ export async function runMemoryExtraction(
   let days = 0;
   let notes = 0;
   const failed = new Set<string>();
+  // One correlation for the whole sweep: every chat-day this run extracts
+  // carries it, so the run is traceable start to end from the Debug filter.
+  const runId = deps.runCorrelationId ?? newRunCorrelationId("memory-extraction", now);
   // The backlog when the run starts is this run's denominator for the live bar;
   // days leave the scan as they are extracted, so it only shrinks from here.
   const total = await countDaysNeedingExtraction(db, { timeZone: deps.timeZone, today });
@@ -322,7 +335,7 @@ export async function runMemoryExtraction(
         const result = await extractChatDay(
           { chatId: day.chatId, extractionDate: day.extractionDate },
           deps,
-          { kind: "cron", actor: "memory-extraction" },
+          { kind: "cron", actor: "memory-extraction", correlationId: runId },
           db,
         );
         notes += result.noteCount;

@@ -111,7 +111,12 @@ export async function startTrace(input: StartTraceInput): Promise<TraceRecorder>
     id,
     feature: input.feature,
     action: input.action,
-    trigger: input.trigger,
+    // Every trace carries a correlation (operator requirement, 2026-08-15: a
+    // process must be traceable start to end, and the Debug correlation filter
+    // must never come up empty-handed). A flow that spans traces passes its
+    // shared id; a single-trace action correlates to itself — the filter then
+    // shows exactly that one action, which is the honest answer.
+    trigger: { ...input.trigger, correlationId: input.trigger.correlationId ?? id },
     startedAt,
     inputSummary: input.inputSummary,
   });

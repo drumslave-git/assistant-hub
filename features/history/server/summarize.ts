@@ -3,8 +3,12 @@ import "server-only";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
-import type { TraceTrigger } from "@/lib/trace";
-import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import { newRunCorrelationId, type TraceTrigger } from "@/lib/trace";
+import type {
+  ChatCompletionResult,
+  ChatMessage,
+  LlmCallTrace,
+} from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -59,7 +63,7 @@ const MAX_DAYS_PER_RUN = 2_000;
 /** The collaborators summarization needs. Injected for testability. */
 export interface SummarizeDeps {
   /** Run one LLM pass (the summarizer prompt for one batch of a day). */
-  complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
   /**
    * Embed each topic for semantic recall. Null when embeddings are unconfigured —
    * the topics are still written and still full-text searchable, so a missing
@@ -71,6 +75,11 @@ export interface SummarizeDeps {
   now?: () => Date;
   /** Publish live per-day progress to the scheduler (drives the Jobs dashboard). */
   onProgress?: (progress: JobProgress | null) => void;
+  /**
+   * Correlation shared by every chat-day trace of one run, so the whole sweep
+   * is traceable start to end from the Debug filter. Absent → generated.
+   */
+  runCorrelationId?: string;
 }
 
 /** Outcome of summarizing one chat-day. */
@@ -253,6 +262,8 @@ export async function runSummarization(
   let days = 0;
   let topics = 0;
   const failed = new Set<string>();
+  // One correlation for the whole sweep — every summarized chat-day carries it.
+  const runId = deps.runCorrelationId ?? newRunCorrelationId("history-summaries", now);
   // The backlog when the run starts is this run's denominator for the live bar;
   // days leave the scan as they are summarized, so it only shrinks from here.
   const total = await countDaysNeedingSummary(db, { timeZone: deps.timeZone, today });
@@ -278,7 +289,7 @@ export async function runSummarization(
         const result = await summarizeChatDay(
           { chatId: day.chatId, summaryDate: day.summaryDate },
           deps,
-          { kind: "cron", actor: "history-summaries" },
+          { kind: "cron", actor: "history-summaries", correlationId: runId },
           db,
         );
         topics += result.topicCount;

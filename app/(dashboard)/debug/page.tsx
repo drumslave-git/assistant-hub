@@ -26,6 +26,9 @@ export default async function DebugPage({
   const parsed = traceQuerySchema.safeParse({
     feature: first(sp.feature),
     status: first(sp.status),
+    correlationId: first(sp.correlationId),
+    triggerKind: first(sp.triggerKind),
+    actor: first(sp.actor),
     limit: first(sp.limit),
     offset: first(sp.offset),
   });

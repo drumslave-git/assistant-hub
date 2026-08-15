@@ -12,13 +12,17 @@ import {
 } from "@/components/ui";
 import { Timestamp } from "@/components/time/Timestamp";
 import { formatDuration } from "@/lib/format";
-import type { Trace } from "@/lib/trace";
+import { debugFilterHref, type Trace } from "@/lib/trace";
 import { TraceStatusBadge } from "./TraceStatusBadge";
 
 /**
  * Shared trace list — a dense, scannable table of trace headers linking to the
  * detail view. Used by every feature's Debug page (scope by pre-filtering the
  * `traces` passed in). Events are omitted here; the detail view loads them.
+ *
+ * Facet cells (status, feature, trigger) link to the Debug list pre-filtered by
+ * that facet — sitting above the row's stretched link (`relative z-10`), so a
+ * facet click filters and any other click opens the trace.
  */
 export function TraceList({
   traces,
@@ -57,9 +61,23 @@ export function TraceList({
           return (
             <TableRow key={trace.id} interactive>
               <TableCell>
-                <TraceStatusBadge status={trace.status} />
+                <Link
+                  href={debugFilterHref({ status: trace.status })}
+                  className="relative z-10 inline-flex hover:opacity-80"
+                  title={`Show ${trace.status} traces`}
+                >
+                  <TraceStatusBadge status={trace.status} />
+                </Link>
               </TableCell>
-              <TableCell className="text-muted">{trace.feature}</TableCell>
+              <TableCell>
+                <Link
+                  href={debugFilterHref({ feature: trace.feature })}
+                  className="relative z-10 text-muted hover:text-primary hover:underline"
+                  title={`Show ${trace.feature} traces`}
+                >
+                  {trace.feature}
+                </Link>
+              </TableCell>
               <TableCell>
                 {/* Stretched link: covers the whole row so any cell click opens the trace. */}
                 <Link
@@ -74,11 +92,20 @@ export function TraceList({
                   </p>
                 ) : null}
               </TableCell>
-              <TableCell className="text-muted">
-                {trace.trigger.kind}
-                {trace.trigger.actor ? (
-                  <span className="text-faint"> · {trace.trigger.actor}</span>
-                ) : null}
+              <TableCell>
+                <Link
+                  href={debugFilterHref({
+                    triggerKind: trace.trigger.kind,
+                    actor: trace.trigger.actor,
+                  })}
+                  className="relative z-10 text-muted hover:text-primary hover:underline"
+                  title="Show traces with this trigger"
+                >
+                  {trace.trigger.kind}
+                  {trace.trigger.actor ? (
+                    <span className="text-faint"> · {trace.trigger.actor}</span>
+                  ) : null}
+                </Link>
               </TableCell>
               <TableCell className="whitespace-nowrap text-muted">
                 <Timestamp iso={trace.startedAt} />

@@ -9,13 +9,9 @@ import type {
   ChatContentPart,
   ChatMessage,
   ChatUsage,
-  LlmRetryInfo,
+  LlmCallTrace,
 } from "@/server/llm/client";
-import {
-  isContextOverflowError,
-  llmUsageOf,
-  sanitizeRequestBodyForTrace,
-} from "@/server/llm/client";
+import { isContextOverflowError } from "@/server/llm/client";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 import { TASK_ENFORCEMENT_DIRECTIVE } from "@/features/tasks/format";
 import { ADDRESSING_CHECK_EVENT } from "../addressing-trace";
@@ -100,28 +96,6 @@ export interface GeneratedReply {
   responseBody?: unknown;
 }
 
-/**
- * One model round inside a reply, reported by the generator as it completes.
- *
- * A reply is not one LLM call. It is a tool turn, then another, then an answer — or
- * just an answer. The generator used to hand back only the sum, which made a
- * four-round reply and an immediate one indistinguishable on the dashboard and hid
- * a slow individual turn inside the total. Each round is recorded separately so
- * "reply · tool turn" and "reply · final answer" are measurable on their own.
- */
-export interface ReplyRound {
-  /** 0-based position in the loop. */
-  index: number;
-  /** True when this round produced the answer rather than asking for tools. */
-  isFinal: boolean;
-  model: string;
-  servedModel?: string;
-  usage?: ChatUsage;
-  latencyMs: number;
-  /** Raw provider response for this round. */
-  responseBody?: unknown;
-}
-
 /** Normalized view of an incoming Telegram message (built by the runtime). */
 export interface IncomingMessage {
   message: Message;
@@ -169,22 +143,16 @@ export interface ReplyToolCall {
 export interface BotMessagingDeps {
   bot: BotIdentity;
   /**
-   * Generate assistant reply text. Throws on provider/config failure. Reports the
-   * exact request body it sends via `onRequest` (recorded verbatim as the full
-   * request trace — model, messages, and tools, not just pieces), each executed tool
-   * call via `onToolCall`, and each model round via `onRound`, so the service records
-   * all three on the reply trace. `onRetry` reports a transient provider failure
-   * the completion path recovered from on its own, so a turn the endpoint had to
-   * be asked twice for does not read as a clean one.
+   * Generate assistant reply text. Throws on provider/config failure. The whole
+   * exchange — request bodies, rounds, tool calls, retries — is recorded on the
+   * reply trace by the shared LLM tracing layer via the `trace` options the
+   * service passes; the service itself only counts tool calls via `onToolCall`
+   * (the task-enforcement guard needs the count).
    */
   generateReply: (
     messages: ChatMessage[],
+    trace: LlmCallTrace,
     onToolCall?: (call: ReplyToolCall) => void | Promise<void>,
-    onRequest?: (requestBody: unknown) => void | Promise<void>,
-    onRound?: (round: ReplyRound) => void | Promise<void>,
-    onRetry?: (info: LlmRetryInfo) => void | Promise<void>,
-    /** A round that produced neither an answer nor a tool call, being re-asked. */
-    onEmptyRound?: (attempt: number) => void | Promise<void>,
   ) => Promise<GeneratedReply>;
   /**
    * Run one plain completion for the addressing analyzer (real: `chatCompletion`
@@ -194,9 +162,9 @@ export interface BotMessagingDeps {
    * Used up to twice per such message: the classification call, then the
    * verifier call on its cited word. Absent → the analyzer step is skipped
    * entirely and such a message is treated as not addressed (the pre-analyzer
-   * behavior).
+   * behavior). Records itself on the trace passed in `trace`.
    */
-  analyzeAddressing?: (messages: ChatMessage[]) => Promise<GeneratedReply>;
+  analyzeAddressing?: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<GeneratedReply>;
   /**
    * Run one plain completion for the honesty gate — the same classifier shape as
    * {@link analyzeAddressing}, over the drafted reply instead of the incoming
@@ -204,7 +172,7 @@ export interface BotMessagingDeps {
    * call at all, so a turn that did something pays nothing. Absent → the gate is
    * skipped entirely and a reply is delivered as written (the pre-gate behavior).
    */
-  checkActionClaim?: (messages: ChatMessage[]) => Promise<GeneratedReply>;
+  checkActionClaim?: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<GeneratedReply>;
   /**
    * Load the words the chat has confirmed are *not* the bot's display name (the
    * 👎 "wasn't talking to you" reports). Called only when the analyzer runs, so
@@ -411,18 +379,11 @@ async function runAddressAnalyzer(
     text: incoming.text,
     exclusions,
   });
-  await trace.event({
-    type: "llm_request",
-    message: "addressing analyzer request",
-    data: { messages },
-  });
   try {
-    const result = await analyze(messages);
-    await trace.event({
-      type: "llm_response",
-      message: "addressing analyzer response",
-      data: result.responseBody ?? { content: result.content },
-      usage: { ...llmUsageOf(result), callKind: "addressing-check" },
+    const result = await analyze(messages, {
+      recorder: trace,
+      callKind: "addressing-check",
+      label: "addressing analyzer",
     });
     const verdict = parseAnalyzerVerdict(result.content, {
       text: incoming.text,
@@ -438,17 +399,10 @@ async function runAddressAnalyzer(
     }
 
     const verifierMessages = buildVerifierMessages(deps.bot, verdict.matchedText, exclusions);
-    await trace.event({
-      type: "llm_request",
-      message: "addressing verifier request",
-      data: { messages: verifierMessages },
-    });
-    const verifierResult = await analyze(verifierMessages);
-    await trace.event({
-      type: "llm_response",
-      message: "addressing verifier response",
-      data: verifierResult.responseBody ?? { content: verifierResult.content },
-      usage: { ...llmUsageOf(verifierResult), callKind: "addressing-verify" },
+    const verifierResult = await analyze(verifierMessages, {
+      recorder: trace,
+      callKind: "addressing-verify",
+      label: "addressing verifier",
     });
     const verified = parseVerifierVerdict(verifierResult.content, verdict.matchedText);
     return {
@@ -493,18 +447,11 @@ async function runActionClaimGate(
   if (!check) return abstain("honesty gate not wired");
 
   const messages = buildActionClaimMessages(input);
-  await trace.event({
-    type: "llm_request",
-    message: "honesty gate request",
-    data: { messages },
-  });
   try {
-    const result = await check(messages);
-    await trace.event({
-      type: "llm_response",
-      message: "honesty gate response",
-      data: result.responseBody ?? { content: result.content },
-      usage: { ...llmUsageOf(result), callKind: "action-claim-check" },
+    const result = await check(messages, {
+      recorder: trace,
+      callKind: "action-claim-check",
+      label: "honesty gate",
     });
     return parseActionClaimVerdict(result.content, { reply: input.reply });
   } catch (err) {
@@ -929,16 +876,13 @@ export async function handleIncomingMessage(
             ]
           : []),
       ];
-      // 4. LLM request + tool calls. The generator reports the exact request body
-      // it sends (via onRequest, before the provider call so the response step's
-      // elapsed time reflects real provider latency) and each tool call it runs
-      // (via onToolCall, as it happens). Recording both here keeps the trace's
-      // event flow ordered — request, then any tool calls, then the response — and
-      // the request is the *whole* body the model saw (model, messages, tools), not
-      // hand-picked fields. Inline image bytes are replaced with a compact marker
-      // (the real image is on the Vision page); all other content is verbatim.
-      // Tool calls are counted, not just recorded: a turn a standing task opened
-      // is answerable only by doing what the task asks, and the only way anything
+      // 4. LLM request + tool calls. The whole exchange — the full request body
+      // per round (endpoint, model, messages, tools), each tool call as it runs,
+      // every round's response with its call kind, retries, and empty-round
+      // re-asks — is recorded by the shared LLM tracing layer (`LlmCallTrace`),
+      // so this pipeline records the same way every other feature does. Tool
+      // calls are additionally *counted* here: a turn a standing task opened is
+      // answerable only by doing what the task asks, and the only way anything
       // is done is a tool call. See the enforcement below the generation.
       let toolCallCount = 0;
       const generate = (
@@ -947,60 +891,13 @@ export async function handleIncomingMessage(
       ) =>
         deps.generateReply(
           composeMessages(historyMessages, enforcement),
-          async (call) => {
+          {
+            recorder: trace,
+            callKind: "reply-final",
+            toolTurnCallKind: "reply-tool-turn",
+          },
+          async () => {
             toolCallCount += 1;
-            await trace.event({
-              type: "external_call",
-              level: call.ok ? "info" : "warn",
-              message: `tool: ${call.name}`,
-              data: { args: call.args, result: call.result },
-            });
-          },
-          async (requestBody) => {
-            await trace.event({
-              type: "llm_request",
-              message: "request",
-              data: sanitizeRequestBodyForTrace(requestBody),
-            });
-          },
-          // 4b. One response event per model round, as it happens. A reply that loops
-          // through tools produces several; a direct answer produces one. Recording
-          // the sum instead made those two shapes indistinguishable, which is exactly
-          // what the performance dashboard needs to tell apart.
-          async (round) => {
-            await trace.event({
-              type: "llm_response",
-              message: round.isFinal ? "response" : `tool turn ${round.index + 1} response`,
-              data: round.responseBody ?? {},
-              usage: {
-                ...llmUsageOf(round),
-                callKind: round.isFinal ? "reply-final" : "reply-tool-turn",
-              },
-            });
-          },
-          // A recovered provider failure is still a failure that happened. Left
-          // unrecorded, the trace of a turn that took two attempts is
-          // indistinguishable from one that worked first time, and the endpoint
-          // going flaky stays invisible until it fails outright.
-          async (info) => {
-            await trace.event({
-              type: "step",
-              level: "warn",
-              message: `LLM call failed — retrying (attempt ${info.attempt} of ${info.attempts})`,
-              data: { error: info.error, delayMs: info.delayMs },
-            });
-          },
-          // Same reasoning as the retry above: a turn that needed an extra round
-          // because one produced nothing must not read as a clean turn. This is
-          // the signal that says whether the tool-call-in-the-reasoning failure
-          // (trace `ef8634e5…`) is rare or routine.
-          async (attempt) => {
-            await trace.event({
-              type: "step",
-              level: "warn",
-              message: "round produced no answer and no tool call — asking again",
-              data: { attempt },
-            });
           },
         );
 

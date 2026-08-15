@@ -713,6 +713,11 @@ export async function scanTraces(input: ScanTracesInput = {}): Promise<Trace[]> 
 export interface ListTracesInput {
   feature?: string;
   status?: TraceStatus;
+  /** Every trace of one process (a turn, a job run) — exact trigger correlation. */
+  correlationId?: string;
+  triggerKind?: TraceTrigger["kind"];
+  /** The trigger's actor (a chat id, user id, or job name), exact match. */
+  actor?: string;
   limit?: number;
   offset?: number;
 }
@@ -753,6 +758,11 @@ export async function listTraces(input: ListTracesInput = {}): Promise<ListTrace
   let all = mergeNewestFirst(live, s.sortedFlushed);
   if (input.feature) all = all.filter((t) => t.feature === input.feature);
   if (input.status) all = all.filter((t) => t.status === input.status);
+  if (input.correlationId) {
+    all = all.filter((t) => t.trigger.correlationId === input.correlationId);
+  }
+  if (input.triggerKind) all = all.filter((t) => t.trigger.kind === input.triggerKind);
+  if (input.actor) all = all.filter((t) => t.trigger.actor === input.actor);
 
   const total = all.length;
   const offset = Math.max(input.offset ?? 0, 0);

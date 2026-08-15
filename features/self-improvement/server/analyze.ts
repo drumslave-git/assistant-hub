@@ -6,7 +6,11 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import { extractJsonObject } from "@/lib/json";
-import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import type {
+  ChatCompletionResult,
+  ChatMessage,
+  LlmCallTrace,
+} from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -48,7 +52,7 @@ const FEATURE = FEATURES["self-improvement"];
 /** Collaborators, injected so tests can drive the run deterministically. */
 export interface SelfImprovementDeps {
   /** Generate one fold step (real: `chatCompletion` with the configured model). */
-  complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
   /** Active persona prompt, stated once per fold call as bot context. */
   personalityPrompt?: string | null;
   /** Configured model id — fallback for stamping when the provider reports none. */
@@ -165,21 +169,17 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
   const total = unreflected.size + prefsBacklog.length + correctionsBacklog.length;
   let processed = 0;
 
-  /** One fold call, fully traced (request + response with usage). */
+  /** One fold call, recorded by the shared LLM tracing layer. Null on failure. */
   async function fold(system: string, userContent: string): Promise<ChatCompletionResult | null> {
     const messages: ChatMessage[] = [
       { role: "system", content: system },
       ...(persona ? [{ role: "system" as const, content: persona }] : []),
       { role: "user", content: userContent },
     ];
-    await trace.event({ type: "llm_request", message: "request", data: { messages } });
     try {
-      const result = await deps.complete(messages);
-      await trace.event({
-        type: "llm_response",
-        message: "response",
-        data: result.responseBody ?? { content: result.content },
-        usage: { ...llmUsageOf(result), callKind: "self-improve-analyze" },
+      const result = await deps.complete(messages, {
+        recorder: trace,
+        callKind: "self-improve-analyze",
       });
       return result;
     } catch (err) {

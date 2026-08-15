@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
@@ -9,7 +10,7 @@ import {
 } from "@/components/ui";
 import { Timestamp } from "@/components/time/Timestamp";
 import { formatDuration } from "@/lib/format";
-import type { Trace } from "@/lib/trace";
+import { debugFilterHref, type Trace } from "@/lib/trace";
 import { DownloadButton } from "./DownloadButton";
 import { TraceStatusBadge } from "./TraceStatusBadge";
 import { TraceTimeline } from "./TraceTimeline";
@@ -46,6 +47,10 @@ function RelatedIds({ relatedIds }: { relatedIds: NonNullable<Trace["relatedIds"
  * Shared trace detail view — the single Debug detail layout for every feature:
  * metadata panel, error panel, related rows, ordered event timeline, and a JSON
  * bundle download. Scope/routing is the page's concern; this only renders a trace.
+ *
+ * Every facet in the header links to the Debug list pre-filtered by it: the
+ * status badge, the feature, the trigger, and the correlation (the whole
+ * process this trace belongs to) — an operator drills sideways in one click.
  */
 export function TraceDetail({ trace }: { trace: Trace }) {
   const duration = formatDuration(trace.startedAt, trace.finishedAt);
@@ -57,10 +62,24 @@ export function TraceDetail({ trace }: { trace: Trace }) {
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <CardTitle>{trace.action}</CardTitle>
-              <TraceStatusBadge status={trace.status} />
+              <Link
+                href={debugFilterHref({ status: trace.status })}
+                className="inline-flex hover:opacity-80"
+                title={`Show ${trace.status} traces`}
+              >
+                <TraceStatusBadge status={trace.status} />
+              </Link>
             </div>
             <p className="font-mono text-xs text-faint">
-              {trace.feature} · {trace.id}
+              <Link
+                href={debugFilterHref({ feature: trace.feature })}
+                className="hover:text-primary hover:underline"
+                title={`Show ${trace.feature} traces`}
+              >
+                {trace.feature}
+              </Link>
+              {" · "}
+              {trace.id}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -71,10 +90,29 @@ export function TraceDetail({ trace }: { trace: Trace }) {
         <CardContent>
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Meta label="Trigger">
-              {trace.trigger.kind}
-              {trace.trigger.actor ? ` · ${trace.trigger.actor}` : ""}
+              <Link
+                href={debugFilterHref({
+                  triggerKind: trace.trigger.kind,
+                  actor: trace.trigger.actor,
+                })}
+                className="hover:text-primary hover:underline"
+                title="Show traces with this trigger"
+              >
+                {trace.trigger.kind}
+                {trace.trigger.actor ? ` · ${trace.trigger.actor}` : ""}
+              </Link>
             </Meta>
-            <Meta label="Correlation">{trace.trigger.correlationId ?? null}</Meta>
+            <Meta label="Correlation">
+              {trace.trigger.correlationId ? (
+                <Link
+                  href={debugFilterHref({ correlationId: trace.trigger.correlationId })}
+                  className="font-mono text-xs hover:text-primary hover:underline"
+                  title="Show every trace of this process"
+                >
+                  {trace.trigger.correlationId}
+                </Link>
+              ) : null}
+            </Meta>
             <Meta label="Duration">{duration ?? null}</Meta>
             <Meta label="Started">
               <Timestamp iso={trace.startedAt} />

@@ -1,6 +1,7 @@
 import type { TraceEvent, TraceEventType, TraceLevel } from "@/lib/trace";
 import { Timestamp } from "@/components/time/Timestamp";
 import { ScrollArea } from "@/components/ui";
+import { callKindLabel } from "@/features/analytics/llm-call-kind";
 import { formatDuration } from "@/lib/format";
 import { JsonBlock } from "./JsonBlock";
 
@@ -49,9 +50,19 @@ function UsageLine({ usage }: { usage: NonNullable<TraceEvent["usage"]> }) {
     stats.push(["total", String(usage.totalTokens)]);
   if (usage.latencyMs !== undefined)
     stats.push(["latency", `${Math.round(usage.latencyMs)}ms`]);
-  if (!usage.model && stats.length === 0) return null;
+  if (!usage.model && !usage.callKind && stats.length === 0) return null;
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      {usage.callKind ? (
+        // What the call was *for* — the axis analytics groups on, named where
+        // the operator reads the exchange rather than only on the dashboard.
+        <span
+          className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted"
+          title={usage.callKind}
+        >
+          {callKindLabel(usage.callKind)}
+        </span>
+      ) : null}
       {usage.model ? (
         <span
           className="max-w-full truncate rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-muted"

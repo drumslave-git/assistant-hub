@@ -2,13 +2,8 @@ import "server-only";
 
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
-import type { LlmConnection, ChatMessage } from "@/server/llm/client";
-import {
-  chatCompletionWithTools,
-  type RoundReport,
-  type ToolCallRecord,
-  type ToolLoopRound,
-} from "@/server/llm/tool-loop";
+import type { LlmCallTrace, LlmConnection, ChatMessage } from "@/server/llm/client";
+import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 
 import { BROWSER_AGENT_TOOLS, makeBrowserToolDispatcher, type AgentToolContext } from "./tools";
 
@@ -207,10 +202,8 @@ export interface RunAgentParams {
   toolContext: AgentToolContext;
   /** Reply language required for the destination chat, or null for the default. */
   requiredLanguage: string | null;
-  /** Trace hooks, forwarded to the shared loop. */
-  onRequest?: (requestBody: unknown) => void | Promise<void>;
-  onToolCall?: (record: ToolCallRecord) => void | Promise<void>;
-  onRound?: (round: ToolLoopRound, report: RoundReport) => void | Promise<void>;
+  /** Recording options for the shared LLM tracing layer, forwarded to the loop. */
+  trace?: LlmCallTrace;
 }
 
 /**
@@ -248,9 +241,7 @@ export async function runBrowserAgent(params: RunAgentParams): Promise<AgentRunR
     messages,
     tools: BROWSER_AGENT_TOOLS,
     callTool: makeBrowserToolDispatcher(params.toolContext),
-    onRequest: params.onRequest,
-    onToolCall: params.onToolCall,
-    onRound: params.onRound,
+    ...(params.trace ? { trace: params.trace } : {}),
     compact: compactAgentConversation,
     // Unbounded by decision — the stall guard is the only stop.
     maxRounds: Number.POSITIVE_INFINITY,

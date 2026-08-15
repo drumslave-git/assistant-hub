@@ -61,6 +61,51 @@ export const traceTriggerSchema = z.object({
 });
 export type TraceTrigger = z.infer<typeof traceTriggerSchema>;
 
+/**
+ * Filterable trace facets, as they appear in `/debug` URLs. The one vocabulary
+ * shared by the Debug page's query parsing, the filter controls, and every
+ * clickable facet on a trace (feature, status, trigger, correlation) — so a
+ * click, a typed URL, and a dropdown can never drift apart.
+ */
+export interface TraceFilterParams {
+  feature?: string;
+  status?: TraceStatus;
+  correlationId?: string;
+  triggerKind?: TraceTrigger["kind"];
+  actor?: string;
+  offset?: number;
+}
+
+/** Canonical Debug-list URL for a filter set — every clickable trace facet builds here. */
+export function debugFilterHref(params: TraceFilterParams, basePath = "/debug"): string {
+  const search = new URLSearchParams();
+  if (params.feature) search.set("feature", params.feature);
+  if (params.status) search.set("status", params.status);
+  if (params.correlationId) search.set("correlationId", params.correlationId);
+  if (params.triggerKind) search.set("triggerKind", params.triggerKind);
+  if (params.actor) search.set("actor", params.actor);
+  if (params.offset) search.set("offset", String(params.offset));
+  const qs = search.toString();
+  return qs ? `${basePath}?${qs}` : basePath;
+}
+
+/**
+ * Correlation id for one background-job run, shared by every trace that run
+ * opens — the nightly memory sweep stamps it on each chat-day extraction, the
+ * vision backfill on each described media — so `/debug?correlationId=…` shows
+ * a whole run start to end. Readable on purpose (job + start time): an operator
+ * seeing it on a trace can tell *which* run without a lookup. A trace opened
+ * with no correlation at all self-correlates instead (see `startTrace`).
+ */
+export function newRunCorrelationId(job: string, now: Date = new Date()): string {
+  const stamp = now
+    .toISOString()
+    .slice(0, 19)
+    .replace(/[-:]/g, "")
+    .replace("T", "-");
+  return `${job}:${stamp}`;
+}
+
 /** Token usage for LLM-related events. */
 export const llmUsageSchema = z.object({
   /**

@@ -2,7 +2,12 @@ import "server-only";
 
 import type { LlmRuntime } from "@/features/settings/server/service";
 import type { ReasoningMode } from "./backends";
-import { chatCompletion, type ChatCompletionResult, type ChatMessage } from "./client";
+import {
+  chatCompletion,
+  type ChatCompletionResult,
+  type ChatMessage,
+  type LlmCallTrace,
+} from "./client";
 
 /**
  * The **classification** call shape, shared by everything that asks the model
@@ -98,6 +103,7 @@ export function runClassifier(
   runtime: LlmRuntime,
   messages: ChatMessage[],
   budget?: ClassifierBudget,
+  trace?: LlmCallTrace,
 ): Promise<ChatCompletionResult> {
   return chatCompletion(
     { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend },
@@ -107,6 +113,7 @@ export function runClassifier(
       maxTokens: budget?.maxTokens ?? CLASSIFIER_MAX_TOKENS,
       ...(budget?.timeoutMs !== undefined ? { timeoutMs: budget.timeoutMs } : {}),
       reasoning: CLASSIFIER_REASONING,
+      ...(trace ? { trace } : {}),
     },
   );
 }

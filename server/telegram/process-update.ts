@@ -86,11 +86,10 @@ import {
 } from "@/server/llm/classifier";
 import {
   chatCompletion,
-  llmUsageOf,
   REPLY_CHAT_COMPLETION_TIMEOUT_MS,
-  servedModelOf,
   type ChatContentPart,
   type ChatMessage,
+  type LlmCallTrace,
 } from "@/server/llm/client";
 import { getDb } from "@/db/drizzle";
 import { findMessageRefs } from "@/lib/telegram";
@@ -111,14 +110,18 @@ import type { IncomingUpdate, ReplyTransport } from "./transport";
  * given it neither, so an installation that never touches the Classifiers tab
  * behaves exactly as it did before the role existed.
  */
-async function classify(messages: ChatMessage[], budget?: ClassifierBudget) {
+async function classify(
+  messages: ChatMessage[],
+  budget?: ClassifierBudget,
+  trace?: LlmCallTrace,
+) {
   const runtime = await getClassifierRuntime();
   if (!runtime) {
     throw ApiError.serviceUnavailable(
       "LLM is not configured — set the endpoint and model in Settings",
     );
   }
-  return runClassifier(runtime, messages, budget);
+  return runClassifier(runtime, messages, budget, trace);
 }
 
 /**
@@ -506,7 +509,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     recordReply: (input) => recordDeliveredMessage(input.telegramMessageId, input.content),
     generateReply:
       overrides?.generateReply ??
-      (async (messages: ChatMessage[], onToolCall, onRequest, onRound, onRetry, onEmptyRound) => {
+      (async (messages: ChatMessage[], callTrace, onToolCall) => {
         const runtime = await getLlmRuntime();
         if (!runtime) {
           throw ApiError.serviceUnavailable(
@@ -521,26 +524,13 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         // its own text is already on its way to the chat.
         const toolset = await getToolset(taskOpenedTurn ? { delivery: "reply" } : undefined);
         if (!toolset) {
-          const result = await chatCompletion(conn, {
+          return chatCompletion(conn, {
             model: runtime.model,
             messages,
             maxTokens: REPLY_MAX_TOKENS,
             timeoutMs: REPLY_CHAT_COMPLETION_TIMEOUT_MS,
-            onRequest,
-            onRetry,
+            trace: callTrace,
           });
-          // Reported as a round too, so the caller records rounds and only rounds —
-          // one code path on the trace whether or not tools were in play.
-          await onRound?.({
-            index: 0,
-            isFinal: true,
-            model: result.model,
-            servedModel: result.servedModel,
-            usage: result.usage,
-            latencyMs: result.latencyMs,
-            responseBody: result.responseBody,
-          });
-          return result;
         }
         // Run the tool-call loop with the current chat bound, so tools only ever
         // read this conversation's data. The sender + thread are bound too, so a
@@ -551,6 +541,9 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           {
             chatId,
             userId: senderId,
+            // The turn's correlation — every tool call's own trace carries it,
+            // so the reply and its tool traces read as one process in Debug.
+            correlationId: `${chatId}:${currentMessageId}`,
             // Permissions only, and only when a standing task drove this turn:
             // the task's author lends the rights, the sender keeps the identity
             // (`userId` above still decides who authored a memory or a task).
@@ -589,39 +582,31 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             callTool: toolset.callTool,
             maxTokens: REPLY_MAX_TOKENS,
             timeoutMs: REPLY_CHAT_COMPLETION_TIMEOUT_MS,
-            onRequest,
-            onRetry,
-            onEmptyRound,
+            trace: callTrace,
             onToolCall: (rec) =>
               onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
-            onRound: (round, report) =>
-              onRound?.({
-                index: report.index,
-                isFinal: report.isFinal,
-                // The round's identity is the model we asked for; the provider's own
-                // answer (which may be a resolved bundle path) stays separate.
-                model: runtime.model,
-                servedModel: servedModelOf(round.raw),
-                usage: round.usage,
-                latencyMs: round.latencyMs,
-                responseBody: round.raw,
-              }),
           }),
         );
       }),
     // Settles a group message that named nobody recognizable but might still be
     // calling the bot by name in another alphabet or an inflected form.
-    analyzeAddressing: overrides?.analyzeAddressing ?? classify,
+    analyzeAddressing:
+      overrides?.analyzeAddressing ??
+      ((messages, callTrace) => classify(messages, undefined, callTrace)),
     // Checks a drafted reply that called no tool for a claim that something was
     // done (`features/bot-messaging/server/action-claim.ts`). Same call shape as
     // the analyzer above, over the answer instead of the incoming message, on a
     // much tighter budget — a gate that cannot decide quickly is one the user is
     // better off not waiting for.
-    checkActionClaim: (messages: ChatMessage[]) =>
-      classify(messages, {
-        maxTokens: HONESTY_GATE_MAX_TOKENS,
-        timeoutMs: HONESTY_GATE_TIMEOUT_MS,
-      }),
+    checkActionClaim: (messages, callTrace) =>
+      classify(
+        messages,
+        {
+          maxTokens: HONESTY_GATE_MAX_TOKENS,
+          timeoutMs: HONESTY_GATE_TIMEOUT_MS,
+        },
+        callTrace,
+      ),
     // The words the chat has already reported as *not* the bot's name, so the
     // analyzer stops answering to someone else's name. Read only when the
     // analyzer actually runs (the service calls this lazily).
@@ -676,17 +661,10 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
               chatType: message.chat.type,
               senderLabel: senderId ? labels.get(senderId) : null,
             });
-            await replyTrace.event({
-              type: "llm_request",
-              message: "task match request",
-              data: { messages },
-            });
-            const result = await runClassifier(runtime, messages);
-            await replyTrace.event({
-              type: "llm_response",
-              message: "task match response",
-              data: result.responseBody ?? { content: result.content },
-              usage: { ...llmUsageOf(result), callKind: "task-match" },
+            const result = await runClassifier(runtime, messages, undefined, {
+              recorder: replyTrace,
+              callKind: "task-match",
+              label: "task match",
             });
 
             const verdict = parseTaskMatchVerdict(result.content, { tasks: matchable, text });

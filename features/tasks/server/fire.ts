@@ -4,10 +4,12 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { buildSystemPrompt } from "@/features/bot-messaging/server/prompt";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
-import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
-import { llmUsageOf, sanitizeMessagesForTrace } from "@/server/llm/client";
+import type {
+  ChatCompletionResult,
+  ChatMessage,
+  LlmCallTrace,
+} from "@/server/llm/client";
 import { runWithToolContext } from "@/server/mcp/context";
-import type { McpToolCallResult } from "@/server/mcp/tool-result";
 import { startTrace } from "@/server/trace";
 
 import type { Task } from "../types";
@@ -40,14 +42,6 @@ import type { Task } from "../types";
 
 const FEATURE = FEATURES.tasks;
 
-/** One tool call executed during a fire, reported for trace recording. */
-export interface FireToolCall {
-  name: string;
-  args: Record<string, unknown>;
-  result: McpToolCallResult;
-  ok: boolean;
-}
-
 /** Collaborators the fire needs. */
 export interface FireDeps {
   /** The active personality prompt to compose into the system prompt, or null. */
@@ -73,13 +67,10 @@ export interface FireDeps {
   /**
    * Run the completion (real: `chatCompletionWithTools` with the outbound
    * toolset). Throws on provider/config failure. Runs inside the task chat's
-   * tool context; each executed tool call is reported via `onToolCall` so the
-   * fire trace records it.
+   * tool context; the whole exchange (request, rounds, tool calls, retries) is
+   * recorded on the fire trace by the shared LLM tracing layer via `trace`.
    */
-  complete: (
-    messages: ChatMessage[],
-    onToolCall?: (call: FireToolCall) => void | Promise<void>,
-  ) => Promise<ChatCompletionResult>;
+  complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
   /**
    * Raw delivery to the task's chat (real: the bot's `sendChatMessage`);
    * resolves the delivered message id. The fire wraps it as the tool context's
@@ -206,10 +197,9 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
       },
     ];
     await trace.event({
-      type: "llm_request",
-      message: "request",
+      type: "step",
+      message: "fire prompt composed",
       data: {
-        messages: sanitizeMessagesForTrace(messages),
         specialistApplied: Boolean(deps.specialistInstructions?.trim()),
         standingTasksApplied: Boolean(deps.standingTasks?.trim()),
       },
@@ -263,18 +253,18 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
         {
           chatId: task.chatId!,
           userId: task.createdByUserId ?? null,
+          // The fire's correlation is the task id (what its trace opened with),
+          // so the fire and any tool calls it makes group in Debug.
+          correlationId: task.id,
           threadId: task.threadId ?? null,
           deliveryKind: "send",
           deliver,
         },
         () =>
-          deps.complete(messages, async (call) => {
-            await trace.event({
-              type: "external_call",
-              level: call.ok ? "info" : "warn",
-              message: `tool: ${call.name}`,
-              data: { args: call.args, result: call.result },
-            });
+          deps.complete(messages, {
+            recorder: trace,
+            callKind: "task-fire",
+            toolTurnCallKind: "task-fire",
           }),
       );
     } catch (err) {
@@ -287,12 +277,6 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
       await trace.skip(undefined, { outputSummary: "generation failed" });
       return { ok: false, sent };
     }
-    await trace.event({
-      type: "llm_response",
-      message: "response",
-      data: reply.responseBody ?? { content: reply.content },
-      usage: { ...llmUsageOf(reply), callKind: "task-fire" },
-    });
 
     // Delivery was attempted and nothing got through: the task wanted to speak
     // and could not — the retryable failure. A fire that attempted nothing is a

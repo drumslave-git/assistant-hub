@@ -5,7 +5,12 @@ import { getDb } from "@/db/drizzle";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import { getBackgroundRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
-import { chatCompletion, llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import {
+  chatCompletion,
+  type ChatCompletionResult,
+  type ChatMessage,
+  type LlmCallTrace,
+} from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 import { normalizeModelName } from "../model-name";
@@ -37,7 +42,7 @@ const FEATURE = FEATURES["user-feedback"];
 /** Collaborators, injected so tests can drive a reflection deterministically. */
 export interface ReflectionDeps {
   /** Run the reflection call (real: `chatCompletion` with the configured model). */
-  complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
   /** Active persona prompt, stated as bot context so the bot judges itself as itself. */
   personalityPrompt?: string | null;
   /** Configured model id — fallback for stamping when the provider reports none. */
@@ -127,11 +132,12 @@ export async function reflectOnFeedback(
       ...(persona ? [{ role: "system" as const, content: persona }] : []),
       { role: "user", content: `${context}\n\n${feedbackBlock(feedback)}` },
     ];
-    await trace.event({ type: "llm_request", message: "request", data: { messages } });
-
     let result: ChatCompletionResult;
     try {
-      result = await deps.complete(messages);
+      result = await deps.complete(messages, {
+        recorder: trace,
+        callKind: "self-improve-reflect",
+      });
     } catch (err) {
       await trace.event({
         type: "error",
@@ -142,12 +148,6 @@ export async function reflectOnFeedback(
       await trace.skip("reflection call failed");
       return null;
     }
-    await trace.event({
-      type: "llm_response",
-      message: "response",
-      data: result.responseBody ?? { content: result.content },
-      usage: { ...llmUsageOf(result), callKind: "self-improve-reflect" },
-    });
 
     const reflection = result.content.trim();
     if (!reflection) {
@@ -185,8 +185,13 @@ export async function resolveReflectionDeps(db?: DrizzleDb): Promise<ReflectionD
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
   const personalityPrompt = await getActivePersonalityPrompt().catch(() => null);
   return {
-    complete: (messages) =>
-      chatCompletion(conn, { model: runtime.model, messages, priority: "background" }),
+    complete: (messages, trace) =>
+      chatCompletion(conn, {
+        model: runtime.model,
+        messages,
+        priority: "background",
+        ...(trace ? { trace } : {}),
+      }),
     personalityPrompt,
     model: runtime.model,
     db,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { traceStatusSchema } from "@/lib/trace";
+import { traceStatusSchema, traceTriggerSchema } from "@/lib/trace";
 
 /**
  * Query schema for the Debug trace list and bundle-export endpoints. Coerces the
@@ -10,6 +10,11 @@ import { traceStatusSchema } from "@/lib/trace";
 export const traceQuerySchema = z.object({
   feature: z.string().min(1).optional(),
   status: traceStatusSchema.optional(),
+  /** Every trace of one process (a turn, a job run) — see `TraceTrigger.correlationId`. */
+  correlationId: z.string().min(1).optional(),
+  triggerKind: traceTriggerSchema.shape.kind.optional(),
+  /** The trigger's actor (a chat id, user id, or job name), exact match. */
+  actor: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });

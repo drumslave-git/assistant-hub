@@ -30,8 +30,13 @@ async function runIncorporation(ctx?: IntervalRunContext): Promise<string> {
   const outcome = await withAdvisoryLock("self-improvement", async () => {
     const personalityPrompt = await getActivePersonalityPrompt().catch(() => null);
     return runSelfImprovement({
-      complete: (messages) =>
-        chatCompletion(conn, { model: runtime.model, messages, priority: "background" }),
+      complete: (messages, trace) =>
+        chatCompletion(conn, {
+          model: runtime.model,
+          messages,
+          priority: "background",
+          ...(trace ? { trace } : {}),
+        }),
       personalityPrompt,
       model: runtime.model,
       onProgress: ctx?.reportProgress,

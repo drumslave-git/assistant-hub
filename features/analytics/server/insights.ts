@@ -4,7 +4,11 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { normalizeModelName } from "@/features/self-improvement/model-name";
 import { FEATURES } from "@/lib/features";
-import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import type {
+  ChatCompletionResult,
+  ChatMessage,
+  LlmCallTrace,
+} from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -78,7 +82,7 @@ const MAX_HOURS_PER_RUN = 500;
 const MAX_PERIODS_PER_RUN = 800;
 
 export interface AnalyticsInsightsDeps {
-  complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
   timeZone: string;
   now?: Date;
   /** Publish live per-hour / per-period progress (drives the Jobs dashboard). */
@@ -254,7 +258,7 @@ async function runInsightPass(
 
   const result = { ...EMPTY };
 
-  /** One LLM pass, fully traced. Null on failure. */
+  /** One LLM pass, recorded by the shared LLM tracing layer. Null on failure. */
   async function complete(
     system: string,
     userContent: string,
@@ -265,14 +269,11 @@ async function runInsightPass(
       { role: "user", content: userContent },
     ];
     const label = callKind === "insight-hour" ? "hour insight" : "period roll-up";
-    await trace.event({ type: "llm_request", message: `${label} request`, data: { messages } });
     try {
-      const completion = await deps.complete(messages);
-      await trace.event({
-        type: "llm_response",
-        message: `${label} response`,
-        data: completion.responseBody ?? { content: completion.content },
-        usage: { ...llmUsageOf(completion), callKind },
+      const completion = await deps.complete(messages, {
+        recorder: trace,
+        callKind,
+        label,
       });
       return { content: completion.content, model: normalizeModelName(completion.model) };
     } catch (err) {

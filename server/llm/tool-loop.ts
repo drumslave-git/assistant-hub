@@ -13,11 +13,16 @@ import {
   CHAT_COMPLETION_TIMEOUT_MS,
   CONTEXT_EXHAUSTED_MESSAGE,
   finishReasonOf,
+  llmEventTitle,
+  recordLlmRequest,
+  recordLlmResponse,
+  recordLlmRetry,
   servedModelOf,
   withLlmRetry,
   type ChatCompletionResult,
   type ChatMessage,
   type ChatUsage,
+  type LlmCallTrace,
   type LlmConnection,
   type LlmRetryInfo,
 } from "./client";
@@ -484,6 +489,14 @@ export async function chatCompletionWithTools(
     maxTokens?: number;
     /** What to ask of a thinking model per round — see `chatCompletion`'s `reasoning`. */
     reasoning?: ReasoningMode;
+    /**
+     * Record this call on the given trace — the initial request (endpoint + full
+     * body, tools included), each round's response with its call kind (final →
+     * `callKind`, tool turns → `toolTurnCallKind`), every tool call, retries,
+     * and empty-round re-asks. The shared recording path; feature code must
+     * pass this rather than writing its own events.
+     */
+    trace?: LlmCallTrace;
   },
 ): Promise<ChatCompletionResult> {
   const seed = toSeedMessages(input.messages);
@@ -498,11 +511,13 @@ export async function chatCompletionWithTools(
   };
   const timeout = input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS;
   const priority = input.priority ?? "interactive";
+  const trace = input.trace;
 
   // Report the initial request body (model + messages + tools) before the first
   // round so the trace records what the model was actually sent, in order — the
   // request precedes any tool-call events the loop then produces.
   await input.onRequest?.(requestBody);
+  await recordLlmRequest(conn, trace, requestBody);
 
   // One factory for both round kinds so the forced final answer is exactly the
   // same request minus the tools (a model that cannot ask for tools must answer).
@@ -548,7 +563,14 @@ export async function chatCompletionWithTools(
               raw: round.responseBody,
             };
           }),
-        { baseUrl: conn.baseUrl, priority, onRetry: input.onRetry },
+        {
+          baseUrl: conn.baseUrl,
+          priority,
+          onRetry: async (info) => {
+            await recordLlmRetry(trace, info);
+            await input.onRetry?.(info);
+          },
+        },
       );
 
   const result = await runToolLoop({
@@ -556,9 +578,52 @@ export async function chatCompletionWithTools(
     complete: completeWith(input.tools),
     completeFinal: completeWith(undefined),
     callTool: input.callTool,
-    onToolCall: input.onToolCall,
-    onRound: input.onRound,
-    onEmptyRound: input.onEmptyRound,
+    // Recording wraps the caller's callbacks rather than replacing them, so a
+    // feature can still count or react while the events stay shared-shape.
+    onToolCall: async (record) => {
+      if (trace) {
+        await trace.recorder.event({
+          type: "external_call",
+          level: record.ok ? "info" : "warn",
+          message: `tool: ${record.name}`,
+          data: { args: record.args, result: record.result },
+        });
+      }
+      await input.onToolCall?.(record);
+    },
+    onRound: async (round, report) => {
+      if (trace) {
+        await recordLlmResponse(
+          trace,
+          {
+            model: input.model,
+            servedModel: servedModelOf(round.raw),
+            usage: round.usage,
+            latencyMs: round.latencyMs,
+            responseBody: round.raw,
+            content: round.content,
+          },
+          {
+            title: report.isFinal
+              ? llmEventTitle(trace, "response")
+              : llmEventTitle(trace, `tool turn ${report.index + 1} response`),
+            callKind: report.isFinal ? trace.callKind : (trace.toolTurnCallKind ?? trace.callKind),
+          },
+        );
+      }
+      await input.onRound?.(round, report);
+    },
+    onEmptyRound: async (attempt) => {
+      if (trace) {
+        await trace.recorder.event({
+          type: "step",
+          level: "warn",
+          message: "round produced no answer and no tool call — asking again",
+          data: { attempt },
+        });
+      }
+      await input.onEmptyRound?.(attempt);
+    },
     compact: input.compact,
     maxRounds: input.maxRounds ?? DEFAULT_MAX_ROUNDS,
   });

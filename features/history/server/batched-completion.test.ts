@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { TraceEvent } from "@/lib/trace";
-import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import type { ChatCompletionResult, ChatMessage, LlmCallTrace } from "@/server/llm/client";
 import type { EventInput } from "@/server/trace";
 
 import type { SummarizableMessage } from "../summary";
@@ -59,10 +59,13 @@ function buildRequest(batch: readonly SummarizableMessage[]): ChatMessage[] {
   ];
 }
 
+/** The dep's shape, so `mock.calls` carries the trace options the loop passes. */
+type Complete = (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
+
 /** A model that rejects any user turn longer than `limit` chars as an overflow. */
 function modelWithContextLimit(limit: number) {
   let pass = 0;
-  return vi.fn(async (messages: ChatMessage[]) => {
+  return vi.fn<Complete>(async (messages) => {
     if ((messages[1].content as string).length > limit) throw new Error(OVERFLOW_MESSAGE);
     pass += 1;
     return completion(`pass ${pass}`);
@@ -70,9 +73,9 @@ function modelWithContextLimit(limit: number) {
 }
 
 describe("completeTranscriptBatches", () => {
-  it("runs a small day as a single unlabelled pass", async () => {
-    const { events, trace } = captureTrace();
-    const complete = vi.fn(async () => completion("ok"));
+  it("runs a small day as a single pass, handing the call its recording options", async () => {
+    const { trace } = captureTrace();
+    const complete = vi.fn<Complete>(async () => completion("ok"));
 
     const contents = await completeTranscriptBatches({
       messages: [msg(1, 100), msg(2, 100)],
@@ -84,10 +87,15 @@ describe("completeTranscriptBatches", () => {
 
     expect(contents).toEqual(["ok"]);
     expect(complete).toHaveBeenCalledTimes(1);
-    expect(events.map((e) => e.message)).toEqual(["request", "response"]);
+    // The shared LLM tracing layer does the recording; this loop's job is to
+    // pass the trace, the call kind, and no batch label on a single pass.
+    expect(complete.mock.calls[0][1]).toEqual({
+      recorder: trace,
+      callKind: "history-summarize",
+    });
   });
 
-  it("splits a large day into labelled batches", async () => {
+  it("splits a large day into batches labelled for the trace", async () => {
     const { events, trace } = captureTrace();
     const complete = modelWithContextLimit(Number.MAX_SAFE_INTEGER);
 
@@ -101,12 +109,12 @@ describe("completeTranscriptBatches", () => {
     });
 
     expect(contents).toEqual(["pass 1", "pass 2"]);
-    expect(events.map((e) => e.message)).toEqual([
-      "transcript batched",
-      "request (batch 1/2)",
-      "response (batch 1/2)",
-      "request (batch 2/2)",
-      "response (batch 2/2)",
+    expect(events.map((e) => e.message)).toEqual(["transcript batched"]);
+    // Each batch's call carries its own label, so the recorded events read
+    // "batch 1/2 request" / "batch 1/2 response" in the trace.
+    expect(complete.mock.calls.map((c) => (c[1] as { label?: string } | undefined)?.label)).toEqual([
+      "batch 1/2",
+      "batch 2/2",
     ]);
   });
 

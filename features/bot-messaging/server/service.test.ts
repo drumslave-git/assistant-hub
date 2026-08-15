@@ -16,11 +16,39 @@ vi.mock("@/db/drizzle", () => ({ getDb: () => ({}) }));
 import { openPolicy } from "@/test/__mocks__/policy";
 import { BOT, BOT_USER, makeMessage } from "@/test/__mocks__/telegram";
 import { imagePart } from "@/test/__mocks__/vision";
+import {
+  recordLlmRequest,
+  recordLlmResponse,
+  recordLlmRetry,
+  type LlmCallTrace,
+} from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
 import { TASK_ENFORCEMENT_DIRECTIVE } from "@/features/tasks/format";
 import { ACTION_CLAIM_ENFORCEMENT_DIRECTIVE, ACTION_NOT_TAKEN_REPLY } from "./action-claim";
 import { BASE_SYSTEM_PROMPT } from "./prompt";
 import { handleIncomingMessage, type BotMessagingDeps, type IncomingMessage } from "./service";
+
+/** The connection the fakes pretend to send to (named in recorded request events). */
+const TEST_CONN = { baseUrl: "https://llm.test/v1" };
+
+/**
+ * Mirror the real generator: record the exchange through the shared LLM tracing
+ * layer exactly as `chatCompletion` does, so the event assertions in this file
+ * pin the same titles and shapes production writes.
+ */
+async function recordExchange(
+  trace: LlmCallTrace | undefined,
+  messages: unknown,
+  result: { content: string; model: string; latencyMs: number; responseBody?: unknown },
+) {
+  await recordLlmRequest(TEST_CONN, trace, { model: result.model, messages });
+  await recordLlmResponse(trace, {
+    model: result.model,
+    latencyMs: result.latencyMs,
+    responseBody: result.responseBody,
+    content: result.content,
+  });
+}
 
 function incoming(partial: Partial<IncomingMessage>): IncomingMessage {
   return {
@@ -43,18 +71,14 @@ function deps(over: Partial<BotMessagingDeps> = {}): BotMessagingDeps {
   return {
     bot: BOT,
     policy: OPEN_POLICY,
-    // Mirror the real generator: report the request body (via onRequest) and each
-    // model round (via onRound) before returning, so the reply trace records the
-    // "request" and "response" events like production. A reply with no tools is one
-    // round, and that round is the final answer.
-    generateReply: vi
-      .fn()
-      .mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
-        await onRequest?.({ model: "m", messages });
-        const result = { content: "hi back", model: "m", latencyMs: 5 };
-        await onRound?.({ index: 0, isFinal: true, ...result });
-        return result;
-      }),
+    // Mirror the real generator: the shared LLM tracing layer records the
+    // "request" and "response" events, driven by the trace options the service
+    // passes. A reply with no tools is one round, and that round is the answer.
+    generateReply: vi.fn().mockImplementation(async (messages, trace) => {
+      const result = { content: "hi back", model: "m", latencyMs: 5 };
+      await recordExchange(trace, messages, result);
+      return result;
+    }),
     sendReply: vi.fn().mockResolvedValue({ messageId: 99 }),
     loadHistory: vi.fn().mockResolvedValue({ messages: [], count: 0 }),
     recordReply: vi.fn().mockResolvedValue(undefined),
@@ -548,14 +572,11 @@ describe("handleIncomingMessage", () => {
     const reply = "y".repeat(300);
     const responseBody = { id: "cmpl-1", choices: [{ message: { content: reply } }] };
     const d = deps({
-      generateReply: vi
-        .fn()
-        .mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
-          await onRequest?.({ model: "m", messages });
-          const result = { content: reply, model: "m", latencyMs: 5, responseBody };
-          await onRound?.({ index: 0, isFinal: true, ...result });
-          return result;
-        }),
+      generateReply: vi.fn().mockImplementation(async (messages, trace) => {
+        const result = { content: reply, model: "m", latencyMs: 5, responseBody };
+        await recordExchange(trace, messages, result);
+        return result;
+      }),
     });
     await handleIncomingMessage(incoming({ text: longText }), d);
 
@@ -598,23 +619,38 @@ describe("handleIncomingMessage", () => {
 
   it("records tool calls reported by the generator as external_call events on the reply trace", async () => {
     // A generator that loops once through a tool before answering — the real shape:
-    // round 0 asks for the tool, the tool runs, round 1 is the answer.
+    // round 0 asks for the tool, the tool runs, round 1 is the answer. Recording
+    // mirrors what the shared tool loop writes for each of those.
     const d = deps({
-      generateReply: vi
-        .fn()
-        .mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
-          await onRequest?.({ model: "m", messages });
-          await onRound?.({ index: 0, isFinal: false, model: "m", latencyMs: 900 });
-          await onToolCall?.({
-            name: "history_search",
-            args: { query: "pizza" },
-            result: { text: "found 2 messages" },
-            ok: true,
-          });
-          const result = { content: "here you go", model: "m", latencyMs: 5 };
-          await onRound?.({ index: 1, isFinal: true, ...result });
-          return result;
-        }),
+      generateReply: vi.fn().mockImplementation(async (messages, trace, onToolCall) => {
+        await recordLlmRequest(TEST_CONN, trace, { model: "m", messages });
+        await recordLlmResponse(
+          trace,
+          { model: "m", latencyMs: 900, responseBody: undefined },
+          { title: "tool turn 1 response", callKind: trace?.toolTurnCallKind },
+        );
+        const call = {
+          name: "history_search",
+          args: { query: "pizza" },
+          result: { text: "found 2 messages" },
+          ok: true,
+        };
+        await trace?.recorder.event({
+          type: "external_call",
+          level: "info",
+          message: `tool: ${call.name}`,
+          data: { args: call.args, result: call.result },
+        });
+        await onToolCall?.(call);
+        const result = { content: "here you go", model: "m", latencyMs: 5 };
+        await recordLlmResponse(trace, {
+          model: "m",
+          latencyMs: 5,
+          responseBody: undefined,
+          content: result.content,
+        });
+        return result;
+      }),
     });
     const out = await handleIncomingMessage(incoming({ text: "what did we say about pizza?" }), d);
     expect(out).toEqual({ status: "replied", text: "here you go" });
@@ -730,10 +766,9 @@ describe("handleIncomingMessage — context-overflow retry", () => {
   function generatorFailing(failures: number) {
     const fn = vi.fn();
     for (let i = 0; i < failures; i++) fn.mockRejectedValueOnce(overflow());
-    return fn.mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
-      await onRequest?.({ model: "m", messages });
+    return fn.mockImplementation(async (messages, trace) => {
       const result = { content: "hi back", model: "m", latencyMs: 5 };
-      await onRound?.({ index: 0, isFinal: true, ...result });
+      await recordExchange(trace, messages, result);
       return result;
     });
   }
@@ -846,16 +881,21 @@ describe("handleIncomingMessage — LLM addressing check", () => {
       ? `{"name_match": "${nameMatch}", "matched_text": "${matchedText}"}`
       : `{"name_match": "${nameMatch}"}`;
     const confirmation = `{"base_form": "x", "refers_to": "x", "is_display_name": ${verified}}`;
-    const respond = (content: string) => ({
-      content,
-      model: "m",
-      latencyMs: 3,
-      responseBody: { id: "cmpl-1" },
+    const answers = [classification, confirmation];
+    let call = 0;
+    // Records itself through the shared layer like the real classifier, so the
+    // event titles asserted below come from the labels the service passes.
+    return vi.fn().mockImplementation(async (messages, trace) => {
+      const content = answers[Math.min(call++, answers.length - 1)];
+      const result = {
+        content,
+        model: "m",
+        latencyMs: 3,
+        responseBody: { id: "cmpl-1" },
+      };
+      await recordExchange(trace, messages, result);
+      return result;
     });
-    return vi
-      .fn()
-      .mockResolvedValueOnce(respond(classification))
-      .mockResolvedValue(respond(confirmation));
   }
 
   it("replies when the analyzer finds the name in another alphabet", async () => {
@@ -1217,11 +1257,10 @@ describe("handleIncomingMessage — standing tasks", () => {
    * generator answers with words only, which on a rule turn is now suppressed.
    */
   const actsOnTheRule = () =>
-    vi.fn().mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
-      await onRequest?.({ model: "m", messages });
+    vi.fn().mockImplementation(async (messages, trace, onToolCall) => {
       await onToolCall?.({ name: "browse_web", args: {}, result: { text: "queued" }, ok: true });
       const result = { content: "hi back", model: "m", latencyMs: 5 };
-      await onRound?.({ index: 0, isFinal: true, ...result });
+      await recordExchange(trace, messages, result);
       return result;
     });
 
@@ -1429,10 +1468,9 @@ describe("handleIncomingMessage — a rule turn that called no tool", () => {
 
   /** Answers with words only, as the incident did — no tool call, ever. */
   const allTalk = (content = "downloaded the video") =>
-    vi.fn().mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
-      await onRequest?.({ model: "m", messages });
+    vi.fn().mockImplementation(async (messages, trace) => {
       const result = { content, model: "m", latencyMs: 5 };
-      await onRound?.({ index: 0, isFinal: true, ...result });
+      await recordExchange(trace, messages, result);
       return result;
     });
 
@@ -1440,17 +1478,15 @@ describe("handleIncomingMessage — a rule turn that called no tool", () => {
   const actsOnSecondAsking = () =>
     vi
       .fn()
-      .mockImplementationOnce(async (messages, _onToolCall, onRequest, onRound) => {
-        await onRequest?.({ model: "m", messages });
+      .mockImplementationOnce(async (messages, trace) => {
         const result = { content: "downloaded the video", model: "m", latencyMs: 5 };
-        await onRound?.({ index: 0, isFinal: true, ...result });
+        await recordExchange(trace, messages, result);
         return result;
       })
-      .mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
-        await onRequest?.({ model: "m", messages });
+      .mockImplementation(async (messages, trace, onToolCall) => {
         await onToolCall?.({ name: "browse_web", args: {}, result: { text: "queued" }, ok: true });
         const result = { content: "on it", model: "m", latencyMs: 5 };
-        await onRound?.({ index: 0, isFinal: true, ...result });
+        await recordExchange(trace, messages, result);
         return result;
       });
 
@@ -1555,20 +1591,23 @@ describe("handleIncomingMessage — recorded LLM retries", () => {
   });
 
   it("records a warn step for a retried LLM call", async () => {
-    const generateReply = vi
-      .fn()
-      .mockImplementation(async (messages, _onToolCall, onRequest, onRound, onRetry) => {
-        await onRequest?.({ model: "m", messages });
-        await onRetry?.({
-          attempt: 1,
-          attempts: 2,
-          error: "Connection to http://llm timed out",
-          delayMs: 3000,
-        });
-        const result = { content: "hi back", model: "m", latencyMs: 5 };
-        await onRound?.({ index: 0, isFinal: true, ...result });
-        return result;
+    const generateReply = vi.fn().mockImplementation(async (messages, trace) => {
+      await recordLlmRequest(TEST_CONN, trace, { model: "m", messages });
+      await recordLlmRetry(trace, {
+        attempt: 1,
+        attempts: 2,
+        error: "Connection to http://llm timed out",
+        delayMs: 3000,
       });
+      const result = { content: "hi back", model: "m", latencyMs: 5 };
+      await recordLlmResponse(trace, {
+        model: "m",
+        latencyMs: 5,
+        responseBody: undefined,
+        content: result.content,
+      });
+      return result;
+    });
     const d = deps({ generateReply });
 
     const out = await handleIncomingMessage(incoming({ text: "hello" }), d);
@@ -1601,20 +1640,24 @@ describe("handleIncomingMessage — the honesty gate", () => {
     vi.clearAllMocks();
   });
 
-  /** A gate verdict, in the shape the real classifier returns it. */
+  /** A gate verdict, in the shape the real classifier returns it — recorded
+   *  through the shared layer with the labels the service passes. */
   const gate = (claim: string, quote: string | null) =>
-    vi.fn().mockResolvedValue({
-      content: JSON.stringify({ claim, quote }),
-      model: "m",
-      latencyMs: 2,
+    vi.fn().mockImplementation(async (messages, trace) => {
+      const result = {
+        content: JSON.stringify({ claim, quote }),
+        model: "m",
+        latencyMs: 2,
+      };
+      await recordExchange(trace, messages, result);
+      return result;
     });
 
   /** Answers with words only — no tool call, ever. */
   const allTalk = (content: string) =>
-    vi.fn().mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
-      await onRequest?.({ model: "m", messages });
+    vi.fn().mockImplementation(async (messages, trace) => {
       const result = { content, model: "m", latencyMs: 5 };
-      await onRound?.({ index: 0, isFinal: true, ...result });
+      await recordExchange(trace, messages, result);
       return result;
     });
 
@@ -1622,17 +1665,15 @@ describe("handleIncomingMessage — the honesty gate", () => {
   const actsOnSecondAsking = (first: string, second: string) =>
     vi
       .fn()
-      .mockImplementationOnce(async (messages, _onToolCall, onRequest, onRound) => {
-        await onRequest?.({ model: "m", messages });
+      .mockImplementationOnce(async (messages, trace) => {
         const result = { content: first, model: "m", latencyMs: 5 };
-        await onRound?.({ index: 0, isFinal: true, ...result });
+        await recordExchange(trace, messages, result);
         return result;
       })
-      .mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
-        await onRequest?.({ model: "m", messages });
+      .mockImplementation(async (messages, trace, onToolCall) => {
         await onToolCall?.({ name: "tasks_delete", args: {}, result: { text: "ok" }, ok: true });
         const result = { content: second, model: "m", latencyMs: 5 };
-        await onRound?.({ index: 0, isFinal: true, ...result });
+        await recordExchange(trace, messages, result);
         return result;
       });
 
@@ -1650,15 +1691,12 @@ describe("handleIncomingMessage — the honesty gate", () => {
 
   it("costs nothing on a turn that actually called a tool", async () => {
     const checkActionClaim = gate("performed", "deleted it");
-    const generateReply = vi
-      .fn()
-      .mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
-        await onRequest?.({ model: "m", messages });
-        await onToolCall?.({ name: "tasks_delete", args: {}, result: { text: "ok" }, ok: true });
-        const result = { content: "deleted it", model: "m", latencyMs: 5 };
-        await onRound?.({ index: 0, isFinal: true, ...result });
-        return result;
-      });
+    const generateReply = vi.fn().mockImplementation(async (messages, trace, onToolCall) => {
+      await onToolCall?.({ name: "tasks_delete", args: {}, result: { text: "ok" }, ok: true });
+      const result = { content: "deleted it", model: "m", latencyMs: 5 };
+      await recordExchange(trace, messages, result);
+      return result;
+    });
     const d = deps({ checkActionClaim, generateReply });
 
     const out = await handleIncomingMessage(incoming({ text: "cancel the task" }), d);
@@ -1719,16 +1757,14 @@ describe("handleIncomingMessage — the honesty gate", () => {
       checkActionClaim,
       generateReply: vi
         .fn()
-        .mockImplementationOnce(async (messages, _t, onRequest, onRound) => {
-          await onRequest?.({ model: "m", messages });
+        .mockImplementationOnce(async (messages, trace) => {
           const r = { content: "task deleted", model: "m", latencyMs: 5 };
-          await onRound?.({ index: 0, isFinal: true, ...r });
+          await recordExchange(trace, messages, r);
           return r;
         })
-        .mockImplementation(async (messages, _t, onRequest, onRound) => {
-          await onRequest?.({ model: "m", messages });
+        .mockImplementation(async (messages, trace) => {
           const r = { content: honest, model: "m", latencyMs: 5 };
-          await onRound?.({ index: 0, isFinal: true, ...r });
+          await recordExchange(trace, messages, r);
           return r;
         }),
     });

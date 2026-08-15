@@ -5,7 +5,11 @@ import { getDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { FEATURES } from "@/lib/features";
-import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import type {
+  ChatCompletionResult,
+  ChatMessage,
+  LlmCallTrace,
+} from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -67,11 +71,13 @@ const MAX_NOTES_PER_RUN = 500;
 /** Collaborators, injected so tests can drive a run deterministically. */
 export interface ConsolidateDeps {
   /** One LLM pass (real: `chatCompletion` with the configured model). */
-  complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
   /** Embed texts, or null when no embedding model is configured. */
   embed: ((texts: string[]) => Promise<number[][]>) | null;
   /** Publish live per-note progress to the scheduler (drives the Jobs dashboard). */
   onProgress?: (progress: JobProgress | null) => void;
+  /** Correlation shared with the extraction half of the same nightly run. */
+  runCorrelationId?: string;
   db?: DrizzleDb;
 }
 
@@ -114,27 +120,27 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
     {
       feature: FEATURE.id,
       action: "consolidate",
-      trigger: { kind: "system", actor: "memory" },
+      trigger: {
+        kind: "system",
+        actor: "memory",
+        ...(deps.runCorrelationId ? { correlationId: deps.runCorrelationId } : {}),
+      },
       inputSummary: `${userIds.length} user(s), ${generalEntries.length} general note(s) pending`,
     }
   );
 
   const result = { ...EMPTY };
 
-  /** One LLM pass, fully traced (request + response with usage). Null on failure. */
+  /** One LLM pass, recorded by the shared LLM tracing layer. Null on failure. */
   async function complete(system: string, userContent: string): Promise<string | null> {
     const messages: ChatMessage[] = [
       { role: "system", content: system },
       { role: "user", content: userContent },
     ];
-    await trace.event({ type: "llm_request", message: "request", data: { messages } });
     try {
-      const completion = await deps.complete(messages);
-      await trace.event({
-        type: "llm_response",
-        message: "response",
-        data: completion.responseBody ?? { content: completion.content },
-        usage: { ...llmUsageOf(completion), callKind: "memory-consolidate" },
+      const completion = await deps.complete(messages, {
+        recorder: trace,
+        callKind: "memory-consolidate",
       });
       return completion.content;
     } catch (err) {

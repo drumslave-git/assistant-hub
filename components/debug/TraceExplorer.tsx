@@ -11,6 +11,9 @@ function queryString(query: TraceQuery): string {
   const params = new URLSearchParams();
   if (query.feature) params.set("feature", query.feature);
   if (query.status) params.set("status", query.status);
+  if (query.correlationId) params.set("correlationId", query.correlationId);
+  if (query.triggerKind) params.set("triggerKind", query.triggerKind);
+  if (query.actor) params.set("actor", query.actor);
   return params.toString();
 }
 
@@ -60,6 +63,9 @@ export function TraceExplorer({
           features={showFeatureFilter ? features : undefined}
           feature={query.feature}
           status={query.status}
+          correlationId={query.correlationId}
+          triggerKind={query.triggerKind}
+          actor={query.actor}
         />
         <div className="flex items-center gap-2">
           <LiveIndicator topic="traces" />

@@ -63,8 +63,16 @@ async function runJob(ctx?: IntervalRunContext): Promise<string> {
   const timeZone = await getTimezone().catch(() => "UTC");
   const conn = { baseUrl: llm.baseUrl, apiKey: llm.apiKey, backend: llm.backend };
   const deps = {
-    complete: (messages: Parameters<typeof chatCompletion>[1]["messages"]) =>
-      chatCompletion(conn, { model: llm.model, messages, priority: "background" }),
+    complete: (
+      messages: Parameters<typeof chatCompletion>[1]["messages"],
+      trace?: Parameters<typeof chatCompletion>[1]["trace"],
+    ) =>
+      chatCompletion(conn, {
+        model: llm.model,
+        messages,
+        priority: "background",
+        ...(trace ? { trace } : {}),
+      }),
     timeZone,
     onProgress: ctx?.reportProgress,
   };

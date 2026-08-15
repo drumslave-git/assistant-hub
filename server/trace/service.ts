@@ -26,6 +26,11 @@ const BUNDLE_MAX = 500;
 export interface TraceQuery {
   feature?: string;
   status?: TraceStatus;
+  /** Every trace of one process (a turn, a job run) — exact trigger correlation. */
+  correlationId?: string;
+  triggerKind?: TraceTrigger["kind"];
+  /** The trigger's actor (a chat id, user id, or job name), exact match. */
+  actor?: string;
   limit?: number;
   offset?: number;
 }

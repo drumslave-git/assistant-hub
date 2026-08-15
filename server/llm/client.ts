@@ -11,6 +11,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 
 import { ApiError } from "@/lib/api-error";
 import { toLlmBackendId, type LlmBackendId } from "@/lib/llm-backend";
+import type { TraceRecorder } from "@/server/trace";
 
 import { adapterFor } from "./backends";
 import type { ReasoningMode } from "./backends";
@@ -624,6 +625,100 @@ export function finishReasonOf(responseBody: unknown): string | undefined {
 }
 
 /**
+ * How a completion records itself on the trace of the action it serves — the ONE
+ * implementation of LLM-call tracing. Features pass this instead of hand-writing
+ * `llm_request`/`llm_response` events, so every recorded call carries the same
+ * facts: which endpoint and backend it went to, which model was asked, what the
+ * call was for (`callKind`), the complete sanitized request body, and the raw
+ * response with usage. Per-feature recording drifted — background jobs recorded
+ * messages with no endpoint at all, which made a failing request impossible to
+ * attribute (operator report, 2026-08-15).
+ */
+export interface LlmCallTrace {
+  recorder: Pick<TraceRecorder, "event">;
+  /** What this call is for — see `features/analytics/llm-call-kind.ts`. */
+  callKind: string;
+  /**
+   * The call kind recorded for a non-final round of a tool loop (e.g.
+   * `reply-tool-turn`); the final round records {@link callKind}. Ignored by
+   * plain completions.
+   */
+  toolTurnCallKind?: string;
+  /**
+   * Human prefix for the event titles (`"honesty gate"` → "honesty gate
+   * request"). Absent → the bare "request"/"response" the reply trace has
+   * always used.
+   */
+  label?: string;
+}
+
+/** "request"/"response" (or a labelled variant) — shared by both completion paths. */
+export function llmEventTitle(trace: Pick<LlmCallTrace, "label">, suffix: string): string {
+  return trace.label ? `${trace.label} ${suffix}` : suffix;
+}
+
+/**
+ * Record the request event for a call about to go out: where it goes (endpoint +
+ * backend) and the complete body (model, messages, tools…), inline image bytes
+ * swapped for compact markers. Recorded per attempt — a retried call really was
+ * sent twice, and the trace must show both.
+ */
+export async function recordLlmRequest(
+  conn: LlmConnection,
+  trace: LlmCallTrace | undefined,
+  requestBody: unknown,
+): Promise<void> {
+  if (!trace) return;
+  const body = sanitizeRequestBodyForTrace(requestBody);
+  await trace.recorder.event({
+    type: "llm_request",
+    message: llmEventTitle(trace, "request"),
+    data: {
+      endpoint: conn.baseUrl,
+      backend: toLlmBackendId(conn.backend),
+      ...(body && typeof body === "object" ? body : { requestBody: body }),
+    },
+  });
+}
+
+/** Record one response event (raw body + usage), tagged with its call kind. */
+export async function recordLlmResponse(
+  trace: LlmCallTrace | undefined,
+  round: {
+    model: string;
+    servedModel?: string;
+    usage?: ChatUsage;
+    latencyMs: number;
+    responseBody: unknown;
+    content?: string;
+  },
+  opts: { title?: string; callKind?: string } = {},
+): Promise<void> {
+  if (!trace) return;
+  await trace.recorder.event({
+    type: "llm_response",
+    message: opts.title ?? llmEventTitle(trace, "response"),
+    data:
+      round.responseBody ?? (round.content !== undefined ? { content: round.content } : {}),
+    usage: { ...llmUsageOf(round), callKind: opts.callKind ?? trace.callKind },
+  });
+}
+
+/** Record a retryable failure about to be retried — a recovered call must not read clean. */
+export async function recordLlmRetry(
+  trace: LlmCallTrace | undefined,
+  info: LlmRetryInfo,
+): Promise<void> {
+  if (!trace) return;
+  await trace.recorder.event({
+    type: "step",
+    level: "warn",
+    message: `LLM call failed — retrying (attempt ${info.attempt} of ${info.attempts})`,
+    data: { error: info.error, delayMs: info.delayMs },
+  });
+}
+
+/**
  * The error for a response cut off by the context window (`finish_reason:
  * "length"` with nothing usable produced). Distinct from "LLM returned an empty
  * response" because the operator's fix is opposite: sending less (or raising the
@@ -826,6 +921,13 @@ export async function chatCompletion(
      * a recovered turn must not look like a clean one.
      */
     onRetry?: (info: LlmRetryInfo) => void | Promise<void>;
+    /**
+     * Record this call on the given trace — request (endpoint + full body),
+     * response (raw body + usage + call kind), and any retries. The shared
+     * recording path; feature code must pass this rather than writing its own
+     * `llm_request`/`llm_response` events.
+     */
+    trace?: LlmCallTrace;
   },
 ): Promise<ChatCompletionResult> {
   const priority = input.priority ?? "interactive";
@@ -856,6 +958,7 @@ export async function chatCompletion(
       // as the gap before the request event.
       withLlmPriority(priority, async () => {
         await input.onRequest?.(requestBody);
+        await recordLlmRequest(conn, input.trace, requestBody);
         const round = await completeRound(conn, {
           model: input.model,
           messages: input.messages as ChatCompletionMessageParam[],
@@ -865,8 +968,30 @@ export async function chatCompletion(
         });
         return { completion: round, latencyMs: round.latencyMs };
       }),
-    { baseUrl: conn.baseUrl, priority, onRetry: input.onRetry },
+    {
+      baseUrl: conn.baseUrl,
+      priority,
+      onRetry: async (info) => {
+        await recordLlmRetry(input.trace, info);
+        await input.onRetry?.(info);
+      },
+    },
   );
+
+  // The provider's own answer, preferred over the SDK's echo of what we asked
+  // for: a served model that stops matching the configured one is real
+  // information (see `ChatCompletionResult.servedModel`).
+  const servedModel = servedModelOf(completion.responseBody) ?? completion.servedModel;
+  // Recorded before the empty-content check: the wire answered, and an operator
+  // diagnosing an "empty response" failure needs the raw body that was empty.
+  await recordLlmResponse(input.trace, {
+    model: input.model,
+    servedModel,
+    usage: completion.usage,
+    latencyMs,
+    responseBody: completion.responseBody,
+    content: completion.content,
+  });
 
   if (!completion.content) {
     throw ApiError.serviceUnavailable(
@@ -878,10 +1003,7 @@ export async function chatCompletion(
   return {
     content: completion.content,
     model: input.model,
-    // The provider's own answer, preferred over the SDK's echo of what we asked
-    // for: a served model that stops matching the configured one is real
-    // information (see `ChatCompletionResult.servedModel`).
-    servedModel: servedModelOf(completion.responseBody) ?? completion.servedModel,
+    servedModel,
     usage: completion.usage,
     latencyMs,
     // The body the SDK actually built and sent, not the preview above.

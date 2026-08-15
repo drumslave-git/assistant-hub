@@ -15,6 +15,13 @@ export interface McpToolContext {
   /** The sender's numeric Telegram user id, when known (absent for tests). */
   userId?: string | null;
   /**
+   * The turn's trace correlation (`<chatId>:<messageId>` for a reply turn, the
+   * task id for a fire), stamped on every tool call's own trace so a whole
+   * turn — reply trace plus each `mcp-tools-*` trace it caused — reads as one
+   * process under the Debug correlation filter.
+   */
+  correlationId?: string;
+  /**
    * The identity whose **permissions** this turn's tool calls carry, when it is
    * not the sender's. Set when a standing chat rule drove the turn: a rule is
    * its author's standing order, so an action the rule calls for runs with the

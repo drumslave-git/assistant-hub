@@ -8,8 +8,14 @@ import {
 import {
   describeAndStore,
   getMediaSuffixesForMessages,
+  type DescribeDeps,
 } from "@/features/vision/server/service";
-import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import {
+  recordLlmRequest,
+  recordLlmResponse,
+  type ChatCompletionResult,
+  type ChatMessage,
+} from "@/server/llm/client";
 import { getTraceDetail, listTraces, startTrace } from "@/server/trace";
 import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
 
@@ -85,21 +91,20 @@ function fakeComplete(content: string): ChatCompletionResult {
   };
 }
 
-const TARGET = { baseUrl: "https://llm.example.com/v1", model: "omni-audio" };
-
 describe("describeAndStore — voice dispatch", () => {
   it("transcribes a pending voice row via an input_audio turn and stores the transcript", async () => {
     await seedVoice();
 
     let seen: ChatMessage[] | null = null;
+    let seenTrace: Parameters<DescribeDeps["complete"]>[1];
     const result = await describeAndStore(
       { chatId: "5", telegramMessageId: 70 },
       {
-        complete: async (messages) => {
+        complete: async (messages, trace) => {
           seen = messages;
+          seenTrace = trace;
           return fakeComplete("hello from the voice message");
         },
-        target: TARGET,
       },
       { db: ctx.db },
     );
@@ -131,27 +136,12 @@ describe("describeAndStore — voice dispatch", () => {
     const visionTraces = await listTraces({ feature: "vision" });
     expect(visionTraces.traces).toHaveLength(0);
 
-    // The trace names what was actually called (endpoint + model), carries the
-    // full request with the audio bytes redacted to a size marker, and records
-    // the provider's raw response body verbatim.
-    const detail = await getTraceDetail(voiceTraces.traces[0]!.id);
-    const request = detail?.events.find((e) => e.type === "llm_request");
-    const requestData = request?.data as {
-      endpoint?: string;
-      model?: string;
-      messages?: Array<{ content: unknown }>;
-    };
-    expect(requestData.endpoint).toBe(TARGET.baseUrl);
-    expect(requestData.model).toBe(TARGET.model);
-    const audioPart = (
-      requestData.messages?.[1]?.content as Array<{ input_audio?: { data: string } }>
-    ).find((p) => p.input_audio);
-    expect(audioPart?.input_audio?.data).toMatch(/^<\d+ bytes>$/);
-    const response = detail?.events.find((e) => e.type === "llm_response");
-    expect(response?.data).toEqual({
-      id: "cmpl-1",
-      choices: [{ message: { content: "hello from the voice message" } }],
-    });
+    // The call was handed the trace to record itself on (the shared LLM tracing
+    // layer owns the request/response events — endpoint, model, redacted body;
+    // see `server/llm/client.test.ts` for that contract).
+    expect(seenTrace?.callKind).toBe("voice-transcribe");
+    expect(seenTrace?.label).toBe("transcribe");
+    expect(seenTrace?.recorder).toBeDefined();
   });
 
   it("prefers a wired dedicated STT endpoint over the chat model, with raw-body trace events", async () => {
@@ -166,7 +156,6 @@ describe("describeAndStore — voice dispatch", () => {
           completeCalled = true;
           return fakeComplete("unused — the STT path must win");
         },
-        target: TARGET,
         transcribe: async (wav) => {
           sttWav = wav;
           return {
@@ -211,7 +200,7 @@ describe("describeAndStore — voice dispatch", () => {
     await seedVoice({ telegramMessageId: 72 });
     const result = await describeAndStore(
       { chatId: "5", telegramMessageId: 72 },
-      { complete: async () => fakeComplete("   \n "), target: TARGET },
+      { complete: async () => fakeComplete("   \n ") },
       { db: ctx.db },
     );
 
@@ -230,7 +219,6 @@ describe("describeAndStore — voice dispatch", () => {
       { chatId: "5", telegramMessageId: 73 },
       {
         complete: async () => fakeComplete("unused — the STT path must win"),
-        target: TARGET,
         // What a whisper-class server does on an internal failure it reports as 200.
         transcribe: async () => ({ text: "", latencyMs: 8, responseBody: { text: "" } }),
         transcribeTarget: { baseUrl: "https://whisper.example.com/v1", model: "large-v3" },
@@ -260,7 +248,24 @@ describe("describeAndStore — voice dispatch", () => {
     });
     const result = await describeAndStore(
       { chatId: "5", telegramMessageId: 74 },
-      { complete: async () => fakeComplete("nested transcript") },
+      {
+        // Record like the real completion does (the shared LLM tracing layer),
+        // so the parent-trace assertion pins the same titles production writes.
+        complete: async (messages, trace) => {
+          await recordLlmRequest({ baseUrl: "https://llm.test/v1" }, trace, {
+            model: "omni-audio",
+            messages,
+          });
+          const completed = fakeComplete("nested transcript");
+          await recordLlmResponse(trace, {
+            model: completed.model,
+            latencyMs: completed.latencyMs,
+            responseBody: completed.responseBody,
+            content: completed.content,
+          });
+          return completed;
+        },
+      },
       { db: ctx.db, trace: parent },
     );
     await parent.succeed({ outputSummary: "done" });
