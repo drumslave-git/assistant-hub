@@ -94,6 +94,45 @@ describe("buildTaskTriggerDirective", () => {
     expect(directive).toMatch(/nothing you merely write/i);
     expect(directive).toContain("reply_to_message");
   });
+
+  it("feeds a rule's recent deliveries back and demands different wording", () => {
+    // The anti-repetition loop: without its own prior output in front of it, a
+    // recurring conversational rule converges on one phrasing (2026-08-16).
+    const directive = buildTaskTriggerDirective([
+      {
+        instruction: "Comment on the message.",
+        recentDeliveries: ["Nice one.", "Classic."],
+      },
+    ]);
+    expect(directive).toContain("WORDING REFERENCE ONLY");
+    expect(directive).toContain("1. Nice one.");
+    expect(directive).toContain("2. Classic.");
+    // Labelled bot-authored and non-factual, and variation is demanded.
+    expect(directive).toMatch(/NOT a source of facts/);
+    expect(directive).toMatch(/DIFFERENT way/);
+  });
+
+  it("omits the wording block for a rule that has never delivered", () => {
+    const directive = buildTaskTriggerDirective([
+      { instruction: "Comment on the message.", recentDeliveries: [] },
+      { instruction: "Download video links." },
+    ]);
+    expect(directive).not.toContain("WORDING REFERENCE ONLY");
+  });
+
+  it("labels each rule's deliveries by its number when several matched", () => {
+    const directive = buildTaskTriggerDirective([
+      { instruction: "Comment on the message.", recentDeliveries: ["Nice one."] },
+      { instruction: "React to links.", recentDeliveries: ["Saved it."] },
+    ]);
+    expect(directive).toContain("you have acted on rule 1 before.");
+    expect(directive).toContain("you have acted on rule 2 before.");
+    // With a single matched rule the label is direct, not numbered.
+    const single = buildTaskTriggerDirective([
+      { instruction: "Comment on the message.", recentDeliveries: ["Nice one."] },
+    ]);
+    expect(single).toContain("you have acted on this rule before.");
+  });
 });
 
 describe("TASK_ENFORCEMENT_DIRECTIVE", () => {

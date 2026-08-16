@@ -22,6 +22,7 @@ import {
   getChatVisibleTask,
   getChatVisibleTasks,
   getTasksView,
+  recordTaskDeliveries,
   removeTaskService,
   updateTaskFromChat,
 } from "./service";
@@ -84,6 +85,31 @@ async function joinGroup(chatId: string, ...userIds: string[]) {
     await recordGroupMembership(ctx.db, chatId, userId);
   }
 }
+
+describe("recorded deliveries (wording variation)", () => {
+  it("prepends what a matched turn delivered, capped, and survives unknown ids", async () => {
+    const rule = await create({ triggerKind: "message", instruction: "Comment on messages." });
+    const other = await create({ triggerKind: "message", instruction: "React to links." });
+
+    // Six deliveries: the cap keeps the newest five, newest first. An unknown
+    // id in the batch (a task deleted mid-turn) records nothing and fails nothing.
+    for (let i = 1; i <= 6; i++) {
+      await recordTaskDeliveries([rule.id, randomUUID()], `comment ${i}`, ctx.db);
+    }
+
+    const { message } = await getActiveTasksForChat(GROUP, null, ctx.db);
+    const stored = message.find((t) => t.id === rule.id)!;
+    expect(stored.recentDeliveries).toEqual([
+      "comment 6",
+      "comment 5",
+      "comment 4",
+      "comment 3",
+      "comment 2",
+    ]);
+    // Only the tasks named in the batch accumulate anything.
+    expect(message.find((t) => t.id === other.id)!.recentDeliveries).toEqual([]);
+  });
+});
 
 describe("scopes and selection", () => {
   it("gives a chat its own tasks plus the global ones, and nobody else's", async () => {

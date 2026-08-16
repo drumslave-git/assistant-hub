@@ -16,6 +16,38 @@ export interface PromptTask {
   instruction: string;
   /** Null for a global task; used only to label the line. */
   chatId?: string | null;
+  /**
+   * What this task's runs actually sent (newest first), fed back so the model
+   * varies its wording instead of converging on one phrasing. Absent/empty for
+   * a task that has never delivered.
+   */
+  recentDeliveries?: readonly string[];
+}
+
+/**
+ * The wording-variation block for a task that has delivered before — the one
+ * anti-repetition mechanism, shared by timed fires and matched `message` tasks.
+ *
+ * The delivered texts are the only bot-authored part of a task prompt, and they
+ * are labelled as such (user report, 2026-08-01): one hallucinated run used to
+ * seed the next, since the invented detail came back as context and compounded
+ * from there. `grounding` names what the surrounding prompt *does* let the model
+ * treat as fact, which differs between a fire (directive + saved context) and a
+ * matched turn (the rules + the message being acted on).
+ */
+export function buildRecentDeliveriesBlock(
+  recentDeliveries: readonly string[],
+  opts: { intro: string; grounding: string },
+): string | null {
+  if (recentDeliveries.length === 0) return null;
+  return (
+    `WORDING REFERENCE ONLY — ${opts.intro} Your most recent messages for it (newest first):\n` +
+    recentDeliveries.map((text, i) => `${i + 1}. ${text}`).join("\n") +
+    `\nThose are YOUR OWN past messages, quoted for exactly one purpose: so you do not repeat yourself. ` +
+    `They are NOT a source of facts. They may be wrong, stale, or invented, and anything in them that is not in ` +
+    `${opts.grounding} is unverified — do not repeat it, build on it, or treat it as something that happened. ` +
+    `Say the same thing a DIFFERENT way this time — fresh wording, angle, or phrasing. Do not reuse a sentence from the list.`
+  );
 }
 
 /** One task as a numbered line, marking the global ones. */
@@ -55,9 +87,27 @@ export function buildStandingTasksBlock(tasks: readonly PromptTask[]): string | 
  * The directive for a turn that no one addressed, opened because a `message`
  * task matched the message. Injected late (maximum recency) so the model acts on
  * the task rather than joining the conversation it was never invited into.
+ *
+ * A rule that has delivered before brings its recent deliveries along — the
+ * same wording-variation feedback timed fires get. Without it, a recurring rule
+ * ("comment on their messages") converges on one phrasing: the model sees the
+ * same instruction over the same shape of input every time, and its scattered
+ * old outputs in the transcript are not recognizable as "what I said for this
+ * rule" (user report, 2026-08-16).
  */
 export function buildTaskTriggerDirective(tasks: readonly PromptTask[]): string {
   const listed = tasks.filter((task) => task.instruction.trim());
+  const variation = listed
+    .map((task, index) =>
+      buildRecentDeliveriesBlock(task.recentDeliveries ?? [], {
+        intro:
+          listed.length === 1
+            ? "you have acted on this rule before."
+            : `you have acted on rule ${index + 1} before.`,
+        grounding: "the rules above or the current message",
+      }),
+    )
+    .filter((block): block is string => block !== null);
   return (
     "Nobody in this chat addressed you in the current message. You are acting on it only because " +
     "these standing rules match it:\n" +
@@ -67,7 +117,8 @@ export function buildTaskTriggerDirective(tasks: readonly PromptTask[]): string 
     "attached to the message above. Call the other tools a rule needs as well (looking something " +
     "up, downloading, remembering). Do exactly what those rules require for this message and " +
     "nothing else: do not greet anyone, do not comment on the conversation, and do not answer " +
-    "anything that was not asked of you."
+    "anything that was not asked of you." +
+    (variation.length > 0 ? "\n\n" + variation.join("\n\n") : "")
   );
 }
 

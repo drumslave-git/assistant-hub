@@ -22,7 +22,7 @@ import {
   parseTaskMatchVerdict,
 } from "@/features/tasks/server/matcher";
 import type { Task } from "@/features/tasks/types";
-import { getActiveTasksForChat } from "@/features/tasks/server/service";
+import { getActiveTasksForChat, recordTaskDeliveries } from "@/features/tasks/server/service";
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import {
   handleIncomingMessage,
@@ -328,6 +328,13 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
    * answer was suppressed (trace `d1c01591…`).
    */
   let taskOpenedTurn = false;
+  /**
+   * The `message` tasks that opened this turn, set alongside `taskOpenedTurn`.
+   * Read by the deliver binding: what the turn sends is stamped onto these
+   * tasks' `recent_deliveries`, feeding the wording-variation block their next
+   * match composes — the same anti-repetition loop timed fires have.
+   */
+  let openingTaskIds: string[] = [];
   /** A matched `message` task can open a turn nobody addressed the bot in. */
   const canOpenTurn = messageTasks.length > 0;
 
@@ -589,6 +596,10 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
                       threadId,
                     });
                     await recordDeliveredMessage(sent.messageId, text);
+                    // Stamp the delivery onto the tasks that opened this turn,
+                    // so their next match sees it in the wording-variation
+                    // block. Best-effort inside — the message is already sent.
+                    await recordTaskDeliveries(openingTaskIds, text);
                     return { messageId: sent.messageId };
                   },
                 }
@@ -721,6 +732,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
             // closure is the only place that knows, and the service awaits it
             // before generating.
             taskOpenedTurn = opening.length > 0;
+            openingTaskIds = opening.map((task) => task.id);
             return {
               taskIds: verdict.matchedIds,
               directive: opening.length > 0 ? buildTaskTriggerDirective(opening) : null,

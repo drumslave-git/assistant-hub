@@ -2829,7 +2829,9 @@ components:
         recentDeliveries:
           type: array
           items: { type: string }
-          description: What fires actually sent (newest first), for wording variation.
+          description: >
+            What this task's runs actually sent (newest first), for wording
+            variation — timed fires and matched `message`-task turns alike.
         lastRunAt: { type: [string, "null"], format: date-time }
         nextRunAt:
           type: [string, "null"]

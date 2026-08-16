@@ -12,6 +12,7 @@ import type {
 import { runWithToolContext } from "@/server/mcp/context";
 import { startTrace } from "@/server/trace";
 
+import { buildRecentDeliveriesBlock } from "../format";
 import type { Task } from "../types";
 
 /**
@@ -106,10 +107,9 @@ export interface FireResult {
  * and this block hands it to the fire; the history lookup stays as the second
  * line of defence, with honesty over parroting when even that fails.
  *
- * The recent deliveries are the one part of this prompt that is bot-authored,
- * and they are labelled as such (user report, 2026-08-01): one hallucinated
- * fire used to seed the next, since the invented detail came back as context
- * and compounded from there.
+ * The recent deliveries are the shared wording-variation block
+ * ({@link buildRecentDeliveriesBlock}) — matched `message` tasks feed back the
+ * same way.
  *
  * Delivery is spelled out twice (up front and at the end) because it inverts
  * what the model does everywhere else: in every other turn its answer text IS
@@ -123,14 +123,11 @@ export function buildTaskDirectiveMessage(
   const contextBlock = context?.trim()
     ? `Saved context (gathered from the chat when this task was created — the background the directive relies on):\n${context.trim()}\n\n`
     : "";
-  const previousBlock =
-    recentDeliveries.length > 0
-      ? `\n\nWORDING REFERENCE ONLY — you have delivered this recurring task before. Your most recent messages for it (newest first):\n` +
-        recentDeliveries.map((text, i) => `${i + 1}. ${text}`).join("\n") +
-        `\nThose are YOUR OWN past messages, quoted for exactly one purpose: so you do not repeat yourself. They are NOT a source of facts. ` +
-        `They may be wrong, stale, or invented, and anything in them that is not in the directive or the saved context above is unverified — do not repeat it, build on it, or treat it as something that happened. ` +
-        `Say the same thing a DIFFERENT way this time — fresh wording, angle, or phrasing. Do not reuse a sentence from the list.`
-      : "";
+  const variation = buildRecentDeliveriesBlock(recentDeliveries, {
+    intro: "you have delivered this recurring task before.",
+    grounding: "the directive or the saved context above",
+  });
+  const previousBlock = variation ? `\n\n${variation}` : "";
   return (
     `[TASK] A standing task set up for this chat is now due. Execute it now.\n` +
     `Directive: ${instruction}\n\n` +

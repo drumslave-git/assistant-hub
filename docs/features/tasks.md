@@ -110,6 +110,15 @@ deliberately expensive and hard to trigger:
    quietly: a rule whose action was "download the file" is carried out by the
    download and owes the chat nothing further.
 
+   What a task-opened turn delivers is stamped onto each opening task's capped
+   `recent_deliveries` (`recordTaskDeliveries`, best-effort), and the trigger
+   directive feeds a task's recent deliveries back as the shared
+   `WORDING REFERENCE ONLY` block (`buildRecentDeliveriesBlock`) — the same
+   anti-repetition loop timed fires have. Without it a recurring conversational
+   rule converged on one phrasing every run (user report, 2026-08-16): the
+   model saw the same instruction over the same shape of input with no memory
+   of what it had already said for it.
+
 Maintenance mode turns the matcher off, exactly as it turns the addressing
 analyzer off. The matcher reads the message's *words*: a bare photo or sticker
 has nothing to quote and cannot match.

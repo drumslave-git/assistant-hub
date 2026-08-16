@@ -257,6 +257,31 @@ export function nextRecentDeliveries(recent: string[], delivered: string): strin
 }
 
 /**
+ * Record one delivered text onto a task's capped `recent_deliveries` — the
+ * prompt-task counterpart of {@link markTaskRun}'s deliveries stamp, for a
+ * matched `message` task whose turn just sent through `reply_to_message`.
+ * Touches nothing else: a prompt task has no schedule to advance.
+ */
+export async function appendTaskDelivery(
+  db: DrizzleDb,
+  id: string,
+  delivered: string,
+): Promise<void> {
+  const row = await db.query.tasks.findFirst({
+    where: eq(tasks.id, id),
+    columns: { recentDeliveries: true },
+  });
+  if (!row) return;
+  await db
+    .update(tasks)
+    .set({
+      recentDeliveries: nextRecentDeliveries(row.recentDeliveries ?? [], delivered),
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, id));
+}
+
+/**
  * Record a failed fire of a due one-shot: stamp `last_run_at` and the new
  * attempts count, keeping `next_run_at` so the task stays due and retries on the
  * next tick. With `disable` (the attempts cap is hit) the task is switched off —

@@ -28,6 +28,28 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Message tasks repeat themselves — deliveries feedback (`done`, 2026-08-16)
+
+User report: a recurring `message` rule ("with 5% chance — comment on …")
+produced near-identical comments every run. Cause: the anti-repetition
+mechanism (`recent_deliveries` + the fire prompt's `WORDING REFERENCE ONLY`
+block) was fire-path only; a matched rule's turn had no memory of its own
+prior output. Fix unifies the loop across both run paths:
+
+- `buildRecentDeliveriesBlock` in `features/tasks/format.ts` is the one
+  wording-variation block (fire keeps its exact text via params);
+  `buildTaskTriggerDirective` now appends each matched rule's recent
+  deliveries.
+- Task-opened turns stamp what they deliver: `appendTaskDelivery` (repository,
+  same 5-entry cap) via `recordTaskDeliveries` (service, best-effort), called
+  from the `reply_to_message` deliver binding in
+  `server/telegram/process-update.ts` for the tasks that opened the turn.
+- Scoped to turn-opening `message` tasks only: an addressed turn where a rule
+  merely lent authority answers the person, so its text is not attributable to
+  the rule. `on-reply` shaping likewise records nothing.
+
+Bot-side (boot-time) change — needs a dev-server restart to take effect.
+
 ## Per-task Debug button + `relatedId` trace filter (`done`, 2026-08-16)
 
 Every task card on `/tasks` now has a Debug button →
@@ -501,10 +523,10 @@ so the number shown *is* the number compared.
 - A message task that calls **no** tool at all still gets the notice and a failed
   trace. That is now correct, but it means a badly-worded rule the model cannot
   act on is noisier than silence.
-- `recent_deliveries` (wording variation) is fed by the fire path only; a
-  `message` task's replies do not accumulate there. Not obviously wrong — a
-  message task varies with the message it answers — but worth revisiting if the
-  bot starts repeating itself on a busy rule.
+- ~~`recent_deliveries` (wording variation) is fed by the fire path only~~ —
+  it happened: a busy rule did start repeating itself (user report,
+  2026-08-16), and task-opened turns now stamp their deliveries and feed them
+  back through the shared wording-variation block. See the entry above.
 
 ## Dashboard rework: Overview, Settings, Debug (`done` pending live verification, 2026-08-14)
 

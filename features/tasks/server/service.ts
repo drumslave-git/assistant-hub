@@ -30,6 +30,7 @@ import {
   type TriggerKind,
 } from "../types";
 import {
+  appendTaskDelivery,
   countPromptTasksInScope,
   deleteTask,
   findActiveTasksByInstruction,
@@ -153,6 +154,24 @@ export async function getActiveTasksForChat(
 ): Promise<{ prompt: Task[]; message: Task[] }> {
   const tasks = tasksForSender(await listTasksForChat(db, chatId), senderUserId);
   return { prompt: promptTasks(tasks), message: messageTasks(tasks) };
+}
+
+/**
+ * Record what a task-opened turn actually delivered onto each opening task's
+ * capped `recent_deliveries` — the prompt-task counterpart of the scheduler's
+ * post-fire stamp, and what feeds the wording-variation block the next time the
+ * task matches. Best-effort per task: the message is already in the chat, so a
+ * failed stamp must never fail the turn (a matched task deleted mid-turn simply
+ * records nothing).
+ */
+export async function recordTaskDeliveries(
+  taskIds: readonly string[],
+  text: string,
+  db: DrizzleDb = getDb(),
+): Promise<void> {
+  for (const id of taskIds) {
+    await appendTaskDelivery(db, id, text).catch(() => undefined);
+  }
 }
 
 /* ------------------------------- validation -------------------------------- */
