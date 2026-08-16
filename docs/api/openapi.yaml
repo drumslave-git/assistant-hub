@@ -1831,6 +1831,21 @@ paths:
         - name: status
           in: query
           schema: { $ref: "#/components/schemas/TraceStatus" }
+        - name: triggerKind
+          in: query
+          schema: { type: string, enum: [telegram, dashboard, cron, system, api, test] }
+        - name: actor
+          in: query
+          description: The trigger's actor (a chat id, user id, or job name), exact match.
+          schema: { type: string }
+        - name: correlationId
+          in: query
+          description: Every trace of one process (a turn, a job run).
+          schema: { type: string }
+        - name: relatedId
+          in: query
+          description: A row id under `relatedIds` (any table) — everything about one record, e.g. a task.
+          schema: { type: string }
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 200 }
@@ -1897,6 +1912,18 @@ paths:
         - name: status
           in: query
           schema: { $ref: "#/components/schemas/TraceStatus" }
+        - name: triggerKind
+          in: query
+          schema: { type: string, enum: [telegram, dashboard, cron, system, api, test] }
+        - name: actor
+          in: query
+          schema: { type: string }
+        - name: correlationId
+          in: query
+          schema: { type: string }
+        - name: relatedId
+          in: query
+          schema: { type: string }
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 200 }

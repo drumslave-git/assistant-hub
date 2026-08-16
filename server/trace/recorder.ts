@@ -12,7 +12,13 @@ import type {
   TraceTrigger,
 } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { appendTraceEvent, createTrace, setTraceInputSummary, settleTrace } from "./store";
+import {
+  addTraceRelatedIds,
+  appendTraceEvent,
+  createTrace,
+  setTraceInputSummary,
+  settleTrace,
+} from "./store";
 
 /**
  * Trace recorder — the single entry point features use to record a meaningful
@@ -62,6 +68,14 @@ export interface TraceRecorder {
    * (a voice reply's input is its transcript, produced after the trace opened).
    */
   setInputSummary(summary: string): void;
+  /**
+   * Attach related row ids (a feature's `relatedIdsKey` → row ids) while the
+   * trace is still open, merged and deduplicated with anything already attached.
+   * Use this over settle-time `relatedIds` whenever the rows are known before
+   * the outcome is: the association then holds on every settle path — the
+   * `/debug?relatedId=…` filter must find the failed runs too.
+   */
+  relate(key: string, ids: string[]): void;
   /** Settle the trace as successful. */
   succeed(input?: FinishInput): Promise<void>;
   /** Settle the trace as skipped (nothing to do / short-circuited). */
@@ -218,6 +232,10 @@ export async function startTrace(input: StartTraceInput): Promise<TraceRecorder>
     setInputSummary(summary) {
       // Lenient on purpose: a late call after settle is a no-op, not a crash.
       if (!settled) setTraceInputSummary(id, summary);
+    },
+    relate(key, ids) {
+      // Lenient like setInputSummary: a late call after settle is a no-op.
+      if (!settled) addTraceRelatedIds(id, key, ids);
     },
     async succeed(finish) {
       ensureOpen();

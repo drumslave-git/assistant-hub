@@ -26,7 +26,11 @@ function Meta({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** Related database row ids grouped by table, for operator drill-down. */
+/**
+ * Related database row ids grouped by table, for operator drill-down. Each id is
+ * a facet like every other id here: it links to the Debug list filtered to
+ * everything recorded about that row (`/debug?relatedId=…`).
+ */
 function RelatedIds({ relatedIds }: { relatedIds: NonNullable<Trace["relatedIds"]> }) {
   const entries = Object.entries(relatedIds).filter(([, ids]) => ids.length > 0);
   if (entries.length === 0) return null;
@@ -35,7 +39,19 @@ function RelatedIds({ relatedIds }: { relatedIds: NonNullable<Trace["relatedIds"
       <ul className="space-y-0.5">
         {entries.map(([table, ids]) => (
           <li key={table} className="font-mono text-xs text-muted">
-            {table}: {ids.join(", ")}
+            {table}:{" "}
+            {ids.map((id, index) => (
+              <span key={id}>
+                {index > 0 ? ", " : null}
+                <Link
+                  href={debugFilterHref({ relatedId: id })}
+                  className="hover:text-primary hover:underline"
+                  title={`Show every trace related to ${id}`}
+                >
+                  {id}
+                </Link>
+              </span>
+            ))}
           </li>
         ))}
       </ul>

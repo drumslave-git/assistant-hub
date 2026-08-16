@@ -1,6 +1,7 @@
 "use client";
 
-import { CalendarClock, Pencil, Plus, Trash2 } from "lucide-react";
+import { Bug, CalendarClock, Pencil, Plus, Trash2 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
@@ -28,6 +29,7 @@ import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
 import { Timestamp } from "@/components/time/Timestamp";
 import { useTimezone } from "@/components/time/TimezoneProvider";
 import type { ApiErrorBody } from "@/lib/api-error";
+import { debugFilterHref } from "@/lib/trace";
 
 import { sameTargets } from "../format";
 import { describeTrigger, scheduleKindOf } from "../schedule";
@@ -669,6 +671,16 @@ function TaskCard({
             disabled={busy}
             aria-label={task.enabled ? "Disable task" : "Enable task"}
           />
+          {/* Everything traced about this task: fires, matched replies, edits. */}
+          <Button size="icon" variant="ghost" asChild>
+            <Link
+              href={debugFilterHref({ relatedId: task.id })}
+              aria-label="Show this task's traces"
+              title="Show this task's traces"
+            >
+              <Bug className="h-4 w-4" />
+            </Link>
+          </Button>
           <Button
             size="icon"
             variant="ghost"

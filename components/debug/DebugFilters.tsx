@@ -92,6 +92,7 @@ export function DebugFilters({
   correlationId,
   triggerKind,
   actor,
+  relatedId,
 }: {
   basePath: string;
   features?: string[];
@@ -100,10 +101,18 @@ export function DebugFilters({
   correlationId?: string;
   triggerKind?: TraceTrigger["kind"];
   actor?: string;
+  relatedId?: string;
 }) {
   const router = useRouter();
 
-  const active: TraceFilterParams = { feature, status, correlationId, triggerKind, actor };
+  const active: TraceFilterParams = {
+    feature,
+    status,
+    correlationId,
+    triggerKind,
+    actor,
+    relatedId,
+  };
 
   function navigate(next: TraceFilterParams) {
     router.push(debugFilterHref(next, basePath));
@@ -191,6 +200,15 @@ export function DebugFilters({
         placeholder="process id"
         value={correlationId}
         onApply={(next) => navigate({ ...active, correlationId: next })}
+      />
+
+      <TextFilter
+        key={`related:${relatedId ?? ""}`}
+        id="debug-related"
+        label="Related id"
+        placeholder="task / row id"
+        value={relatedId}
+        onApply={(next) => navigate({ ...active, relatedId: next })}
       />
     </div>
   );

@@ -125,6 +125,30 @@ describe("recorder → store", () => {
     expect(stored!.error!.message).toBe("boom");
   });
 
+  it("merges mid-flight related ids with settle-time ones, deduplicated", async () => {
+    const trace = await startTrace(baseInput);
+    trace.relate("tasks", ["task-1"]);
+    trace.relate("tasks", ["task-1", "task-2"]); // duplicate must not double up
+    await trace.succeed({ relatedIds: { tasks: ["task-1"], messages: ["m1"] } });
+
+    const stored = await getTrace(trace.id);
+    expect(stored!.relatedIds).toEqual({ tasks: ["task-1", "task-2"], messages: ["m1"] });
+  });
+
+  it("keeps ids related mid-flight when the trace settles as failed or skipped", async () => {
+    // The point of relating up front: a task fire that fails must still be
+    // findable by its task id.
+    const failed = await startTrace(baseInput);
+    failed.relate("tasks", ["task-9"]);
+    await failed.fail(new Error("boom"));
+    expect((await getTrace(failed.id))!.relatedIds).toEqual({ tasks: ["task-9"] });
+
+    const skipped = await startTrace(baseInput);
+    skipped.relate("tasks", ["task-9"]);
+    await skipped.skip("nothing to do");
+    expect((await getTrace(skipped.id))!.relatedIds).toEqual({ tasks: ["task-9"] });
+  });
+
   it("records skips with a reason", async () => {
     const trace = await startTrace(baseInput);
     await trace.skip("not addressed to bot");
@@ -223,6 +247,31 @@ describe("listTraces / listFeatures", () => {
     expect(errors.traces[0].feature).toBe("memory");
 
     expect(await listFeatures()).toEqual(["bot", "memory"]);
+  });
+
+  it("filters by a related row id across tables, in memory and after a flush", async () => {
+    const fire = await startTrace({ ...baseInput, feature: "tasks", action: "fire" });
+    fire.relate("tasks", ["task-1"]);
+    await fire.fail(new Error("delivery down")); // failed runs must match too
+    const edit = await startTrace({ ...baseInput, feature: "tasks", action: "update" });
+    await edit.succeed({ relatedIds: { tasks: ["task-1"] } });
+    const other = await startTrace({ ...baseInput, feature: "tasks", action: "fire" });
+    other.relate("tasks", ["task-2"]);
+    await other.succeed();
+    const unrelated = await startTrace(baseInput);
+    await unrelated.succeed();
+
+    const matched = await listTraces({ relatedId: "task-1" });
+    expect(matched.total).toBe(2);
+    expect(matched.traces.map((t) => t.id).sort()).toEqual([edit.id, fire.id].sort());
+    expect((await listTraces({ relatedId: "task-2" })).total).toBe(1);
+    expect((await listTraces({ relatedId: "missing" })).total).toBe(0);
+
+    // The filter reads the header tier, so a flushed month must still match.
+    await flushTracesNow();
+    __resetTraceStoreForTests();
+    const cold = await listTraces({ relatedId: "task-1" });
+    expect(cold.total).toBe(2);
   });
 
   it("applies limit and offset, and unions memory with flushed traces", async () => {

@@ -14,6 +14,7 @@ function queryString(query: TraceQuery): string {
   if (query.correlationId) params.set("correlationId", query.correlationId);
   if (query.triggerKind) params.set("triggerKind", query.triggerKind);
   if (query.actor) params.set("actor", query.actor);
+  if (query.relatedId) params.set("relatedId", query.relatedId);
   return params.toString();
 }
 
@@ -66,6 +67,7 @@ export function TraceExplorer({
           correlationId={query.correlationId}
           triggerKind={query.triggerKind}
           actor={query.actor}
+          relatedId={query.relatedId}
         />
         <div className="flex items-center gap-2">
           <LiveIndicator topic="traces" />

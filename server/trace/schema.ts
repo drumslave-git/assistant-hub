@@ -15,6 +15,8 @@ export const traceQuerySchema = z.object({
   triggerKind: traceTriggerSchema.shape.kind.optional(),
   /** The trigger's actor (a chat id, user id, or job name), exact match. */
   actor: z.string().min(1).optional(),
+  /** A row id under `trace.relatedIds` (any table) — everything about one record. */
+  relatedId: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });

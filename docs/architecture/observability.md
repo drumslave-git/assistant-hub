@@ -130,6 +130,22 @@ On the Debug list and detail views the feature, status, trigger (kind · actor)
 and correlation are links to the pre-filtered list — `debugFilterHref` in
 `lib/trace.ts` is the one URL builder behind all of them.
 
+### Related rows
+
+Where correlation groups a *process*, `relatedIds` groups a *record*: every
+trace that touched one database row, keyed by the feature's `relatedIdsKey`
+(`{ tasks: ["<taskId>"] }`). `/debug?relatedId=<rowId>` filters across all
+tables at once, and it is what per-row debug buttons link to — a task card's
+Debug button shows the task's fires, the replies its match produced, and its
+create/update/delete audit trail in one list.
+
+Rows should be related **as soon as they are known**, not at settle:
+`trace.relate(key, ids)` merges ids into the open trace (deduplicated per
+table), so the association holds on every settle path — a task fire that
+*failed* is precisely the trace the per-task view must not lose. Settling with
+`relatedIds` still works and merges the same way; use it when the rows are only
+known at the end (a created row's id).
+
 ### What gets traced, and what does not
 
 | Traced | Not traced |
@@ -253,7 +269,7 @@ their own debug pages; they compose the shared components in
 | Component | Role |
 | --- | --- |
 | `TraceExplorer` | Filters + one page of the list + pagination + bundle-export link |
-| `DebugFilters` | Feature and status filters. The feature select is grouped by product area (`groupedFeatureOptions`), and lists every *registered* feature, not only those with traces, so an empty list reads as "no traces yet" rather than "this feature does not exist". Ids that appear only in old trace data — a retired feature — land under "Other" so their traces stay reachable |
+| `DebugFilters` | The filter controls — every facet the URL accepts (feature, status, trigger kind, actor, correlation, related id) is a visible control. The feature select is grouped by product area (`groupedFeatureOptions`), and lists every *registered* feature, not only those with traces, so an empty list reads as "no traces yet" rather than "this feature does not exist". Ids that appear only in old trace data — a retired feature — land under "Other" so their traces stay reachable |
 | `TraceList` | Dense, scannable table of headers linking to the detail view |
 | `TraceDetail` | Metadata panel plus the timeline |
 | `TraceTimeline` | The ordered events, with stage-category badges |

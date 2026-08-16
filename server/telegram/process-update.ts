@@ -77,6 +77,7 @@ import { pokeVisionBackfill } from "@/features/vision/server/backfill-scheduler"
 import { VOICE_TURN_NOTE, VOICE_UNAVAILABLE_NOTE } from "@/features/voice/format";
 import { synthesizeVoiceReply } from "@/features/voice/server/speak";
 import { ApiError } from "@/lib/api-error";
+import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
 import {
   runClassifier,
@@ -708,6 +709,10 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
               },
             });
             if (matched.length === 0) return null;
+            // This turn is now these tasks' run — relate their ids so the
+            // per-task Debug view (`/debug?relatedId=<taskId>`) finds the
+            // replies a `message`/`on-reply` task produced, not only its fires.
+            replyTrace.relate(FEATURES.tasks.relatedIdsKey, verdict.matchedIds);
             // Only a `message` task may open a turn nobody addressed.
             const opening = matched.filter((task) => task.triggerKind === "message");
             // Read below when the toolset and tool context are resolved: this is

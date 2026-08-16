@@ -31,6 +31,8 @@ export interface TraceQuery {
   triggerKind?: TraceTrigger["kind"];
   /** The trigger's actor (a chat id, user id, or job name), exact match. */
   actor?: string;
+  /** A row id under `trace.relatedIds` (any table) — everything about one record. */
+  relatedId?: string;
   limit?: number;
   offset?: number;
 }

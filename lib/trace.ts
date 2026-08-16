@@ -73,6 +73,8 @@ export interface TraceFilterParams {
   correlationId?: string;
   triggerKind?: TraceTrigger["kind"];
   actor?: string;
+  /** A row id under `trace.relatedIds` (any table) — everything about one record. */
+  relatedId?: string;
   offset?: number;
 }
 
@@ -84,6 +86,7 @@ export function debugFilterHref(params: TraceFilterParams, basePath = "/debug"):
   if (params.correlationId) search.set("correlationId", params.correlationId);
   if (params.triggerKind) search.set("triggerKind", params.triggerKind);
   if (params.actor) search.set("actor", params.actor);
+  if (params.relatedId) search.set("relatedId", params.relatedId);
   if (params.offset) search.set("offset", String(params.offset));
   const qs = search.toString();
   return qs ? `${basePath}?${qs}` : basePath;

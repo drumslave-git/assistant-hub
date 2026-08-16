@@ -420,11 +420,26 @@ export function setTraceInputSummary(traceId: string, inputSummary: string): voi
   if (trace) trace.inputSummary = inputSummary;
 }
 
+/**
+ * Merge related row ids into an open trace, deduplicated per table. Mid-flight
+ * counterpart to settling with `relatedIds`: a flow tags the rows it is about as
+ * soon as it knows them, so the association survives *any* settle path — a task
+ * fire that fails must still be findable by its task id.
+ */
+export function addTraceRelatedIds(traceId: string, key: string, ids: string[]): void {
+  if (ids.length === 0) return;
+  const trace = store().open.get(traceId);
+  if (!trace) return;
+  const merged = [...new Set([...(trace.relatedIds?.[key] ?? []), ...ids])];
+  trace.relatedIds = { ...trace.relatedIds, [key]: merged };
+}
+
 export interface SettleTraceInput {
   status: Extract<TraceStatus, "success" | "error" | "skipped">;
   finishedAt: string;
   outputSummary?: string;
   error?: Trace["error"];
+  /** Merged (per table, deduplicated) with ids already added mid-flight. */
   relatedIds?: Record<string, string[]>;
   /** Replaces the correlation the trace opened with; see `recorder.ts`. */
   correlationId?: string;
@@ -439,7 +454,11 @@ export function settleTrace(traceId: string, input: SettleTraceInput): void {
   trace.finishedAt = input.finishedAt;
   trace.error = input.error ?? null;
   if (input.outputSummary !== undefined) trace.outputSummary = input.outputSummary;
-  if (input.relatedIds !== undefined) trace.relatedIds = input.relatedIds;
+  if (input.relatedIds !== undefined) {
+    for (const [key, ids] of Object.entries(input.relatedIds)) {
+      addTraceRelatedIds(traceId, key, ids);
+    }
+  }
   if (input.correlationId !== undefined) reindexCorrelation(s, trace, input.correlationId);
   s.open.delete(traceId);
   s.pending.set(traceId, trace);
@@ -718,6 +737,8 @@ export interface ListTracesInput {
   triggerKind?: TraceTrigger["kind"];
   /** The trigger's actor (a chat id, user id, or job name), exact match. */
   actor?: string;
+  /** A row id under `relatedIds` (any table) — everything about one record. */
+  relatedId?: string;
   limit?: number;
   offset?: number;
 }
@@ -763,6 +784,14 @@ export async function listTraces(input: ListTracesInput = {}): Promise<ListTrace
   }
   if (input.triggerKind) all = all.filter((t) => t.trigger.kind === input.triggerKind);
   if (input.actor) all = all.filter((t) => t.trigger.actor === input.actor);
+  if (input.relatedId) {
+    const id = input.relatedId;
+    // Across all tables: ids are unique enough (UUIDs, snowflake ids) that
+    // scoping by table would only make the URL longer, never the match tighter.
+    all = all.filter(
+      (t) => t.relatedIds && Object.values(t.relatedIds).some((ids) => ids.includes(id)),
+    );
+  }
 
   const total = all.length;
   const offset = Math.max(input.offset ?? 0, 0);

@@ -28,6 +28,36 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Per-task Debug button + `relatedId` trace filter (`done`, 2026-08-16)
+
+Every task card on `/tasks` now has a Debug button →
+`/debug?relatedId=<taskId>`: all traces about that one task (fires, matched
+replies, the create/update/delete audit trail) in one list.
+
+- `relatedId` is a first-class Debug facet: filters across all `relatedIds`
+  tables (store → service → schema → `debugFilterHref` → a visible
+  `DebugFilters` control, per the every-filter-is-a-control rule), and the
+  detail view's Related rows ids are now clickable facets.
+- New `trace.relate(key, ids)` on the recorder merges related ids into the
+  *open* trace (settle-time `relatedIds` now merges too, deduplicated). A fire
+  relates its task id at open — failed/quiet fires stay findable — and a
+  matched `message`/`on-reply` task's ids are related on the reply trace it
+  ran in (`process-update.ts`), so standing-task runs are part of the record.
+- Docs: `docs/architecture/observability.md` (Related rows section),
+  `docs/features/tasks.md` (Traces), `docs/api/openapi.yaml` (the traces list
+  + bundle routes now document `triggerKind`/`actor`/`correlationId` too,
+  which were missing, plus `relatedId`).
+
+Proof: lint clean, typecheck clean, unit suite 1162 passed / 26 skipped (new
+store tests: relate/settle merge, failed-settle retention, `relatedId` filter
+warm + cold), `npm run build` green (no dev server was running).
+**Integration suites not run: Docker Desktop is not running on this machine
+today** — `tasks.integration` / `live-flow.integration` should be run when
+Docker is back (the touched paths are covered by unit tests; the reply-trace
+relate is one added line in the match closure). Bot-side changes (fire relate,
+reply-trace relate) are boot-time modules — the operator's dev server needs a
+restart to pick them up.
+
 ## Traces overhaul + reactions memory + vision gate + page speed (`done` pending live verification, 2026-08-15)
 
 One operator report with a screenshot and three trace bundles, six asks — plus

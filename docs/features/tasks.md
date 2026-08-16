@@ -296,10 +296,19 @@ timing, and context are.
 Every mutation is traced under `tasks` (`create`/`update`/`delete`) and every
 fire as `tasks`/`fire` (usage `callKind: "task-fire"`), with the task id in
 `relatedIds.tasks` and, when a fire delivered, the `<chatId>:<messageId>`
-correlation so feedback can find it. The match decision is recorded on the
-reply trace of the message it judged (`callKind: "task-match"`, a `task match`
-step with the offered tasks, matches, and the bound `authorityUserId`). Tool
-calls are traced under `mcp-tools-tasks`.
+correlation so feedback can find it. A fire relates its task id **at open**
+(`trace.relate`), so failed and quiet fires stay findable, not only delivered
+ones. The match decision is recorded on the reply trace of the message it
+judged (`callKind: "task-match"`, a `task match` step with the offered tasks,
+matches, and the bound `authorityUserId`); when tasks *match*, their ids are
+related on that reply trace too, so a standing task's actual runs are part of
+its record. Tool calls are traced under `mcp-tools-tasks`.
+
+Each task card on `/tasks` has a Debug button linking to
+`/debug?relatedId=<taskId>` — every trace about that one task (fires, matched
+replies, the create/update/delete audit trail) in one list. The `relatedId`
+facet is a first-class Debug filter; see
+`docs/architecture/observability.md`.
 
 ## Tests
 

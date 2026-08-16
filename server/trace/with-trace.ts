@@ -22,6 +22,7 @@ export async function withTrace<T>(
     id: inner.id,
     event: (event) => inner.event(event),
     setInputSummary: (summary) => inner.setInputSummary(summary),
+    relate: (key, ids) => inner.relate(key, ids),
     async succeed(finish) {
       settled = true;
       await inner.succeed(finish);

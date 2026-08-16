@@ -29,6 +29,7 @@ export default async function DebugPage({
     correlationId: first(sp.correlationId),
     triggerKind: first(sp.triggerKind),
     actor: first(sp.actor),
+    relatedId: first(sp.relatedId),
     limit: first(sp.limit),
     offset: first(sp.offset),
   });

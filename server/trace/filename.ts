@@ -68,6 +68,7 @@ export function traceListBundleFilename(
     query.triggerKind,
     query.actor,
     query.correlationId,
+    query.relatedId,
   ]
     .filter((value): value is string => Boolean(value))
     .map(slug);

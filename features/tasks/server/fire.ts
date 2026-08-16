@@ -173,6 +173,9 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
     trigger: { kind: "cron", actor: task.chatId ?? "global", correlationId: task.id },
     inputSummary: task.instruction,
   });
+  // Related up front, not at settle: the per-task Debug view must find every
+  // fire — the failed and skipped ones are the fires an operator looks for.
+  trace.relate(FEATURE.relatedIdsKey, [task.id]);
   try {
     const languageInstruction = deps.requiredLanguage?.trim()
       ? buildLanguageInstruction(deps.requiredLanguage)
@@ -296,7 +299,6 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
     await trace.succeed({
       outputSummary:
         sent.length > 0 ? sent.join("\n\n") : `quiet fire — nothing sent (${reply.content})`,
-      relatedIds: { [FEATURE.relatedIdsKey]: [task.id] },
       ...(sentIds.length > 0 ? { correlationId: `${task.chatId}:${sentIds[0]}` } : {}),
     });
     return { ok: true, sent };
