@@ -33,6 +33,8 @@ export interface TraceQuery {
   actor?: string;
   /** A row id under `trace.relatedIds` (any table) — everything about one record. */
   relatedId?: string;
+  /** A flow seed (correlation, trace, or row id) — every transitively linked trace. */
+  flow?: string;
   limit?: number;
   offset?: number;
 }

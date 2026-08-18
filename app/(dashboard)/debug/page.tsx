@@ -30,6 +30,7 @@ export default async function DebugPage({
     triggerKind: first(sp.triggerKind),
     actor: first(sp.actor),
     relatedId: first(sp.relatedId),
+    flow: first(sp.flow),
     limit: first(sp.limit),
     offset: first(sp.offset),
   });

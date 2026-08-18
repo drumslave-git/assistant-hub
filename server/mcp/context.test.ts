@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { getToolContext, runWithToolContext, tryGetToolContext } from "./context";
+import {
+  getToolContext,
+  runWithToolContext,
+  toolContextTrigger,
+  tryGetToolContext,
+} from "./context";
 
 /**
  * The per-turn tool context has to survive the one thing this app guarantees:
@@ -42,5 +47,21 @@ describe("MCP tool context", () => {
 
     expect(tryGetToolContext()).toBeNull();
     expect(() => getToolContext()).toThrow(/no chat is bound/);
+  });
+});
+
+describe("toolContextTrigger", () => {
+  it("stamps the turn's correlation so tool-driven traces join their turn's flow", () => {
+    expect(
+      toolContextTrigger({ chatId: "100", userId: "77", correlationId: "100:41" }),
+    ).toEqual({ kind: "telegram", actor: "77", correlationId: "100:41" });
+  });
+
+  it("falls back to the chat id when the context carries no correlation", () => {
+    expect(toolContextTrigger({ chatId: "100" })).toEqual({
+      kind: "telegram",
+      actor: "100",
+      correlationId: "100",
+    });
   });
 });

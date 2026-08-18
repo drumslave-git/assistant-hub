@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
 import type { TraceTrigger } from "@/lib/trace";
-import { getToolContext } from "@/server/mcp/context";
+import { getToolContext, toolContextTrigger } from "@/server/mcp/context";
 
 import {
   MAX_COLLECTION_LEN,
@@ -68,9 +68,9 @@ function toToolError(err: unknown): ReturnType<typeof errorResult> | null {
   return null;
 }
 
-/** The trigger for a specialist mutation traced from a chat turn. */
-function toolTrigger(chatId: string, userId?: string | null): TraceTrigger {
-  return { kind: "telegram", actor: userId ?? chatId, correlationId: chatId };
+/** The trigger for a specialist mutation traced from a chat turn (shared shape). */
+function toolTrigger(): TraceTrigger {
+  return toolContextTrigger(getToolContext());
 }
 
 /** The no-active-specialist result every data tool returns when unscoped. */
@@ -148,7 +148,7 @@ export function registerSpecialistsMcpTools(server: McpServer): void {
             collection: collection.trim().toLowerCase(),
             payload,
           },
-          toolTrigger(chatId, userId),
+          toolTrigger(),
         );
         return textResult(`Saved entry ${entry.id} in "${entry.collection}".`, {
           ok: true,
@@ -238,12 +238,12 @@ export function registerSpecialistsMcpTools(server: McpServer): void {
       },
     },
     async ({ id, payload }) => {
-      const { specialist, chatId, userId } = await activeSpecialist();
+      const { specialist, chatId } = await activeSpecialist();
       if (!specialist) return noActiveSpecialist();
       try {
         const entry = await updateEntry(
           { specialist, chatId, id, payload },
-          toolTrigger(chatId, userId),
+          toolTrigger(),
         );
         return textResult(`Updated entry ${entry.id}.`, { ok: true, entry: entryView(entry) });
       } catch (err) {
@@ -271,10 +271,10 @@ export function registerSpecialistsMcpTools(server: McpServer): void {
       },
     },
     async ({ id }) => {
-      const { specialist, chatId, userId } = await activeSpecialist();
+      const { specialist, chatId } = await activeSpecialist();
       if (!specialist) return noActiveSpecialist();
       try {
-        await deleteEntry({ specialist, chatId, id }, toolTrigger(chatId, userId));
+        await deleteEntry({ specialist, chatId, id }, toolTrigger());
         return textResult(`Deleted entry ${id}.`, { ok: true, id });
       } catch (err) {
         const mapped = toToolError(err);
@@ -355,7 +355,7 @@ export function registerSpecialistsMcpTools(server: McpServer): void {
           userId: ctx.userId ?? null,
           specialistName: name.trim() ? name.trim() : null,
         },
-        toolTrigger(ctx.chatId, ctx.userId),
+        toolTrigger(),
       );
       switch (result.status) {
         case "switched":

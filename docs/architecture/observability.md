@@ -130,6 +130,24 @@ On the Debug list and detail views the feature, status, trigger (kind · actor)
 and correlation are links to the pre-filtered list — `debugFilterHref` in
 `lib/trace.ts` is the one URL builder behind all of them.
 
+### Flow — the whole story behind one click
+
+A correlation is one process, but a story spans several: "remind me tomorrow"
+is a reply turn, a `tasks` create inside it, a fire the next morning, and the
+message that fire sent — joined only pairwise (the turn's correlation on one
+side, the task's row id on the other). `/debug?flow=<id>` follows both link
+kinds **transitively** (`collectFlowIds` in `server/trace/store.ts`): collect
+the traces matching the seed, widen the frontier with every collected trace's
+correlation id, related row ids and own id, repeat — depth- and size-capped
+(6 hops / 300 traces) so a legacy over-broad correlation cannot drag in a
+chat's whole history. Any linked id is a valid seed: a correlation id, a trace
+id, or a row id.
+
+On a trace's detail view the correlation id links to its flow (the exact
+one-process view stays one click away), and the Debug filter bar has a Flow
+input like every other facet. All other filters compose with it — the flow is
+computed first, then feature/status/etc. narrow within it.
+
 ### Related rows
 
 Where correlation groups a *process*, `relatedIds` groups a *record*: every
@@ -269,7 +287,7 @@ their own debug pages; they compose the shared components in
 | Component | Role |
 | --- | --- |
 | `TraceExplorer` | Filters + one page of the list + pagination + bundle-export link |
-| `DebugFilters` | The filter controls — every facet the URL accepts (feature, status, trigger kind, actor, correlation, related id) is a visible control. The feature select is grouped by product area (`groupedFeatureOptions`), and lists every *registered* feature, not only those with traces, so an empty list reads as "no traces yet" rather than "this feature does not exist". Ids that appear only in old trace data — a retired feature — land under "Other" so their traces stay reachable |
+| `DebugFilters` | The filter controls — every facet the URL accepts (feature, status, trigger kind, actor, correlation, related id, flow) is a visible control. The feature select is grouped by product area (`groupedFeatureOptions`), and lists every *registered* feature, not only those with traces, so an empty list reads as "no traces yet" rather than "this feature does not exist". Ids that appear only in old trace data — a retired feature — land under "Other" so their traces stay reachable |
 | `TraceList` | Dense, scannable table of headers linking to the detail view |
 | `TraceDetail` | Metadata panel plus the timeline |
 | `TraceTimeline` | The ordered events, with stage-category badges |

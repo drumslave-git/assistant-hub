@@ -739,6 +739,8 @@ export interface ListTracesInput {
   actor?: string;
   /** A row id under `relatedIds` (any table) — everything about one record. */
   relatedId?: string;
+  /** A flow seed (correlation, trace, or row id) — the transitive story. See {@link collectFlowIds}. */
+  flow?: string;
   limit?: number;
   offset?: number;
 }
@@ -764,6 +766,72 @@ function mergeNewestFirst(a: Trace[], b: Trace[]): Trace[] {
   return out;
 }
 
+/** Bounds on a flow walk, so one over-connected id cannot pull in the whole store. */
+const MAX_FLOW_DEPTH = 6;
+const MAX_FLOW_TRACES = 300;
+
+/**
+ * The link ids one trace contributes to a flow walk: the process it belongs to
+ * (`trigger.correlationId`), the records it touched (`relatedIds`, any table),
+ * and its own id (so a bare trace id is a valid seed even where the trace
+ * correlates to something else).
+ */
+function flowKeysOf(trace: Trace): string[] {
+  const keys = [trace.id];
+  if (trace.trigger.correlationId) keys.push(trace.trigger.correlationId);
+  for (const ids of Object.values(trace.relatedIds ?? {})) keys.push(...ids);
+  return keys;
+}
+
+/**
+ * Every trace transitively linked to `seed` — the "whole story" read behind the
+ * Debug `flow` filter (operator requirement, 2026-08-18: clicking a trace's
+ * correlation must surface the entire process, not one slice of it).
+ *
+ * Traces link two ways: a shared `trigger.correlationId` groups the traces of
+ * one process (a turn and its tool calls), and a shared related row id groups
+ * the processes that touched one record (a task's create, updates, and every
+ * fire). Neither alone tells the story — "remind me tomorrow" spans a reply
+ * turn, a `tasks` create, a later fire, and the message that fire sent — so the
+ * walk alternates: collect traces matching the frontier ids, widen the frontier
+ * with every collected trace's own link ids, repeat. Depth- and size-capped: a
+ * legacy over-broad correlation (a bare chat id) stops costing at the caps
+ * instead of dragging in a chat's whole history.
+ */
+function collectFlowIds(all: Trace[], seed: string): Set<string> {
+  // One pass to index every link key → traces carrying it.
+  const byKey = new Map<string, Trace[]>();
+  for (const trace of all) {
+    for (const key of flowKeysOf(trace)) {
+      const list = byKey.get(key);
+      if (list) list.push(trace);
+      else byKey.set(key, [trace]);
+    }
+  }
+
+  const collected = new Set<string>();
+  const seenKeys = new Set<string>([seed]);
+  let frontier = [seed];
+  for (let depth = 0; depth < MAX_FLOW_DEPTH && frontier.length > 0; depth++) {
+    const nextKeys: string[] = [];
+    for (const key of frontier) {
+      for (const trace of byKey.get(key) ?? []) {
+        if (collected.has(trace.id)) continue;
+        if (collected.size >= MAX_FLOW_TRACES) return collected;
+        collected.add(trace.id);
+        for (const linked of flowKeysOf(trace)) {
+          if (!seenKeys.has(linked)) {
+            seenKeys.add(linked);
+            nextKeys.push(linked);
+          }
+        }
+      }
+    }
+    frontier = nextKeys;
+  }
+  return collected;
+}
+
 /**
  * List trace headers (without events), newest first, with total count.
  * Full-history read, served from the header tier; the sorted flushed view is
@@ -777,6 +845,10 @@ export async function listTraces(input: ListTracesInput = {}): Promise<ListTrace
   }
   const live = [...s.open.values(), ...s.pending.values()].sort(newestFirst);
   let all = mergeNewestFirst(live, s.sortedFlushed);
+  if (input.flow) {
+    const ids = collectFlowIds(all, input.flow);
+    all = all.filter((t) => ids.has(t.id));
+  }
   if (input.feature) all = all.filter((t) => t.feature === input.feature);
   if (input.status) all = all.filter((t) => t.status === input.status);
   if (input.correlationId) {

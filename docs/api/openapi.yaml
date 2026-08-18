@@ -1846,6 +1846,13 @@ paths:
           in: query
           description: A row id under `relatedIds` (any table) — everything about one record, e.g. a task.
           schema: { type: string }
+        - name: flow
+          in: query
+          description: >-
+            A flow seed (correlation, trace, or row id) — every transitively linked
+            trace: the turn that created a task, its tool calls, every fire, what
+            each fire sent. Depth- and size-capped.
+          schema: { type: string }
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 200 }
@@ -1922,6 +1929,9 @@ paths:
           in: query
           schema: { type: string }
         - name: relatedId
+          in: query
+          schema: { type: string }
+        - name: flow
           in: query
           schema: { type: string }
         - name: limit

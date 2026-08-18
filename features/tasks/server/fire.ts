@@ -48,6 +48,16 @@ export interface FireDeps {
   /** The active personality prompt to compose into the system prompt, or null. */
   personalityPrompt: string | null;
   /**
+   * The firing chat's identity context — the same block a live reply gets: in a
+   * group the known-participant roster (names, @usernames, user ids), in a
+   * private chat who the bot is talking to. Injected as a system message so a
+   * fire can address people properly — most importantly by their exact
+   * @username, without which Telegram notifies nobody (operator report,
+   * 2026-08-18: a fire greeted someone by a bare alias and the reminder was
+   * never seen). Null/absent → no block.
+   */
+  chatContext?: string | null;
+  /**
    * The firing chat's active specialist instructions, stacked into the system
    * prompt like the live reply path. Null/absent → no specialist block.
    */
@@ -142,6 +152,10 @@ export function buildTaskDirectiveMessage(
     `send "Hey, don't forget to call your mom").\n` +
     `- Address people by name when you know it; if it concerns the person who set the task up, ` +
     `address them directly ("you").\n` +
+    `- A bare name or nickname notifies NOBODY on Telegram — a message meant for a specific ` +
+    `person must mention them by their exact @username (copy it from the chat participants ` +
+    `context, @ included) so they actually get notified. Only when no @username is listed for ` +
+    `them, use their name.\n` +
     `- You have no chat transcript here — the directive and saved context above are all you were ` +
     `given. Ground the message in the saved context when there is one; the message must carry the ` +
     `substance, not point at it. If the directive names a person, event, joke, or topic the saved ` +
@@ -177,6 +191,7 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
     const languageInstruction = deps.requiredLanguage?.trim()
       ? buildLanguageInstruction(deps.requiredLanguage)
       : null;
+    const chatContext = deps.chatContext?.trim() ? deps.chatContext.trim() : null;
     const messages: ChatMessage[] = [
       {
         role: "system",
@@ -186,6 +201,9 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
           standingTasks: deps.standingTasks,
         }),
       },
+      // The chat identity context right after the system prompt, mirroring the
+      // live reply order — it names who can be addressed and by which @username.
+      ...(chatContext ? [{ role: "system" as const, content: chatContext }] : []),
       ...(languageInstruction ? [{ role: "system" as const, content: languageInstruction }] : []),
       {
         role: "user",
@@ -202,6 +220,7 @@ export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> 
       data: {
         specialistApplied: Boolean(deps.specialistInstructions?.trim()),
         standingTasksApplied: Boolean(deps.standingTasks?.trim()),
+        chatContextApplied: Boolean(chatContext),
       },
     });
 

@@ -3,8 +3,8 @@ import "server-only";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { recordAssistantMessage } from "@/features/history/server/service";
-import { getGroupLanguage } from "@/features/known-groups/server/service";
-import { getUserLanguage } from "@/features/known-users/server/service";
+import { getGroupContext, getGroupLanguage } from "@/features/known-groups/server/service";
+import { getUserContext, getUserLanguage } from "@/features/known-users/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import { getBotPolicy, getLlmRuntime, getTimezone } from "@/features/settings/server/service";
@@ -139,6 +139,14 @@ export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; fa
     const specialistInstructions = await getActiveSpecialistInstructions(chatId, db).catch(
       () => null,
     );
+    // The chat identity context — the roster with @usernames in a group, the
+    // person's identity in a DM (a DM chat id is the user id) — so the fire can
+    // address its target by a mention that actually notifies. Best-effort.
+    const chatContext = await (
+      isGroupChatId(chatId)
+        ? getGroupContext(chatId, db).then((c) => c?.content ?? null)
+        : getUserContext(chatId, db).then((c) => c?.content ?? null)
+    ).catch(() => null);
     // The chat's standing tasks, resolved per task for the same reason. Only
     // the prompt-composed set applies, and with a null sender: a fire is
     // nobody's message, so a standing task that singles people out has no one
@@ -148,6 +156,7 @@ export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; fa
       .catch(() => null);
     const result = await fireTask(task, {
       personalityPrompt: deps.personalityPrompt,
+      chatContext,
       specialistInstructions,
       standingTasks,
       requiredLanguage: resolveRequiredLanguage(storedLanguage),

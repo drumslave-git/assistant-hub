@@ -3,7 +3,7 @@ import "server-only";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { getToolContext } from "@/server/mcp/context";
+import { getToolContext, toolContextTrigger } from "@/server/mcp/context";
 import { formatKnownUserLabel } from "../format";
 import { addAliasByReference, type AddAliasByReferenceResult } from "./service";
 
@@ -79,11 +79,11 @@ export function registerKnownUsersMcpTools(server: McpServer): void {
       },
     },
     async ({ name, aliases }) => {
-      const { chatId } = getToolContext();
+      const ctx = getToolContext();
       const list = Array.isArray(aliases) ? aliases : [aliases];
       const result = await addAliasByReference(
-        { chatId, reference: name, aliases: list },
-        { kind: "telegram", actor: chatId },
+        { chatId: ctx.chatId, reference: name, aliases: list },
+        toolContextTrigger(ctx),
       );
       const { text, isError } = resultMessage(name, result);
       return { content: [{ type: "text" as const, text }], ...(isError ? { isError: true } : {}) };

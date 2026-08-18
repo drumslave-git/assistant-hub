@@ -64,6 +64,14 @@ describe("buildTaskDirectiveMessage", () => {
     expect(text).toMatch(/logged, not sent/i);
   });
 
+  it("requires @username mentions for person-directed messages", () => {
+    // A bare name notifies nobody on Telegram (operator report, 2026-08-18) —
+    // the directive must say so and point at the participants context.
+    const text = buildTaskDirectiveMessage("remind R. about the thing", null, []);
+    expect(text).toMatch(/@username/);
+    expect(text).toMatch(/notifies NOBODY/i);
+  });
+
   it("hands over saved context and labels past deliveries as wording reference only", () => {
     const text = buildTaskDirectiveMessage("nudge about X", "X is the launch checklist.", [
       "Don't forget X!",
@@ -125,6 +133,31 @@ describe("fireTask", () => {
 
     await fireTask(task(), deps({ complete }));
     expect(complete).toHaveBeenCalled();
+  });
+
+  it("injects the chat identity context as a system message when provided", async () => {
+    const complete = vi.fn().mockResolvedValue({ content: "ok", model: "m", latencyMs: 1 });
+    const roster = "Known participants of this group: Alice (@alice) [user id 1]";
+
+    await fireTask(task(), deps({ complete, chatContext: roster }));
+
+    const messages = complete.mock.calls[0][0] as { role: string; content: string }[];
+    const rosterIndex = messages.findIndex((m) => m.content === roster);
+    expect(rosterIndex).toBeGreaterThan(0);
+    expect(messages[rosterIndex].role).toBe("system");
+    // Right after the base system prompt, before the directive — the reply order.
+    expect(messages[rosterIndex - 1].role).toBe("system");
+    expect(messages[messages.length - 1].role).toBe("user");
+  });
+
+  it("composes no context block when the chat has none", async () => {
+    const complete = vi.fn().mockResolvedValue({ content: "ok", model: "m", latencyMs: 1 });
+
+    await fireTask(task(), deps({ complete, chatContext: "  " }));
+
+    const messages = complete.mock.calls[0][0] as { role: string; content: string }[];
+    // Base system prompt + directive only (no personality/language in these deps).
+    expect(messages).toHaveLength(2);
   });
 
   it("treats a fire that sends nothing as a quiet success, not a failure", async () => {

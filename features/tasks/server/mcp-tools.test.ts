@@ -6,6 +6,7 @@ import { runWithToolContext } from "@/server/mcp/context";
 import type { Task } from "../types";
 import {
   registerTasksMcpTools,
+  TASKS_CREATE_TOOL,
   TASKS_DELETE_TOOL,
   TASKS_GET_TOOL,
   TASKS_LIST_TOOL,
@@ -87,6 +88,34 @@ function tools(): Record<string, Registered> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("trace correlation", () => {
+  it("stamps the turn's correlation on a create, so the task joins its turn's flow", async () => {
+    service.createTaskFromChat.mockResolvedValue({
+      status: "created",
+      task: task({ triggerKind: "schedule", runDate: "2026-08-18", timeOfDay: "09:00" }),
+    });
+
+    await runWithToolContext({ chatId: "100", userId: "77", correlationId: "100:41" }, () =>
+      tools()[TASKS_CREATE_TOOL].handler({
+        instruction: "Remind about the contract.",
+        trigger: "schedule",
+        context: "",
+        user_ids: [],
+        every_minutes: 0,
+        delay_minutes: 0,
+        time: "09:00",
+        weekdays: [],
+        date: "2026-08-18",
+      }),
+    );
+
+    expect(service.createTaskFromChat).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "telegram", actor: "77", correlationId: "100:41" }),
+    );
+  });
 });
 
 describe("reads go through the chat-visible service", () => {

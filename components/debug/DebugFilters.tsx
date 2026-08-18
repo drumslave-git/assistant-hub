@@ -93,6 +93,7 @@ export function DebugFilters({
   triggerKind,
   actor,
   relatedId,
+  flow,
 }: {
   basePath: string;
   features?: string[];
@@ -102,6 +103,7 @@ export function DebugFilters({
   triggerKind?: TraceTrigger["kind"];
   actor?: string;
   relatedId?: string;
+  flow?: string;
 }) {
   const router = useRouter();
 
@@ -112,6 +114,7 @@ export function DebugFilters({
     triggerKind,
     actor,
     relatedId,
+    flow,
   };
 
   function navigate(next: TraceFilterParams) {
@@ -209,6 +212,17 @@ export function DebugFilters({
         placeholder="task / row id"
         value={relatedId}
         onApply={(next) => navigate({ ...active, relatedId: next })}
+      />
+
+      {/* The transitive facet: follows correlation + related-row links both ways,
+          so one id surfaces the whole story (turn → task → fires → messages). */}
+      <TextFilter
+        key={`flow:${flow ?? ""}`}
+        id="debug-flow"
+        label="Flow"
+        placeholder="any linked id"
+        value={flow}
+        onApply={(next) => navigate({ ...active, flow: next })}
       />
     </div>
   );

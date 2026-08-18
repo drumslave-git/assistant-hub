@@ -262,7 +262,13 @@ phrasings of a rule and of a schedule request, memory-tool disambiguation,
 trigger selection ("in 5 minutes" is `timeout` with `delay_minutes` 5, "every
 10 minutes" is `interval`), gather-context-before-creating for timed kinds
 (2026-07-28: a fire sees no transcript), repeat-is-safe idempotence
-(`f33e1ede…`), and roster-copied `user_ids` (never derived from a name).
+(`f33e1ede…`), roster-copied `user_ids` (never derived from a name), and the
+one-time-vs-weekly rule (2026-08-18: "remind me tomorrow at 9" was saved as
+`weekdays: [Tue]` — every Tuesday forever — instead of `date`; the description
+and both param descriptions now spell out that a one-time request resolves to
+`date` and `weekdays` is only for every-week requests, and that relative time
+words like "tomorrow" must stay out of the instruction, whose text is read only
+when the task fires).
 `tasks_update` keeps two audience fields (`user_ids` + `applies_to_everyone`)
 so an empty array means "leave it alone" and can never silently widen a rule
 written about one person. Unknown ids answer with the chat's real ids to copy
@@ -275,9 +281,15 @@ advisory lock) scans enabled timed rows whose `next_run_at` is due, fires each,
 then settles: an `interval` advances from the settle instant (drift over
 double-fire), a `schedule` advances on the calendar, a spent one-shot is
 deleted, a failed one is retried/disabled. Fires pause during maintenance mode
-(skipped, not dropped). Each fire composes the chat's specialist, language, and
-the standing-tasks block (null sender), and runs with the task's chat bound as
-the tool context. Job card on `/tasks` and `/jobs`; "Run due now" via
+(skipped, not dropped). Each fire composes the chat's specialist, language, the
+standing-tasks block (null sender), and the chat identity context — the group
+roster (names, @usernames, user ids) or the DM partner — and runs with the
+task's chat bound as the tool context. The identity context is what lets a fire
+address its target by their exact `@username`: a bare name or alias notifies
+nobody on Telegram (operator report, 2026-08-18 — a reminder greeted its target
+by a nickname and was never seen), so the fire directive requires an @username
+mention for person-directed messages, falling back to the name only when none
+is listed. Job card on `/tasks` and `/jobs`; "Run due now" via
 `POST /api/tasks/run`.
 
 ## Where a standing task lands in the prompt
@@ -312,6 +324,13 @@ judged (`callKind: "task-match"`, a `task match` step with the offered tasks,
 matches, and the bound `authorityUserId`); when tasks *match*, their ids are
 related on that reply trace too, so a standing task's actual runs are part of
 its record. Tool calls are traced under `mcp-tools-tasks`.
+
+A chat-side mutation stamps the **turn's** correlation
+(`toolContextTrigger`, 2026-08-18 — it used to stamp the bare chat id, cutting
+the create out of the turn that asked for it), so `/debug?flow=<any linked id>`
+walks the whole story: the reply turn that created the task, its tool calls,
+every fire, and what each fire sent. See the Flow section of
+`docs/architecture/observability.md`.
 
 Each task card on `/tasks` has a Debug button linking to
 `/debug?relatedId=<taskId>` — every trace about that one task (fires, matched

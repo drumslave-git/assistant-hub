@@ -4,8 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
-import type { TraceTrigger } from "@/lib/trace";
-import { getToolContext } from "@/server/mcp/context";
+import { getToolContext, toolContextTrigger } from "@/server/mcp/context";
 
 import { describeTrigger } from "../schedule";
 import { isPromptTask, type Task, type TriggerKind } from "../types";
@@ -86,7 +85,10 @@ export const TASKS_CREATE_DESCRIPTION =
   "roast everyone once a day'): a recurring bit is still a task. This is NOT for facts about " +
   "people — that is the memory tool. " +
   "Write the instruction as a complete, self-contained directive to yourself, spelling out the " +
-  "trigger and the action in full — it is read later without this conversation. " +
+  "trigger and the action in full — it is read later without this conversation. Keep relative " +
+  "time words (\"tomorrow\", \"tonight\", \"in an hour\") OUT of the instruction: it is read " +
+  "when the task fires, when they no longer mean anything — the timing lives entirely in the " +
+  "trigger fields, and the instruction states only what to do. " +
   "Pick 'trigger' from what was described: " +
   "'message' when something people SAY or POST here must set it off, even when nobody is " +
   "talking to you (\"any time someone posts X, do Y\"); " +
@@ -94,8 +96,13 @@ export const TASKS_CREATE_DESCRIPTION =
   "'interval' with every_minutes for \"every N minutes/hours/days\"; " +
   "'timeout' with delay_minutes for one-off relative requests — \"in 5 minutes\" is " +
   "delay_minutes 5, \"in two hours\" is 120; " +
-  "'schedule' with time (HH:MM, operator timezone) plus date (YYYY-MM-DD, a single run) or " +
-  "weekdays (0=Sunday..6=Saturday) or neither (daily) for clock-and-calendar requests. " +
+  "'schedule' with time (HH:MM, operator timezone) for clock-and-calendar requests — plus " +
+  "date (YYYY-MM-DD) for a SINGLE run, or weekdays (0=Sunday..6=Saturday) for an every-week " +
+  "repeat, or neither for a daily repeat. A one-time request — \"tomorrow at 9\", \"tonight\", " +
+  "\"on the 25th\" — is a single run: resolve the wording against the current date and pass " +
+  "'date'. NEVER encode it as weekdays — \"tomorrow\" is not \"every Tuesday\"; weekdays make " +
+  "the task fire every week forever, and a reminder saved that way keeps firing long after it " +
+  "was due. Pass weekdays only when the request itself says every/each <weekday>. " +
   "IMPORTANT for timed tasks — when the task fires you will have ONLY the stored 'instruction' " +
   "and 'context' texts: no chat transcript, no conversation memory. So GATHER CONTEXT BEFORE " +
   "CREATING: if the request points at a person, event, joke, or topic from this chat rather " +
@@ -149,11 +156,6 @@ function errorResult(text: string) {
 function toToolError(err: unknown): ReturnType<typeof errorResult> | null {
   if (err instanceof ApiError) return errorResult(err.message);
   return null;
-}
-
-/** The trigger for a task mutation traced from a chat turn. */
-function toolTrigger(chatId: string, userId?: string | null): TraceTrigger {
-  return { kind: "telegram", actor: userId ?? chatId, correlationId: chatId };
 }
 
 /**
@@ -345,8 +347,19 @@ export function registerTasksMcpTools(server: McpServer): void {
         weekdays: z
           .array(z.number().int().min(0).max(6))
           .default([])
-          .describe("'schedule' only: weekdays for a weekly run (0=Sunday..6=Saturday)"),
-        date: z.string().default("").describe("'schedule' only: date for a single run as YYYY-MM-DD"),
+          .describe(
+            "'schedule' only: weekdays for a run repeating EVERY week (0=Sunday..6=Saturday). " +
+              "Only when the request says every/each week — a one-time \"tomorrow\" or a named " +
+              "date goes in 'date', never here",
+          ),
+        date: z
+          .string()
+          .default("")
+          .describe(
+            "'schedule' only: date for a single run as YYYY-MM-DD — the field for every " +
+              "one-time request (\"tomorrow at 9\" = tomorrow's actual date, resolved against " +
+              "the current date)",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -373,7 +386,7 @@ export function registerTasksMcpTools(server: McpServer): void {
             weekdays: weekdays.length > 0 ? weekdays : null,
             runDate: date.trim() ? date.trim() : null,
           },
-          toolTrigger(ctx.chatId, ctx.userId),
+          toolContextTrigger(ctx),
         );
         const failure = await relayFailure(result, ctx.chatId);
         if (failure) return failure;
@@ -479,8 +492,17 @@ export function registerTasksMcpTools(server: McpServer): void {
         weekdays: z
           .array(z.number().int().min(0).max(6))
           .default([])
-          .describe("'schedule': new weekdays (empty keeps them)"),
-        date: z.string().default("").describe("'schedule': new date YYYY-MM-DD ('' keeps it)"),
+          .describe(
+            "'schedule': new weekdays for an every-week repeat (empty keeps them). Only for " +
+              "every/each-week requests — a one-time date goes in 'date', never here",
+          ),
+        date: z
+          .string()
+          .default("")
+          .describe(
+            "'schedule': new date YYYY-MM-DD for a single run ('' keeps it) — the field for " +
+              "one-time requests, with relative wording resolved against the current date",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -534,7 +556,7 @@ export function registerTasksMcpTools(server: McpServer): void {
             id,
             patch,
           },
-          toolTrigger(ctx.chatId, ctx.userId),
+          toolContextTrigger(ctx),
         );
         const failure = await relayFailure(result, ctx.chatId, id);
         if (failure) return failure;
@@ -585,7 +607,7 @@ export function registerTasksMcpTools(server: McpServer): void {
             authorityUserId: ctx.authorityUserId ?? null,
             id,
           },
-          toolTrigger(ctx.chatId, ctx.userId),
+          toolContextTrigger(ctx),
         );
         const failure = await relayFailure(result, ctx.chatId, id);
         if (failure) return failure;

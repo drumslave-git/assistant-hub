@@ -2,6 +2,8 @@ import "server-only";
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import type { TraceTrigger } from "@/lib/trace";
+
 /**
  * Per-turn context for MCP tool handlers. Tools are registered once on the shared
  * in-process server at startup, but their execution is scoped to a single chat
@@ -146,4 +148,21 @@ export function getToolContext(): McpToolContext {
  */
 export function tryGetToolContext(): McpToolContext | null {
   return storage().getStore() ?? null;
+}
+
+/**
+ * The {@link TraceTrigger} for a service mutation an MCP tool performs on behalf
+ * of the bound turn — the ONE way tool handlers stamp their traces, so every
+ * feature's tool-driven trace carries the turn's correlation and groups with the
+ * reply (or fire) that caused it. Handlers used to build this by hand and
+ * stamped the bare chat id as correlation, which cut the trace out of its turn's
+ * flow (operator report, 2026-08-18). The chat id remains only as the fallback
+ * for contexts bound without a correlation (tests, legacy callers).
+ */
+export function toolContextTrigger(ctx: McpToolContext): TraceTrigger {
+  return {
+    kind: "telegram",
+    actor: ctx.userId ?? ctx.chatId,
+    correlationId: ctx.correlationId ?? ctx.chatId,
+  };
 }

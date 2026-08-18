@@ -17,6 +17,8 @@ export const traceQuerySchema = z.object({
   actor: z.string().min(1).optional(),
   /** A row id under `trace.relatedIds` (any table) — everything about one record. */
   relatedId: z.string().min(1).optional(),
+  /** A flow seed (correlation, trace, or row id) — every transitively linked trace. */
+  flow: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });

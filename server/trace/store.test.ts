@@ -274,6 +274,61 @@ describe("listTraces / listFeatures", () => {
     expect(cold.total).toBe(2);
   });
 
+  it("walks the whole flow from any linked id (turn ↔ record ↔ fires)", async () => {
+    // The real shape behind the filter: a reply turn creates a task via a tool,
+    // and the task later fires — three processes joined only pairwise (turn
+    // correlation on one side, the task's row id on the other).
+    const turnCorr = "100:1";
+    const reply = await startTrace({
+      ...baseInput,
+      feature: "bot-messaging",
+      trigger: { kind: "telegram", actor: "77", correlationId: turnCorr },
+    });
+    await reply.succeed();
+    const toolCall = await startTrace({
+      ...baseInput,
+      feature: "mcp-tools-tasks",
+      action: "tasks_create",
+      trigger: { kind: "telegram", actor: "100", correlationId: turnCorr },
+    });
+    await toolCall.succeed();
+    const create = await startTrace({
+      ...baseInput,
+      feature: "tasks",
+      action: "create",
+      trigger: { kind: "telegram", actor: "77", correlationId: turnCorr },
+    });
+    await create.succeed({ relatedIds: { tasks: ["task-9"] } });
+    // The fire opens on the task id and settles correlated to what it sent.
+    const fire = await startTrace({
+      ...baseInput,
+      feature: "tasks",
+      action: "fire",
+      trigger: { kind: "cron", actor: "100", correlationId: "task-9" },
+    });
+    fire.relate("tasks", ["task-9"]);
+    await fire.succeed({ correlationId: "100:9" });
+    const unrelated = await startTrace(baseInput);
+    await unrelated.succeed();
+
+    const story = [reply.id, toolCall.id, create.id, fire.id].sort();
+    // From the fire's settled correlation (what the operator clicks on the
+    // fire's Debug page) all the way back to the turn that created the task.
+    const fromFire = await listTraces({ flow: "100:9" });
+    expect(fromFire.traces.map((t) => t.id).sort()).toEqual(story);
+    // From the creation turn forward to the fire.
+    const fromTurn = await listTraces({ flow: turnCorr });
+    expect(fromTurn.traces.map((t) => t.id).sort()).toEqual(story);
+    // A bare trace id and the record id are valid seeds too.
+    expect((await listTraces({ flow: create.id })).traces.map((t) => t.id).sort()).toEqual(story);
+    expect((await listTraces({ flow: "task-9" })).traces.map((t) => t.id).sort()).toEqual(story);
+    // Other filters narrow within the flow.
+    const tasksOnly = await listTraces({ flow: "task-9", feature: "tasks" });
+    expect(tasksOnly.traces.map((t) => t.id).sort()).toEqual([create.id, fire.id].sort());
+    // An unknown seed matches nothing.
+    expect((await listTraces({ flow: "missing" })).total).toBe(0);
+  });
+
   it("applies limit and offset, and unions memory with flushed traces", async () => {
     for (let i = 0; i < 3; i++) {
       const t = await startTrace(baseInput);

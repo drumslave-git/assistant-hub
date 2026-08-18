@@ -28,6 +28,37 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Trace flow view + fire addressing + one-shot triggers (`done`, 2026-08-18)
+
+Three operator reports off live traces (`6b8b54e5…` fire, `9be9e44b…`/
+`7e961eb4…` creation turn), all shipped and documented:
+
+1. **Flow view** — `/debug?flow=<id>` walks correlation + related-row links
+   transitively (`collectFlowIds` in `server/trace/store.ts`, capped 6 hops /
+   300 traces); a trace's correlation id now links to its flow ("exact" link
+   keeps the old one-process view); Flow is a visible filter control. Chat-side
+   task/specialist/alias mutations now stamp the turn correlation via the
+   shared `toolContextTrigger` (`server/mcp/context.ts`) instead of the bare
+   chat id. Docs: observability.md (Flow section), openapi.yaml.
+2. **Fire addressing** — fires now get the chat identity context (group roster
+   with @usernames / DM partner) as a system message, and the directive
+   requires @username mentions for person-directed messages (a bare alias
+   notifies nobody). `FireDeps.chatContext`, loaded in `runDueTasks`.
+3. **One-shot vs weekly** — `tasks_create`/`tasks_update` descriptions now
+   spell out: one-time requests ("tomorrow at 9") resolve to `date`, `weekdays`
+   only for every-week requests, relative time words stay out of the
+   instruction. ("нагадай завтра" had been saved as every-Tuesday.)
+
+Proof: `npm run lint` / `typecheck` / `test` (1172 passed) / `build` all green.
+Remaining operational steps (bot-side code is boot-time):
+
+- **Restart the operator's bot/dev process** for the new tool descriptions and
+  fire prompt to take effect (MCP registry singleton survives hot reload).
+- The live mis-saved reminder is still stored as **weekly Tuesday** — it will
+  fire again next Tuesday unless deleted/edited on `/tasks`.
+- Old traces keep their bare-chat-id correlations; their flows may over-collect
+  within the caps. New traces link correctly.
+
 ## Message tasks repeat themselves — deliveries feedback (`done`, 2026-08-16)
 
 User report: a recurring `message` rule ("with 5% chance — comment on …")

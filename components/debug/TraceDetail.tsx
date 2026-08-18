@@ -130,13 +130,27 @@ export function TraceDetail({ trace }: { trace: Trace }) {
             </Meta>
             <Meta label="Correlation">
               {trace.trigger.correlationId ? (
-                <Link
-                  href={debugFilterHref({ correlationId: trace.trigger.correlationId })}
-                  className="font-mono text-xs hover:text-primary hover:underline"
-                  title="Show every trace of this process"
-                >
-                  {trace.trigger.correlationId}
-                </Link>
+                <>
+                  {/* The id itself opens the whole flow — every trace reachable
+                      through correlation and related-row links (the turn that
+                      created a task, its tool calls, every fire, what was sent).
+                      The narrow one-process view stays a click away. */}
+                  <Link
+                    href={debugFilterHref({ flow: trace.trigger.correlationId })}
+                    className="font-mono text-xs hover:text-primary hover:underline"
+                    title="Show the whole flow linked to this trace"
+                  >
+                    {trace.trigger.correlationId}
+                  </Link>
+                  <span className="text-faint"> · </span>
+                  <Link
+                    href={debugFilterHref({ correlationId: trace.trigger.correlationId })}
+                    className="text-xs text-faint hover:text-primary hover:underline"
+                    title="Show only this process's traces (exact correlation)"
+                  >
+                    exact
+                  </Link>
+                </>
               ) : null}
             </Meta>
             <Meta label="Duration">{duration ?? null}</Meta>

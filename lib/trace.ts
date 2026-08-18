@@ -75,6 +75,16 @@ export interface TraceFilterParams {
   actor?: string;
   /** A row id under `trace.relatedIds` (any table) — everything about one record. */
   relatedId?: string;
+  /**
+   * A flow seed — any correlation id, trace id, or related row id. Unlike the
+   * exact `correlationId` filter (one process) this follows the links
+   * *transitively*: correlations connect the traces of one turn, related row
+   * ids connect the turns that touched the same record, and the flow walk
+   * alternates between the two until the whole story is collected — the reply
+   * that created a task, its tool calls, every fire of that task, and what each
+   * fire sent, from one click.
+   */
+  flow?: string;
   offset?: number;
 }
 
@@ -87,6 +97,7 @@ export function debugFilterHref(params: TraceFilterParams, basePath = "/debug"):
   if (params.triggerKind) search.set("triggerKind", params.triggerKind);
   if (params.actor) search.set("actor", params.actor);
   if (params.relatedId) search.set("relatedId", params.relatedId);
+  if (params.flow) search.set("flow", params.flow);
   if (params.offset) search.set("offset", String(params.offset));
   const qs = search.toString();
   return qs ? `${basePath}?${qs}` : basePath;
