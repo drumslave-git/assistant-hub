@@ -2,6 +2,8 @@ import "server-only";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
+import { ApiError } from "@/lib/api-error";
+import type { TraceTrigger } from "@/lib/trace";
 import { recordAssistantMessage } from "@/features/history/server/service";
 import { getGroupContext, getGroupLanguage } from "@/features/known-groups/server/service";
 import { getUserContext, getUserLanguage } from "@/features/known-users/server/service";
@@ -32,10 +34,11 @@ import { sendChatMessage } from "@/server/telegram/bot-manager";
 
 import { buildStandingTasksBlock } from "../format";
 import { computeNextTriggerRun } from "../schedule";
-import { MAX_ONE_SHOT_ATTEMPTS } from "../types";
-import { fireTask } from "./fire";
+import { isPromptTask, MAX_ONE_SHOT_ATTEMPTS } from "../types";
+import { fireTask, type FireResult } from "./fire";
 import {
   deleteTask,
+  getTaskById,
   listDueTasks,
   markTaskFailedAttempt,
   markTaskRun,
@@ -104,6 +107,37 @@ export interface DueRunDeps {
 }
 
 /**
+ * The chat-scoped prompt pieces every fire composes, resolved per task (live
+ * reply parity): the configured reply language, the active specialist, the
+ * chat identity context (roster with @usernames in a group, the person in a
+ * DM — a DM chat id is the user id) so the fire can address its target by a
+ * mention that actually notifies, and the chat's standing tasks (null sender:
+ * a fire is nobody's message, so a task that singles people out has no one to
+ * single out). All best-effort — an unreadable piece degrades to the generic
+ * bot rather than blocking the fire. Shared by the due-run loop and the
+ * dashboard's manual fire.
+ */
+async function loadChatScopedFireDeps(chatId: string, db: DrizzleDb) {
+  const [storedLanguage, specialistInstructions, chatContext, standingTasks] = await Promise.all([
+    (isGroupChatId(chatId) ? getGroupLanguage(chatId) : getUserLanguage(chatId)).catch(() => null),
+    getActiveSpecialistInstructions(chatId, db).catch(() => null),
+    (isGroupChatId(chatId)
+      ? getGroupContext(chatId, db).then((c) => c?.content ?? null)
+      : getUserContext(chatId, db).then((c) => c?.content ?? null)
+    ).catch(() => null),
+    getActiveTasksForChat(chatId, null, db)
+      .then(({ prompt }) => buildStandingTasksBlock(prompt))
+      .catch(() => null),
+  ]);
+  return {
+    requiredLanguage: resolveRequiredLanguage(storedLanguage),
+    specialistInstructions,
+    chatContext,
+    standingTasks,
+  };
+}
+
+/**
  * Fire every currently-due task and settle its schedule. Pure of scheduling
  * mechanics (the caller owns the lock/interval): scans due rows, fires each via
  * the injected collaborators, then either stamps `last_run_at`/`next_run_at` +
@@ -128,38 +162,10 @@ export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; fa
     // A due row always has a chat (the DB check pins global scope to prompt
     // kinds, which never carry a next_run_at) — narrow it once here.
     const chatId = task.chatId!;
-    // Anything the fire sends must be in the chat's configured language, like a
-    // normal reply. A private chat's id is the user id; a group's names the
-    // group — the kind selects which registry to read. Unset → the default.
-    const storedLanguage = await (
-      isGroupChatId(chatId) ? getGroupLanguage(chatId) : getUserLanguage(chatId)
-    ).catch(() => null);
-    // The firing chat's active specialist — per chat, so it is resolved per
-    // task, like the language. Best-effort: unreadable → the generic bot.
-    const specialistInstructions = await getActiveSpecialistInstructions(chatId, db).catch(
-      () => null,
-    );
-    // The chat identity context — the roster with @usernames in a group, the
-    // person's identity in a DM (a DM chat id is the user id) — so the fire can
-    // address its target by a mention that actually notifies. Best-effort.
-    const chatContext = await (
-      isGroupChatId(chatId)
-        ? getGroupContext(chatId, db).then((c) => c?.content ?? null)
-        : getUserContext(chatId, db).then((c) => c?.content ?? null)
-    ).catch(() => null);
-    // The chat's standing tasks, resolved per task for the same reason. Only
-    // the prompt-composed set applies, and with a null sender: a fire is
-    // nobody's message, so a standing task that singles people out has no one
-    // to single out here.
-    const standingTasks = await getActiveTasksForChat(chatId, null, db)
-      .then(({ prompt }) => buildStandingTasksBlock(prompt))
-      .catch(() => null);
+    const scoped = await loadChatScopedFireDeps(chatId, db);
     const result = await fireTask(task, {
       personalityPrompt: deps.personalityPrompt,
-      chatContext,
-      specialistInstructions,
-      standingTasks,
-      requiredLanguage: resolveRequiredLanguage(storedLanguage),
+      ...scoped,
       complete: deps.complete,
       send: (text, opts) => deps.send(chatId, text, opts),
       recordReply: deps.recordReply,
@@ -203,6 +209,51 @@ export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; fa
   return { fired, failed };
 }
 
+/**
+ * The real LLM + bot collaborators a fire runs with, or null when the LLM is
+ * not configured. Shared by the poll tick and the dashboard's manual fire.
+ */
+async function buildLiveFireCollaborators(): Promise<Pick<
+  DueRunDeps,
+  "personalityPrompt" | "complete" | "send" | "recordReply"
+> | null> {
+  const runtime = await getLlmRuntime().catch(() => null);
+  if (!runtime) return null;
+  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
+  const [personalityPrompt, toolset] = await Promise.all([
+    getActivePersonalityPrompt().catch(() => null),
+    // A fire delivers only through `send_message`: nothing triggered it, so
+    // there is no message to reply to. No tools registered → plain completion
+    // (the fire then simply cannot send, and records a quiet fire).
+    getToolset({ delivery: "send" }).catch(() => null),
+  ]);
+  return {
+    personalityPrompt,
+    complete: (messages, trace) =>
+      toolset
+        ? chatCompletionWithTools(conn, {
+            model: runtime.model,
+            messages,
+            tools: toolset.tools,
+            callTool: toolset.callTool,
+            ...(trace ? { trace } : {}),
+          })
+        : chatCompletion(conn, {
+            model: runtime.model,
+            messages,
+            ...(trace ? { trace } : {}),
+          }),
+    send: (chatId, text, opts) => sendChatMessage(chatId, text, opts),
+    recordReply: (input) =>
+      recordAssistantMessage({
+        chatId: input.chatId,
+        telegramMessageId: input.telegramMessageId,
+        content: input.content,
+        replyToMessageId: null,
+      }).then(() => undefined),
+  };
+}
+
 /** One poll tick: wire the real LLM + bot collaborators and fire due tasks under the lock. */
 async function runTick(ctx?: IntervalRunContext): Promise<{ summary: string }> {
   // Pause firing during maintenance — the bot is owner-only then, so it should
@@ -210,51 +261,68 @@ async function runTick(ctx?: IntervalRunContext): Promise<{ summary: string }> {
   const policy = await getBotPolicy().catch(() => null);
   if (policy?.maintenanceModeEnabled) return { summary: "paused (maintenance)" };
 
-  const runtime = await getLlmRuntime().catch(() => null);
-  if (!runtime) return { summary: "LLM not configured" };
-  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
+  const live = await buildLiveFireCollaborators();
+  if (!live) return { summary: "LLM not configured" };
 
   const outcome = await withAdvisoryLock("tasks", async () => {
-    const [timezone, personalityPrompt, toolset] = await Promise.all([
-      getTimezone().catch(() => "UTC"),
-      getActivePersonalityPrompt().catch(() => null),
-      // A fire delivers only through `send_message`: nothing triggered it, so
-      // there is no message to reply to. No tools registered → plain completion
-      // (the fire then simply cannot send, and records a quiet fire).
-      getToolset({ delivery: "send" }).catch(() => null),
-    ]);
-    return runDueTasks({
-      timezone,
-      personalityPrompt,
-      complete: (messages, trace) =>
-        toolset
-          ? chatCompletionWithTools(conn, {
-              model: runtime.model,
-              messages,
-              tools: toolset.tools,
-              callTool: toolset.callTool,
-              ...(trace ? { trace } : {}),
-            })
-          : chatCompletion(conn, {
-              model: runtime.model,
-              messages,
-              ...(trace ? { trace } : {}),
-            }),
-      send: (chatId, text, opts) => sendChatMessage(chatId, text, opts),
-      onProgress: ctx?.reportProgress,
-      recordReply: (input) =>
-        recordAssistantMessage({
-          chatId: input.chatId,
-          telegramMessageId: input.telegramMessageId,
-          content: input.content,
-          replyToMessageId: null,
-        }).then(() => undefined),
-    });
+    const timezone = await getTimezone().catch(() => "UTC");
+    return runDueTasks({ timezone, ...live, onProgress: ctx?.reportProgress });
   });
 
   if (!outcome.ran) return { summary: "skipped (locked elsewhere)" };
   const { fired, failed } = outcome.result;
   return { summary: `${fired} fired${failed ? `, ${failed} failed` : ""}` };
+}
+
+/**
+ * Fire one timed task immediately, on the operator's explicit request (the
+ * dashboard's "Fire now"). Runs the exact fire path — same prompt composition,
+ * tool context, and delivery — but is deliberately OFF the schedule's books:
+ * `next_run_at`, `last_run_at`, `attempts` and `recent_deliveries` are not
+ * touched, and a one-shot is not consumed (user decision, 2026-08-18 — a
+ * manual fire does not count as a regular one). Recorded as
+ * `tasks`/`manual-fire` with the caller's trigger, so operator-initiated runs
+ * are distinguishable in Debug. Maintenance mode does not block it: this is an
+ * explicit operator action, not a background push. No advisory lock either — a
+ * manual fire mutates no schedule state, so it cannot corrupt a concurrent
+ * tick; at worst a task due this very instant delivers twice, which is the
+ * operator's own timing.
+ */
+export async function manualFireTask(
+  id: string,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+  // Injectable like DueRunDeps, so tests drive a capturing sink + fake LLM.
+  liveOverride?: Pick<DueRunDeps, "personalityPrompt" | "complete" | "send" | "recordReply">,
+): Promise<FireResult> {
+  const task = await getTaskById(db, id);
+  if (!task) throw ApiError.notFound("Unknown task");
+  if (isPromptTask(task)) {
+    throw ApiError.badRequest(
+      "Only a timed task can be fired manually — a message/on-reply task runs inside live turns",
+    );
+  }
+  const live = liveOverride ?? (await buildLiveFireCollaborators());
+  if (!live) {
+    throw ApiError.serviceUnavailable(
+      "LLM is not configured — set the endpoint and model in Settings",
+    );
+  }
+  // A timed task always has a chat (the DB scope check); narrow once.
+  const chatId = task.chatId!;
+  const scoped = await loadChatScopedFireDeps(chatId, db);
+  return fireTask(
+    task,
+    {
+      personalityPrompt: live.personalityPrompt,
+      ...scoped,
+      complete: live.complete,
+      send: (text, opts) => live.send(chatId, text, opts),
+      recordReply: live.recordReply,
+      db,
+    },
+    { action: "manual-fire", trigger },
+  );
 }
 
 function scheduler(): IntervalScheduler {

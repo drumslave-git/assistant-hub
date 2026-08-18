@@ -292,6 +292,18 @@ mention for person-directed messages, falling back to the name only when none
 is listed. Job card on `/tasks` and `/jobs`; "Run due now" via
 `POST /api/tasks/run`.
 
+**Manual fire.** Every timed task's card has a "Fire now" button
+(`POST /api/tasks/{id}/fire` → `manualFireTask`): the exact fire path — same
+prompt composition, tool context, delivery, and history mirror — run
+immediately on the operator's request, but deliberately **off the schedule's
+books** (user decision, 2026-08-18: a manual fire does not count as a regular
+one). `next_run_at`, `last_run_at`, `attempts` and `recent_deliveries` stay
+untouched and a one-shot is not consumed; a failed manual run does not spend
+the retry budget either. Traced as `tasks`/`manual-fire` with the `dashboard`
+trigger (still correlated to the task id, so it joins the task's flow).
+Maintenance mode does not block it — it is an explicit operator action, not a
+background push — and prompt kinds are refused (they have no fire to run).
+
 ## Where a standing task lands in the prompt
 
 `buildStandingTasksBlock` composes the enabled prompt tasks for the sender;
@@ -314,8 +326,9 @@ timing, and context are.
 
 ## Traces
 
-Every mutation is traced under `tasks` (`create`/`update`/`delete`) and every
-fire as `tasks`/`fire` (usage `callKind: "task-fire"`), with the task id in
+Every mutation is traced under `tasks` (`create`/`update`/`delete`), every
+scheduled fire as `tasks`/`fire`, and every dashboard "Fire now" as
+`tasks`/`manual-fire` (both with usage `callKind: "task-fire"`), with the task id in
 `relatedIds.tasks` and, when a fire delivered, the `<chatId>:<messageId>`
 correlation so feedback can find it. A fire relates its task id **at open**
 (`trace.relate`), so failed and quiet fires stay findable, not only delivered

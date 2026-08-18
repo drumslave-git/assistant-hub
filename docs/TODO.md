@@ -49,7 +49,16 @@ Three operator reports off live traces (`6b8b54e5…` fire, `9be9e44b…`/
    only for every-week requests, relative time words stay out of the
    instruction. ("нагадай завтра" had been saved as every-Tuesday.)
 
-Proof: `npm run lint` / `typecheck` / `test` (1172 passed) / `build` all green.
+4. **Manual fire** — every timed task card has a "Fire now" button
+   (`POST /api/tasks/{id}/fire` → `manualFireTask` in the scheduler): the
+   exact fire path, run on demand, off the schedule's books — one-shots
+   survive, `next_run_at`/`attempts`/`recent_deliveries` untouched, failed
+   runs don't spend the retry budget. Traced as `tasks`/`manual-fire`
+   (dashboard trigger, task-id correlation). Integration-tested
+   (scheduler.integration.test.ts, needs Docker: `npm run test:integration`).
+
+Proof: `npm run lint` / `typecheck` / `test` (1172 passed) / `build` all green;
+tasks integration suite 9/9 with Docker.
 Remaining operational steps (bot-side code is boot-time):
 
 - **Restart the operator's bot/dev process** for the new tool descriptions and

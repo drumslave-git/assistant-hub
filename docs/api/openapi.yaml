@@ -1365,6 +1365,42 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/tasks/{id}/fire:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [tasks]
+      summary: Fire one timed task now (manual fire)
+      description: |
+        Runs the task's fire immediately, off the schedule's books: `nextRunAt`,
+        `lastRunAt`, `attempts` and `recentDeliveries` are untouched, and a
+        one-shot is not consumed. Traced as `tasks`/`manual-fire`. Timed kinds
+        only — a `message`/`on-reply` task has no fire to run.
+      responses:
+        "200":
+          description: Fire outcome (`ok` with `sent: []` is a quiet fire)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [ok, sent]
+                        properties:
+                          ok: { type: boolean }
+                          sent:
+                            type: array
+                            items: { type: string }
+                            description: The texts actually delivered, in send order.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/tasks/run:
     get:
       tags: [tasks]

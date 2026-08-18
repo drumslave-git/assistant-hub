@@ -5,7 +5,7 @@ import { tryGetToolContext } from "@/server/mcp/context";
 
 import { MAX_ONE_SHOT_ATTEMPTS } from "../types";
 import { getTaskById } from "./repository";
-import { runDueTasks, type DueRunDeps } from "./scheduler";
+import { manualFireTask, runDueTasks, type DueRunDeps } from "./scheduler";
 import { createTaskService, getTask } from "./service";
 
 /**
@@ -149,5 +149,82 @@ describe("runDueTasks", () => {
 
     expect(result).toEqual({ fired: 0, failed: 0 });
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("manualFireTask", () => {
+  /** The injectable collaborators, standing in for the live LLM + bot. */
+  function live(
+    over: Partial<Pick<DueRunDeps, "personalityPrompt" | "complete" | "send" | "recordReply">> = {},
+  ) {
+    return {
+      personalityPrompt: null,
+      complete: sendingComplete(["manual!"]),
+      send: vi.fn().mockResolvedValue({ messageId: 5 }),
+      ...over,
+    };
+  }
+
+  it("fires without consuming the schedule — a one-shot survives untouched", async () => {
+    const task = await dueTask({ triggerKind: "timeout", delayMinutes: 5, everyMinutes: null });
+    const collaborators = live();
+
+    const result = await manualFireTask(task.id, trigger, ctx.db, collaborators);
+
+    expect(result).toEqual({ ok: true, sent: ["manual!"] });
+    expect(collaborators.send).toHaveBeenCalledWith(CHAT, "manual!", {
+      threadId: null,
+      replyToMessageId: undefined,
+    });
+    // The row is exactly as it was: not deleted (a regular fire would have
+    // spent this one-shot), schedule and counters untouched.
+    const after = await getTaskById(ctx.db, task.id);
+    expect(after).toMatchObject({
+      nextRunAt: task.nextRunAt,
+      attempts: 0,
+      lastRunAt: null,
+      recentDeliveries: [],
+      enabled: true,
+    });
+  });
+
+  it("leaves the row untouched even when the manual fire fails", async () => {
+    const task = await dueTask({ triggerKind: "timeout", delayMinutes: 5, everyMinutes: null });
+
+    const result = await manualFireTask(
+      task.id,
+      trigger,
+      ctx.db,
+      live({ complete: vi.fn().mockRejectedValue(new Error("provider down")) }),
+    );
+
+    // A failed manual run is reported, but never counts toward the one-shot's
+    // retry budget — that budget belongs to the schedule.
+    expect(result.ok).toBe(false);
+    expect(await getTaskById(ctx.db, task.id)).toMatchObject({ attempts: 0, enabled: true });
+  });
+
+  it("refuses a prompt-kind task — there is no fire to run", async () => {
+    const rule = await createTaskService(
+      {
+        chatId: CHAT,
+        instruction: "Answer briefly.",
+        triggerKind: "on-reply",
+        targetUserIds: [],
+        enabled: true,
+      } as Parameters<typeof createTaskService>[0],
+      trigger,
+      ctx.db,
+    );
+
+    await expect(manualFireTask(rule.id, trigger, ctx.db, live())).rejects.toThrow(
+      /timed task/i,
+    );
+  });
+
+  it("rejects an unknown id", async () => {
+    await expect(manualFireTask("nope", trigger, ctx.db, live())).rejects.toThrow(
+      /unknown task/i,
+    );
   });
 });

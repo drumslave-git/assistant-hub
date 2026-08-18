@@ -1,6 +1,6 @@
 "use client";
 
-import { Bug, CalendarClock, Pencil, Plus, Trash2 } from "lucide-react";
+import { Bug, CalendarClock, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -604,12 +604,45 @@ function TaskCard({
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fireNotice, setFireNotice] = useState<string | null>(null);
 
   // Someone who has left the roster still has to be readable here, or the task
   // would show fewer people than it actually applies to.
   const audience = task.targetUserIds.map(
     (userId) => members.find((m) => m.userId === userId)?.label ?? `User ${userId}`,
   );
+
+  /**
+   * Manual fire — runs the task's fire immediately without touching its
+   * schedule (a one-shot survives; the next regular run stays put).
+   */
+  async function fireNow() {
+    setBusy(true);
+    setError(null);
+    setFireNotice(null);
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/fire`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        setError(await readError(res));
+        return;
+      }
+      const { data } = (await res.json()) as { data: { ok: boolean; sent: string[] } };
+      setFireNotice(
+        !data.ok
+          ? "Fire failed — see the task's traces"
+          : data.sent.length === 0
+            ? "Fired — nothing sent (quiet fire)"
+            : `Fired — ${data.sent.length} message${data.sent.length === 1 ? "" : "s"} sent`,
+      );
+      router.refresh();
+    } catch {
+      setError("Network error — could not reach the server");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function toggleEnabled() {
     setBusy(true);
@@ -671,6 +704,19 @@ function TaskCard({
             disabled={busy}
             aria-label={task.enabled ? "Disable task" : "Enable task"}
           />
+          {/* A fire run on demand, off the schedule's books — a one-shot survives. */}
+          {isTimedTask(task) ? (
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={() => void fireNow()}
+              disabled={busy}
+              aria-label="Fire now (does not consume the schedule)"
+              title="Fire now (does not consume the schedule)"
+            >
+              <Play className="h-4 w-4" />
+            </Button>
+          ) : null}
           {/* Everything traced about this task: fires, matched replies, edits. */}
           <Button size="icon" variant="ghost" asChild>
             <Link
@@ -729,6 +775,7 @@ function TaskCard({
           </p>
         ) : null}
         {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
+        {fireNotice ? <p className="mt-2 text-sm text-muted">{fireNotice}</p> : null}
       </CardContent>
     </Card>
   );

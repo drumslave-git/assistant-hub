@@ -4,6 +4,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { buildSystemPrompt } from "@/features/bot-messaging/server/prompt";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
+import type { TraceTrigger } from "@/lib/trace";
 import type {
   ChatCompletionResult,
   ChatMessage,
@@ -106,6 +107,18 @@ export interface FireResult {
 }
 
 /**
+ * How a fire is recorded. The scheduler's regular fire is the default; the
+ * dashboard's "Fire now" passes `manual-fire` with its own trigger, so an
+ * operator-initiated run is distinguishable from the schedule's in Debug. The
+ * task id is stamped as the opening correlation either way.
+ */
+export interface FireOptions {
+  action?: "fire" | "manual-fire";
+  /** Trace trigger override (e.g. `{ kind: "dashboard" }`); omit for the cron default. */
+  trigger?: TraceTrigger;
+}
+
+/**
  * Build the directive user message. Recurring tasks get their recent deliveries
  * fed back so the model varies its wording; a one-shot has none.
  *
@@ -177,11 +190,20 @@ export function buildTaskDirectiveMessage(
  * failed, or when delivery was attempted and nothing got through — both worth a
  * one-shot retry. A quiet fire (the model chose to send nothing) is `ok: true`.
  */
-export async function fireTask(task: Task, deps: FireDeps): Promise<FireResult> {
+export async function fireTask(
+  task: Task,
+  deps: FireDeps,
+  opts: FireOptions = {},
+): Promise<FireResult> {
   const trace = await startTrace({
     feature: FEATURE.id,
-    action: "fire",
-    trigger: { kind: "cron", actor: task.chatId ?? "global", correlationId: task.id },
+    action: opts.action ?? "fire",
+    trigger: {
+      kind: "cron",
+      actor: task.chatId ?? "global",
+      ...(opts.trigger ?? {}),
+      correlationId: opts.trigger?.correlationId ?? task.id,
+    },
     inputSummary: task.instruction,
   });
   // Related up front, not at settle: the per-task Debug view must find every
