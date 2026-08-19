@@ -5,7 +5,6 @@ import {
   Bug,
   CalendarClock,
   Globe,
-  GraduationCap,
   Image,
   LayoutDashboard,
   MessageSquare,
@@ -60,7 +59,6 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Bot",
     items: [
       { href: "/personalities", label: "Personalities", icon: VenetianMask },
-      { href: "/specialists", label: "Specialists", icon: GraduationCap },
       { href: "/memory", label: "Memory", icon: Brain },
       { href: "/tools", label: "Tools", icon: Wrench },
       { href: "/self-improvement", label: "Self-improvement", icon: Sparkles },

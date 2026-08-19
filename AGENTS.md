@@ -99,7 +99,9 @@ Priorities 9 and 16 were merged (user decision, 2026-08-13): scheduled tasks
 and chat rules are now the single **Tasks** feature — one instruction plus one
 trigger (`message` / `on-reply` / `interval` / `timeout` / `schedule`), with
 timed fires delivering through outbound MCP tools instead of a hardcoded send.
-See `docs/features/tasks.md`. Remaining work is tracked in `docs/TODO.md`.
+See `docs/features/tasks.md`. Priority 15 (Specialists) was later removed
+completely (user decision, 2026-08-19) — see the note below the list. Remaining
+work is tracked in `docs/TODO.md`.
 
 Priority order:
 
@@ -126,6 +128,11 @@ not re-add it to the priority list without a new decision from the user. Reply
 behavior comes from the base system prompt plus the active personality only.
 This does not touch the analytics-only mood score in the Analytics dashboard
 (priority 11), which stays.
+
+The Specialists feature (priority 15 — per-chat operator-authored roles with a
+shared entry-store toolkit) was **removed completely** by the user (2026-08-19):
+code, UI, MCP tools, prompt layer, and its three DB tables (dropped in
+migration 0058). Do not re-implement it without a new decision from the user.
 
 Features not listed here are not in scope by default. Add a feature to
 `docs/TODO.md` with explicit priority, acceptance criteria, and dependencies

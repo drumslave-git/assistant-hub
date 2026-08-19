@@ -264,12 +264,6 @@ export interface BotMessagingDeps {
    */
   personalityPrompt?: string | null;
   /**
-   * The current chat's active specialist role instructions (per-chat
-   * activation), composed into the system prompt below the persona — the stack
-   * is always base + personality + specialist. Null/absent → none active.
-   */
-  specialistInstructions?: string | null;
-  /**
    * The latest global self-correction guidelines (from the self-improvement
    * job), composed into the system prompt below the persona. Null/absent → none.
    */
@@ -665,13 +659,11 @@ export async function handleIncomingMessage(
         },
       });
 
-      // 2. Compose the system prompt (base + operator personality + the chat's
-      // active specialist + learned self-corrections) and record it so the
-      // operator can see exactly what persona, role, and corrections drove the
-      // reply.
+      // 2. Compose the system prompt (base + operator personality + learned
+      // self-corrections) and record it so the operator can see exactly what
+      // persona and corrections drove the reply.
       const systemPrompt = buildSystemPrompt({
         personalityPrompt: deps.personalityPrompt,
-        specialistInstructions: deps.specialistInstructions,
         selfCorrection: deps.selfCorrection,
         standingTasks: deps.standingTasks,
       });
@@ -680,7 +672,6 @@ export async function handleIncomingMessage(
         message: "system prompt composed",
         data: {
           personalityApplied: hasPersonality(deps.personalityPrompt),
-          specialistApplied: Boolean(deps.specialistInstructions?.trim()),
           selfCorrectionApplied: Boolean(deps.selfCorrection?.trim()),
           standingTasksApplied: Boolean(deps.standingTasks?.trim()),
           systemPrompt,

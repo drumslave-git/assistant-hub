@@ -28,10 +28,6 @@ import {
   RANDOMNESS_TOOL_NAMES,
   registerRandomnessMcpTools,
 } from "@/features/randomness/server/mcp-tools";
-import {
-  registerSpecialistsMcpTools,
-  SPECIALISTS_TOOL_NAMES,
-} from "@/features/specialists/server/mcp-tools";
 import { registerTasksMcpTools, TASKS_TOOL_NAMES } from "@/features/tasks/server/mcp-tools";
 import {
   registerTasksOutboundMcpTools,
@@ -88,11 +84,6 @@ const REGISTRARS: { feature: string; registrar: McpToolRegistrar; toolNames: str
     feature: "tasks",
     registrar: registerTasksOutboundMcpTools,
     toolNames: TASKS_OUTBOUND_TOOL_NAMES,
-  },
-  {
-    feature: "specialists",
-    registrar: registerSpecialistsMcpTools,
-    toolNames: SPECIALISTS_TOOL_NAMES,
   },
   { feature: "memory", registrar: registerMemoryMcpTools, toolNames: MEMORY_TOOL_NAMES },
   {

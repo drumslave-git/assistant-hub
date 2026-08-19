@@ -140,14 +140,13 @@ probe flow and five of the write-only secret input. Those are now two hooks in
 ### The floating action button
 
 A page with **one** unambiguous main action renders it as a `Fab` instead of an inline
-button (user decision, 2026-08-14). Today that is six pages:
+button (user decision, 2026-08-14). Today that is five pages:
 
 | Page | Action |
 | --- | --- |
 | `/settings` | Save settings |
 | `/backends` | Create backend |
 | `/personalities` | Create personality |
-| `/specialists` | Create specialist |
 | `/tasks` | Create task |
 | `/browser` | Start run |
 
@@ -208,15 +207,15 @@ visible in one file.
 
 On a tabbed page, put the `Fab` and the dialog **inside the owning tab's panel**.
 `Tabs` keeps inactive panels mounted but `hidden`, which takes a `fixed` child out
-of rendering too — so "New specialist" correctly disappears on the Entries tab
-with no extra wiring.
+of rendering too — so the Fab correctly disappears on tabs that don't own it, with
+no extra wiring.
 
 `useConfirm` replaces `window.confirm()` for destructive actions. Beyond looking
 like the rest of the dashboard, the reason it had to go: browsers let a user
 suppress the native dialog for the session, so a delete guard can silently stop
 appearing and nobody notices it left. Give the confirmation the fact that makes it
-worth reading — which roles use the backend, how many chats lose the specialist,
-the task's own instruction — not "Are you sure?".
+worth reading — which roles use the backend, the task's own instruction — not
+"Are you sure?".
 
 ## Theming
 

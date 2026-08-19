@@ -27,38 +27,17 @@ describe("buildSystemPrompt", () => {
     expect(buildSystemPrompt({ personalityPrompt: persona })).toContain(persona);
   });
 
-  it("stacks base + personality + specialist, in that order", () => {
-    const out = buildSystemPrompt({
-      personalityPrompt: "Be terse.",
-      specialistInstructions: "  Keep a daily journal.  ",
-    });
-    expect(out).toBe(
-      `${BASE_SYSTEM_PROMPT}\n\n---\nAdditional instructions:\nBe terse.` +
-        `\n\n---\nActive specialist role for this chat (follow these instructions on top of everything above):\nKeep a daily journal.`,
-    );
-  });
-
-  it("appends the specialist even without a personality, and treats blank as unset", () => {
-    const out = buildSystemPrompt({ specialistInstructions: "Keep a daily journal." });
-    expect(out).toContain("Active specialist role for this chat");
-    expect(out).toContain("Keep a daily journal.");
-    expect(buildSystemPrompt({ specialistInstructions: "   \n " })).toBe(BASE_SYSTEM_PROMPT);
-  });
-
-  it("orders the full stack persona → specialist → self-correction → standing tasks", () => {
+  it("orders the full stack persona → self-correction → standing tasks", () => {
     const out = buildSystemPrompt({
       personalityPrompt: "Persona.",
-      specialistInstructions: "Role.",
       selfCorrection: "Correction.",
       standingTasks: "Rules block.",
     });
     const personaAt = out.indexOf("Persona.");
-    const roleAt = out.indexOf("Role.");
     const correctionAt = out.indexOf("Correction.");
     const rulesAt = out.indexOf("Rules block.");
     expect(personaAt).toBeGreaterThan(-1);
-    expect(roleAt).toBeGreaterThan(personaAt);
-    expect(correctionAt).toBeGreaterThan(roleAt);
+    expect(correctionAt).toBeGreaterThan(personaAt);
     // Last: the rules are what the people in the chat will judge the reply by.
     expect(rulesAt).toBeGreaterThan(correctionAt);
   });

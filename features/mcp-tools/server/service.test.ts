@@ -15,7 +15,6 @@ import { IMAGE_GENERATE_TOOL } from "@/features/image-gen/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
 import { MEMORY_TOOL_NAMES } from "@/features/memory/server/mcp-tools";
 import { RANDOMNESS_TOOL_NAMES, ROLL_CHANCE_TOOL } from "@/features/randomness/server/mcp-tools";
-import { SPECIALISTS_TOOL_NAMES } from "@/features/specialists/server/mcp-tools";
 import { TASKS_TOOL_NAMES } from "@/features/tasks/server/mcp-tools";
 import {
   SEND_MESSAGE_TOOL,
@@ -46,7 +45,6 @@ const COMMON_TOOLS = [
   SET_MESSAGE_REACTION_TOOL,
   UPDATE_USER_ALIASES_TOOL,
   ...TASKS_TOOL_NAMES,
-  ...SPECIALISTS_TOOL_NAMES,
   ...MEMORY_TOOL_NAMES,
   // Rolling a chance is not a delivery, so a reply turn gets it too: "from time
   // to time, do X" is written as a standing task but decided in an ordinary turn.
@@ -67,7 +65,6 @@ describe("getToolsView", () => {
     expect(featureOf(TASKS_TOOL_NAMES[0])).toBe("tasks");
     expect(featureOf(SEND_MESSAGE_TOOL)).toBe("tasks");
     expect(featureOf(MEMORY_TOOL_NAMES[0])).toBe("memory");
-    expect(featureOf(SPECIALISTS_TOOL_NAMES[0])).toBe("specialists");
     // The owning feature is what gives the tool its `mcp-tools-image-gen` Debug scope.
     expect(featureOf(IMAGE_GENERATE_TOOL)).toBe("image-gen");
     expect(featureOf(BROWSE_WEB_TOOL)).toBe("browser-agent");

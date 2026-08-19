@@ -10,7 +10,6 @@ import { getUserContext, getUserLanguage } from "@/features/known-users/server/s
 import { getToolset } from "@/features/mcp-tools/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import { getBotPolicy, getLlmRuntime, getTimezone } from "@/features/settings/server/service";
-import { getActiveSpecialistInstructions } from "@/features/specialists/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
 import { isGroupChatId } from "@/lib/telegram";
@@ -108,19 +107,18 @@ export interface DueRunDeps {
 
 /**
  * The chat-scoped prompt pieces every fire composes, resolved per task (live
- * reply parity): the configured reply language, the active specialist, the
- * chat identity context (roster with @usernames in a group, the person in a
- * DM — a DM chat id is the user id) so the fire can address its target by a
- * mention that actually notifies, and the chat's standing tasks (null sender:
- * a fire is nobody's message, so a task that singles people out has no one to
- * single out). All best-effort — an unreadable piece degrades to the generic
- * bot rather than blocking the fire. Shared by the due-run loop and the
- * dashboard's manual fire.
+ * reply parity): the configured reply language, the chat identity context
+ * (roster with @usernames in a group, the person in a DM — a DM chat id is the
+ * user id) so the fire can address its target by a mention that actually
+ * notifies, and the chat's standing tasks (null sender: a fire is nobody's
+ * message, so a task that singles people out has no one to single out). All
+ * best-effort — an unreadable piece degrades to the generic bot rather than
+ * blocking the fire. Shared by the due-run loop and the dashboard's manual
+ * fire.
  */
 async function loadChatScopedFireDeps(chatId: string, db: DrizzleDb) {
-  const [storedLanguage, specialistInstructions, chatContext, standingTasks] = await Promise.all([
+  const [storedLanguage, chatContext, standingTasks] = await Promise.all([
     (isGroupChatId(chatId) ? getGroupLanguage(chatId) : getUserLanguage(chatId)).catch(() => null),
-    getActiveSpecialistInstructions(chatId, db).catch(() => null),
     (isGroupChatId(chatId)
       ? getGroupContext(chatId, db).then((c) => c?.content ?? null)
       : getUserContext(chatId, db).then((c) => c?.content ?? null)
@@ -131,7 +129,6 @@ async function loadChatScopedFireDeps(chatId: string, db: DrizzleDb) {
   ]);
   return {
     requiredLanguage: resolveRequiredLanguage(storedLanguage),
-    specialistInstructions,
     chatContext,
     standingTasks,
   };

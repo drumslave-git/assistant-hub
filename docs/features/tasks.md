@@ -281,7 +281,7 @@ advisory lock) scans enabled timed rows whose `next_run_at` is due, fires each,
 then settles: an `interval` advances from the settle instant (drift over
 double-fire), a `schedule` advances on the calendar, a spent one-shot is
 deleted, a failed one is retried/disabled. Fires pause during maintenance mode
-(skipped, not dropped). Each fire composes the chat's specialist, language, the
+(skipped, not dropped). Each fire composes the chat's language, the
 standing-tasks block (null sender), and the chat identity context — the group
 roster (names, @usernames, user ids) or the DM partner — and runs with the
 task's chat bound as the tool context. The identity context is what lets a fire
@@ -307,7 +307,7 @@ background push — and prompt kinds are refused (they have no fire to run).
 ## Where a standing task lands in the prompt
 
 `buildStandingTasksBlock` composes the enabled prompt tasks for the sender;
-`buildSystemPrompt` appends it **last**, after personality, specialist, and
+`buildSystemPrompt` appends it **last**, after personality and
 self-correction — these are explicit instructions the people in the chat gave
 the bot, and they are what the reply is judged against. The block's closing
 paragraph binds an action to a tool call in the same turn and licenses an

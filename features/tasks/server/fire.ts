@@ -18,9 +18,9 @@ import type { Task } from "../types";
 
 /**
  * Firing a timed task: compose an out-of-band prompt (base system prompt +
- * active persona + the firing chat's specialist + standing tasks + the task
- * directive), then let the LLM *execute* the task with the full toolset — the
- * outbound tools included — and record the whole pass as a trace.
+ * active persona + standing tasks + the task directive), then let the LLM
+ * *execute* the task with the full toolset — the outbound tools included — and
+ * record the whole pass as a trace.
  *
  * Nothing is delivered by this code (user decision, 2026-08-13). The model's
  * completion text is traced, never sent; a message reaches the chat only
@@ -28,12 +28,6 @@ import type { Task } from "../types";
  * binding {@link import("@/server/mcp/context").McpToolContext.deliver}. A
  * fire that sends nothing is a **quiet fire** — a legitimate outcome ("check
  * X, message only if Y"), recorded as such, never an error.
- *
- * The fire composes the firing chat's specialist context exactly like the live
- * reply path (the load-bearing integration — user decision, 2026-07-27):
- * instructions stack into the system prompt, and the completion runs with the
- * task's chat bound as the tool context, so a specialist check-in can
- * read/write its own entries instead of waking up as the generic bot.
  *
  * Collaborators (LLM completion, delivery, history mirror) are injected so the
  * fire is unit-testable without a live LLM or Telegram, and so the scheduler
@@ -58,11 +52,6 @@ export interface FireDeps {
    * never seen). Null/absent → no block.
    */
   chatContext?: string | null;
-  /**
-   * The firing chat's active specialist instructions, stacked into the system
-   * prompt like the live reply path. Null/absent → no specialist block.
-   */
-  specialistInstructions?: string | null;
   /**
    * The firing chat's standing tasks as a composed prompt block, stacked in
    * like the live reply path: a standing task about how the bot speaks here
@@ -219,7 +208,6 @@ export async function fireTask(
         role: "system",
         content: buildSystemPrompt({
           personalityPrompt: deps.personalityPrompt,
-          specialistInstructions: deps.specialistInstructions,
           standingTasks: deps.standingTasks,
         }),
       },
@@ -240,7 +228,6 @@ export async function fireTask(
       type: "step",
       message: "fire prompt composed",
       data: {
-        specialistApplied: Boolean(deps.specialistInstructions?.trim()),
         standingTasksApplied: Boolean(deps.standingTasks?.trim()),
         chatContextApplied: Boolean(chatContext),
       },

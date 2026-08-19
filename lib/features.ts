@@ -149,14 +149,6 @@ export const FEATURES = {
     relatedIdsKey: "tasks",
     path: "/tasks",
   },
-  specialists: {
-    id: "specialists",
-    label: "Specialists",
-    group: "conversation",
-    realtimeTopic: "specialists",
-    relatedIdsKey: "specialists",
-    path: "/specialists",
-  },
   settings: {
     id: "settings",
     label: "Settings",
@@ -298,12 +290,6 @@ export const FEATURES = {
   "mcp-tools-browser-agent": {
     id: "mcp-tools-browser-agent",
     label: "Browser agent tool",
-    group: "tools",
-    path: "/tools",
-  },
-  "mcp-tools-specialists": {
-    id: "mcp-tools-specialists",
-    label: "Specialist tools",
     group: "tools",
     path: "/tools",
   },

@@ -13,7 +13,6 @@ Feature ids are the ones in `lib/features.ts` — the same strings that appear a
 | --- | --- | --- | --- |
 | Bot messaging | `bot-messaging` | Overview (bot control) | [bot-messaging.md](bot-messaging.md) |
 | Personalities | `personalities` | `/personalities` | [personalities.md](personalities.md) |
-| Specialists | `specialists`, `mcp-tools-specialists` | `/specialists` | [specialists.md](specialists.md) |
 | Tasks (standing rules + timed jobs) | `tasks`, `mcp-tools-tasks` | `/tasks` | [tasks.md](tasks.md) |
 | History | `history`, `history-summaries` | `/history` | [history.md](history.md) |
 | Memory | `memory`, `memory-extraction` | `/memory` | [memory.md](memory.md) |
@@ -41,7 +40,6 @@ message. In prompt order:
 | --- | --- | --- |
 | Base system prompt | Bot messaging (code-owned constant) | Yes |
 | Personality | Personalities | When one is active |
-| Specialist role | Specialists | When one is active in this chat |
 | Self-correction guidelines | Self-improvement | When any version exists |
 | Standing tasks (rules) | Tasks | When the chat (or the global set) has any |
 | Chat context (roster, group notes) | Users and groups | When there is anything to inject |
@@ -71,3 +69,8 @@ deliver through the outbound tools instead of a hardcoded send. See
 dropped (user decision, 2026-07-16). Reply behavior comes from the base system
 prompt plus the active personality only. This does not touch the analytics-only
 mood score, which stays.
+
+**Specialists** — per-chat operator-authored roles with a shared entry-store
+toolkit — was removed completely (user decision, 2026-08-19): dashboard page,
+Route Handlers, MCP tools, prompt layer, and the `specialists` /
+`chat_specialists` / `specialist_entries` tables (dropped in migration 0058).

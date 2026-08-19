@@ -407,6 +407,13 @@
       "when": 1786809571276,
       "tag": "0057_glorious_ultragirl",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1787148319230,
+      "tag": "0058_skinny_next_avengers",
+      "breakpoints": true
     }
   ]
 }

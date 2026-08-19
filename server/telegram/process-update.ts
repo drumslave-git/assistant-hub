@@ -10,7 +10,6 @@ import {
 } from "@/features/settings/server/service";
 import type { BotPolicy } from "@/features/settings/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
-import { getActiveSpecialistInstructions } from "@/features/specialists/server/service";
 import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/exclusions-repository";
 import {
   buildStandingTasksBlock,
@@ -203,7 +202,6 @@ interface BuildDepsInput {
   transport: ReplyTransport;
   policy: BotPolicy;
   personalityPrompt: string | null;
-  specialistInstructions: string | null;
   selfCorrection: string | null;
   /** The chat's standing tasks, already composed into a prompt block (or null). */
   standingTasks: string | null;
@@ -284,7 +282,6 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     transport,
     policy,
     personalityPrompt,
-    specialistInstructions,
     selfCorrection,
     standingTasks,
     tasks: { prompt: promptTasks, message: messageTasks },
@@ -401,7 +398,6 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     bot,
     policy,
     personalityPrompt,
-    specialistInstructions,
     selfCorrection,
     standingTasks,
     timeContext,
@@ -1016,7 +1012,6 @@ export async function processUpdate(
   const [
     policy,
     personalityPrompt,
-    specialistInstructions,
     selfCorrection,
     standingTaskSets,
     timezone,
@@ -1024,9 +1019,6 @@ export async function processUpdate(
   ] = await Promise.all([
     getBotPolicy(),
     getActivePersonalityPrompt(),
-    // The chat's active specialist role — stacked onto the persona, never
-    // replacing it. Best-effort: an unreadable activation degrades to no role.
-    getActiveSpecialistInstructions(chatId).catch(() => null),
     getLatestSelfCorrectionPrompt().catch(() => null),
     // The chat's standing tasks (its own + the global ones), narrowed to the
     // ones this sender's messages can trigger — a task naming other people is
@@ -1061,7 +1053,6 @@ export async function processUpdate(
       transport,
       policy,
       personalityPrompt,
-      specialistInstructions,
       selfCorrection,
       standingTasks: buildStandingTasksBlock(standingTaskSets.prompt),
       tasks: standingTaskSets,

@@ -3406,47 +3406,29 @@ never identified from the two exported traces alone — if it recurs, check the
 trace list for the correlation id and whether another process shares the
 production DB.
 
-## Priority 15 — Specialists (`done`, 2026-07-27)
+## Specialists feature removed (`done`, 2026-08-19)
 
-Implemented per the user-decided design of 2026-07-27 (now documented in
-`docs/features/specialists.md`): operator-only `/specialists` CRUD, one shared
-MCP data toolkit over a unified `specialist_entries` store (free-text
-collection + JSONB payload), per-chat activation stacking base + personality +
-specialist, in-tool switch gating (self-serve in own DM, owner-only in
-groups), the per-specialist `per-chat`/`shared` data-scope flag, proactivity
-via the existing scheduled-tasks engine, and three editable seed rows.
+Priority 15 (Specialists, shipped 2026-07-27) was **removed completely** (user
+decision, 2026-08-19): the whole feature — dashboard page, Route Handlers, MCP
+toolkit, per-chat prompt layer, and data — is gone. Do not re-implement without
+a new decision from the user.
 
-Implementation choices within the decided guardrails (values were unspecified):
-payload cap 16 384 bytes/entry, query cap 50 results, collection label ≤128
-chars, max 32 specialists (the personalities bound). Load-bearing integration
-delivered by making scheduled-task fires run with the full registered toolset
-(`chatCompletionWithTools`) inside the task chat's tool context — so a
-specialist's check-in queries its own entries mid-fire; tool calls are
-recorded on the fire trace as `external_call` events.
-
-Proof: files — `db/schema.ts` + migration `0042_next_iron_monger.sql` (three
-tables + seeds; **applied to the dev DB**), `features/specialists/*`
-(schema/repository/service/mcp-tools/UI), `app/api/specialists/**`,
-`app/(dashboard)/specialists/page.tsx`, `lib/features.ts`
-(`specialists` + `mcp-tools-specialists`), `lib/realtime.ts` (`specialists`
-topic), `server/mcp/runtime.ts`, `components/layout/nav-config.ts`,
-`features/bot-messaging/server/{prompt,service}.ts`,
-`server/telegram/process-update.ts`,
-`features/scheduled-tasks/server/{fire,scheduler}.ts`, docs
-(`docs/features/specialists.md`, features README, AGENTS.md). Tests: new
-`specialists.integration.test.ts` (18: seeds, CRUD, assignment, switch gating
-DM vs group, scope silos, caps, browser, traces), `mcp-tools.test.ts`
-(no-active-specialist result, save normalization, switch relaying), prompt
-stacking + fire-path composition/tool-context tests added to existing suites.
-`npm run lint`, `typecheck`, `test` (716), `test:integration` (311 passed / 31
-skipped — the live-LLM-gated ones), `build` all green. Remaining risks: the
-dashboard page was verified only by build + tests (operator auth blocks an
-agent from logging in — check `/specialists` renders after the next dev-server
-restart; the "new MCP tools only appear after a restart" caveat recorded here is
-no longer true, see the chat-rules entry — the registry now rebuilds itself when
-the tool set changes); gemma4:12b tool-selection quality over the new toolkit is
-unmeasured — if the model ignores `specialist_*` tools live, tune the seed
-instructions/tool descriptions like the tasks tools were.
+- Deleted: `features/specialists/*`, `app/(dashboard)/specialists/`,
+  `app/api/specialists/**`, `docs/features/specialists.md`.
+- Unwired: `server/mcp/runtime.ts` (registrar), `server/telegram/
+  process-update.ts` + `features/bot-messaging/server/{prompt,service}.ts`
+  (`specialistInstructions` prompt layer and its trace flag),
+  `features/tasks/server/{scheduler,fire}.ts` (fire-time specialist load),
+  `lib/features.ts` (`specialists` + `mcp-tools-specialists` ids),
+  `lib/realtime.ts` (`specialists` topic), `components/layout/nav-config.ts`.
+- Data: migration `0058_skinny_next_avengers.sql` drops `specialists`,
+  `chat_specialists`, `specialist_entries` (**applied to the dev DB** — the
+  data is deleted, not archived).
+- Docs: features README (Dropped features note), AGENTS.md (priority list
+  note), ui-kit.md (Fab table), tasks.md (fire composition).
+- Note: old traces with feature ids `specialists` / `mcp-tools-specialists`
+  now render those ids raw in Debug (the label lookup falls back to the id) —
+  harmless, ages out with trace retention.
 
 ## Memory scope placement — `general` holds outsiders again (`done`, 2026-07-28)
 

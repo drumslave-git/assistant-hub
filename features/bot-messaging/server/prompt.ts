@@ -142,13 +142,6 @@ export interface SystemPromptOptions {
    */
   personalityPrompt?: string | null;
   /**
-   * The current chat's active specialist role instructions (operator-authored,
-   * activated per chat), appended below the persona — composition always stacks
-   * base + personality + specialist (user decision, 2026-07-27). Null/empty
-   * (after trimming) means no specialist block.
-   */
-  specialistInstructions?: string | null;
-  /**
    * The latest global self-correction guidelines (distilled from user feedback
    * by the self-improvement job), appended below the persona. Null/empty (after
    * trimming) means no correction block.
@@ -171,22 +164,17 @@ export function hasPersonality(personalityPrompt?: string | null): boolean {
 
 /**
  * Compose the system prompt for a reply: the fixed base prompt, plus the
- * operator's personality instructions when configured, plus the chat's active
- * specialist role when one is active, plus the latest self-correction
- * guidelines learned from user feedback, plus the chat's standing tasks. The
- * stack never replaces a layer — a specialist adds to the persona, it does not
- * suppress it.
+ * operator's personality instructions when configured, plus the latest
+ * self-correction guidelines learned from user feedback, plus the chat's
+ * standing tasks. The stack never replaces a layer — each block adds to the
+ * persona, it does not suppress it.
  */
 export function buildSystemPrompt(options: SystemPromptOptions = {}): string {
   const persona = options.personalityPrompt?.trim();
-  const specialist = options.specialistInstructions?.trim();
   const correction = options.selfCorrection?.trim();
   const standing = options.standingTasks?.trim();
   let prompt = BASE_SYSTEM_PROMPT;
   if (persona) prompt += `\n\n---\nAdditional instructions:\n${persona}`;
-  if (specialist) {
-    prompt += `\n\n---\nActive specialist role for this chat (follow these instructions on top of everything above):\n${specialist}`;
-  }
   if (correction) {
     prompt += `\n\n---\nSelf-correction guidelines (learned from user feedback on your replies):\n${correction}`;
   }
