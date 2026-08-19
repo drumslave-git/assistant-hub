@@ -34,36 +34,28 @@ export const BROWSER_AGENT_TOOL_NAMES = [BROWSE_WEB_TOOL];
 
 const BROWSE_WEB_DESCRIPTION =
   "Start a background web agent that opens a REAL browser and does everything on the web for you: " +
-  "SEARCH the web, open and read any page, follow links, click, fill forms, read content behind a " +
-  "click, read a page's LIVE rendered values, AND download files (documents, images, videos, archives) " +
-  "to send to the user. This is the ONLY way you can reach the internet — you have no other way to " +
-  "search, open a link, or fetch a file. " +
-  "You CAN get a file for the user through this tool — so when a user gives you a link and asks you " +
-  "to download / save / grab / get / fetch it (or the video/image/file on it), DO NOT reply that you " +
-  "are 'just a language model' or 'cannot download files': call this tool instead. That refusal is " +
-  "wrong — this is exactly the tool for it. " +
-  "MUST call when: (a) the user asks you to look something up, search for something, or check what is " +
-  "online right now; (b) the user shares a URL, or asks about the content of a page whose URL is in " +
-  "the conversation — go read that page instead of answering from memory; (c) the user asks to " +
-  "download or save a file, video, image, or document; (d) the user names a specific site, service, or " +
-  "page to get data FROM (e.g. 'on <site>', 'check <site>', 'from <site>') — go read it there; (e) the " +
-  "user wants a LIVE or CURRENT value — the weather, a price, a rate, live stats, a player/viewer/user " +
-  "count, a chart or dashboard, availability, today's news — because those change constantly and your " +
-  "own knowledge is stale; (f) the task needs any multi-step interaction on the web. " +
-  "In all of those, go get the real value from the real page instead of answering from memory. " +
-  "The agent works step by step and reports back to this chat when it is done (this may take a while). " +
-  "Do NOT call for casual chat, an opinion, or a stable fact you already know well and the user did " +
-  "not ask you to verify (a definition, a historical date, arithmetic) — that is not a web task. " +
-  "Write the goal as a clear, self-contained instruction, and INCLUDE ALL links, site names, and " +
-  "search terms the user gave — the agent starts from nothing but this text. Any link you write " +
-  "must be copied character-for-character (the system also hands the agent the user's links " +
-  "verbatim, so a mistyped link in the goal will be caught — but do not rely on that). " +
-  "Pass on what the user actually asked for, and do NOT soften it or add an easier alternative: " +
-  "if they said to download something, the goal is to download it — never write 'or describe it', " +
-  "'or find information about it', 'or explain how to get it'. The agent takes any alternative you " +
-  "offer as permission to stop early, so a request for a file comes back as a paragraph about the " +
-  "file. State plainly that the file must be downloaded, and say whether they want audio or video. " +
-  "The agent replies to the chat itself, so just tell the user you're on it; do not invent results.";
+  "SEARCH the web, open and read any page, follow links, click, fill forms, read a page's LIVE " +
+  "rendered values, AND download files (documents, images, videos, archives) to send to the user. " +
+  "This is the ONLY way you can reach the internet. " +
+  "You CAN get a file for the user through this tool — when a user gives you a link and asks you " +
+  "to download / save / grab / fetch it (or the video/image/file on it), call this tool: never " +
+  "reply that you are 'just a language model' or 'cannot download files' — that refusal is wrong. " +
+  "MUST call when the user: (a) asks you to look something up or check what is online; (b) shares " +
+  "a URL, or asks about a page whose URL is in the conversation — read it instead of answering " +
+  "from memory; (c) asks to download or save a file, video, image, or document; (d) names a site " +
+  "or service to get data FROM ('on <site>', 'check <site>'); (e) wants a LIVE or CURRENT value — " +
+  "weather, a price, a rate, live stats or counts, availability, today's news — your own " +
+  "knowledge is stale; (f) needs any multi-step interaction on the web. " +
+  "Do NOT call for casual chat, an opinion, or a stable fact you already know well and the user " +
+  "did not ask you to verify (a definition, a historical date, arithmetic). " +
+  "Write the goal as a clear, self-contained instruction and INCLUDE ALL links, site names, and " +
+  "search terms the user gave, links copied character-for-character — the agent starts from " +
+  "nothing but this text. Pass on what was actually asked and add NO easier alternative: never " +
+  "'or describe it' / 'or explain how to get it' — the agent takes any alternative as permission " +
+  "to stop early, so a request for a file comes back as a paragraph about the file. A download " +
+  "goal must say plainly that the file is to be downloaded, and whether audio or video. " +
+  "The agent reports back to this chat itself when done (this may take a while), so just tell " +
+  "the user you're on it; do not invent results.";
 
 /** Register the browser-agent MCP tool on the shared server. */
 export function registerBrowserAgentMcpTools(server: McpServer): void {

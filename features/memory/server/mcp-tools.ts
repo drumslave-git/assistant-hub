@@ -91,34 +91,30 @@ export function registerMemoryMcpTools(server: McpServer): void {
     {
       title: "Save a durable fact to long-term memory",
       description:
-        "Record ONE durable fact so you still know it in future conversations, days or months " +
-        "from now. This is the ONLY way anything is remembered: your reply is forgotten once the " +
-        "conversation moves on, so a fact you do not save here is lost permanently, and saying " +
-        "'I'll remember that' without calling this tool is a false promise.\n" +
+        "Record ONE durable fact so you still know it in future conversations. This is the ONLY " +
+        "way anything is remembered: an unsaved fact is lost once the conversation moves on, and " +
+        "saying 'I'll remember that' without calling this tool is a false promise.\n" +
         "MUST call, before you reply, whenever the message asks you to remember, note, save, keep " +
         "in mind, or not forget something.\n" +
         "ALSO call, without being asked, the moment someone reveals something lastingly true about " +
-        `themselves — ${DURABLE_FACT_KINDS}. Saving proactively is expected of ` +
-        "you, not optional: prefer saving a fact that turns out to be minor over losing one that " +
-        "mattered.\n" +
+        `themselves — ${DURABLE_FACT_KINDS}. Saving proactively is expected: ` +
+        "prefer saving a minor fact over losing one that mattered.\n" +
         "EXCEPTION — what a person in THIS chat is called (a nickname, alias, 'call me X', or " +
         "'when I say X I mean Y') is never saved here: name recognition does not read memory, so " +
         "a note about a name changes nothing — record the name with the dedicated alias-recording " +
         "tool instead.\n" +
-        "Use scope 'user' for a fact about a person this chat knows (this is how you remember " +
-        "someone across chats). By default the fact is saved about the person you are talking to " +
-        "right now; to save it about someone else in this chat, name them in 'person' by a name " +
-        "you already see for them (their first name, @username, or a known nickname) — never a " +
-        "numeric id.\n" +
-        "Use scope 'general' for knowledge that is about nobody — a definition, a rule, a " +
-        "convention, how something works — and ALSO for a fact about a person who is not in this " +
-        "chat and so has no memory of their own: name them in 'person', and write their name into " +
-        "the fact itself so it still says who it is about. A fact about someone who IS in this " +
-        "chat is refused under 'general' — it belongs in their own memory.\n" +
+        "Scope 'user': a fact about a person this chat knows (this is how you remember someone " +
+        "across chats). By default it is about the person you are talking to now; to save about " +
+        "someone else here, name them in 'person' by a name you already see for them (first " +
+        "name, @username, or known nickname) — never a numeric id.\n" +
+        "Scope 'general': knowledge about nobody — a definition, rule, convention — and ALSO a " +
+        "fact about a person NOT in this chat: name them in 'person' AND write their name into " +
+        "the fact itself. A fact about someone who IS in this chat is refused under 'general' — " +
+        "it belongs in their own memory.\n" +
         `Evidence: ${FIRST_PERSON_EVIDENCE_RULE}.\n` +
         `Identity: ${UNIDENTIFIED_PERSON_RULE}.\n` +
         `Do NOT save: ${NON_DURABLE_FACT_KINDS}. Do not re-save something you have already saved.\n` +
-        `Save ONE fact per call — make several calls for several facts — and ${SELF_CONTAINED_FACT_RULE}.`,
+        `Save ONE fact per call — several calls for several facts — and ${SELF_CONTAINED_FACT_RULE}.`,
       inputSchema: {
         scope: memoryScope.describe(
           "'user' for a fact about a specific person, 'general' for shared knowledge",

@@ -79,50 +79,39 @@ export const TASKS_CREATE_DESCRIPTION =
   "Save a task for THIS chat — either a STANDING RULE about how you must behave here from now " +
   "on, or a TIMED job (a reminder or something recurring) that runs by itself later. Use it " +
   "whenever someone sets one up, however they phrase it: \"new rule: …\", \"from now on …\", " +
-  "\"always …\", \"never … again\", \"whenever someone sends X, do Y\", \"stop doing X\", " +
-  "\"remind me in 5 minutes / tonight / tomorrow at 9\", \"every day at 8, …\", \"every 10 " +
-  "minutes, check …\" — including playful or third-person requests about you ('let the bot " +
-  "roast everyone once a day'): a recurring bit is still a task. This is NOT for facts about " +
-  "people — that is the memory tool. " +
-  "Write the instruction as a complete, self-contained directive to yourself, spelling out the " +
-  "trigger and the action in full — it is read later without this conversation. Keep relative " +
-  "time words (\"tomorrow\", \"tonight\", \"in an hour\") OUT of the instruction: it is read " +
-  "when the task fires, when they no longer mean anything — the timing lives entirely in the " +
-  "trigger fields, and the instruction states only what to do. " +
-  "Pick 'trigger' from what was described: " +
-  "'message' when something people SAY or POST here must set it off, even when nobody is " +
-  "talking to you (\"any time someone posts X, do Y\"); " +
-  "'on-reply' when it only shapes how you answer people who talk to you (\"answer briefly\"); " +
-  "'interval' with every_minutes for \"every N minutes/hours/days\"; " +
-  "'timeout' with delay_minutes for one-off relative requests — \"in 5 minutes\" is " +
-  "delay_minutes 5, \"in two hours\" is 120; " +
+  "\"always/never …\", \"whenever someone sends X, do Y\", \"stop doing X\", \"remind me in 5 " +
+  "minutes / tomorrow at 9\", \"every day at 8, …\" — playful or third-person requests about " +
+  "you included ('let the bot roast everyone once a day'). NOT for facts about people — that " +
+  "is memory. " +
+  "Write 'instruction' as a complete directive to yourself, trigger and action spelled out — " +
+  "it is read later without this conversation. Keep relative time words (\"tomorrow\", " +
+  "\"in an hour\") OUT of it: they mean nothing when the task fires — timing lives only in " +
+  "the trigger fields. " +
+  "Pick 'trigger' from what was described: 'message' when things people SAY or POST here must " +
+  "set it off, even when nobody is talking to you; 'on-reply' when it only shapes how you " +
+  "answer (\"answer briefly\"); 'interval' with every_minutes for \"every N minutes/hours\"; " +
+  "'timeout' with delay_minutes for one-off relative requests (\"in 5 minutes\" = 5); " +
   "'schedule' with time (HH:MM, operator timezone) for clock-and-calendar requests — plus " +
   "date (YYYY-MM-DD) for a SINGLE run, or weekdays (0=Sunday..6=Saturday) for an every-week " +
-  "repeat, or neither for a daily repeat. A one-time request — \"tomorrow at 9\", \"tonight\", " +
-  "\"on the 25th\" — is a single run: resolve the wording against the current date and pass " +
-  "'date'. NEVER encode it as weekdays — \"tomorrow\" is not \"every Tuesday\"; weekdays make " +
-  "the task fire every week forever, and a reminder saved that way keeps firing long after it " +
-  "was due. Pass weekdays only when the request itself says every/each <weekday>. " +
-  "IMPORTANT for timed tasks — when the task fires you will have ONLY the stored 'instruction' " +
-  "and 'context' texts: no chat transcript, no conversation memory. So GATHER CONTEXT BEFORE " +
-  "CREATING: if the request points at a person, event, joke, or topic from this chat rather " +
-  "than spelling it out, collect what it actually refers to (from the visible messages, or " +
-  "history_search then history_get_in_range around thin matches) and save it in 'context'; if " +
-  "you cannot find it, ask instead of storing the empty phrasing. " +
-  "A standing rule applies to everyone in the chat, which is what almost every rule wants. In " +
-  "a group you can instead limit it to particular people with user_ids, and only when the " +
-  "instruction is explicitly about them — then it acts on their messages and nobody else's. " +
-  "Copy each id exactly from the group participant list you were given: never invent one, " +
-  "never work one out from a name, and if the person is not listed, say so instead of guessing. " +
-  "ALWAYS call this tool when a task is set, even if the conversation already contains you " +
-  "saying you would do it: a message of yours agreeing is NOT the task being saved, and a task " +
-  "never stored through this tool does not exist no matter how often you promised it. Someone " +
-  "repeating the same instruction is telling you they do not believe it took effect — call the " +
-  "tool, do not reassure them again. Calling it twice is safe: a rule already in force, or a " +
-  "reminder already scheduled with the same wording for the same time, is left exactly as it is " +
-  "and the result says so — you never end up with two copies. If you want to know what is actually " +
-  "stored, call tasks_list — that result is the only evidence; your own earlier messages are " +
-  "not. Tell the person what you saved once it is stored.";
+  "repeat, or neither for daily. A one-time request — \"tomorrow at 9\", \"on the 25th\" — is " +
+  "a single run: resolve it against the current date and pass 'date'. NEVER encode it as " +
+  "weekdays — \"tomorrow\" is not \"every Tuesday\", and weekdays fire every week forever. " +
+  "Weekdays only when the request itself says every/each <weekday>. " +
+  "IMPORTANT for timed tasks — a fire sees ONLY the stored 'instruction' and 'context': no " +
+  "transcript, no conversation memory. GATHER CONTEXT BEFORE CREATING: if the request points " +
+  "at a person, event, joke, or topic from this chat, resolve what it refers to (visible " +
+  "messages, or history search) and save it in 'context'; if you cannot find it, ask instead " +
+  "of storing the empty phrasing. " +
+  "A standing rule applies to everyone in the chat. In a group, user_ids can limit it to " +
+  "particular people when the instruction is explicitly about them. Copy each id exactly from " +
+  "the participant list: never invent or derive one from a name; if the person is not listed, " +
+  "say so instead of guessing. " +
+  "ALWAYS call this tool when a task is set, even if the conversation shows you agreeing to do " +
+  "it: your message is NOT the task being saved, and an unsaved task does not exist however " +
+  "often you promised it. A repeated instruction means the person does not believe it took " +
+  "effect — call the tool, do not reassure them again. Calling twice is safe: an identical " +
+  "task is left exactly as it is and the result says so. tasks_list is the only evidence of " +
+  "what is stored; your own earlier messages are not. Tell the person what you saved.";
 
 /**
  * `tasks_update`'s description — pinned like the create one, and carrying the
@@ -131,18 +120,17 @@ export const TASKS_CREATE_DESCRIPTION =
  * missing.
  */
 export const TASKS_UPDATE_DESCRIPTION =
-  "Change one of THIS chat's tasks by its id — reword it, change when or how it triggers, or " +
-  "change who a standing rule applies to. Use it when someone amends a task they already set " +
-  "rather than adding a new one. It cannot switch a task off: when someone cancels, stops or " +
-  "calls off a task, that task is deleted, not changed here. Just call it: the tool decides who " +
-  "is allowed and answers plainly when the caller is not, so never refuse on its behalf. Get " +
-  "the id from tasks_list; only the fields you pass are changed. " +
-  "IMPORTANT for timed tasks — the same rule as tasks_create: a fire sees ONLY the stored " +
-  "'instruction' and 'context'. When the update touches what the task is about — including the " +
-  "user telling you what a task's person/event/joke/topic actually is — gather the background " +
-  "(visible messages, or history search) and pass it as 'context'; it replaces the stored " +
-  "context entirely. Changing only the timing needs no context. " +
-  "Times are in the operator timezone.";
+  "Change one of THIS chat's tasks by its id (from tasks_list) — reword it, retime it, or " +
+  "change who a standing rule applies to; only the fields you pass are changed. Use it when " +
+  "someone amends a task they already set. It cannot turn a task off: when someone cancels, " +
+  "stops or calls off a task, that task is deleted, not changed here. Just call it: the tool " +
+  "decides who is allowed and answers plainly when the caller is not, so never refuse on its " +
+  "behalf. " +
+  "Same rule as creation: a timed task fires with ONLY the stored 'instruction' and 'context'. " +
+  "When the update touches what the task is about — including the user telling you what a " +
+  "task's person/event/topic actually is — gather the background and pass it as 'context'; it " +
+  "replaces the stored context entirely. Timing-only changes need no context. Times are in " +
+  "the operator timezone.";
 
 function textResult(text: string, structured?: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text }], structuredContent: structured };
@@ -305,23 +293,22 @@ export function registerTasksMcpTools(server: McpServer): void {
           .min(2)
           .max(MAX_INSTRUCTION_LENGTH)
           .describe(
-            "The task as a complete instruction to yourself, naming both what triggers it and " +
-              "what you must do — understandable on its own, without this conversation. " +
-              "Background facts go in 'context', not here",
+            "The task as a complete instruction to yourself — trigger and action, readable " +
+              "without this conversation. Background facts go in 'context', not here",
           ),
         trigger: z
           .enum(["message", "on-reply", "interval", "timeout", "schedule"])
           .describe(
-            "'message' when things people say/post must set it off; 'on-reply' when it only " +
-              "shapes your answers; 'interval' for every-N-minutes; 'timeout' for a one-off " +
-              "delay from now; 'schedule' for clock/calendar times",
+            "'message' = set off by what people say/post; 'on-reply' = only shapes your " +
+              "answers; 'interval' = every N minutes; 'timeout' = one-off delay from now; " +
+              "'schedule' = clock/calendar times",
           ),
         context: z
           .string()
           .default("")
           .describe(
             "Timed tasks: the gathered background the fire will need, self-contained for a " +
-              "reader with NO chat transcript. Pass '' when the instruction is fully " +
+              "reader with NO chat transcript. '' when the instruction is fully " +
               "self-contained, and always for standing rules",
           ),
         user_ids: z
@@ -329,9 +316,8 @@ export function registerTasksMcpTools(server: McpServer): void {
           .max(MAX_TASK_TARGETS)
           .default([])
           .describe(
-            "Group standing rules only: the user ids, copied exactly from the participant " +
-              "list, of the people the rule is about — it then applies to their messages and " +
-              "no one else's. Leave empty for a rule that applies to everyone (the normal case)",
+            "Group standing rules only: ids of the people the rule is about, copied exactly " +
+              "from the participant list. Empty = applies to everyone (the normal case)",
           ),
         every_minutes: z
           .number()
@@ -348,17 +334,15 @@ export function registerTasksMcpTools(server: McpServer): void {
           .array(z.number().int().min(0).max(6))
           .default([])
           .describe(
-            "'schedule' only: weekdays for a run repeating EVERY week (0=Sunday..6=Saturday). " +
-              "Only when the request says every/each week — a one-time \"tomorrow\" or a named " +
-              "date goes in 'date', never here",
+            "'schedule' only: weekdays (0=Sunday..6=Saturday) for an EVERY-week repeat — a " +
+              "one-time request goes in 'date', never here",
           ),
         date: z
           .string()
           .default("")
           .describe(
-            "'schedule' only: date for a single run as YYYY-MM-DD — the field for every " +
-              "one-time request (\"tomorrow at 9\" = tomorrow's actual date, resolved against " +
-              "the current date)",
+            "'schedule' only: YYYY-MM-DD for a single run — the field for every one-time " +
+              "request, resolved against the current date",
           ),
       },
       annotations: {
@@ -447,7 +431,7 @@ export function registerTasksMcpTools(server: McpServer): void {
           .default("")
           .describe(
             "Timed tasks: new saved background, self-contained for a reader with NO chat " +
-              "transcript; replaces the stored context entirely. '' leaves it unchanged",
+              "transcript; replaces the stored context. '' leaves it unchanged",
           ),
         // Optional-by-omission, not an "" enum member: Google's OpenAI-compat
         // layer rejects empty enum values ("enum[N]: cannot be empty").
@@ -468,15 +452,15 @@ export function registerTasksMcpTools(server: McpServer): void {
           .describe(
             "Group standing rules only: the complete new list of user ids the rule applies " +
               "to, copied exactly from the participant list (replaces the current list). " +
-              "Leave empty to leave the audience exactly as it is",
+              "Empty leaves the audience as it is",
           ),
         applies_to_everyone: z
           .boolean()
           .nullable()
           .default(null)
           .describe(
-            "true to drop any limit to particular people, so the rule applies to everyone in " +
-              "the chat again (optional)",
+            "true to drop any limit to particular people, so the rule applies to everyone " +
+              "again (optional)",
           ),
         every_minutes: z
           .number()
@@ -493,15 +477,15 @@ export function registerTasksMcpTools(server: McpServer): void {
           .array(z.number().int().min(0).max(6))
           .default([])
           .describe(
-            "'schedule': new weekdays for an every-week repeat (empty keeps them). Only for " +
-              "every/each-week requests — a one-time date goes in 'date', never here",
+            "'schedule': new weekdays for an EVERY-week repeat (empty keeps them) — a " +
+              "one-time date goes in 'date', never here",
           ),
         date: z
           .string()
           .default("")
           .describe(
-            "'schedule': new date YYYY-MM-DD for a single run ('' keeps it) — the field for " +
-              "one-time requests, with relative wording resolved against the current date",
+            "'schedule': new YYYY-MM-DD for a single run ('' keeps it) — the field for " +
+              "one-time requests, resolved against the current date",
           ),
       },
       annotations: {

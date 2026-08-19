@@ -319,6 +319,9 @@ export const SEARCH_RESULT_USAGE_NOTE =
 const HISTORY_SEARCH_DESCRIPTION =
   "Search this whole conversation's stored history — every message ever sent here, not just " +
   "the recent ones you are shown. " +
+  "Use it whenever the question is about what was actually SAID or POSTED here earlier — " +
+  "'what did I tell you about X', 'look back through our chat', 'did we discuss X' — finding " +
+  "the said words is this tool's job, not a memory lookup. " +
   "Searches by meaning as well as by wording, so describe what you are looking for in plain " +
   "words; it does not have to match how anyone phrased it, or even be the same language. " +
   "Photos, videos, GIFs, stickers and voice messages are searched by what is IN them: a " +

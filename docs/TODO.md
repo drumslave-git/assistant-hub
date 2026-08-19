@@ -28,6 +28,46 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Oversized tool descriptions trimmed + history/memory search boundary (`done`, 2026-08-19)
+
+Follow-up to the toolset measurements: the 23 tools offered every reply turn
+rendered to ~7,500 prompt tokens on the live llama.cpp gemma4-26b backend, half
+of it four tools (`tasks_create` 6.2KB JSON, `memory_save` 3.6KB, `browse_web`
+3.3KB, `tasks_update` 3.1KB).
+
+- **Wording compressed, zero rules cut.** Every earned clause survives:
+  one-shot-vs-weekly (`date` never `weekdays` for "tomorrow"), relative words
+  out of the instruction, gather-context-before-creating, exact-id copying,
+  always-call/repeat-means-disbelief/duplicates-safe (tasks); the false-promise
+  clause, proactive saving, the alias EXCEPTION, both scope rules (memory); the
+  only-web-tool claim, the anti-"just a language model" download clause, all
+  six MUST-call cases, the no-softer-alternative rule (browse_web). The
+  triplication of one-shot-vs-weekly and gather-context across description +
+  two schema fields was cut to one strong copy + short field pointers.
+- **`history_search` gained one boundary sentence** ("what did I tell you
+  about X … is this tool's job, not a memory lookup"): the live history suite's
+  "searches history for something said earlier" case was flaky *before* this
+  change (failed 2/3 on the untouched tree — `memory_search` chosen), and the
+  sentence fixed it (12/12 after).
+- The toolset stays static per turn — llama.cpp's prompt-prefix cache depends
+  on a stable tools block at the top of the prompt (measured: a changed block
+  costs 8–10s reprocessing at 27k tokens vs 1–3s cached).
+
+Measured: tools JSON 33.2KB → 31.2KB; rendered prompt 9,226 → **8,788 tokens**
+(net −438/turn; −495 from the trims, +57 for the history sentence).
+
+Proof: lint/typecheck clean; unit suites for tasks/memory/browser-agent/
+mcp-tools/server-mcp/history all green (434 tests, incl. the pinned
+no-pause/cancel-is-delete description tests). Live (LLM_LIVE, real gemma4):
+all five tool-selection suites 18/18 twice in a row; scratch argument-level
+check 10/10 — one-shot "tomorrow at 9" → `date: 2026-08-20` with no weekdays
+(EN + UK "завтра"), weekly → `weekdays: [1]`, "in 20 minutes" →
+`delay_minutes: 20`, standing rule → `message`.
+
+Same operational note as the alias fix: description-only changes never trip
+the registry's name-based staleness check — **the running process serves the
+old text until restarted** (none was running locally).
+
 ## `memory_save` shadowed `update_user_aliases` (`done`, 2026-08-19)
 
 Found by live tool-selection testing against the production toolset (llama.cpp
