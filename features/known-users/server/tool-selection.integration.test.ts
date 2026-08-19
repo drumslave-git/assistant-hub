@@ -30,4 +30,20 @@ describe.skipIf(!LLM_LIVE)("known-users MCP tool selection (live)", () => {
     },
     TOOL_SELECTION_TIMEOUT,
   );
+
+  it(
+    // Live defect (2026-08-19): this exact shape chose `memory_save` 6/6 times, so
+    // the alias table — which mention matching reads — never learned the name.
+    "records a name mapping ('when I say X I mean Y') as an alias, not a memory note",
+    async () => {
+      const run = await runToolSelection({
+        systemContext: [
+          "You are in the group chat \"Weekend plans\". Members: Alex (@alex), Marta (@marta).",
+        ],
+        userText: "When I say Sanya I mean Alex, keep that in mind.",
+      });
+      expectToolCalled(run, "update_user_aliases");
+    },
+    TOOL_SELECTION_TIMEOUT,
+  );
 });

@@ -101,6 +101,10 @@ export function registerMemoryMcpTools(server: McpServer): void {
         `themselves — ${DURABLE_FACT_KINDS}. Saving proactively is expected of ` +
         "you, not optional: prefer saving a fact that turns out to be minor over losing one that " +
         "mattered.\n" +
+        "EXCEPTION — what a person in THIS chat is called (a nickname, alias, 'call me X', or " +
+        "'when I say X I mean Y') is never saved here: name recognition does not read memory, so " +
+        "a note about a name changes nothing — record the name with the dedicated alias-recording " +
+        "tool instead.\n" +
         "Use scope 'user' for a fact about a person this chat knows (this is how you remember " +
         "someone across chats). By default the fact is saved about the person you are talking to " +
         "right now; to save it about someone else in this chat, name them in 'person' by a name " +

@@ -28,6 +28,45 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## `memory_save` shadowed `update_user_aliases` (`done`, 2026-08-19)
+
+Found by live tool-selection testing against the production toolset (llama.cpp
+gemma4-26b): "when I say Sanya I mean Alex, keep that in mind" called
+`memory_save` instead of `update_user_aliases` **6/6 times** across small
+(~9k-token) and large (~34k-token) contexts. A name filed as a free-text memory
+note never reaches `known_users.aliases`, which is what mention matching (and
+fire addressing) actually reads — so the bot "remembered" the name and still
+never recognized it. Cause: `memory_save`'s description commands "MUST call …
+whenever the message asks you to … keep in mind", and its `DURABLE_FACT_KINDS`
+list *leads with* "their name or what they want to be called".
+
+Fix is description-only, per `tools-self-describe-atomic` (boundary drawn by
+fact kind, no tool named):
+
+- `update_user_aliases` now claims every phrasing of a name statement
+  (nickname, "call me X", "when I say X I mean Y") and states it is the ONLY
+  way a name is remembered.
+- `memory_save` gained an EXCEPTION clause: what a person in this chat is
+  called is never saved as memory (recognition does not read memory) — the
+  dedicated alias-recording tool does it.
+- `DURABLE_FACT_KINDS` itself is **unchanged**: passive extraction shares it
+  and has no alias-writing path, so a transcript-harvested "wants to be called
+  X" must still become a memory fact rather than be dropped.
+
+Proof: lint/typecheck clean; unit suites for memory/known-users/mcp-tools/
+server-mcp 150/150. New live suites (LLM_LIVE-gated):
+`features/memory/server/tool-selection.integration.test.ts` (durable fact still
+saved; name mapping NOT saved as memory) and a second known-users case (the
+exact failing mapping shape) — 4/4 passed on three consecutive runs at
+production sampling. Scratch harness re-check with the full 23-tool set at
+production `max_tokens`: 12/12 correct (EN + UK, small and ~34k context).
+
+Remaining operational step: the running bot serves whatever descriptions its
+registry was built with, and the registry compares tool *names* only — a
+description-only change never triggers the staleness rebuild. **Restart the
+dev/production process** to serve the new text (no server was running locally
+when this shipped; the next boot picks it up).
+
 ## Trace flow view + fire addressing + one-shot triggers (`done`, 2026-08-18)
 
 Three operator reports off live traces (`6b8b54e5…` fire, `9be9e44b…`/

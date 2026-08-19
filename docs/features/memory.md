@@ -72,6 +72,17 @@ fact about someone in this chat belongs under `user` and is refused under
 `general`, while a fact about anyone else belongs in `general` with their name
 written into it; and that facts must be self-contained.
 
+One carve-out (2026-08-19): what a person in this chat is *called* — a nickname,
+"call me X", "when I say X I mean Y" — is explicitly **not** saved here, because
+name recognition reads the known-users alias table, never memory; the description
+points the model at the alias-recording tool instead. Live tool-selection testing
+had shown the exact opposite choice 6/6 times (the mapping request landed in
+`memory_save` and the alias table never learned the name); the boundary is pinned
+by the live suites in `features/{known-users,memory}/server/tool-selection.integration.test.ts`.
+The carve-out is tool-path only: passive extraction keeps the full
+`DURABLE_FACT_KINDS` (it has no alias-writing path, so "wants to be called X"
+harvested from a transcript is still stored as a memory fact rather than dropped).
+
 ### Producer 2: passive extraction
 
 The tool only runs while the model is composing a reply — and the bot only replies

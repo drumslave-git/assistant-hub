@@ -58,10 +58,13 @@ export function registerKnownUsersMcpTools(server: McpServer): void {
       title: "Remember a user's other name",
       description:
         "Record an additional name or nickname for a person in this chat, so the bot recognizes " +
-        "them by it later. Call this whenever someone is referred to by — or tells you — a name " +
-        "other than the one shown for them (e.g. a nickname, or a shortened first name); actually " +
-        "record it, do not merely say you did. Identify the person by a name you already see for " +
-        "them (their first name, @username, or a known nickname).",
+        "them by it later. This is the ONLY way a name is remembered: recognition runs on what is " +
+        "recorded here, so a name that is merely mentioned — or noted anywhere else — is not " +
+        "recognized later. MUST call whenever someone states what a person is called, in any " +
+        "form: a nickname ('everyone calls him Sanya'), a self-introduction ('call me Lex'), or a " +
+        "mapping ('when I say Sanya I mean Alex'); actually record it, do not merely say you did. " +
+        "Identify the person by a name you already see for them (their first name, @username, or " +
+        "a known nickname).",
       inputSchema: {
         name: z
           .string()
