@@ -97,3 +97,10 @@ Known pitfalls for whoever starts:
   store, with no internal worker API needed. Three apps, three images
   (core/tg/chat). Phase 2 becomes "source split" (extract telegram from
   core) instead of a web/worker split.
+- **2026-08-21 (last)** — Four refinements (user): typing is not an MCP
+  tool — the core publishes turn-lifecycle events (accepted / progress /
+  settled) and each source renders them natively (tg typing indicator,
+  web thread progress); the chat app owns its own users (operator gets a
+  chat user, linkable via person links); and the dashboard UI packages
+  move inside their apps (apps/tg/ui, apps/chat/ui) as the one sanctioned
+  seam the shell composes at build time.

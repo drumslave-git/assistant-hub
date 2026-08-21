@@ -29,8 +29,11 @@ Three pillars:
 
 ### Monorepo
 
-Turborepo with npm workspaces. `apps/*` never import each other — only
-packages.
+Turborepo with npm workspaces. `apps/*` never import each other's code —
+only packages. The one sanctioned seam is the dashboard: each source app
+ships a `ui` subpackage (a separate workspace package living inside the
+app's directory) that only the shell composes at build time; it may import
+shared packages only, never its app's server code and never another app.
 
 ```
 apps/
@@ -44,10 +47,14 @@ apps/
               connection, its own store (users, chats, messages, media,
               connections), Telegram media ingestion, and an MCP server
               exposing Telegram outbound actions (send_message,
-              send_reply, typing, …).
-  chat/       Web-chat source app: its own store (threads, messages,
-              media), inbound events, reply-delivery consumption, and an
-              MCP server exposing web-thread outbound actions.
+              send_reply, …). Ships its dashboard extensions as
+              apps/tg/ui (assistant editor: bot token / connection
+              section, status cards, …).
+  chat/       Web-chat source app: its own store (users, threads,
+              messages, media), inbound events, reply-delivery
+              consumption, and an MCP server exposing web-thread outbound
+              actions. Ships its dashboard extensions as apps/chat/ui
+              (thread list, chat view, …).
 packages/
   db/         Shared database tooling: drizzle helpers, migration runner,
               repository conventions. Each app defines its OWN schema and
@@ -57,16 +64,12 @@ packages/
               payloads, bus events, scoped entity refs, API DTOs.
   ui/         Shared dashboard components + the typed extension-point
               registry the shell composes from.
-  tg-ui/      tg's dashboard extensions (assistant editor: bot token /
-              connection section, status cards, …).
-  chat-ui/    chat's dashboard extensions (thread list, chat view, …).
 ```
 
 Domain logic with a single consumer (pipeline, prompt composition, tool
 loop) lives inside `apps/core`; only genuinely cross-app code becomes a
-package (e.g. the shared trace recorder). The exact package cut — and
-whether an app's UI package lives under `packages/` or inside the app's
-workspace — is settled in Phase 0.
+package (e.g. the shared trace recorder). The exact package cut is settled
+in Phase 0.
 
 ### Runtime topology
 
@@ -98,7 +101,8 @@ cross-app access goes through APIs, events, or the bus.
   in-process — no self-proxy.
 - `apps/tg` — telegram users, chats, messages (all kinds), media,
   telegram connections (bot token per assistant, desired/actual state).
-- `apps/chat` — web threads, messages, media, thread↔assistant binding.
+- `apps/chat` — its own web users, threads, messages, media,
+  thread↔assistant binding.
 
 Cross-app references use **scoped refs** (`source:kind:id`, e.g.
 `tg:chat:123`, `chat:thread:45`), defined in `packages/contracts`. Memory,
@@ -158,6 +162,11 @@ internal network.
 - **Outbound, model-driven:** task fires and cross-chat sends are tool
   calls into the source app's MCP server (send_message, send_reply, …),
   which the core registers as a built-in connection.
+- **Turn lifecycle:** the core publishes lifecycle events for every
+  inbound message — accepted-for-processing, progress (tool activity),
+  settled — and the owning source app renders them natively: tg turns
+  them into the Telegram typing indicator, web chat into the live thread
+  progress. Presence/typing is never an MCP tool.
 - **Events:** all apps publish status/progress events on Redis pub/sub;
   `apps/core` bridges them to the SSE layer (the
   `publishEvent`/`useLiveRefresh` contract survives, its backbone
@@ -169,10 +178,11 @@ internal network.
 ### Dashboard composition (micro-frontends)
 
 The dashboard is a shell in `apps/core` composed from app-owned UI
-packages via a **build-time extension registry** — one Next.js build, one
-origin, Server Components work, no runtime federation. Each source app
-owns a dashboard UI package (`packages/tg-ui`, `packages/chat-ui`, …)
-exporting typed extensions the shell mounts:
+subpackages via a **build-time extension registry** — one Next.js build,
+one origin, Server Components work, no runtime federation. Each source app
+ships its dashboard UI as a subpackage inside its own directory
+(`apps/tg/ui`, `apps/chat/ui`, …) exporting typed extensions the shell
+mounts:
 
 - navigation items and routes/pages (chat contributes the thread list and
   chat view);
@@ -183,12 +193,13 @@ exporting typed extensions the shell mounts:
 - aggregated entity views: the shared users/chats/messages pages call
   every source app's listing API through the proxy and merge the results.
 
-Rules: the shell knows extension *points*, never the apps; a UI package may
-import only shared packages (never another app), and its data access goes
-through the owning app's operator API behind the `apps/core` proxy. The
-extension-point types live in `packages/ui`. Runtime independence is not a
-goal — all images release together on one version, so build-time
-composition costs nothing operationally.
+Rules: the shell knows extension *points*, never the apps; a UI subpackage
+may import only shared packages (never its app's server code, never
+another app), and its data access goes through the owning app's operator
+API behind the `apps/core` proxy. The extension-point types live in
+`packages/ui`. Runtime independence is not a goal — all images release
+together on one version, so build-time composition costs nothing
+operationally.
 
 ### Turn failure handling
 
@@ -243,11 +254,14 @@ body of memory regardless of source.
 
 ### Web chat
 
-Served by `apps/chat` (backend + own store) plus `chat-ui` extensions in
-the dashboard (views), with the operator API behind the `apps/core` proxy.
+Served by `apps/chat` (backend + own store) plus its `apps/chat/ui`
+extensions in the dashboard (views), with the operator API behind the
+`apps/core` proxy.
 
-- Operator + named threads: the operator maps to a chat-app user tied to
-  the operator session; threads are chat-app entities, each bound to one
+- The chat app owns its own users. The operator gets a chat user bound to
+  the operator session — linkable to their telegram user via person
+  links, like any other pair.
+- Named threads belong to chat users; each thread is bound to one
   assistant **at creation** (no mid-thread switching).
 - v1 scope is everything: text, image upload (vision pipeline), and voice
   (voice pipeline).
@@ -343,11 +357,11 @@ Each phase gets detailed acceptance criteria in PROGRESS.md when it starts.
   operator API + bus.
 - **Phase 3 — Assistants.** CRUD UI, personality conversion, per-assistant
   telegram connections with concurrent pollers (connection settings as a
-  `tg-ui` extension of the assistant editor, stored in tg's DB),
+  `apps/tg/ui` extension of the assistant editor, stored in tg's DB),
   per-assistant tasks, own-name addressing + bot-to-bot rules, aggregated
   users/chats dashboard pages + person links.
 - **Phase 4 — Web chat.** `apps/chat` as the second source app plus its
-  `chat-ui` extensions: threads UI (create/name/pick assistant), text +
+  `apps/chat/ui` extensions: threads UI (create/name/pick assistant), text +
   image upload + voice, live turn progress, message-at-once delivery,
   memory/trace parity with telegram chats.
 - **Phase 5 — MCP connections.** HTTP connections CRUD, discovery +
