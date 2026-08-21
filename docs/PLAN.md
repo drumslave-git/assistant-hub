@@ -42,7 +42,7 @@ apps/
               reply pipeline, LLM loop, MCP runtime, schedulers,
               background jobs, Playwright. Owns the core store
               (assistants, settings, memory, tasks, tool connections,
-              person links, operator sessions, its traces).
+              person links, operator sessions, all traces).
   tg/         Telegram source app: one grammY poller per enabled telegram
               connection, its own store (users, chats, messages, media,
               connections), Telegram media ingestion, and an MCP server
@@ -68,8 +68,8 @@ packages/
 
 Domain logic with a single consumer (pipeline, prompt composition, tool
 loop) lives inside `apps/core`; only genuinely cross-app code becomes a
-package (e.g. the shared trace recorder). The exact package cut is settled
-in Phase 0.
+package (e.g. the trace client the core provides to apps). The exact
+package cut is settled in Phase 0.
 
 ### Runtime topology
 
@@ -97,8 +97,8 @@ cross-app access goes through APIs, events, or the bus.
 
 - `apps/core` — the core store: assistants, settings, LLM backend config,
   memory, tasks, tool connections, person links, operator sessions and
-  dashboard preferences, and its traces. The dashboard CRUDs it
-  in-process — no self-proxy.
+  dashboard preferences, and all traces (see Traces and debug). The
+  dashboard CRUDs it in-process — no self-proxy.
 - `apps/tg` — telegram users, chats, messages (all kinds), media,
   telegram connections (bot token per assistant, desired/actual state).
 - `apps/chat` — its own web users, threads, messages, media,
@@ -292,12 +292,14 @@ later — the schema leaves room.
 
 ### Traces and debug
 
-Trace recording is one shared implementation (a shared package); each app
-records traces for its own actions into its own store. A turn's flow spans
-apps (tg inbound → core pipeline → tg outbound), stitched by a correlation
-id that travels with every event and job; the debug explorer aggregates
-trace data across apps through the listing contract and merges by
-correlation id. Existing v1 traces are not migrated.
+Tracing is unified and core-owned: every trace from every app lands in the
+core store, and the debug explorer reads exactly one place. Apps never
+write trace rows themselves — they record through the trace client the
+core provides (a shared package whose implementation delivers trace events
+to the core over the bus; the core persists them). A turn's flow still
+spans apps (tg inbound → core pipeline → tg outbound); a correlation id
+travels with every event and job and ties the whole flow into one trace.
+Existing v1 traces are not migrated.
 
 ## Migration ("migrate the brain, drop the logs")
 

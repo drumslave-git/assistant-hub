@@ -104,3 +104,9 @@ Known pitfalls for whoever starts:
   chat user, linkable via person links); and the dashboard UI packages
   move inside their apps (apps/tg/ui, apps/chat/ui) as the one sanctioned
   seam the shell composes at build time.
+- **2026-08-21 (traces)** — Tracing unified (user): the core owns all
+  trace storage and provides the recording functions; apps record through
+  a shared trace client that delivers events to the core over the bus.
+  Replaces per-app trace stores and cross-store stitching — the debug
+  explorer reads one store, correlation ids still tie a turn's cross-app
+  flow into one trace.
