@@ -30,7 +30,7 @@ Known pitfalls for whoever starts:
 | --- | --- | --- |
 | 0 | Monorepo scaffold, apps/web + packages carve-out, CI, docker | todo |
 | 1 | Canonical identity + assistants schema, migration scripts + rehearsal | todo |
-| 2 | Worker app split, Redis bus + queue, SSE bridge | todo |
+| 2 | Runtime split: worker + tg apps, source contract, Redis bus + queue, SSE bridge | todo |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | todo |
 | 4 | Web chat: threads, text/image/voice, live progress | todo |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
@@ -56,3 +56,12 @@ Known pitfalls for whoever starts:
   user the same day to the simpler rule: retry only if the turn performed
   no actions yet; otherwise fail, report, stop — no revert machinery.
   Planning is complete.
+- **2026-08-21 (evening)** — Topology revised by the user: **three** runtime
+  apps, not two. `apps/tg` becomes a dedicated Telegram source app (pollers,
+  inbound events, media ingestion, own MCP server with send_message /
+  send_reply / typing tools); the worker keeps the pipeline and has no
+  Telegram code. A formal source-app contract goes into packages/contracts
+  (web chat and future sources implement the same shape). Reply path:
+  deterministic replies travel as bus events the source app delivers;
+  model-driven sends use the source app's MCP tools. Deployment becomes
+  three per-app images.

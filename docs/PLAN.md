@@ -29,11 +29,27 @@ Structure:
 - **Monorepo with Turborepo.** `apps/*` + `packages/*`. The backend (API
   layer) and the dashboard stay together as one Next.js app — do NOT split
   them into separate apps.
-- **Two runtime apps.** `apps/web` (Next.js dashboard + API) and `apps/worker`
-  (Telegram pollers, schedulers, background jobs, reply pipeline).
+- **Three runtime apps** (user, 2026-08-21 — revised from an initial two-app
+  split the same day): `apps/web` (Next.js dashboard + API), `apps/worker`
+  (reply pipeline, LLM loop, MCP runtime, schedulers, background jobs), and
+  `apps/tg` (everything Telegram-scoped: per-assistant grammY pollers,
+  inbound event source, Telegram media ingestion, and an MCP server exposing
+  Telegram outbound actions — send_message, send_reply, typing, …). The
+  worker contains no Telegram code.
+- **Formal source-app contract** (user, 2026-08-21): `packages/contracts`
+  defines what any source is — it persists + publishes normalized inbound
+  events, consumes reply-delivery events for its chats, exposes an MCP
+  server for its outbound actions, and reconciles its connections from DB
+  desired state. `apps/tg` is the first implementation; web chat inside
+  `apps/web` follows the same contract; a future Signal source is "write
+  another source app".
 - **Worker owns the whole reply pipeline** (LLM loop, MCP runtime) for every
-  source. The web app persists + enqueues inbound web messages; the worker
-  runs the turn; replies come back over the event bus.
+  source. Source apps enqueue normalized inbound events; the worker runs the
+  turn. The finished reply travels back **over the bus** as a
+  reply-delivery event the owning source app consumes and sends
+  (deterministic — the model never has to remember to send). Model-driven
+  sends (task fires, cross-chat messages) go through the source app's MCP
+  tools instead (user, 2026-08-21).
 - **Redis pub/sub + queue** (BullMQ) is the inter-process transport. Redis
   joins docker-compose.
 
@@ -46,7 +62,7 @@ Domain model:
   assistants. Many assistants, CRUD via dashboard. Configs, memories, and
   history are SHARED across assistants (one brain, many faces).
 - **One Telegram bot token per assistant.** A telegram connection belongs to
-  an assistant and runs its own poller in the worker; the assistant in a
+  an assistant and runs its own poller in `apps/tg`; the assistant in a
   Telegram chat is implied by which bot is in it.
 - **Assistants do not ignore each other's messages** in a shared chat; each
   assistant's addressing check is against its own name only. (Replaces the
@@ -91,10 +107,11 @@ Execution:
   does not retry and does not revert: the turn fails, is reported to the
   operator (trace + dashboard surfacing), and stops. Mechanically this is a
   per-turn "actions started" marker, not a compensation registry.
-- **Two Docker images** (user, 2026-08-21): `assistant-hub-web` and
-  `assistant-hub-worker`. The release pipeline builds and publishes both
-  from the same version bump; compose pins both services to the same tag so
-  the two containers never run different code versions.
+- **Per-app Docker images** (user, 2026-08-21; count follows the app split):
+  `assistant-hub-web`, `assistant-hub-worker`, `assistant-hub-tg`. The
+  release pipeline builds and publishes all of them from the same version
+  bump; compose pins every service to the same tag so containers never run
+  different code versions.
 - **Big-bang redesign** — full target designed first, then rebuilt toward it;
   intermediate states need not be shippable.
 - **Long-lived redesign branch** — the sanctioned exception to the
@@ -113,17 +130,21 @@ Execution:
 
 ```
 apps/
-  web/        Next.js — dashboard + API + auth + SSE. Owns all HTTP.
-  worker/     Bot runtimes (one grammY poller per enabled telegram
-              connection), schedulers, background jobs, the reply pipeline,
-              the MCP runtime, Playwright.
+  web/        Next.js — dashboard + API + auth + SSE. Owns operator HTTP.
+              Also the web-chat source (implements the source contract).
+  worker/     Reply pipeline, LLM loop, MCP runtime, schedulers, background
+              jobs, Playwright. No Telegram code.
+  tg/         Telegram source app: one grammY poller per enabled telegram
+              connection, inbound events, Telegram media ingestion, and an
+              MCP server exposing Telegram outbound actions (send_message,
+              send_reply, typing, …).
 packages/
   db/         Drizzle schema, migrations, repositories.
   core/       Domain logic: pipeline, assistants, identity, prompt
               composition, tool loop, trace recording. Framework-free,
               server-only.
-  contracts/  Zod schemas shared web <-> worker: queue payloads, bus events,
-              API DTOs.
+  contracts/  Zod schemas shared across apps: the source-app contract,
+              queue payloads, bus events, API DTOs.
 ```
 
 Exact package cut (e.g. whether `contracts` folds into `core`) is settled in
@@ -132,30 +153,36 @@ Phase 0; the rule is: `apps/*` never import each other — only packages.
 ### Runtime topology
 
 ```
-Browser ── HTTP/SSE ── apps/web ──────────── Postgres
-                          │                     │
-                          ├── Redis (BullMQ queue + pub/sub)
-                          │                     │
-                       apps/worker ─────────────┘
-                          │
-                          ├── Telegram (grammY pollers, 1 per connection)
-                          ├── LLM endpoint(s)
-                          ├── Remote MCP servers (HTTP)
-                          └── Playwright / media pipelines
+Browser ─ HTTP/SSE ─ apps/web ──┐
+Telegram ─ pollers ─ apps/tg ───┼── Redis (BullMQ queue + pub/sub) ── apps/worker
+                                │                                       │
+        (source apps:           │            LLM endpoint(s) ───────────┤
+         inbound events out,    │            remote MCP servers (HTTP) ─┤
+         reply-delivery         │            source-app MCP servers ────┤
+         events in, each        │            Playwright / media ────────┘
+         exposes an MCP server
+         for outbound actions)
+
+Postgres is shared by all three apps.
 ```
 
-- Inbound: telegram updates arrive in the worker directly; web messages are
-  persisted by `apps/web` and enqueued. Both normalize into one canonical
-  inbound-message shape and enter the same pipeline.
-- Outbound: the pipeline delivers through a per-source outbound transport
-  (evolution of today's `ReplyTransport`) — grammY for telegram, bus events
-  for web threads.
-- Events: worker publishes status/progress/reply events on Redis pub/sub;
-  `apps/web` bridges them to the existing SSE layer (the
+- Inbound: every source app (`apps/tg` for Telegram, `apps/web` for web
+  chat) persists the message and enqueues one normalized inbound event; the
+  worker consumes the queue and runs the same pipeline regardless of source.
+- Outbound, deterministic: the finished reply is published as a
+  reply-delivery event; the owning source app consumes it and performs the
+  actual send (grammY for tg, SSE to the browser for web threads).
+- Outbound, model-driven: each source app exposes an MCP server for its
+  outbound actions (send_message, send_reply, typing, …); the worker's MCP
+  runtime registers these as built-in connections, so task fires and
+  cross-chat sends are tool calls into the source app.
+- Events: worker and source apps publish status/progress events on Redis
+  pub/sub; `apps/web` bridges them to the existing SSE layer (the
   `publishEvent`/`useLiveRefresh` contract survives, its backbone changes).
 - Control: dashboard actions (enable/disable a connection, start/stop) write
-  desired state to the DB and nudge the worker over the bus; the worker
-  reconciles and publishes actual state.
+  desired state to the DB and nudge the owning app over the bus; that app
+  reconciles (e.g. `apps/tg` starts/stops pollers) and publishes actual
+  state.
 
 ### Identity model (draft — refined in Phase 1)
 
@@ -179,8 +206,8 @@ telegram bindings.
   MCP tool connections (v1).
 - Per-assistant: persona, transport connections, standing tasks.
 - `assistant_connections` — assistant id, source (`telegram` for now),
-  credentials (bot token), enabled/desired state, runtime status. One worker
-  poller per enabled telegram connection.
+  credentials (bot token), enabled/desired state, runtime status. `apps/tg`
+  runs one poller per enabled telegram connection.
 - Migration default: the current bot token becomes a telegram connection on
   the assistant converted from the currently active personality.
 
@@ -211,7 +238,8 @@ telegram bindings.
   avoiding strict-provider 400s on schema drift.
 - Tool names are prefixed with the connection slug to prevent collisions.
 - Built-in feature tools (browse_web, memory, tasks, image-gen, …) remain an
-  in-process registry inside the worker, alongside remote connections.
+  in-process registry inside the worker, alongside remote connections and
+  the source apps' MCP servers (registered as built-in connections).
 
 ### Traces and debug
 
@@ -251,14 +279,17 @@ Each phase gets detailed acceptance criteria in PROGRESS.md when it starts.
 - **Phase 0 — Scaffold.** Turborepo + workspaces; current app moves into
   `apps/web`; `packages/db` / `core` / `contracts` carved out with no
   behavior change; CI, lint/typecheck/test/build wiring; docker builds the
-  two images (`assistant-hub-web`, `assistant-hub-worker`) and the release
-  pipeline publishes both on one version bump.
+  per-app images (`assistant-hub-web`, `assistant-hub-worker`,
+  `assistant-hub-tg`) and the release pipeline publishes them all on one
+  version bump.
 - **Phase 1 — Schema + migration.** Canonical identity, assistants,
   connections, tool-connection tables in `packages/db`; migration scripts +
   verification harness + rehearsal workflow.
-- **Phase 2 — Worker split.** Bot runtime, schedulers, jobs, pipeline, MCP
-  runtime move to `apps/worker`; Redis bus + queue; SSE bridged in
-  `apps/web`; dashboard controls go through desired-state + bus.
+- **Phase 2 — Runtime split.** Pipeline, schedulers, jobs, MCP runtime move
+  to `apps/worker`; the Telegram runtime moves to `apps/tg` behind the
+  source contract (inbound events, reply-delivery events, tg MCP server);
+  Redis bus + queue; SSE bridged in `apps/web`; dashboard controls go
+  through desired-state + bus.
 - **Phase 3 — Assistants.** CRUD UI, personality conversion, per-assistant
   telegram connections with concurrent pollers, per-assistant tasks,
   own-name addressing + bot-to-bot rules.
