@@ -28,6 +28,16 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## v2 redesign (`in-progress` — planning, started 2026-08-21)
+
+The global refactoring: monorepo (web + worker apps), canonical identity,
+Assistant entity, dashboard web chat, pluggable MCP connections. Per user
+decision (2026-08-21) this effort is documented in its own files, not here:
+decisions and target architecture in `docs/PLAN.md`, tracking in
+`docs/PROGRESS.md`. Work happens on the long-lived redesign branch (the
+sanctioned exception to commit-on-main); main stays hotfixable and the branch
+is rebased onto main (rebases, not merges).
+
 ## Collections feature (`deferred` — possible future feature, spec agreed 2026-08-19)
 
 Not scheduled: the user parked this after the brainstorm ("maybe will work on
