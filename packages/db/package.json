@@ -4,7 +4,9 @@
   "private": true,
   "description": "Shared database tooling: pg pool singletons, drizzle helpers, and the production migration runner. Each app defines its OWN schema and migration chain on top of this.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./import": "./src/import.ts",
+    "./testing": "./src/testing.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
@@ -17,6 +19,7 @@
   "devDependencies": {
     "@types/node": "^20",
     "@types/pg": "^8.20.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "@testcontainers/postgresql": "^12.0.4"
   }
 }

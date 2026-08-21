@@ -1,0 +1,28 @@
+{
+  "name": "@assistant-hub/tg",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Telegram source app. Phase 1 ships its store (schema + migrations) and the v1 import; the runtime (pollers, inbound events, media ingestion, MCP server) arrives with Phase 2.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "import:v1": "tsx store/import-v1.ts"
+  },
+  "dependencies": {
+    "@assistant-hub/contracts": "*",
+    "dotenv": "^17.2.0",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.0.4",
+    "@types/node": "^20",
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}

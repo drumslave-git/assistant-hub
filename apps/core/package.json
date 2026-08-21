@@ -13,7 +13,10 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "store:generate": "drizzle-kit generate --config drizzle.store.config.ts",
+    "store:migrate": "drizzle-kit migrate --config drizzle.store.config.ts",
+    "import:v1": "tsx store/import-v1.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.38",
@@ -53,6 +56,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "drizzle-kit": "^0.31.10",
+    "tsx": "^4.19.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",

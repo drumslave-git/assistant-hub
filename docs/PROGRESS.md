@@ -7,12 +7,32 @@ Per user decision (2026-08-21), redesign progress lives here, not in TODO.md.
 
 ## Current state
 
-Phase 0 (scaffold) is done on the long-lived `redesign` branch (created
-2026-08-21 from main at the tracing-unification commit).
+Phases 0 (scaffold) and 1 (schemas + migration) are done on the long-lived
+`redesign` branch (created 2026-08-21 from main at the tracing-unification
+commit).
 
-Next best task: Phase 1 — per-app databases and schema modules, scoped-ref
-and person-link foundations, migration scripts + verification harness.
-Remember the open Phase 2 decision from planning: queue retry semantics.
+Next best task: Phase 2 (source split). **Before starting it, the user
+should answer the open questions below** — they shape the source contract
+and job placement:
+
+1. **Queue retry semantics** (flagged open since planning): PLAN's
+   turn-failure rule implies BullMQ `attempts: 1` with our own
+   "retry only if no actions started yet" gate in the turn runner —
+   confirm, or specify backoff/attempt counts.
+2. **Derived-data placement** (Phase 1 made these calls; cheap to revisit
+   now, expensive later): chat_summaries + summary/extraction day markers
+   → **core** store (scoped chat refs — derived knowledge is brain-owned);
+   message_search → **tg** store (raw-content index beside the mirror,
+   FK-cascades with it); users_feedbacks → **tg** store (telegram
+   interaction flow; distilled prefs/corrections are core);
+   addressing_exclusions → **core** (bot-wide brain facts). Post-split,
+   the core's jobs that build tg-store rows (search indexing, vision
+   describe) will need a write path through tg's API/MCP — Phase 2 design.
+3. **Owner semantics**: v2 core settings keep `owner_username` /
+   `owner_user_id` with v1 telegram meaning for now; generalizing "owner"
+   per-source is proposed as a Phase 3 topic.
+4. Naming already logged: `@assistant-hub/*` package scope ahead of the
+   Phase 6 repo rename; per-app v2 database modules live in `<app>/store/`.
 
 Known pitfalls (in addition to the ones under "Phases" below):
 
@@ -39,7 +59,7 @@ Known pitfalls for whoever starts:
 | Phase | Scope (see PLAN.md) | Status |
 | --- | --- | --- |
 | 0 | Monorepo scaffold, apps/core + packages carve-out, extension registry, CI, docker | done |
-| 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | todo |
+| 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | done |
 | 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | todo |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | todo |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
@@ -112,6 +132,77 @@ them from the build context. Docs under `docs/` still describe the v1
 layout except README and `docs/operations/deployment.md`, which were
 updated; the full docs rewrite is Phase 6 by design.
 
+## Phase 1 — Schemas + migration (acceptance criteria)
+
+Scope from PLAN.md: per-app databases and schema modules (core, tg, chat);
+scoped-ref and person-link foundations; migration scripts splitting the v1
+DB + verification harness + rehearsal workflow. The v1 runtime keeps
+running on the v1 schema untouched — the new stores exist beside it and
+take over feature by feature in Phases 2–5.
+
+Conventions set here: each app's v2 database module lives in
+`<app>/store/` (schema.ts + migrations/ + drizzle config) — `apps/core/db`
+stays the v1 module until cutover deletes it. Fresh databases, fresh
+migration chains, clean table names. Store DB URLs come from each app's
+own env (`DATABASE_URL` in apps/tg and apps/chat; `STORE_DATABASE_URL` in
+apps/core while v1 still owns `DATABASE_URL`). Import scripts read the v1
+DB via `V1_DATABASE_URL` with plain SQL (no code dependency on the v1
+schema module) and refuse a non-empty target.
+
+- [x] `@assistant-hub/contracts` exports the scoped-ref foundation
+      (`source:kind:id` — format, parse, zod schema, source ids) and the
+      shared `EMBEDDING_DIMENSIONS` constant (moved from `lib/embeddings`,
+      which re-exports it); unit tests cover parse/format round-trips.
+- [x] `apps/core/store`: core-store schema + 0000 migration — backends,
+      settings (v1 minus `telegram_bot_token` / `active_personality_id`),
+      assistants, memory (entries / user docs by scoped ref / general),
+      communication_preferences, self_corrections, addressing_exclusions,
+      tasks (scoped refs + `assistant_id`), chat_summaries + day markers +
+      memory_extraction_days (scoped chat refs), person_links +
+      person_link_members (unique member ref).
+- [x] `apps/tg/store`: tg-store schema + 0000 migration — users, chats,
+      chat_members, messages, message_search, media, media_blobs,
+      feedbacks, connections (bot token per assistant, desired state).
+      Hand-written extension/index SQL (vector, pg_trgm, FTS/trgm GIN)
+      carried over from the v1 chain.
+- [x] `apps/chat/store`: chat-store schema + 0000 migration — users
+      (operator flag), threads (assistant bound at creation), messages,
+      media + blobs.
+- [x] Import scripts as one-shot per-app tools: `apps/core/store/import-v1.ts`
+      and `apps/tg/store/import-v1.ts` (runnable via `npm run import:v1
+      -w <app>`), splitting the v1 DB per the PLAN mapping, preserving
+      identity ids, converting FKs to scoped refs, deriving the default
+      assistant deterministically (active personality id, else the fixed
+      `assistant-default`), and creating the tg connection from the v1
+      bot token. Both refuse a non-empty target.
+- [x] Verification harness built into each import script: per-table-pair
+      row-count reconciliation plus spot checks; mismatch prints a report
+      and exits non-zero.
+- [x] Integration tests (Testcontainers): seeded synthetic v1 fixtures →
+      run each import → verification passes and spot asserts hold; the
+      chat store's migration chain applies cleanly.
+- [x] Rehearsal workflow documented (docs/operations/v1-split.md): dump →
+      restore copy → create per-app DBs (`packages/db` create-database
+      helper) → migrate stores → run imports → read verification; repeat
+      until clean. Production DB is never touched outside it.
+- [x] Proof (2026-08-21, all from the root): typecheck 6/6 workspaces
+      green; lint green; unit tests green (contracts scoped-ref suite
+      included); `turbo run test:integration` green with a real exit code —
+      chat 1/1, tg 2/2 (full import round-trip: verbatim identity-preserved
+      mirror, surviving embeddings and pending-media bytes, token bound to
+      the converted active personality, non-empty-target refusal), core
+      369 passed / 33 skipped including the core import round-trip
+      (settings minus dropped columns, id-preserving assistants, scoped
+      refs on memory/tasks/exclusions, identity-preserved summaries,
+      sequence continuation, refusal); build green.
+
+Remaining gaps, deliberate: the new workspaces (tg, chat, contracts, db,
+ui) have no eslint wiring yet (typecheck guards them; lint config for
+non-Next workspaces is a small standalone task). The tg import test
+applies the frozen v1 migration chain via a cross-app path — test-only,
+deleted with `apps/core/db` at cutover. Person links have schema +
+foundations only; no UI/service until the aggregation phases.
+
 ## Session log
 
 - **2026-08-21** — Brainstorm session: all core decisions made by the user
@@ -180,6 +271,22 @@ updated; the full docs rewrite is Phase 6 by design.
   chat user, linkable via person links); and the dashboard UI packages
   move inside their apps (apps/tg/ui, apps/chat/ui) as the one sanctioned
   seam the shell composes at build time.
+- **2026-08-21/22 (Phase 1)** — Phase 1 executed and verified: scoped-ref
+  foundation + shared `EMBEDDING_DIMENSIONS` + `DEFAULT_ASSISTANT_ID` in
+  `@assistant-hub/contracts`; three store modules with fresh migration
+  chains (`apps/core/store`, `apps/tg/store`, `apps/chat/store` — apps/tg
+  and apps/chat created as store-only workspaces, runtimes land in Phases
+  2/4); person_links + members in the core store; one-shot per-app import
+  scripts with the built-in count-reconciliation + spot-check harness
+  (plumbing shared via `@assistant-hub/db/import`, Testcontainers helpers
+  via `/testing`); rehearsal workflow documented in
+  docs/operations/v1-split.md with a create-database helper. Placement
+  calls made in-session and flagged for user confirmation (see Current
+  state): summaries/day-markers/exclusions → core with scoped refs;
+  message_search/feedbacks → tg; both import scripts derive the default
+  assistant identically (active personality id, else `assistant-default`).
+  Notable fix: tg 0000 migration needed the messages unique index moved
+  above the composite FKs (drizzle-kit orders indexes after constraints).
 - **2026-08-21 (Phase 0)** — `redesign` branch created; Phase 0 executed
   and verified in one session: Turborepo + npm workspaces, the whole app
   `git mv`-ed into `apps/core`, `@assistant-hub/db` / `contracts` / `ui`

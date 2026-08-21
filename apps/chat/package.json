@@ -1,0 +1,26 @@
+{
+  "name": "@assistant-hub/chat",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Web-chat source app. Phase 1 ships its store (schema + migrations); the runtime (threads backend, inbound events, MCP server) and the dashboard ui subpackage arrive with Phase 4.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@assistant-hub/contracts": "*",
+    "dotenv": "^17.2.0",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.0.4",
+    "@types/node": "^20",
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}
