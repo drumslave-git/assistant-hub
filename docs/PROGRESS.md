@@ -7,12 +7,22 @@ Per user decision (2026-08-21), redesign progress lives here, not in TODO.md.
 
 ## Current state
 
-Planning. All architecture decisions are agreed and recorded in PLAN.md
-(2026-08-21 brainstorm). Name chosen: **assistant-hub**. No code has moved
-yet; the redesign branch does not exist yet.
+Phase 0 (scaffold) is done on the long-lived `redesign` branch (created
+2026-08-21 from main at the tracing-unification commit).
 
-Next best task: create the redesign branch and start Phase 0. No open
-architecture decisions remain.
+Next best task: Phase 1 — per-app databases and schema modules, scoped-ref
+and person-link foundations, migration scripts + verification harness.
+Remember the open Phase 2 decision from planning: queue retry semantics.
+
+Known pitfalls (in addition to the ones under "Phases" below):
+
+- Local dev runtime data now lives under `apps/core/data` (traces,
+  downloads, bin); only the Compose Postgres bind mount stays at the root
+  `./data/pg`. The container equivalents moved to `/app/apps/core/data/*`
+  because the standalone server chdirs into `apps/core`.
+- `npm run <anything>` at the root fans out via turbo; per-app scripts run
+  with `npm run <script> -w @assistant-hub/core`. The dev server and
+  `.claude/launch.json` are unchanged (port 3200).
 
 Known pitfalls for whoever starts:
 
@@ -28,13 +38,76 @@ Known pitfalls for whoever starts:
 
 | Phase | Scope (see PLAN.md) | Status |
 | --- | --- | --- |
-| 0 | Monorepo scaffold, apps/core + packages carve-out, extension registry, CI, docker | todo |
+| 0 | Monorepo scaffold, apps/core + packages carve-out, extension registry, CI, docker | done |
 | 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | todo |
 | 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | todo |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | todo |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
 | 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
+
+## Phase 0 — Scaffold (acceptance criteria)
+
+Scope from PLAN.md: Turborepo + npm workspaces; the current app moves into
+`apps/core` unchanged; `packages/db` / `packages/contracts` / `packages/ui`
+carved out with no behavior change; the extension-registry skeleton in the
+shell; lint/typecheck/test/build wiring through turbo; docker builds the
+per-app images (only `core` exists yet) and the release pipeline publishes
+them all from one root version bump.
+
+- [x] Root is a Turborepo workspace (`turbo.json`, root `package.json` with
+      `workspaces`, shared `tsconfig.base.json`); `npm run lint|typecheck|
+      test|build` at the root fan out via turbo and pass.
+- [x] The whole current app lives in `apps/core` (moved with `git mv`, no
+      rewrites beyond config paths); `npm run dev` still serves the
+      dashboard on :3200; `@/*` imports unchanged.
+- [x] `packages/db` (`@assistant-hub/db`) holds the generic Postgres/drizzle
+      tooling (process-global pool singletons keyed by symbol, the
+      production migration runner formerly in `docker/migrate`);
+      `apps/core/db/pool.ts` consumes it with the same symbol key and
+      identical behavior. App schema, drizzle handle, and migration chain
+      stay in `apps/core`.
+- [x] `packages/contracts` (`@assistant-hub/contracts`) exists as the
+      documented home for cross-app schemas (source-app contract, scoped
+      refs — content lands in Phases 1–2; deliberately exports nothing yet).
+- [x] `packages/ui` (`@assistant-hub/ui`) holds the typed extension-point
+      definitions (`AppExtensions` with nav contributions now; form
+      sections / status cards / debug panels / aggregated views typed as
+      their first contributor lands) plus `composeNavGroups`; the shell's
+      `NAV_GROUPS` composes from the static registry in
+      `apps/core/components/layout/extensions.ts` (empty today) — rendered
+      nav identical.
+- [x] Docker: `apps/core/Dockerfile` builds `assistant-hub-core` from the
+      repo-root context (workspace-aware install, Next standalone monorepo
+      output with `outputFileTracingRoot`, migrate runner from
+      `packages/db/migrate`, runtime data at `/app/apps/core/data/*`); root
+      `docker-compose.yml` and `docker-compose.test.yml` updated.
+- [x] Release pipeline: `.github/workflows/release.yml` verifies via turbo
+      and, on a root version change on main, tags once and builds/pushes
+      every per-app image (matrix; currently `assistant-hub-core`) on that
+      one version. (Cannot fire from the branch — by design, no version
+      bumps until cutover; verified by review only.)
+- [x] Proof (2026-08-21, all from the root): `turbo run typecheck` 4/4
+      workspaces green; `turbo run lint` green; `turbo run test` 1163
+      passed / 26 skipped; `turbo run test:integration` 367 passed / 33
+      skipped (Testcontainers); `turbo run build` green (standalone output
+      verified: `apps/core/server.js` + root `node_modules` + traced
+      playwright). `docker build -f apps/core/Dockerfile .` succeeded
+      (1.83GB) and the container booted: migrate runner ran (skipped
+      without DATABASE_URL), standalone server started from
+      `apps/core/server.js`, failed only on the intentional missing-DB
+      guard — same as v1 without a database. Dev server boots through
+      turbo (env loaded from `apps/core/.env`, DB + bot poller up, /login
+      200, no server errors).
+
+Remaining risks: the release workflow and `npm run test:linux` are updated
+but unexercised (the workflow can only fire from main; the linux test
+container needs a first run to rebuild its node_modules volume for the
+workspace layout). The standalone build locally traces in `apps/core/data`
+and test files — harmless in the image because `.dockerignore` excludes
+them from the build context. Docs under `docs/` still describe the v1
+layout except README and `docs/operations/deployment.md`, which were
+updated; the full docs rewrite is Phase 6 by design.
 
 ## Session log
 
@@ -104,6 +177,18 @@ Known pitfalls for whoever starts:
   chat user, linkable via person links); and the dashboard UI packages
   move inside their apps (apps/tg/ui, apps/chat/ui) as the one sanctioned
   seam the shell composes at build time.
+- **2026-08-21 (Phase 0)** — `redesign` branch created; Phase 0 executed
+  and verified in one session: Turborepo + npm workspaces, the whole app
+  `git mv`-ed into `apps/core`, `@assistant-hub/db` / `contracts` / `ui`
+  carved out (pool singleton + migration runner; documented empty
+  contracts; extension-point types + `composeNavGroups` with an empty
+  registry composed into the shell nav), per-app Docker image
+  (`assistant-hub-core`, monorepo standalone) and the release workflow
+  reshaped to a tag-once + per-image matrix on the root version. Full
+  proof under the Phase 0 acceptance criteria above. Naming decision made
+  in-session: workspace packages use the `@assistant-hub/*` scope ahead of
+  the Phase 6 repo rename; the root package keeps the v1 name/version so
+  build info and the release trigger are unchanged until cutover.
 - **2026-08-21 (traces)** — Tracing unified (user): the core owns all
   trace storage and provides the recording functions; apps record through
   a shared trace client that delivers events to the core over the bus.

@@ -15,7 +15,7 @@ Two services:
 
 | Service | Image | Notes |
 | --- | --- | --- |
-| `app` | Built from the repo `Dockerfile` | Publishes `${PORT:-3200}` |
+| `app` | Built from `apps/core/Dockerfile` (repo-root context) | Publishes `${PORT:-3200}` |
 | `db` | `pgvector/pgvector:pg17` | Publishes `${POSTGRES_PORT:-5432}` |
 
 `app` waits on `db`'s healthcheck (`pg_isready`) before starting. Both restart
@@ -29,15 +29,15 @@ back up the data with ordinary tools:
 | Host path (default) | Container path | Holds |
 | --- | --- | --- |
 | `./data/pg` | `/var/lib/postgresql/data` | The database |
-| `./data/traces` | `/app/data/traces` | Monthly trace NDJSON logs |
-| `./data/downloads` | `/app/data/downloads` | Browser-agent downloads |
+| `./data/traces` | `/app/apps/core/data/traces` | Monthly trace NDJSON logs |
+| `./data/downloads` | `/app/apps/core/data/downloads` | Browser-agent downloads |
 
 All three are mounted, and all three hold the only copy of what they contain. The
 downloads mount matters for a non-obvious reason: a file the browser agent fetched that
 was **too large to attach to the chat** exists nowhere else, so an unmounted container
 path would silently lose it on the next image replacement.
 
-`/app/data/bin` — where the yt-dlp updater keeps the current binary — is deliberately
+`/app/apps/core/data/bin` — where the yt-dlp updater keeps the current binary — is deliberately
 **not** mounted (user decision, 2026-08-01). It is a cache, not data: a recreated
 container falls back to the build the image pins and re-downloads a current one on
 boot, which costs ~40 MB per redeploy and saves a host directory whose ownership would
@@ -85,22 +85,22 @@ Deliberate choices worth knowing before you change them:
 | Native deps installed **inside** the image | Host `node_modules` must never be copied in — they are built for the wrong platform |
 | `output: "standalone"` | The runner ships only traced runtime deps (`.next/standalone`), not a full `node_modules` |
 | `ffmpeg` from apk | Vision samples video frames with it, voice transcodes both ways, and the browser agent muxes streams with it (user decision: system ffmpeg over a bundled/WASM build) |
-| `yt-dlp` from **upstream**, not apk | The browser agent's media downloader; a media site's player has no file URL to fetch (user decision, 2026-07-29). The apk package is frozen per Alpine release while these sites change on purpose, so the image pins upstream's self-contained `musllinux` build (checksum-verified, no python3) and the app's daily updater keeps a newer copy in `/app/data/bin` (user decision, 2026-08-01) |
+| `yt-dlp` from **upstream**, not apk | The browser agent's media downloader; a media site's player has no file URL to fetch (user decision, 2026-07-29). The apk package is frozen per Alpine release while these sites change on purpose, so the image pins upstream's self-contained `musllinux` build (checksum-verified, no python3) and the app's daily updater keeps a newer copy in `/app/apps/core/data/bin` (user decision, 2026-08-01) |
 | `chromium` + `nss`/`freetype`/`harfbuzz`/fonts from apk | Playwright's own download is a glibc build that will not run on Alpine (musl). `CHROMIUM_EXECUTABLE_PATH` points at the distro browser |
 | `playwright` and `playwright-core` copied **whole** over the traced copies | They are `serverExternalPackages`, so Next's file tracer copies only statically resolvable JS and misses runtime data files like `playwright-core/browsers.json` |
 | `sharp` needs no apk package | It ships its own musl libvips binary via npm |
-| Non-root `app` user | Standard hardening; `/app/data/traces` is created and chowned up front |
+| Non-root `app` user | Standard hardening; `/app/apps/core/data/traces` is created and chowned up front |
 
 ### Startup command
 
 ```sh
-node migrate/migrate.mjs && node server.js
+node migrate/migrate.mjs && node apps/core/server.js
 ```
 
 Migrations complete **before** the app accepts traffic, and a failed migration fails
 the start — so the app never serves against an unmigrated database.
 
-The migration runner is isolated on purpose: `docker/migrate/` has its own tiny
+The migration runner is isolated on purpose: `packages/db/migrate/` has its own tiny
 `package.json` and uses drizzle's **programmatic** migrator
 (`drizzle-orm/node-postgres/migrator`) rather than the drizzle-kit CLI, which is
 intentionally absent from the slim image. Its two dependencies live in their own
@@ -141,15 +141,19 @@ tag), then commit and push to `main`.
 
 The workflow:
 
-1. **version** — wakes only when `package.json` is touched, then diffs the `version`
-   field against `HEAD~1`. Unchanged → nothing ships.
-2. **verify** — `npm install`, `npm run lint`, `npm run typecheck`, `npm run test`.
-   (Unit tests only; the integration suite needs Docker and is not part of the gate.)
-3. **release** — creates and pushes the `v<version>` tag if it does not already
-   exist, then builds and pushes the image to Docker Hub as
-   `<user>/<repo>:<version>` and `:latest`, with GitHub Actions layer caching.
+1. **version** — wakes only when the root `package.json` is touched, then diffs the
+   `version` field against `HEAD~1`. Unchanged → nothing ships.
+2. **verify** — `npm install`, `npm run lint`, `npm run typecheck`, `npm run test`
+   (fanned out across the workspaces via turbo. Unit tests only; the integration
+   suite needs Docker and is not part of the gate.)
+3. **tag** — creates and pushes the `v<version>` tag if it does not already exist.
+4. **release** — a matrix with one entry per app image (today only
+   `assistant-hub-core` from `apps/core/Dockerfile`) builds and pushes each to
+   Docker Hub as `<user>/<image>:<version>` and `:latest`, with GitHub Actions
+   layer caching. Every image releases on the same version — one bump publishes
+   them all.
 
-Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. The release job
+Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. The tag job
 needs `contents: write` to push the tag.
 
 Note that `verify` uses `npm install` rather than `npm ci` for the same lockfile

@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-# Multi-stage build for the self-hosted Next.js app.
+# Multi-stage build for the self-hosted core app (assistant-hub-core).
+# Build context is the REPO ROOT (workspace install needs every manifest):
+#   docker build -f apps/core/Dockerfile .
 # Native deps (lightningcss, tailwind oxide) are installed inside the image so
 # they match the container's platform — never copy host node_modules in.
 
@@ -8,19 +10,24 @@ FROM node:24-alpine AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# --- deps: full install (incl. dev) for building ---
+# --- deps: full workspace install (incl. dev) for building ---
 # `npm install` (not `npm ci`) so platform-specific optional native deps
 # (musl builds of lightningcss / tailwind-oxide) resolve at build time even when
 # package-lock.json was generated on another OS.
 FROM base AS deps
 COPY package.json package-lock.json ./
+COPY apps/core/package.json apps/core/
+COPY packages/contracts/package.json packages/contracts/
+COPY packages/db/package.json packages/db/
+COPY packages/ui/package.json packages/ui/
 RUN npm install --no-audit --no-fund
 
 # --- builder: compile the production build ---
-FROM base AS builder
-COPY --from=deps /app/node_modules ./node_modules
+# Builds FROM deps (not a fresh copy) so the workspace node_modules layout —
+# root modules plus per-workspace symlinks — carries over intact.
+FROM deps AS builder
 COPY . .
-RUN npm run build
+RUN npm run build --workspace @assistant-hub/core
 
 # --- runner: slim production runtime from Next standalone output ---
 FROM base AS runner
@@ -58,7 +65,7 @@ RUN apk add --no-cache \
 # once rather than degrading. Alpine's package is frozen per release and was four
 # months behind upstream when this was written, so a rebuild would not reliably
 # make it current. This binary is only the floor — the app's daily updater keeps a
-# newer copy in /app/data/bin and prefers it (features/browser-agent/server/
+# newer copy in data/bin and prefers it (features/browser-agent/server/
 # ytdlp-binary.ts). Pin + checksum so the image itself stays reproducible; bump
 # both together, or just let the updater do it at runtime.
 #
@@ -84,9 +91,12 @@ RUN set -eu; \
 ENV CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # Self-contained app server: only traced runtime deps, no full node_modules.
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
+# Traced from the monorepo root (outputFileTracingRoot), so the standalone
+# output mirrors the workspace layout: server.js under apps/core, shared
+# node_modules at the root.
+COPY --from=builder /app/apps/core/.next/standalone ./
+COPY --from=builder /app/apps/core/.next/static ./apps/core/.next/static
+COPY --from=builder /app/apps/core/public ./apps/core/public
 
 # Playwright is a serverExternalPackage, so Next's file tracer copies only the JS
 # it can statically resolve into the standalone node_modules — it misses data
@@ -98,19 +108,20 @@ COPY --from=builder /app/node_modules/playwright-core ./node_modules/playwright-
 
 # Isolated migration runner: drizzle's programmatic migrator + the SQL files,
 # in its own dir so its two small deps never touch the app's traced node_modules.
-COPY docker/migrate/package.json ./migrate/package.json
-COPY docker/migrate/migrate.mjs ./migrate/migrate.mjs
-COPY --from=builder /app/db/migrations ./migrate/db/migrations
+COPY packages/db/migrate/package.json ./migrate/package.json
+COPY packages/db/migrate/migrate.mjs ./migrate/migrate.mjs
+COPY --from=builder /app/apps/core/db/migrations ./migrate/db/migrations
 RUN cd migrate && npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 
 # Trace/debug logs, browser-agent downloads and self-updating tool binaries are
-# written here at runtime. The app resolves all three relative to its working
-# directory, so they land in /app/data/{traces,downloads,bin} — not configurable.
-# Created up front so they are writable by the non-root app user; a host bind mount
-# must be made writable by that user on the host side. `bin` is deliberately not
+# written here at runtime. The standalone server chdirs to its own directory
+# (apps/core), so the app resolves all three relative to it — they land in
+# /app/apps/core/data/{traces,downloads,bin} — not configurable. Created up
+# front so they are writable by the non-root app user; a host bind mount must be
+# made writable by that user on the host side. `bin` is deliberately not
 # mounted: a recreated container falls back to the pinned binary above and the
 # updater re-fetches on boot.
-RUN mkdir -p /app/data/traces /app/data/downloads /app/data/bin
+RUN mkdir -p /app/apps/core/data/traces /app/apps/core/data/downloads /app/apps/core/data/bin
 
 # Run as non-root.
 RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
@@ -120,4 +131,4 @@ EXPOSE 3200
 
 # Apply pending migrations, then serve. Migrations complete before the app
 # accepts traffic; a failed migration fails the start.
-CMD ["sh", "-c", "node migrate/migrate.mjs && node server.js"]
+CMD ["sh", "-c", "node migrate/migrate.mjs && node apps/core/server.js"]

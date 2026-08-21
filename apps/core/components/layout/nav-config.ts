@@ -1,3 +1,4 @@
+import { composeNavGroups, type NavGroup } from "@assistant-hub/ui";
 import {
   Activity,
   BarChart3,
@@ -15,28 +16,19 @@ import {
   UsersRound,
   VenetianMask,
   Wrench,
-  type LucideIcon,
 } from "lucide-react";
 
-export interface NavItem {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-  /** Planned-but-not-built routes render disabled with a "soon" hint. */
-  soon?: boolean;
-}
+import { APP_EXTENSIONS } from "./extensions";
 
-export interface NavGroup {
-  label?: string;
-  items: NavItem[];
-}
+export type { NavGroup, NavItem } from "@assistant-hub/ui";
 
 /**
- * Single source of truth for dashboard navigation. Feature pages register here
- * as they land; `soon` marks planned v1 routes so the shell shows intended shape
- * without dead links.
+ * The shell's own navigation. Feature pages register here as they land; `soon`
+ * marks planned v1 routes so the shell shows intended shape without dead links.
+ * Source apps contribute their groups through the extension registry, composed
+ * into {@link NAV_GROUPS} below.
  */
-export const NAV_GROUPS: NavGroup[] = [
+const SHELL_NAV_GROUPS: NavGroup[] = [
   {
     // Landing pages, no header: they are the entry point, not a category.
     items: [
@@ -82,3 +74,12 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
 ];
+
+/**
+ * What the sidebar renders: the shell's groups plus every registered source
+ * app's contributions (none yet — the registry is empty until Phase 2).
+ */
+export const NAV_GROUPS: NavGroup[] = composeNavGroups(
+  SHELL_NAV_GROUPS,
+  APP_EXTENSIONS,
+);

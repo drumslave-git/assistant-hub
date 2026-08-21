@@ -1,6 +1,7 @@
 # Rebuilt inside the image
-node_modules
-.next
+**/node_modules
+**/.next
+**/.turbo
 out
 dist
 
@@ -12,13 +13,14 @@ dist
 .vscode
 
 # Secrets / local env (compose provides env at runtime)
-.env
-.env.*
-!.env.example
+**/.env
+**/.env.*
+!**/.env.example
 
 # Local data / artifacts
 data
 downloads
+apps/core/data
 coverage
 *.log
 

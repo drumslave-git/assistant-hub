@@ -17,8 +17,11 @@ services:
     working_dir: /app
     volumes:
       - .:/app
-      # Shadows the host's node_modules — see docker/test/entrypoint.sh.
+      # Shadows the host's node_modules — see docker/test/entrypoint.sh. The
+      # workspace roots get their own volumes too, so any nested (non-hoisted)
+      # install never writes linux binaries into the bind-mounted host tree.
       - node_modules:/app/node_modules
+      - core_node_modules:/app/apps/core/node_modules
     environment:
       CI: "true"
       # The suite is pure unit tests (integration tests run separately, against
@@ -30,3 +33,4 @@ services:
 
 volumes:
   node_modules:
+  core_node_modules:

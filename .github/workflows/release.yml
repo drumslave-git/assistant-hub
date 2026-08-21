@@ -1,9 +1,10 @@
 name: Release
 
-# Ships a new image whenever the "version" field in package.json changes on main.
-# Bump the version locally (e.g. `npm version patch` / `minor` / `major`) and push
-# to main; this workflow verifies, tags the release, and pushes the image to
-# Docker Hub. No version change -> nothing runs.
+# Ships new images whenever the "version" field in the ROOT package.json changes
+# on main. Bump the version locally (e.g. `npm run release:patch`) and push to
+# main; this workflow verifies, tags the release, and pushes EVERY per-app image
+# (one per entry in the release job's matrix) to Docker Hub on that one version.
+# No version change -> nothing runs.
 on:
   push:
     branches: [main]
@@ -64,12 +65,13 @@ jobs:
       # omits Linux-only optional native deps (@emnapi/*, sharp/lightningcss musl
       # builds), which `npm ci`'s strict sync check rejects. Mirrors the Dockerfile.
       - run: npm install --no-audit --no-fund
+      # Root scripts fan out across every workspace via turbo.
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
 
-  release:
-    name: Tag and publish image
+  tag:
+    name: Tag the release
     needs: [version, verify]
     if: needs.version.outputs.changed == 'true'
     runs-on: ubuntu-latest
@@ -78,7 +80,6 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}
     steps:
       - uses: actions/checkout@v5
 
@@ -94,6 +95,25 @@ jobs:
             git push origin "$tag"
           fi
 
+  release:
+    name: Publish ${{ matrix.image }}
+    needs: [version, verify, tag]
+    if: needs.version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      # Per-app images, all released together on the same version. Every app
+      # that ships an image adds a matrix entry here (tg and chat join as the
+      # source split lands).
+      matrix:
+        include:
+          - image: assistant-hub-core
+            dockerfile: apps/core/Dockerfile
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v5
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
@@ -106,6 +126,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ env.VERSION }}

@@ -1,7 +1,7 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -11,18 +11,23 @@
 !.yarn/versions
 
 # testing
-/coverage
+coverage/
 
 # next.js
-/.next/
-/out/
+.next/
+out/
+
+# turborepo
+.turbo/
 
 # production
 /build
 
-# local data (bind-mounted Postgres data, downloads)
+# local data (bind-mounted Postgres data at the root; per-app runtime data)
 /data
 /downloads
+/apps/*/data
+/apps/*/downloads
 
 # misc
 .DS_Store

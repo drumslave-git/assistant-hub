@@ -1,6 +1,8 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: apps/core/Dockerfile
     ports:
       - "${PORT:-3200}:3200"
     depends_on:
@@ -15,12 +17,13 @@ services:
       TZ: ${TZ:-UTC}
     volumes:
       # Bind-mounted so trace/debug logs persist across restarts. The app writes
-      # to ./data/traces relative to its working directory, which is /app.
-      - "./data/traces:/app/data/traces"
+      # to ./data/traces relative to its working directory, which is
+      # /app/apps/core (the standalone server chdirs to its own directory).
+      - "./data/traces:/app/apps/core/data/traces"
       # Same for downloaded files, which are also reachable from the host: a file
       # too large to attach to the chat exists only here, so it must outlive the
       # container.
-      - "./data/downloads:/app/data/downloads"
+      - "./data/downloads:/app/apps/core/data/downloads"
     healthcheck:
       # 127.0.0.1 (not localhost): the standalone server binds IPv4 0.0.0.0, and
       # localhost can resolve to IPv6 ::1, which would refuse the connection.
