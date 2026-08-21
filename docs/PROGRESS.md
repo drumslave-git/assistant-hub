@@ -29,7 +29,7 @@ Known pitfalls for whoever starts:
 | Phase | Scope (see PLAN.md) | Status |
 | --- | --- | --- |
 | 0 | Monorepo scaffold, apps/web + packages carve-out, extension registry, CI, docker | todo |
-| 1 | Canonical identity + assistants schema, migration scripts + rehearsal | todo |
+| 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | todo |
 | 2 | Runtime split: worker + tg apps, source contract, Redis bus + queue, SSE bridge | todo |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | todo |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
@@ -75,3 +75,17 @@ Known pitfalls for whoever starts:
   APIs are reached through the apps/web proxy on a single origin. Images:
   four. PLAN.md also rewritten this session as a history-free source of
   truth.
+- **2026-08-21 (late night)** — Data model inverted by the user: canonical
+  core entities are dropped in favor of **federation** — each app owns its
+  own storage (its own logical database, schema, and migration chain):
+  tg owns telegram users/chats/messages/media/connections, chat owns
+  threads/messages, worker owns the core store (assistants, memory,
+  tasks, settings, tool connections), web owns only sessions/prefs. The
+  worker never reads a source's store — the source supplies conversation
+  context (history window, participants) with the inbound event or on
+  demand. Cross-app references are scoped refs (tg:chat:123); the same
+  human across sources is joined by an operator-managed person-link table
+  in the core store, which memory resolves through. The dashboard
+  aggregates users/chats/messages via a shared listing/CRUD contract each
+  source app's operator API implements. Migration now splits the v1 DB
+  into the per-app databases.

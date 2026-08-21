@@ -10,17 +10,18 @@ updated in place when the design changes, and carries no decision history
 
 The Telegram bot becomes one connectable source on top of a general
 assistant platform named **assistant-hub**. The generic foundation —
-pipeline, memory, history, tools, traces, dashboard — is the product;
-Telegram, the dashboard web chat, and any future source (Signal, mobile
-apps) are interchangeable source apps that plug into it.
+pipeline, memory, tools, traces, dashboard — is the product; Telegram, the
+dashboard web chat, and any future source (Signal, mobile apps) are
+interchangeable source apps that plug into it.
 
 Three pillars:
 
-1. **One place for users, groups, chats** — canonical entities with
-   per-source identity bindings.
+1. **Every app owns its own data; the dashboard is the one place** — users,
+   chats, and messages live in per-app stores, aggregated for the operator
+   through a common listing contract.
 2. **Assistants** — a first-class entity replacing personalities: many
-   assistants sharing one brain (config, memory, history), each with its
-   own persona and its own transport connections.
+   assistants sharing one brain (config, memory), each with its own persona
+   and its own transport connections.
 3. **Pluggable MCP tools** — tool connections managed from the dashboard
    and stored in the DB, instead of a hardcoded in-process toolset.
 
@@ -34,26 +35,32 @@ Next.js app; they are never split.
 
 ```
 apps/
-  web/        Next.js — dashboard shell + API + auth + SSE bridge + proxy
-              to the source apps' operator APIs. Hosts the composed
-              dashboard (see Dashboard composition). Not a source app.
+  web/        Next.js — dashboard shell + auth + SSE bridge + proxy to the
+              other apps' operator APIs. Hosts the composed dashboard (see
+              Dashboard composition). Not a source app. Owns only its own
+              data (operator sessions, dashboard preferences).
   worker/     Reply pipeline, LLM loop, MCP runtime, schedulers, background
-              jobs, Playwright. No source code.
+              jobs, Playwright. Owns the core store (assistants, memory,
+              tasks, settings, tool connections, person links, its traces)
+              and exposes an operator API for CRUD on it.
   tg/         Telegram source app: one grammY poller per enabled telegram
-              connection, inbound events, Telegram media ingestion, and an
-              MCP server exposing Telegram outbound actions (send_message,
+              connection, its own store (users, chats, messages, media,
+              connections), Telegram media ingestion, and an MCP server
+              exposing Telegram outbound actions (send_message,
               send_reply, typing, …).
-  chat/       Web-chat source app: thread/message persistence, inbound
-              events, reply-delivery consumption, and an MCP server
-              exposing web-thread outbound actions. Its operator API is
-              reached through the apps/web proxy.
+  chat/       Web-chat source app: its own store (threads, messages, media),
+              inbound events, reply-delivery consumption, and an MCP server
+              exposing web-thread outbound actions.
 packages/
-  db/         Drizzle schema, migrations, repositories.
-  core/       Domain logic: pipeline, assistants, identity, prompt
+  db/         Shared database tooling: drizzle helpers, migration runner,
+              repository conventions. Each app defines its OWN schema and
+              migration chain for its own database on top of this.
+  core/       Domain logic used by the worker: pipeline, prompt
               composition, tool loop, trace recording. Framework-free,
               server-only.
-  contracts/  Zod schemas shared across apps: the source-app contract,
-              queue payloads, bus events, API DTOs.
+  contracts/  Zod schemas shared across apps: the source-app contract
+              (events, context provider, listing/CRUD API shapes), queue
+              payloads, bus events, scoped entity refs, API DTOs.
   ui/         Shared dashboard components + the typed extension-point
               registry the shell composes from.
   tg-ui/      tg's dashboard extensions (assistant editor: bot token /
@@ -61,16 +68,15 @@ packages/
   chat-ui/    chat's dashboard extensions (thread list, chat view, …).
 ```
 
-The exact package cut (e.g. whether `contracts` folds into `core`, and
-whether an app's UI package lives under `packages/` or inside the app's
-workspace) is settled in Phase 0.
+The exact package cut (and whether an app's UI package lives under
+`packages/` or inside the app's workspace) is settled in Phase 0.
 
 ### Runtime topology
 
 ```
-Browser ── HTTP/SSE ── apps/web (shell + API + SSE bridge)
-                          │ proxies /api/chat/* and /api/tg/*
-                          │ to the owning source app
+Browser ── HTTP/SSE ── apps/web (shell + auth + SSE bridge)
+                          │ proxies /api/<app>/* to the owning app's
+                          │ operator API (worker, tg, chat)
                           │
 Telegram ─ pollers ─ apps/tg ──┐
 Web-chat backend ── apps/chat ─┼── Redis (BullMQ queue + pub/sub) ── apps/worker
@@ -82,50 +88,88 @@ apps/web (bus bridge) ─────────┘                            
          MCP server for outbound
          actions)
 
-Postgres is shared by all apps.
+One Postgres server; each app has its OWN database in it.
 ```
+
+### Data ownership
+
+Each app is responsible for its own storage — its own logical database,
+its own drizzle schema, its own migration chain (on shared tooling from
+`packages/db`). No app reads or writes another app's database; all
+cross-app access goes through APIs, events, or the bus.
+
+- `apps/tg` — telegram users, chats, messages (all kinds), media,
+  telegram connections (bot token per assistant, desired/actual state).
+- `apps/chat` — web threads, messages, media, thread↔assistant binding.
+- `apps/worker` — the core store: assistants, settings, LLM backend
+  config, memory, tasks, tool connections, person links, and its traces.
+- `apps/web` — operator sessions and dashboard preferences only.
+
+Cross-app references use **scoped refs** (`source:kind:id`, e.g.
+`tg:chat:123`, `chat:thread:45`), defined in `packages/contracts`. Memory,
+tasks, and traces store scoped refs, never foreign keys into another app's
+database.
+
+**Person links:** the core store holds an operator-managed link table
+declaring "tg user X = web user Y". Memory reads through it, so what the
+bot knows about a person follows them across sources; unlinked users stay
+separate. This is the "one place for users" goal realized as linking +
+aggregation instead of canonical tables.
+
+**Entity lifecycle across apps:** apps react to core events on the bus
+(e.g. `assistant.deleted` → tg disables and removes that assistant's
+connection). Source apps create their own entities on first contact — tg
+upserts a user/chat the moment someone reaches the bot.
 
 ### The source-app contract
 
 `packages/contracts` defines what any source is:
 
-- it persists incoming messages and enqueues normalized inbound events;
+- it owns the storage for its users, chats, messages, and media, and
+  creates them on first contact;
+- it enqueues normalized inbound events for the worker;
+- it **supplies conversation context**: the composed history window and
+  participant roster for a chat, carried on the inbound event or served
+  on demand — the worker never reads a source's store;
 - it consumes reply-delivery events for its chats and performs the actual
   send;
 - it exposes an MCP server for its outbound actions;
-- it reconciles its connections from DB desired state and publishes actual
-  state.
+- it exposes an operator API implementing the shared **listing/CRUD
+  contract** for its entities (list/search/read/update/delete users,
+  chats, messages), which the dashboard aggregates;
+- it reconciles its connections from its own desired state and publishes
+  actual state.
 
 `apps/tg` and `apps/chat` are the two v2 implementations; adding Signal
 later means writing another source app.
 
-Source apps' operator-facing APIs are reached only through the `apps/web`
-proxy: the browser talks to one origin, the operator session is
-authenticated in one place, and source apps trust only the proxy on the
-internal network.
+All operator-facing APIs (worker's included) are reached only through the
+`apps/web` proxy: the browser talks to one origin, the operator session is
+authenticated in one place, and apps trust only the proxy on the internal
+network.
 
 ### Message flow
 
-- **Inbound:** every source app persists the message and enqueues one
-  normalized inbound event (canonical chat id, canonical sender id,
-  assistant id, content — text / media refs / voice — reply target). The
-  worker consumes the queue and runs the same pipeline regardless of
-  source.
+- **Inbound:** the source app persists the message in its own store, then
+  enqueues one normalized inbound event (scoped chat/sender refs,
+  assistant id, content, reply target, plus the conversation context per
+  the contract). The worker consumes the queue and runs the same pipeline
+  regardless of source.
 - **Outbound, deterministic:** the finished reply is published as a
-  reply-delivery event; the owning source app consumes it and performs the
-  send (grammY for tg; for web threads `apps/chat` persists the reply and
-  the update reaches the browser through the SSE bridge). The model never
-  has to remember to send its own answer.
+  reply-delivery event; the owning source app consumes it, persists the
+  reply in its store, and performs the send (grammY for tg; for web
+  threads the update reaches the browser through the SSE bridge). The
+  model never has to remember to send its own answer.
 - **Outbound, model-driven:** task fires and cross-chat sends are tool
   calls into the source app's MCP server (send_message, send_reply, …),
   which the worker registers as a built-in connection.
-- **Events:** worker and source apps publish status/progress events on
-  Redis pub/sub; `apps/web` bridges them to the SSE layer (the
-  `publishEvent`/`useLiveRefresh` contract survives, its backbone changes).
-- **Control:** dashboard actions (enable/disable a connection, start/stop)
-  write desired state to the DB and nudge the owning app over the bus; that
-  app reconciles (e.g. `apps/tg` starts/stops pollers) and publishes actual
-  state.
+- **Events:** all apps publish status/progress events on Redis pub/sub;
+  `apps/web` bridges them to the SSE layer (the
+  `publishEvent`/`useLiveRefresh` contract survives, its backbone
+  changes).
+- **Control:** dashboard actions write desired state through the owning
+  app's operator API; that app reconciles (e.g. `apps/tg` starts/stops
+  pollers) and publishes actual state.
 
 ### Dashboard composition (micro-frontends)
 
@@ -138,8 +182,11 @@ extensions the shell mounts:
 - navigation items and routes/pages (chat contributes the thread list and
   chat view);
 - entity-form sections (tg extends the assistant editor with the bot
-  token / connection settings);
-- status cards and debug panels.
+  token / connection settings, stored in tg's own database through tg's
+  API);
+- status cards and debug panels;
+- aggregated entity views: the shared users/chats/messages pages call
+  every source app's listing API through the proxy and merge the results.
 
 Rules: the shell knows extension *points*, never the apps; a UI package may
 import only shared packages (never another app), and its data access goes
@@ -155,39 +202,24 @@ actions yet** — no reply sent, no tool executed, nothing created or changed
 beyond storing the inbound message itself. Once any action has run, a
 failure does not retry: the turn fails, is reported to the operator (trace
 + dashboard surfacing), and stops. Mechanically this is a per-turn
-"actions started" marker. This guarantees transient failures before any
-work never drop messages, and nothing ever double-sends or double-executes.
+"actions started" marker in the worker's store. This guarantees transient
+failures before any work never drop messages, and nothing ever
+double-sends or double-executes.
 
 ## Domain model
 
-### Identity
-
-Canonical, source-agnostic entities; per-source bindings. Draft schema,
-refined in Phase 1:
-
-- `users` — canonical person: id, display name, operator flag, notes.
-- `user_identities` — `(user_id, source, external_id)` unique per
-  `(source, external_id)`, plus per-source profile fields.
-- `chats` — canonical conversation: id, kind (`dm` / `group` / `thread`),
-  title.
-- `chat_identities` — `(chat_id, source, external_id)`.
-
-Every feature (history, memory, analytics, tasks) keys on canonical ids.
-Today's `known-users` / `known-groups` data becomes canonical rows with
-telegram bindings.
-
 ### Assistants
 
-Personalities convert into assistants. Many assistants, CRUD via dashboard,
-sharing one brain: LLM backend config, settings, memory, history, and (for
-v1) MCP tool connections are shared across all assistants. Per-assistant:
-persona, transport connections, standing tasks.
+Personalities convert into assistants, owned by the worker's core store.
+Many assistants, CRUD via dashboard (through the worker's operator API),
+sharing one brain: LLM backend config, settings, memory, and (for v1) MCP
+tool connections are shared across all assistants. Per-assistant: persona,
+transport connections (stored by the owning source app, keyed by assistant
+id), standing tasks.
 
-- `assistants` — id, name, persona prompt, timestamps (draft).
-- `assistant_connections` — assistant id, source (`telegram` for now),
-  credentials (bot token), enabled/desired state, runtime status. One bot
-  token per assistant; `apps/tg` runs one poller per enabled connection;
-  the assistant in a Telegram chat is implied by which bot is in it.
+One bot token per assistant; `apps/tg` runs one poller per enabled
+connection; the assistant in a Telegram chat is implied by which bot is in
+it.
 
 Behavior in shared chats:
 
@@ -203,31 +235,37 @@ Behavior in shared chats:
 
 The turn runner generalizes today's `handleIncomingMessage`: addressing
 (deterministic own-name check per assistant + analyzer), policy gates,
-prompt composition (system + persona + chat context + memory + history +
-current turn), tool loop, honesty gate, delivery, trace. One BullMQ job per
-inbound message, with the turn-failure rules above. Trace events double as
-progress events on the bus, so web threads show live typing/tool activity.
+prompt composition (system + persona + source-supplied chat context +
+memory + source-supplied history + current turn), tool loop, honesty gate,
+delivery, trace. One BullMQ job per inbound message, with the turn-failure
+rules above. Trace events double as progress events on the bus, so web
+threads show live typing/tool activity.
+
+### Memory
+
+Worker-owned, shared across assistants. Keyed by scoped user/chat refs and
+resolved through person links, so knowledge about a linked person is one
+body of memory regardless of source.
 
 ### Web chat
 
-Served by `apps/chat` (backend, source contract) plus `chat-ui` extensions
-in the dashboard (views), with the operator API behind the `apps/web`
-proxy.
+Served by `apps/chat` (backend + own store) plus `chat-ui` extensions in
+the dashboard (views), with the operator API behind the `apps/web` proxy.
 
-- Operator + named threads: the operator session maps to a canonical user
-  with a `web` identity binding; threads are `chats` of kind `thread`,
-  owned by the operator, each bound to one assistant **at creation** (no
-  mid-thread switching).
+- Operator + named threads: the operator maps to a chat-app user tied to
+  the operator session; threads are chat-app entities, each bound to one
+  assistant **at creation** (no mid-thread switching).
 - v1 scope is everything: text, image upload (vision pipeline), and voice
   (voice pipeline).
-- Delivery: message-at-once + live turn progress (typing / tool-call events
-  over SSE), not token streaming.
+- Delivery: message-at-once + live turn progress (typing / tool-call
+  events over SSE), not token streaming.
 
 ### MCP tool connections
 
-Operator-managed, DB-backed (config-in-DB direction; no end-user accounts),
-scopable global / per-chat / per-user. Shared across assistants in v1;
-per-assistant toolset selection is planned later — the schema leaves room.
+Operator-managed, stored in the worker's core store (config-in-DB
+direction; no end-user accounts), scopable global / per-chat / per-user
+via scoped refs. Shared across assistants in v1; per-assistant toolset
+selection is planned later — the schema leaves room.
 
 - `tool_connections` (draft): name/slug, transport discriminator (`http`
   live; `stdio` modeled but disabled in v1), endpoint URL, auth headers
@@ -246,27 +284,30 @@ per-assistant toolset selection is planned later — the schema leaves room.
 
 ### Traces and debug
 
-DB-backed trace store as today; all apps record, the dashboard debug
-explorer reads. Existing traces are not migrated.
+Trace recording is one shared implementation in `packages/core`; each app
+records traces for its own actions into its own store. A turn's flow spans
+apps (tg inbound → worker pipeline → tg outbound), stitched by a
+correlation id that travels with every event and job; the debug explorer
+aggregates trace data across apps through the listing contract and merges
+by correlation id. Existing v1 traces are not migrated.
 
 ## Migration ("migrate the brain, drop the logs")
 
 Hard requirement: **no brain-data loss**. Downtime at cutover is
-acceptable.
+acceptable. The v1 database is split into the new per-app databases:
 
-In scope (migrated): canonical users/chats from known-users/known-groups
-(+ telegram bindings), history messages, memory, sender preferences,
-self-improvement corrections, tasks (assigned to the default assistant),
-personalities → assistants, settings, media/vision descriptions. The
-current bot token becomes a telegram connection on the assistant converted
-from the active personality.
-
-Out of scope (start fresh): traces, analytics rollups.
+- → `apps/tg` store: known users/groups, message history, media/vision
+  descriptions, the bot token (as a telegram connection on the default
+  assistant).
+- → `apps/worker` core store: memory, sender preferences,
+  self-improvement corrections, tasks (assigned to the default
+  assistant), personalities → assistants, settings.
+- Out of scope (start fresh): traces, analytics rollups.
 
 Mechanism and safety net:
 
-1. One-shot migration scripts (old schema → new schema), written and tested
-   during Phase 1 against seeded fixtures.
+1. One-shot migration scripts (v1 schema → per-app schemas), written and
+   tested during Phase 1 against seeded fixtures.
 2. **Mandatory rehearsal** against a copy of the production DB before
    cutover — repeated until clean.
 3. Scripted verification: row-count reconciliation per table pair plus
@@ -284,7 +325,8 @@ Per-app Docker images: `assistant-hub-web`, `assistant-hub-worker`,
 `assistant-hub-tg`, `assistant-hub-chat`. The release pipeline builds and
 publishes all of them from the same version bump; compose pins every
 service to the same tag so containers never run different code versions.
-Redis joins docker-compose.
+Compose runs one Postgres server hosting one database per app (each app
+gets its own connection URL) and one Redis.
 
 ## Build phases
 
@@ -295,22 +337,24 @@ Each phase gets detailed acceptance criteria in PROGRESS.md when it starts.
   no behavior change; the extension-registry skeleton in the shell; CI,
   lint/typecheck/test/build wiring; docker builds the per-app images and
   the release pipeline publishes them all on one version bump.
-- **Phase 1 — Schema + migration.** Canonical identity, assistants,
-  connections, tool-connection tables in `packages/db`; migration scripts +
-  verification harness + rehearsal workflow.
-- **Phase 2 — Runtime split.** Pipeline, schedulers, jobs, MCP runtime move
-  to `apps/worker`; the Telegram runtime moves to `apps/tg` behind the
-  source contract (inbound events, reply-delivery events, tg MCP server);
-  Redis bus + queue; SSE bridged in `apps/web`; dashboard controls go
-  through desired-state + bus.
+- **Phase 1 — Schemas + migration.** Per-app databases and schema modules
+  (tg, chat, worker core, web); scoped-ref and person-link foundations;
+  migration scripts splitting the v1 DB + verification harness + rehearsal
+  workflow.
+- **Phase 2 — Runtime split.** Pipeline, schedulers, jobs, MCP runtime
+  move to `apps/worker`; the Telegram runtime moves to `apps/tg` behind
+  the source contract (inbound events with context, reply-delivery
+  events, listing API, tg MCP server); Redis bus + queue; SSE bridged in
+  `apps/web`; dashboard controls go through operator APIs + bus.
 - **Phase 3 — Assistants.** CRUD UI, personality conversion, per-assistant
   telegram connections with concurrent pollers (connection settings as a
-  `tg-ui` extension of the assistant editor), per-assistant tasks, own-name
-  addressing + bot-to-bot rules.
+  `tg-ui` extension of the assistant editor, stored in tg's DB),
+  per-assistant tasks, own-name addressing + bot-to-bot rules, aggregated
+  users/chats dashboard pages + person links.
 - **Phase 4 — Web chat.** `apps/chat` as the second source app plus its
   `chat-ui` extensions: threads UI (create/name/pick assistant), text +
   image upload + voice, live turn progress, message-at-once delivery,
-  history/memory/trace parity with telegram chats.
+  memory/trace parity with telegram chats.
 - **Phase 5 — MCP connections.** HTTP connections CRUD, discovery +
   snapshot/apply, scoping, prefixing, tools dashboard rework.
 - **Phase 6 — Cutover.** Rehearsed migration, runbook execution, rename to
