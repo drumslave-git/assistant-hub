@@ -49,9 +49,10 @@ Known pitfalls for whoever starts:
   guard approved: cap on consecutive assistant-authored turns per chat,
   operator-configurable. Remaining open items: queue retry semantics
   (Phase 2), image shape (Phase 0).
-- **2026-08-21 (later still)** — Final two decisions: turns are ACID-like
-  (all-or-nothing with compensation/revert of completed side effects on
-  failure; non-revertible external effects mark a point of no return that
-  surfaces failures to the operator instead), and deployment is two Docker
-  images (`assistant-hub-web`, `assistant-hub-worker`) published together
-  from one version bump. Planning is complete.
+- **2026-08-21 (later still)** — Final two decisions: turn failure handling
+  and deployment as two Docker images (`assistant-hub-web`,
+  `assistant-hub-worker`) published together from one version bump. Turn
+  handling was first agreed as ACID-like compensation, then revised by the
+  user the same day to the simpler rule: retry only if the turn performed
+  no actions yet; otherwise fail, report, stop — no revert machinery.
+  Planning is complete.

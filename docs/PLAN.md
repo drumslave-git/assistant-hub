@@ -83,16 +83,14 @@ MCP connections:
 
 Execution:
 
-- **Turn atomicity (ACID-like)** (user, 2026-08-21): a reply turn is
-  all-or-nothing. Every side effect it performs (persisted message, created
-  task, saved memory, sent reply) is tracked, and if the turn fails at any
-  point, the effects already done are reverted (delete the sent message,
-  delete the task, …) before the job is retried or surfaced as failed —
-  never a half-applied turn, never a double reply. Design note: an effect
-  with external consequences that cannot be undone (a remote MCP tool call
-  that e.g. sent an email) marks the turn's point of no return — after it,
-  a failure surfaces to the operator as a failed turn instead of
-  revert-and-retry. Mechanics (compensation registry) are Phase 2 design.
+- **Turn failure handling** (user, 2026-08-21 — revised the same day,
+  superseding a first ACID/compensation idea as too hard): no revert
+  machinery. A failed turn **retries only if it had performed no actions
+  yet** — no reply sent, no tool executed, nothing created/changed beyond
+  storing the inbound message itself. Once any action has run, a failure
+  does not retry and does not revert: the turn fails, is reported to the
+  operator (trace + dashboard surfacing), and stops. Mechanically this is a
+  per-turn "actions started" marker, not a compensation registry.
 - **Two Docker images** (user, 2026-08-21): `assistant-hub-web` and
   `assistant-hub-worker`. The release pipeline builds and publishes both
   from the same version bump; compose pins both services to the same tag so
@@ -191,10 +189,10 @@ telegram bindings.
 - Source adapters normalize into a canonical inbound message: canonical chat
   id, canonical sender id, assistant id, content (text / media refs / voice),
   reply target.
-- One BullMQ job per inbound message, with all-or-nothing turns (see the
-  turn-atomicity decision): every side effect registers its compensating
-  action, a failed turn reverts what it already did, and only a fully
-  reverted turn is eligible for retry. Exact mechanics are Phase 2 design.
+- One BullMQ job per inbound message (see the turn-failure-handling
+  decision): the job retries on failure only while the turn has performed
+  no actions; after the first action, failure means fail + report + stop —
+  no retry, no revert. Exact wiring is Phase 2 design.
 - The turn runner generalizes today's `handleIncomingMessage`: addressing
   (deterministic own-name check per assistant + analyzer), policy gates,
   prompt composition (system + persona + chat context + memory + history +
