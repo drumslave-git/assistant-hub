@@ -34,14 +34,19 @@ Next.js app; they are never split.
 
 ```
 apps/
-  web/        Next.js — dashboard + API + auth + SSE. Owns operator HTTP.
-              Also the web-chat source (implements the source contract).
+  web/        Next.js — dashboard shell + API + auth + SSE bridge + proxy
+              to the source apps' operator APIs. Hosts the composed
+              dashboard (see Dashboard composition). Not a source app.
   worker/     Reply pipeline, LLM loop, MCP runtime, schedulers, background
-              jobs, Playwright. No Telegram code.
+              jobs, Playwright. No source code.
   tg/         Telegram source app: one grammY poller per enabled telegram
               connection, inbound events, Telegram media ingestion, and an
               MCP server exposing Telegram outbound actions (send_message,
               send_reply, typing, …).
+  chat/       Web-chat source app: thread/message persistence, inbound
+              events, reply-delivery consumption, and an MCP server
+              exposing web-thread outbound actions. Its operator API is
+              reached through the apps/web proxy.
 packages/
   db/         Drizzle schema, migrations, repositories.
   core/       Domain logic: pipeline, assistants, identity, prompt
@@ -49,25 +54,35 @@ packages/
               server-only.
   contracts/  Zod schemas shared across apps: the source-app contract,
               queue payloads, bus events, API DTOs.
+  ui/         Shared dashboard components + the typed extension-point
+              registry the shell composes from.
+  tg-ui/      tg's dashboard extensions (assistant editor: bot token /
+              connection section, status cards, …).
+  chat-ui/    chat's dashboard extensions (thread list, chat view, …).
 ```
 
-The exact package cut (e.g. whether `contracts` folds into `core`) is
-settled in Phase 0.
+The exact package cut (e.g. whether `contracts` folds into `core`, and
+whether an app's UI package lives under `packages/` or inside the app's
+workspace) is settled in Phase 0.
 
 ### Runtime topology
 
 ```
-Browser ─ HTTP/SSE ─ apps/web ──┐
-Telegram ─ pollers ─ apps/tg ───┼── Redis (BullMQ queue + pub/sub) ── apps/worker
-                                │                                       │
-        (source apps:           │            LLM endpoint(s) ───────────┤
-         inbound events out,    │            remote MCP servers (HTTP) ─┤
-         reply-delivery         │            source-app MCP servers ────┤
-         events in, each        │            Playwright / media ────────┘
-         exposes an MCP server
-         for outbound actions)
+Browser ── HTTP/SSE ── apps/web (shell + API + SSE bridge)
+                          │ proxies /api/chat/* and /api/tg/*
+                          │ to the owning source app
+                          │
+Telegram ─ pollers ─ apps/tg ──┐
+Web-chat backend ── apps/chat ─┼── Redis (BullMQ queue + pub/sub) ── apps/worker
+apps/web (bus bridge) ─────────┘                                       │
+                                            LLM endpoint(s) ───────────┤
+        (source apps: inbound              remote MCP servers (HTTP) ──┤
+         events out, reply-delivery        source-app MCP servers ─────┤
+         events in, each exposes an        Playwright / media ─────────┘
+         MCP server for outbound
+         actions)
 
-Postgres is shared by all three apps.
+Postgres is shared by all apps.
 ```
 
 ### The source-app contract
@@ -81,8 +96,13 @@ Postgres is shared by all three apps.
 - it reconciles its connections from DB desired state and publishes actual
   state.
 
-`apps/tg` is the first implementation; web chat inside `apps/web` follows
-the same contract; adding Signal later means writing another source app.
+`apps/tg` and `apps/chat` are the two v2 implementations; adding Signal
+later means writing another source app.
+
+Source apps' operator-facing APIs are reached only through the `apps/web`
+proxy: the browser talks to one origin, the operator session is
+authenticated in one place, and source apps trust only the proxy on the
+internal network.
 
 ### Message flow
 
@@ -93,7 +113,8 @@ the same contract; adding Signal later means writing another source app.
   source.
 - **Outbound, deterministic:** the finished reply is published as a
   reply-delivery event; the owning source app consumes it and performs the
-  send (grammY for tg, SSE to the browser for web threads). The model never
+  send (grammY for tg; for web threads `apps/chat` persists the reply and
+  the update reaches the browser through the SSE bridge). The model never
   has to remember to send its own answer.
 - **Outbound, model-driven:** task fires and cross-chat sends are tool
   calls into the source app's MCP server (send_message, send_reply, …),
@@ -105,6 +126,27 @@ the same contract; adding Signal later means writing another source app.
   write desired state to the DB and nudge the owning app over the bus; that
   app reconciles (e.g. `apps/tg` starts/stops pollers) and publishes actual
   state.
+
+### Dashboard composition (micro-frontends)
+
+The dashboard is a shell in `apps/web` composed from app-owned UI packages
+via a **build-time extension registry** — one Next.js build, one origin,
+Server Components work, no runtime federation. Each app owns a dashboard UI
+package (`packages/tg-ui`, `packages/chat-ui`, …) exporting typed
+extensions the shell mounts:
+
+- navigation items and routes/pages (chat contributes the thread list and
+  chat view);
+- entity-form sections (tg extends the assistant editor with the bot
+  token / connection settings);
+- status cards and debug panels.
+
+Rules: the shell knows extension *points*, never the apps; a UI package may
+import only shared packages (never another app), and its data access goes
+through the owning app's operator API behind the `apps/web` proxy. The
+extension-point types live in `packages/ui`. Runtime independence is not a
+goal — all images release together on one version, so build-time
+composition costs nothing operationally.
 
 ### Turn failure handling
 
@@ -167,6 +209,10 @@ inbound message, with the turn-failure rules above. Trace events double as
 progress events on the bus, so web threads show live typing/tool activity.
 
 ### Web chat
+
+Served by `apps/chat` (backend, source contract) plus `chat-ui` extensions
+in the dashboard (views), with the operator API behind the `apps/web`
+proxy.
 
 - Operator + named threads: the operator session maps to a canonical user
   with a `web` identity binding; threads are `chats` of kind `thread`,
@@ -235,19 +281,20 @@ Mechanism and safety net:
 ## Deployment
 
 Per-app Docker images: `assistant-hub-web`, `assistant-hub-worker`,
-`assistant-hub-tg`. The release pipeline builds and publishes all of them
-from the same version bump; compose pins every service to the same tag so
-containers never run different code versions. Redis joins docker-compose.
+`assistant-hub-tg`, `assistant-hub-chat`. The release pipeline builds and
+publishes all of them from the same version bump; compose pins every
+service to the same tag so containers never run different code versions.
+Redis joins docker-compose.
 
 ## Build phases
 
 Each phase gets detailed acceptance criteria in PROGRESS.md when it starts.
 
 - **Phase 0 — Scaffold.** Turborepo + workspaces; current app moves into
-  `apps/web`; `packages/db` / `core` / `contracts` carved out with no
-  behavior change; CI, lint/typecheck/test/build wiring; docker builds the
-  per-app images and the release pipeline publishes them all on one version
-  bump.
+  `apps/web`; `packages/db` / `core` / `contracts` / `ui` carved out with
+  no behavior change; the extension-registry skeleton in the shell; CI,
+  lint/typecheck/test/build wiring; docker builds the per-app images and
+  the release pipeline publishes them all on one version bump.
 - **Phase 1 — Schema + migration.** Canonical identity, assistants,
   connections, tool-connection tables in `packages/db`; migration scripts +
   verification harness + rehearsal workflow.
@@ -257,9 +304,11 @@ Each phase gets detailed acceptance criteria in PROGRESS.md when it starts.
   Redis bus + queue; SSE bridged in `apps/web`; dashboard controls go
   through desired-state + bus.
 - **Phase 3 — Assistants.** CRUD UI, personality conversion, per-assistant
-  telegram connections with concurrent pollers, per-assistant tasks,
-  own-name addressing + bot-to-bot rules.
-- **Phase 4 — Web chat.** Threads UI (create/name/pick assistant), text +
+  telegram connections with concurrent pollers (connection settings as a
+  `tg-ui` extension of the assistant editor), per-assistant tasks, own-name
+  addressing + bot-to-bot rules.
+- **Phase 4 — Web chat.** `apps/chat` as the second source app plus its
+  `chat-ui` extensions: threads UI (create/name/pick assistant), text +
   image upload + voice, live turn progress, message-at-once delivery,
   history/memory/trace parity with telegram chats.
 - **Phase 5 — MCP connections.** HTTP connections CRUD, discovery +

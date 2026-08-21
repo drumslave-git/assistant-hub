@@ -28,11 +28,11 @@ Known pitfalls for whoever starts:
 
 | Phase | Scope (see PLAN.md) | Status |
 | --- | --- | --- |
-| 0 | Monorepo scaffold, apps/web + packages carve-out, CI, docker | todo |
+| 0 | Monorepo scaffold, apps/web + packages carve-out, extension registry, CI, docker | todo |
 | 1 | Canonical identity + assistants schema, migration scripts + rehearsal | todo |
 | 2 | Runtime split: worker + tg apps, source contract, Redis bus + queue, SSE bridge | todo |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | todo |
-| 4 | Web chat: threads, text/image/voice, live progress | todo |
+| 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
 | 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
 
@@ -65,3 +65,13 @@ Known pitfalls for whoever starts:
   deterministic replies travel as bus events the source app delivers;
   model-driven sends use the source app's MCP tools. Deployment becomes
   three per-app images.
+- **2026-08-21 (night)** — Two more user revisions. (1) Web chat becomes
+  its own source app, `apps/chat`, same contract as tg; `apps/web` is a
+  pure dashboard shell + API + auth + SSE bridge + proxy, no longer a
+  source. (2) The dashboard goes micro-frontend: app-owned UI packages
+  (tg-ui, chat-ui) inject typed extensions (nav/routes, assistant-form
+  sections, status cards) into the shell via a build-time extension
+  registry (chosen over runtime module federation); source-app operator
+  APIs are reached through the apps/web proxy on a single origin. Images:
+  four. PLAN.md also rewritten this session as a history-free source of
+  truth.
