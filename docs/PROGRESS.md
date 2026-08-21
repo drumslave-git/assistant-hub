@@ -8,11 +8,12 @@ Per user decision (2026-08-21), redesign progress lives here, not in TODO.md.
 ## Current state
 
 Planning. All architecture decisions are agreed and recorded in PLAN.md
-(2026-08-21 brainstorm). No code has moved yet; the redesign branch does not
-exist yet.
+(2026-08-21 brainstorm). Name chosen: **assistant-hub**. No code has moved
+yet; the redesign branch does not exist yet.
 
-Next best task: user reviews PLAN.md and picks the new repo/product name;
-then create the redesign branch and start Phase 0.
+Next best task: create the redesign branch and start Phase 0. The two
+remaining open items (queue retry semantics, image shape) are phase-time
+decisions and do not block starting.
 
 Known pitfalls for whoever starts:
 
@@ -45,3 +46,7 @@ Known pitfalls for whoever starts:
   PLAN.md and PROGRESS.md created; TODO.md entry reduced to a pointer.
   Open: repo name, bot-to-bot loop guard, queue retry semantics, image
   shape.
+- **2026-08-21 (later)** — Name decided: **assistant-hub**. Bot-to-bot loop
+  guard approved: cap on consecutive assistant-authored turns per chat,
+  operator-configurable. Remaining open items: queue retry semantics
+  (Phase 2), image shape (Phase 0).

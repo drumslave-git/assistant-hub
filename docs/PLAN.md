@@ -50,8 +50,12 @@ Domain model:
   Telegram chat is implied by which bot is in it.
 - **Assistants do not ignore each other's messages** in a shared chat; each
   assistant's addressing check is against its own name only. (Replaces the
-  blanket `from_bot` ignore between assistant bots; see the loop-guard open
-  item.)
+  blanket `from_bot` ignore between assistant bots.)
+- **Bot-to-bot loop guard** (user, 2026-08-21): a per-chat cap on
+  *consecutive* assistant-authored turns — once N assistant↔assistant
+  exchanges happen with no human message in between, assistants stay silent
+  in that chat until a human speaks. The cap N is operator-configurable
+  (DB-backed setting), deterministic, no LLM judgment involved.
 - **Tasks are per assistant** (assistant + chat), not global per chat.
 - **MCP tool connections are shared across assistants for v1**; per-assistant
   toolset selection is planned for later — the schema must leave room for it.
@@ -89,7 +93,7 @@ Execution:
   the hard requirement; downtime at cutover does not matter. Traces and
   analytics start fresh.
 - **The repo/product gets renamed** (`llm-tg-bot-nextjs` no longer fits).
-  New name: TBD (open item).
+  New name: **`assistant-hub`** (user, 2026-08-21).
 
 ## Target architecture
 
@@ -259,12 +263,7 @@ Signal, mobile apps.
 
 ## Open items
 
-- **New repo/product name** — rename decided, name not chosen yet.
-- **Bot-to-bot loop guard** — with `from_bot` ignoring relaxed between
-  assistants, two assistants addressing each other can ping-pong forever.
-  Needs a designed guard (e.g. a cap on consecutive bot-to-bot turns per
-  chat). Proposal pending user review.
 - **Queue retry semantics** — exact idempotency/dedupe rules for inbound
-  turn jobs (no double replies, no lost messages).
+  turn jobs (no double replies, no lost messages). Phase 2 decision.
 - **Image shape** — one image with two entrypoints vs two images (Phase 0
   decision, affects the release pipeline).
