@@ -1,132 +1,36 @@
-# v2 Redesign Plan
+# assistant-hub — v2 Redesign Plan
 
-Status: **planning** — decisions agreed, architecture drafted, no code yet.
-Progress is tracked in [PROGRESS.md](PROGRESS.md); the pointer entry lives in
-[TODO.md](TODO.md). Decisions for this effort are recorded here (user decision,
-2026-08-21), not in TODO.md.
+The source of truth for the v2 target architecture. Progress and phase
+status live in [PROGRESS.md](PROGRESS.md); the pointer entry is in
+[TODO.md](TODO.md). This document describes the target as designed — it is
+updated in place when the design changes, and carries no decision history
+(the session log in PROGRESS.md does).
 
 ## Vision
 
-The Telegram bot becomes one connectable source on top of a general assistant
-platform. The generic foundation (pipeline, memory, history, tools, traces,
-dashboard) is the product; Telegram, the dashboard web chat, and any future
-source (Signal, mobile apps) are transports that plug into it.
+The Telegram bot becomes one connectable source on top of a general
+assistant platform named **assistant-hub**. The generic foundation —
+pipeline, memory, history, tools, traces, dashboard — is the product;
+Telegram, the dashboard web chat, and any future source (Signal, mobile
+apps) are interchangeable source apps that plug into it.
 
 Three pillars:
 
-1. **One place for users, groups, chats** — canonical entities with per-source
-   identity bindings.
+1. **One place for users, groups, chats** — canonical entities with
+   per-source identity bindings.
 2. **Assistants** — a first-class entity replacing personalities: many
-   assistants sharing one brain (config, memory, history), each with its own
-   persona and its own transport connections.
-3. **Pluggable MCP tools** — tool connections managed from the dashboard and
-   stored in the DB, instead of a hardcoded in-process toolset.
+   assistants sharing one brain (config, memory, history), each with its
+   own persona and its own transport connections.
+3. **Pluggable MCP tools** — tool connections managed from the dashboard
+   and stored in the DB, instead of a hardcoded in-process toolset.
 
-## Decision log (user, 2026-08-21)
+## Architecture
 
-Structure:
+### Monorepo
 
-- **Monorepo with Turborepo.** `apps/*` + `packages/*`. The backend (API
-  layer) and the dashboard stay together as one Next.js app — do NOT split
-  them into separate apps.
-- **Three runtime apps** (user, 2026-08-21 — revised from an initial two-app
-  split the same day): `apps/web` (Next.js dashboard + API), `apps/worker`
-  (reply pipeline, LLM loop, MCP runtime, schedulers, background jobs), and
-  `apps/tg` (everything Telegram-scoped: per-assistant grammY pollers,
-  inbound event source, Telegram media ingestion, and an MCP server exposing
-  Telegram outbound actions — send_message, send_reply, typing, …). The
-  worker contains no Telegram code.
-- **Formal source-app contract** (user, 2026-08-21): `packages/contracts`
-  defines what any source is — it persists + publishes normalized inbound
-  events, consumes reply-delivery events for its chats, exposes an MCP
-  server for its outbound actions, and reconciles its connections from DB
-  desired state. `apps/tg` is the first implementation; web chat inside
-  `apps/web` follows the same contract; a future Signal source is "write
-  another source app".
-- **Worker owns the whole reply pipeline** (LLM loop, MCP runtime) for every
-  source. Source apps enqueue normalized inbound events; the worker runs the
-  turn. The finished reply travels back **over the bus** as a
-  reply-delivery event the owning source app consumes and sends
-  (deterministic — the model never has to remember to send). Model-driven
-  sends (task fires, cross-chat messages) go through the source app's MCP
-  tools instead (user, 2026-08-21).
-- **Redis pub/sub + queue** (BullMQ) is the inter-process transport. Redis
-  joins docker-compose.
-
-Domain model:
-
-- **Canonical identity + bindings.** Source-agnostic `users`/`chats` with
-  internal ids; identity-binding tables map `(source, external_id)` to the
-  canonical entity. Every feature keys on canonical ids.
-- **No "channels" concept — Assistant entity.** Personalities convert into
-  assistants. Many assistants, CRUD via dashboard. Configs, memories, and
-  history are SHARED across assistants (one brain, many faces).
-- **One Telegram bot token per assistant.** A telegram connection belongs to
-  an assistant and runs its own poller in `apps/tg`; the assistant in a
-  Telegram chat is implied by which bot is in it.
-- **Assistants do not ignore each other's messages** in a shared chat; each
-  assistant's addressing check is against its own name only. (Replaces the
-  blanket `from_bot` ignore between assistant bots.)
-- **Bot-to-bot loop guard** (user, 2026-08-21): a per-chat cap on
-  *consecutive* assistant-authored turns — once N assistant↔assistant
-  exchanges happen with no human message in between, assistants stay silent
-  in that chat until a human speaks. The cap N is operator-configurable
-  (DB-backed setting), deterministic, no LLM judgment involved.
-- **Tasks are per assistant** (assistant + chat), not global per chat.
-- **MCP tool connections are shared across assistants for v1**; per-assistant
-  toolset selection is planned for later — the schema must leave room for it.
-
-Web chat:
-
-- **Operator user + named threads.** The operator session maps to a canonical
-  user with a `web` identity binding; multiple named threads, each a
-  first-class chat. The thread's assistant is **fixed at thread creation** —
-  no mid-thread switching.
-- **v1 scope is everything:** text, image upload (vision pipeline), and voice
-  (voice pipeline) from day one.
-- **Delivery: message-at-once + live turn progress** (typing / tool-call
-  events over SSE), not token streaming.
-
-MCP connections:
-
-- **Operator-managed, DB-backed** (config-in-DB direction; no end-user
-  accounts yet), scopable global / per-chat / per-user.
-- **HTTP transport only in v1** (Streamable HTTP + legacy SSE, configurable
-  auth headers). **stdio is out of scope for v1 but designed in**: the
-  connection entity carries a transport discriminator so stdio can be added
-  without schema or UI rework. (Revises the earlier "HTTP + stdio" pick,
-  user, 2026-08-21.)
-
-Execution:
-
-- **Turn failure handling** (user, 2026-08-21 — revised the same day,
-  superseding a first ACID/compensation idea as too hard): no revert
-  machinery. A failed turn **retries only if it had performed no actions
-  yet** — no reply sent, no tool executed, nothing created/changed beyond
-  storing the inbound message itself. Once any action has run, a failure
-  does not retry and does not revert: the turn fails, is reported to the
-  operator (trace + dashboard surfacing), and stops. Mechanically this is a
-  per-turn "actions started" marker, not a compensation registry.
-- **Per-app Docker images** (user, 2026-08-21; count follows the app split):
-  `assistant-hub-web`, `assistant-hub-worker`, `assistant-hub-tg`. The
-  release pipeline builds and publishes all of them from the same version
-  bump; compose pins every service to the same tag so containers never run
-  different code versions.
-- **Big-bang redesign** — full target designed first, then rebuilt toward it;
-  intermediate states need not be shippable.
-- **Long-lived redesign branch** — the sanctioned exception to the
-  no-branches rule. Main stays releasable for hotfixes; no version bumps from
-  the branch until cutover. The branch is **rebased onto main** after
-  hotfixes (rebases, not merges).
-- **Data: migrate the brain, drop the logs.** No data loss on brain data is
-  the hard requirement; downtime at cutover does not matter. Traces and
-  analytics start fresh.
-- **The repo/product gets renamed** (`llm-tg-bot-nextjs` no longer fits).
-  New name: **`assistant-hub`** (user, 2026-08-21).
-
-## Target architecture
-
-### Monorepo layout (proposed)
+Turborepo with npm workspaces. `apps/*` never import each other — only
+packages. The backend (API layer) and the dashboard stay together as one
+Next.js app; they are never split.
 
 ```
 apps/
@@ -147,8 +51,8 @@ packages/
               queue payloads, bus events, API DTOs.
 ```
 
-Exact package cut (e.g. whether `contracts` folds into `core`) is settled in
-Phase 0; the rule is: `apps/*` never import each other — only packages.
+The exact package cut (e.g. whether `contracts` folds into `core`) is
+settled in Phase 0.
 
 ### Runtime topology
 
@@ -166,94 +70,150 @@ Telegram ─ pollers ─ apps/tg ───┼── Redis (BullMQ queue + pub/su
 Postgres is shared by all three apps.
 ```
 
-- Inbound: every source app (`apps/tg` for Telegram, `apps/web` for web
-  chat) persists the message and enqueues one normalized inbound event; the
-  worker consumes the queue and runs the same pipeline regardless of source.
-- Outbound, deterministic: the finished reply is published as a
-  reply-delivery event; the owning source app consumes it and performs the
-  actual send (grammY for tg, SSE to the browser for web threads).
-- Outbound, model-driven: each source app exposes an MCP server for its
-  outbound actions (send_message, send_reply, typing, …); the worker's MCP
-  runtime registers these as built-in connections, so task fires and
-  cross-chat sends are tool calls into the source app.
-- Events: worker and source apps publish status/progress events on Redis
-  pub/sub; `apps/web` bridges them to the existing SSE layer (the
-  `publishEvent`/`useLiveRefresh` contract survives, its backbone changes).
-- Control: dashboard actions (enable/disable a connection, start/stop) write
-  desired state to the DB and nudge the owning app over the bus; that app
-  reconciles (e.g. `apps/tg` starts/stops pollers) and publishes actual
+### The source-app contract
+
+`packages/contracts` defines what any source is:
+
+- it persists incoming messages and enqueues normalized inbound events;
+- it consumes reply-delivery events for its chats and performs the actual
+  send;
+- it exposes an MCP server for its outbound actions;
+- it reconciles its connections from DB desired state and publishes actual
   state.
 
-### Identity model (draft — refined in Phase 1)
+`apps/tg` is the first implementation; web chat inside `apps/web` follows
+the same contract; adding Signal later means writing another source app.
+
+### Message flow
+
+- **Inbound:** every source app persists the message and enqueues one
+  normalized inbound event (canonical chat id, canonical sender id,
+  assistant id, content — text / media refs / voice — reply target). The
+  worker consumes the queue and runs the same pipeline regardless of
+  source.
+- **Outbound, deterministic:** the finished reply is published as a
+  reply-delivery event; the owning source app consumes it and performs the
+  send (grammY for tg, SSE to the browser for web threads). The model never
+  has to remember to send its own answer.
+- **Outbound, model-driven:** task fires and cross-chat sends are tool
+  calls into the source app's MCP server (send_message, send_reply, …),
+  which the worker registers as a built-in connection.
+- **Events:** worker and source apps publish status/progress events on
+  Redis pub/sub; `apps/web` bridges them to the SSE layer (the
+  `publishEvent`/`useLiveRefresh` contract survives, its backbone changes).
+- **Control:** dashboard actions (enable/disable a connection, start/stop)
+  write desired state to the DB and nudge the owning app over the bus; that
+  app reconciles (e.g. `apps/tg` starts/stops pollers) and publishes actual
+  state.
+
+### Turn failure handling
+
+No revert machinery. A failed turn **retries only if it performed no
+actions yet** — no reply sent, no tool executed, nothing created or changed
+beyond storing the inbound message itself. Once any action has run, a
+failure does not retry: the turn fails, is reported to the operator (trace
++ dashboard surfacing), and stops. Mechanically this is a per-turn
+"actions started" marker. This guarantees transient failures before any
+work never drop messages, and nothing ever double-sends or double-executes.
+
+## Domain model
+
+### Identity
+
+Canonical, source-agnostic entities; per-source bindings. Draft schema,
+refined in Phase 1:
 
 - `users` — canonical person: id, display name, operator flag, notes.
 - `user_identities` — `(user_id, source, external_id)` unique per
-  `(source, external_id)`, plus per-source profile fields (username, etc.).
+  `(source, external_id)`, plus per-source profile fields.
 - `chats` — canonical conversation: id, kind (`dm` / `group` / `thread`),
   title.
 - `chat_identities` — `(chat_id, source, external_id)`.
-- Web threads are `chats` of kind `thread`: owned by the operator's canonical
-  user, bound to one assistant at creation.
 
+Every feature (history, memory, analytics, tasks) keys on canonical ids.
 Today's `known-users` / `known-groups` data becomes canonical rows with
 telegram bindings.
 
 ### Assistants
 
-- `assistants` — id, name, persona prompt, timestamps (draft; converted from
-  `personalities`).
-- Shared across assistants: LLM backend config, settings, memory, history,
-  MCP tool connections (v1).
-- Per-assistant: persona, transport connections, standing tasks.
+Personalities convert into assistants. Many assistants, CRUD via dashboard,
+sharing one brain: LLM backend config, settings, memory, history, and (for
+v1) MCP tool connections are shared across all assistants. Per-assistant:
+persona, transport connections, standing tasks.
+
+- `assistants` — id, name, persona prompt, timestamps (draft).
 - `assistant_connections` — assistant id, source (`telegram` for now),
-  credentials (bot token), enabled/desired state, runtime status. `apps/tg`
-  runs one poller per enabled telegram connection.
-- Migration default: the current bot token becomes a telegram connection on
-  the assistant converted from the currently active personality.
+  credentials (bot token), enabled/desired state, runtime status. One bot
+  token per assistant; `apps/tg` runs one poller per enabled connection;
+  the assistant in a Telegram chat is implied by which bot is in it.
+
+Behavior in shared chats:
+
+- Assistants do **not** ignore each other's messages; each assistant's
+  addressing check is against its own name only.
+- **Bot-to-bot loop guard:** a per-chat cap on *consecutive*
+  assistant-authored turns — once N assistant↔assistant exchanges happen
+  with no human message in between, assistants stay silent in that chat
+  until a human speaks. N is operator-configurable (DB-backed setting),
+  deterministic, no LLM judgment involved.
 
 ### Conversation pipeline
 
-- Source adapters normalize into a canonical inbound message: canonical chat
-  id, canonical sender id, assistant id, content (text / media refs / voice),
-  reply target.
-- One BullMQ job per inbound message (see the turn-failure-handling
-  decision): the job retries on failure only while the turn has performed
-  no actions; after the first action, failure means fail + report + stop —
-  no retry, no revert. Exact wiring is Phase 2 design.
-- The turn runner generalizes today's `handleIncomingMessage`: addressing
-  (deterministic own-name check per assistant + analyzer), policy gates,
-  prompt composition (system + persona + chat context + memory + history +
-  current turn), tool loop, honesty gate, delivery, trace.
-- Turn progress: trace events double as progress events published on the bus
-  so the web thread shows live typing/tool activity.
+The turn runner generalizes today's `handleIncomingMessage`: addressing
+(deterministic own-name check per assistant + analyzer), policy gates,
+prompt composition (system + persona + chat context + memory + history +
+current turn), tool loop, honesty gate, delivery, trace. One BullMQ job per
+inbound message, with the turn-failure rules above. Trace events double as
+progress events on the bus, so web threads show live typing/tool activity.
+
+### Web chat
+
+- Operator + named threads: the operator session maps to a canonical user
+  with a `web` identity binding; threads are `chats` of kind `thread`,
+  owned by the operator, each bound to one assistant **at creation** (no
+  mid-thread switching).
+- v1 scope is everything: text, image upload (vision pipeline), and voice
+  (voice pipeline).
+- Delivery: message-at-once + live turn progress (typing / tool-call events
+  over SSE), not token streaming.
 
 ### MCP tool connections
 
-- `tool_connections` (draft): name/slug, transport discriminator (`http` live;
-  `stdio` modeled, disabled in v1), endpoint URL, auth headers (secrets in
-  DB), enabled, scope (`global` / chat / user).
+Operator-managed, DB-backed (config-in-DB direction; no end-user accounts),
+scopable global / per-chat / per-user. Shared across assistants in v1;
+per-assistant toolset selection is planned later — the schema leaves room.
+
+- `tool_connections` (draft): name/slug, transport discriminator (`http`
+  live; `stdio` modeled but disabled in v1), endpoint URL, auth headers
+  (secrets in DB), enabled, scope.
+- Transport v1: Streamable HTTP + legacy SSE with configurable auth
+  headers. stdio execution is deferred but designed in via the
+  discriminator, so adding it later needs no schema or UI rework.
 - Tool discovery at connect time plus an explicit re-sync/apply step: the
   offered toolset is a **snapshot** that changes only on operator command —
   never mid-conversation — preserving llama.cpp prefix-cache stability and
   avoiding strict-provider 400s on schema drift.
 - Tool names are prefixed with the connection slug to prevent collisions.
-- Built-in feature tools (browse_web, memory, tasks, image-gen, …) remain an
-  in-process registry inside the worker, alongside remote connections and
-  the source apps' MCP servers (registered as built-in connections).
+- Built-in feature tools (browse_web, memory, tasks, image-gen, …) remain
+  an in-process registry inside the worker, alongside remote connections
+  and the source apps' MCP servers.
 
 ### Traces and debug
 
-DB-backed trace store as today; both apps record, the dashboard debug
-explorer reads. Existing traces are not migrated (logs are dropped).
+DB-backed trace store as today; all apps record, the dashboard debug
+explorer reads. Existing traces are not migrated.
 
 ## Migration ("migrate the brain, drop the logs")
 
-Hard requirement: **no brain-data loss**. Downtime at cutover is acceptable.
+Hard requirement: **no brain-data loss**. Downtime at cutover is
+acceptable.
 
-In scope (migrated): canonical users/chats from known-users/known-groups (+
-telegram bindings), history messages, memory, sender preferences,
+In scope (migrated): canonical users/chats from known-users/known-groups
+(+ telegram bindings), history messages, memory, sender preferences,
 self-improvement corrections, tasks (assigned to the default assistant),
-personalities → assistants, settings, media/vision descriptions.
+personalities → assistants, settings, media/vision descriptions. The
+current bot token becomes a telegram connection on the assistant converted
+from the active personality.
 
 Out of scope (start fresh): traces, analytics rollups.
 
@@ -264,13 +224,20 @@ Mechanism and safety net:
 2. **Mandatory rehearsal** against a copy of the production DB before
    cutover — repeated until clean.
 3. Scripted verification: row-count reconciliation per table pair plus
-   spot-check queries (e.g. a known chat's history readable through the new
-   schema), run automatically after every rehearsal and at cutover.
+   spot-check queries, run automatically after every rehearsal and at
+   cutover.
 4. Full DB backup immediately before cutover; the old database is retained
    untouched (read-only) after cutover.
-5. Written cutover runbook: stop old → backup → migrate → verify → start new
-   → smoke-check (bot answers, dashboard loads, web chat works) → rollback
-   path (restore backup, redeploy last v1 image).
+5. Written cutover runbook: stop old → backup → migrate → verify → start
+   new → smoke-check (bot answers, dashboard loads, web chat works) →
+   rollback path (restore backup, redeploy last v1 image).
+
+## Deployment
+
+Per-app Docker images: `assistant-hub-web`, `assistant-hub-worker`,
+`assistant-hub-tg`. The release pipeline builds and publishes all of them
+from the same version bump; compose pins every service to the same tag so
+containers never run different code versions. Redis joins docker-compose.
 
 ## Build phases
 
@@ -279,9 +246,8 @@ Each phase gets detailed acceptance criteria in PROGRESS.md when it starts.
 - **Phase 0 — Scaffold.** Turborepo + workspaces; current app moves into
   `apps/web`; `packages/db` / `core` / `contracts` carved out with no
   behavior change; CI, lint/typecheck/test/build wiring; docker builds the
-  per-app images (`assistant-hub-web`, `assistant-hub-worker`,
-  `assistant-hub-tg`) and the release pipeline publishes them all on one
-  version bump.
+  per-app images and the release pipeline publishes them all on one version
+  bump.
 - **Phase 1 — Schema + migration.** Canonical identity, assistants,
   connections, tool-connection tables in `packages/db`; migration scripts +
   verification harness + rehearsal workflow.
@@ -298,16 +264,21 @@ Each phase gets detailed acceptance criteria in PROGRESS.md when it starts.
   history/memory/trace parity with telegram chats.
 - **Phase 5 — MCP connections.** HTTP connections CRUD, discovery +
   snapshot/apply, scoping, prefixing, tools dashboard rework.
-- **Phase 6 — Cutover.** Rehearsed migration, runbook execution, rename,
-  release pipeline for the new shape, docs rewrite (AGENTS.md describes v1
-  and must be updated).
+- **Phase 6 — Cutover.** Rehearsed migration, runbook execution, rename to
+  assistant-hub, release pipeline for the new shape, docs rewrite
+  (AGENTS.md describes v1 and must be updated).
 
-Out of scope for v2 (planned, not built): stdio MCP execution, per-assistant
-toolset selection, end-user accounts / self-serve tools, token streaming,
-Signal, mobile apps.
+Out of scope for v2 (planned, not built): stdio MCP execution,
+per-assistant toolset selection, end-user accounts / self-serve tools,
+token streaming, Signal, mobile apps.
 
-## Open items
+## Working rules
 
-None. Every architecture-level decision is made; remaining details (exact
-compensation mechanics, queue wiring, package cut) are phase-level design,
-expanded in PROGRESS.md when their phase starts.
+- Big-bang redesign: the full target is designed here first; intermediate
+  states need not be shippable.
+- All work happens on one long-lived redesign branch — the sanctioned
+  exception to the commit-on-main rule. Main stays releasable for hotfixes;
+  the branch is **rebased onto main** after hotfixes (rebases, not merges).
+- No version bumps from the branch until cutover.
+- Design changes are made by asking the user, then updating this document
+  in place; the outcome is logged in PROGRESS.md's session log.
