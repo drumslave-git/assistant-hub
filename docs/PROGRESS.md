@@ -11,9 +11,8 @@ Planning. All architecture decisions are agreed and recorded in PLAN.md
 (2026-08-21 brainstorm). Name chosen: **assistant-hub**. No code has moved
 yet; the redesign branch does not exist yet.
 
-Next best task: create the redesign branch and start Phase 0. The two
-remaining open items (queue retry semantics, image shape) are phase-time
-decisions and do not block starting.
+Next best task: create the redesign branch and start Phase 0. No open
+architecture decisions remain.
 
 Known pitfalls for whoever starts:
 
@@ -50,3 +49,9 @@ Known pitfalls for whoever starts:
   guard approved: cap on consecutive assistant-authored turns per chat,
   operator-configurable. Remaining open items: queue retry semantics
   (Phase 2), image shape (Phase 0).
+- **2026-08-21 (later still)** — Final two decisions: turns are ACID-like
+  (all-or-nothing with compensation/revert of completed side effects on
+  failure; non-revertible external effects mark a point of no return that
+  surfaces failures to the operator instead), and deployment is two Docker
+  images (`assistant-hub-web`, `assistant-hub-worker`) published together
+  from one version bump. Planning is complete.

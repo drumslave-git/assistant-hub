@@ -83,6 +83,20 @@ MCP connections:
 
 Execution:
 
+- **Turn atomicity (ACID-like)** (user, 2026-08-21): a reply turn is
+  all-or-nothing. Every side effect it performs (persisted message, created
+  task, saved memory, sent reply) is tracked, and if the turn fails at any
+  point, the effects already done are reverted (delete the sent message,
+  delete the task, …) before the job is retried or surfaced as failed —
+  never a half-applied turn, never a double reply. Design note: an effect
+  with external consequences that cannot be undone (a remote MCP tool call
+  that e.g. sent an email) marks the turn's point of no return — after it,
+  a failure surfaces to the operator as a failed turn instead of
+  revert-and-retry. Mechanics (compensation registry) are Phase 2 design.
+- **Two Docker images** (user, 2026-08-21): `assistant-hub-web` and
+  `assistant-hub-worker`. The release pipeline builds and publishes both
+  from the same version bump; compose pins both services to the same tag so
+  the two containers never run different code versions.
 - **Big-bang redesign** — full target designed first, then rebuilt toward it;
   intermediate states need not be shippable.
 - **Long-lived redesign branch** — the sanctioned exception to the
@@ -177,9 +191,10 @@ telegram bindings.
 - Source adapters normalize into a canonical inbound message: canonical chat
   id, canonical sender id, assistant id, content (text / media refs / voice),
   reply target.
-- One BullMQ job per inbound message. Retry semantics must not double-send:
-  retries are safe only before side effects; the turn runner dedupes by
-  message id (design detail, Phase 2).
+- One BullMQ job per inbound message, with all-or-nothing turns (see the
+  turn-atomicity decision): every side effect registers its compensating
+  action, a failed turn reverts what it already did, and only a fully
+  reverted turn is eligible for retry. Exact mechanics are Phase 2 design.
 - The turn runner generalizes today's `handleIncomingMessage`: addressing
   (deterministic own-name check per assistant + analyzer), policy gates,
   prompt composition (system + persona + chat context + memory + history +
@@ -237,8 +252,9 @@ Each phase gets detailed acceptance criteria in PROGRESS.md when it starts.
 
 - **Phase 0 — Scaffold.** Turborepo + workspaces; current app moves into
   `apps/web`; `packages/db` / `core` / `contracts` carved out with no
-  behavior change; CI, lint/typecheck/test/build wiring; docker builds both
-  apps (image shape decided here: two images vs one image, two entrypoints).
+  behavior change; CI, lint/typecheck/test/build wiring; docker builds the
+  two images (`assistant-hub-web`, `assistant-hub-worker`) and the release
+  pipeline publishes both on one version bump.
 - **Phase 1 — Schema + migration.** Canonical identity, assistants,
   connections, tool-connection tables in `packages/db`; migration scripts +
   verification harness + rehearsal workflow.
@@ -263,7 +279,6 @@ Signal, mobile apps.
 
 ## Open items
 
-- **Queue retry semantics** — exact idempotency/dedupe rules for inbound
-  turn jobs (no double replies, no lost messages). Phase 2 decision.
-- **Image shape** — one image with two entrypoints vs two images (Phase 0
-  decision, affects the release pipeline).
+None. Every architecture-level decision is made; remaining details (exact
+compensation mechanics, queue wiring, package cut) are phase-level design,
+expanded in PROGRESS.md when their phase starts.
