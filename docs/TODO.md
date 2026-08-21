@@ -28,6 +28,117 @@ independently runs the bot, dashboard, persistence, background jobs and Docker
 deployment. Priorities 5–6 (search / read-link MCP tools) were later
 superseded — `browse_web` is the only web tool (user decision, 2026-07-26).
 
+## Collections feature (`deferred` — possible future feature, spec agreed 2026-08-19)
+
+Not scheduled: the user parked this after the brainstorm ("maybe will work on
+it eventually", 2026-08-19). The full agreed spec below is kept so a future
+session can start from the decisions instead of re-asking them. If picked up,
+the suggested order is: inline-buttons subsystem → schema + CRUD + dashboard →
+detection/enrichment adapters → interview flow → task-based tracking.
+
+The bot becomes a personal collection keeper in DMs: things the user sends
+(YouTube links, IMDB links, Steam links, photos of food, generic links) are
+enriched, automatically categorized and stored into that user's collections,
+browsable and CRUD-able from the dashboard. Note: this deliberately
+re-introduces a generic entry store after the Specialists removal (2026-08-19)
+— a fresh user decision, different product (user-facing collecting with
+enrichment and tracking, not operator-authored roles).
+
+Decisions (user, 2026-08-19):
+
+- **DM-only, per-user.** The whole feature engages only in direct messages;
+  collections belong to the DM user. Group messages never touch it.
+- **Rule-driven collections, created by interview.** When the first item of an
+  unrecognized kind arrives, the bot asks what to do with it and keeps asking
+  until it has all required info (name, what matches, what to extract, rating
+  policy, statuses, tracking policy, notification cadence), then creates the
+  collection + its rules. Subsequent matching items follow the rules without
+  asking. Enforcement mechanism: the create tool's schema refuses incomplete
+  input and names what is missing, so the model's next question is driven by
+  the refusal — the conversation is the interview state.
+- **Rating / statuses / tracking cadence are per-collection rules**, not
+  global settings. Notification target for tracking fires is the DM.
+- **Movie metadata via web crawler** (browser agent over the IMDB page), not a
+  TMDB/OMDb API key.
+- **Steam (and similar) update tracking reuses Tasks** — no new watcher
+  mechanism. Tracking an item = the bot creates/maintains a task in the DM
+  chat per the collection's rules; requires collection-item tools in fire
+  turns (read/compare/update the item's `watch_state` so one update never
+  fires twice), plus `browse_web` (exists). Deleting an item removes its task.
+- **Items carry media (at least images)** — derived from the source (YouTube
+  thumbnail, Steam header image, crawled poster, the sent photo itself) or
+  found by the bot via the browser agent when the source yields none. Own
+  persistence, not `message_media` (that pipeline drops bytes after
+  describing; collection images must persist for the dashboard gallery).
+- **Telegram interaction tools — dynamic buttons** (user decision,
+  2026-08-19, superseding the first deterministic-binding proposal): the bot
+  *decides* what options to render (free-form labels from the model — a
+  rating scale, yes/no, interview choices), receives the tap, and processes
+  the answer itself. A tap does not apply a pre-bound action; it opens a new
+  model turn in that chat with the chosen option as the triggering input, and
+  the model does whatever follows (update the item's rating, ask the next
+  interview question, …). New shared subsystem (nothing handles
+  `callback_query` today): a generic ask-with-buttons tool, server-side
+  payload token (64-byte callback-data cap), the choice recorded in history,
+  the question message edited to show the selection with the keyboard removed
+  (one-shot — a consumed button set never processes twice). The tool result
+  tells the model the buttons were *sent*, never the answer — the answer
+  arrives in a later turn, and the description must forbid claiming the
+  choice was already handled. Shared across features, not
+  collections-specific.
+
+Proposed architecture (direction agreed in brainstorm, details to implement):
+
+- Tables: `collections` (per-user, tree via `parent_id`, structured rule
+  fields + free-text rules instruction), `collection_items` (title,
+  `source_kind`, `source_url`, `attributes` JSONB, status, rating/review,
+  provenance chat/user/media ids, `watch_state` JSONB, embedding), item
+  images table. Dedupe: same `source_url` in the same collection updates
+  rather than duplicates.
+- Deterministic detection in the DM pipeline (URL domain / media kind —
+  mechanical facts only) → source-adapter enrichment (YouTube oEmbed/yt-dlp,
+  Steam `appdetails` + `ISteamNews`, crawler for IMDB/generic, vision
+  pipeline for photos — multi-item photos itemize into N items) → LLM
+  categorization against the user's collection tree (metadata is the
+  evidence; the model picks/creates the shelf, never invents the facts).
+- MCP tools (~8): collections create/update/delete, items
+  add/update/delete/search, ask-with-buttons. No `collections_list` tool —
+  DM turns compose the user's collection tree into context (like tasks).
+
+Sub-decisions (user, 2026-08-19 — both resolved as recommended):
+
+1. **Toolset is DM-variant**: collections + buttons tools are offered in DM
+   turns only. Two stable tool blocks (group vs DM) instead of one; each
+   variant stays internally stable per the llama.cpp prefix-cache constraint
+   (see the 2026-08-19 trimming entry).
+2. **Rules are hybrid**: required structured fields (name, match rule, media
+   policy, rating policy, tracking cadence) + a free-text instruction for the
+   rest, injected when handling a matching item.
+
+Acceptance criteria (v1):
+
+- A known-kind link sent in DM becomes an enriched, categorized item with an
+  image; a first-of-kind link triggers the creation interview and the bot
+  does not stop asking until the create tool accepts.
+- A photo of food creates item(s) in the right branch with the photo
+  attached; an order photo with several dishes itemizes.
+- Rating is asked exactly when the collection's rules say, via inline
+  buttons the model composed; a tap opens a turn in which the model records
+  the choice on the item, the question message shows the selection with its
+  keyboard removed, and a consumed button set never processes twice.
+- A tracked Steam item gets a task; a new update fires one DM message and
+  stamps the item's `watch_state`; the same update never fires twice.
+- `/collections` dashboard: tree + items with shared components, every
+  filter a visible URL control, live SSE updates, full raw enrichment bodies
+  in traces, `featureDebugHref`, JSON export, full CRUD.
+- Feature-contract tests: service logic, Route Handlers, adapters (pinned
+  fixture pages for the crawler), button callback handling, task-fire item
+  update path.
+
+Dependencies: vision pipeline (photo items), browser agent (crawler + image
+finding), tasks (tracking), history (DM context), the new inline-keyboard
+subsystem.
+
 ## Oversized tool descriptions trimmed + history/memory search boundary (`done`, 2026-08-19)
 
 Follow-up to the toolset measurements: the 23 tools offered every reply turn
