@@ -100,10 +100,13 @@ them all from one root version bump.
       turbo (env loaded from `apps/core/.env`, DB + bot poller up, /login
       200, no server errors).
 
-Remaining risks: the release workflow and `npm run test:linux` are updated
-but unexercised (the workflow can only fire from main; the linux test
-container needs a first run to rebuild its node_modules volume for the
-workspace layout). The standalone build locally traces in `apps/core/data`
+`npm run test:linux` verified on the new layout (stale volume dropped,
+fresh workspace install, 1189/1189 tests in 105 files — including the
+subprocess tests that skip on Windows).
+
+Remaining risks: the release workflow is updated but unexercised (it can
+only fire from main — by design, no version bumps from the branch until
+cutover). The standalone build locally traces in `apps/core/data`
 and test files — harmless in the image because `.dockerignore` excludes
 them from the build context. Docs under `docs/` still describe the v1
 layout except README and `docs/operations/deployment.md`, which were
