@@ -28,9 +28,9 @@ Known pitfalls for whoever starts:
 
 | Phase | Scope (see PLAN.md) | Status |
 | --- | --- | --- |
-| 0 | Monorepo scaffold, apps/web + packages carve-out, extension registry, CI, docker | todo |
+| 0 | Monorepo scaffold, apps/core + packages carve-out, extension registry, CI, docker | todo |
 | 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | todo |
-| 2 | Runtime split: worker + tg apps, source contract, Redis bus + queue, SSE bridge | todo |
+| 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | todo |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | todo |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
@@ -89,3 +89,11 @@ Known pitfalls for whoever starts:
   aggregates users/chats/messages via a shared listing/CRUD contract each
   source app's operator API implements. Migration now splits the v1 DB
   into the per-app databases.
+- **2026-08-21 (later)** — apps/web and apps/worker merged into a single
+  **apps/core** (user): with the sources carved out, the worker was just
+  the brain and the web app just the shell, and the user wants the core
+  store owned by the dashboard-owning app — so one hub app owns dashboard
+  + auth + SSE + proxy + pipeline + MCP runtime + schedulers + core
+  store, with no internal worker API needed. Three apps, three images
+  (core/tg/chat). Phase 2 becomes "source split" (extract telegram from
+  core) instead of a web/worker split.
