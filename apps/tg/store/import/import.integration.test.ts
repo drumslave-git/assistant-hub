@@ -60,11 +60,16 @@ async function seedV1(v1: Pool): Promise<void> {
      VALUES ('fb-1', '-2001', 12, '1001', 'up', 'completed', 'fixture-model', 'nice reply')`,
   );
   await v1.query(
+    `INSERT INTO chat_summaries (chat_id, summary_date, content, message_ids)
+     VALUES ('-2001', '2026-08-01', 'talked about the fixture', ARRAY[11,12]::bigint[])`,
+  );
+  await v1.query(
     `INSERT INTO personalities (id, name, prompt) VALUES ('persona-1', 'Fixture Persona', 'be terse')`,
   );
   await v1.query(
-    `INSERT INTO settings (id, telegram_bot_token, active_personality_id)
-     VALUES ('singleton', '12345:fixture-token', 'persona-1')`,
+    `INSERT INTO settings (id, telegram_bot_token, active_personality_id,
+                           owner_username, owner_user_id)
+     VALUES ('singleton', '12345:fixture-token', 'persona-1', 'alice_example', '1001')`,
   );
 }
 
@@ -134,11 +139,23 @@ describe("v1 → tg store import", () => {
     const blob = await target.query(`SELECT data FROM media_blobs WHERE media_id = 'media-1'`);
     expect(blob.rows[0].data.toString()).toBe("fixture-jpeg-bytes");
 
+    // Summaries came along with identity ids and their telegram message ids.
+    const summaries = await target.query(
+      `SELECT id, chat_id, summary_date, message_ids FROM summaries`,
+    );
+    expect(summaries.rows).toEqual([
+      { id: "1", chat_id: "-2001", summary_date: "2026-08-01", message_ids: ["11", "12"] },
+    ]);
+
     // The v1 bot token became a connection on the converted active personality.
     const connection = await target.query(`SELECT assistant_id, bot_token, enabled FROM connections`);
     expect(connection.rows).toEqual([
       { assistant_id: "persona-1", bot_token: "12345:fixture-token", enabled: true },
     ]);
+
+    // The owner identity now lives in this app's settings singleton.
+    const settings = await target.query(`SELECT owner_username, owner_user_id FROM settings`);
+    expect(settings.rows).toEqual([{ owner_username: "alice_example", owner_user_id: "1001" }]);
   });
 
   it("refuses a non-empty target", async () => {

@@ -26,9 +26,10 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 /**
  * The v2 **tg store** (PLAN.md, "Data ownership") — everything the Telegram
  * source app owns: users, chats, the message mirror, media, message search,
- * feedbacks collected through Telegram interactions, and the telegram
- * connections (bot token per assistant). Fresh database, fresh migration
- * chain (`store/migrations`), populated from the v1 database by
+ * chat summaries, feedbacks collected through Telegram interactions, the
+ * telegram connections (bot token per assistant), and this app's own
+ * settings (owner identity). Fresh database, fresh migration chain
+ * (`store/migrations`), populated from the v1 database by
  * `store/import-v1.ts` at cutover.
  *
  * Table shapes are the v1 tables (known_users, known_groups, chat_messages,
@@ -307,6 +308,70 @@ export const feedbacks = pgTable(
 
 export type FeedbackRow = typeof feedbacks.$inferSelect;
 export type FeedbackInsert = typeof feedbacks.$inferInsert;
+
+/**
+ * One topic discussed in one chat on one day, distilled by the core's
+ * summarization job (v1 `chat_summaries`). Conversation-derived CONTENT, so
+ * it lives here with the mirror it summarizes (user decision, 2026-08-22);
+ * the core provides the feature and writes/reads through this app's API.
+ * The job's coverage markers (which chat-days are done) are core-job state
+ * and live in the core store. `message_ids` are Telegram message ids (the
+ * `#<id>` transcript anchors), not `messages.id` — no FK, deliberately, as
+ * in v1.
+ */
+export const summaries = pgTable(
+  "summaries",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    /** Telegram chat/group id this topic belongs to. */
+    chatId: text("chat_id").notNull(),
+    /** The summarized day (`YYYY-MM-DD`) in the operator timezone. */
+    summaryDate: text("summary_date").notNull(),
+    /** Self-contained summary of the topic. */
+    content: text("content").notNull(),
+    /** Telegram message ids belonging to this topic, for reading the originals. */
+    messageIds: bigint("message_ids", { mode: "number" }).array().notNull().default([]),
+    /** Embedding of `content` for semantic recall. Null when embedding failed. */
+    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("summaries_chat_date_idx").on(t.chatId, t.summaryDate),
+    // The full-text half of the hybrid search is a hand-written expression
+    // index in the migration (to_tsvector has no Drizzle column to hang off).
+    index("summaries_embedding_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+  ],
+);
+
+export type SummaryRow = typeof summaries.$inferSelect;
+export type SummaryInsert = typeof summaries.$inferInsert;
+
+/**
+ * This app's own settings — a single typed row (`id = 'singleton'`), the
+ * same convention as the core store's settings. Holds what is Telegram's to
+ * decide: the owner identity (user decision, 2026-08-22 — owner logic and
+ * settings live on the app side; the core receives the resolved is-owner
+ * flag on inbound events, never the raw identity).
+ */
+export const settings = pgTable(
+  "settings",
+  {
+    id: text("id").primaryKey().default("singleton"),
+    /** Owner's Telegram @username (normalized: lowercase, no leading `@`). */
+    ownerUsername: text("owner_username"),
+    /**
+     * Owner's numeric Telegram user id, resolved and persisted the first time
+     * the configured @username messages a bot (Telegram has no lookup by
+     * username).
+     */
+    ownerUserId: text("owner_user_id"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check("settings_singleton", sql`${t.id} = 'singleton'`)],
+);
+
+export type TgSettingsRow = typeof settings.$inferSelect;
+export type TgSettingsInsert = typeof settings.$inferInsert;
 
 /**
  * Telegram connections — one bot token per assistant (PLAN.md). This is the

@@ -11,28 +11,27 @@ Phases 0 (scaffold) and 1 (schemas + migration) are done on the long-lived
 `redesign` branch (created 2026-08-21 from main at the tracing-unification
 commit).
 
-Next best task: Phase 2 (source split). **Before starting it, the user
-should answer the open questions below** — they shape the source contract
-and job placement:
+Next best task: Phase 2 (source split). The open questions were answered
+by the user (2026-08-22) and applied:
 
-1. **Queue retry semantics** (flagged open since planning): PLAN's
-   turn-failure rule implies BullMQ `attempts: 1` with our own
-   "retry only if no actions started yet" gate in the turn runner —
-   confirm, or specify backoff/attempt counts.
-2. **Derived-data placement** (Phase 1 made these calls; cheap to revisit
-   now, expensive later): chat_summaries + summary/extraction day markers
-   → **core** store (scoped chat refs — derived knowledge is brain-owned);
-   message_search → **tg** store (raw-content index beside the mirror,
-   FK-cascades with it); users_feedbacks → **tg** store (telegram
-   interaction flow; distilled prefs/corrections are core);
-   addressing_exclusions → **core** (bot-wide brain facts). Post-split,
-   the core's jobs that build tg-store rows (search indexing, vision
-   describe) will need a write path through tg's API/MCP — Phase 2 design.
-3. **Owner semantics**: v2 core settings keep `owner_username` /
-   `owner_user_id` with v1 telegram meaning for now; generalizing "owner"
-   per-source is proposed as a Phase 3 topic.
-4. Naming already logged: `@assistant-hub/*` package scope ahead of the
-   Phase 6 repo rename; per-app v2 database modules live in `<app>/store/`.
+1. **Queue retry semantics**: confirmed — BullMQ `attempts: 1`; the turn
+   runner alone decides re-enqueue via the "actions started" marker.
+2. **Placement rule (strict)**: bot state (memory, self-improvement,
+   tasks, job coverage markers like chat_summary_days /
+   memory_extraction_days) → **core** store; conversation-derived content
+   (messages, message_search, media, **chat summaries**, feedbacks) →
+   the **owning app's** store — "core just provides tools and features".
+   Consequence for Phase 2: core jobs (summarization, search indexing,
+   vision describe) read and write app content through the owning app's
+   API.
+3. **Owner**: owner logic and settings live on the app side (tg-store
+   settings singleton holds owner_username / owner_user_id); the core
+   receives only the resolved is-owner flag on inbound events.
+   `maintenance_mode_enabled` stays core (the gate consuming the flag).
+4. Naming confirmed as explained: `@assistant-hub/*` package scope ahead
+   of the Phase 6 repo rename; per-app v2 database modules in
+   `<app>/store/`; core's transitional `STORE_DATABASE_URL`; assistants
+   keep personality UUIDs.
 
 Known pitfalls (in addition to the ones under "Phases" below):
 
@@ -154,15 +153,18 @@ schema module) and refuse a non-empty target.
       shared `EMBEDDING_DIMENSIONS` constant (moved from `lib/embeddings`,
       which re-exports it); unit tests cover parse/format round-trips.
 - [x] `apps/core/store`: core-store schema + 0000 migration — backends,
-      settings (v1 minus `telegram_bot_token` / `active_personality_id`),
-      assistants, memory (entries / user docs by scoped ref / general),
-      communication_preferences, self_corrections, addressing_exclusions,
-      tasks (scoped refs + `assistant_id`), chat_summaries + day markers +
-      memory_extraction_days (scoped chat refs), person_links +
-      person_link_members (unique member ref).
+      settings (v1 minus `telegram_bot_token` / `active_personality_id` /
+      owner columns), assistants, memory (entries / user docs by scoped
+      ref / general), communication_preferences, self_corrections,
+      addressing_exclusions, tasks (scoped refs + `assistant_id`), job
+      coverage markers (chat_summary_days + memory_extraction_days,
+      scoped chat refs), person_links + person_link_members (unique
+      member ref).
 - [x] `apps/tg/store`: tg-store schema + 0000 migration — users, chats,
       chat_members, messages, message_search, media, media_blobs,
-      feedbacks, connections (bot token per assistant, desired state).
+      feedbacks, summaries (conversation-derived content lives with the
+      mirror — user decision 2026-08-22), connections (bot token per
+      assistant, desired state), settings singleton (owner identity).
       Hand-written extension/index SQL (vector, pg_trgm, FTS/trgm GIN)
       carried over from the v1 chain.
 - [x] `apps/chat/store`: chat-store schema + 0000 migration — users
@@ -185,16 +187,18 @@ schema module) and refuse a non-empty target.
       restore copy → create per-app DBs (`packages/db` create-database
       helper) → migrate stores → run imports → read verification; repeat
       until clean. Production DB is never touched outside it.
-- [x] Proof (2026-08-21, all from the root): typecheck 6/6 workspaces
-      green; lint green; unit tests green (contracts scoped-ref suite
-      included); `turbo run test:integration` green with a real exit code —
-      chat 1/1, tg 2/2 (full import round-trip: verbatim identity-preserved
-      mirror, surviving embeddings and pending-media bytes, token bound to
-      the converted active personality, non-empty-target refusal), core
-      369 passed / 33 skipped including the core import round-trip
-      (settings minus dropped columns, id-preserving assistants, scoped
-      refs on memory/tasks/exclusions, identity-preserved summaries,
-      sequence continuation, refusal); build green.
+- [x] Proof (2026-08-22, after the placement revision, all from the
+      root): typecheck 6/6 workspaces green; lint green; unit tests green
+      (contracts scoped-ref suite included); `turbo run test:integration`
+      green with a real exit code — chat 1/1, tg 2/2 (full import
+      round-trip: verbatim identity-preserved mirror and summaries,
+      surviving embeddings and pending-media bytes, token bound to the
+      converted active personality, owner in tg settings,
+      non-empty-target refusal), core 369 passed / 33 skipped including
+      the core import round-trip (settings minus dropped token/persona/
+      owner columns, id-preserving assistants, scoped refs on
+      memory/tasks/exclusions, identity-preserved day markers, sequence
+      continuation, refusal); build green.
 
 Remaining gaps, deliberate: the new workspaces (tg, chat, contracts, db,
 ui) have no eslint wiring yet (typecheck guards them; lint config for
@@ -271,6 +275,20 @@ foundations only; no UI/service until the aggregation phases.
   chat user, linkable via person links); and the dashboard UI packages
   move inside their apps (apps/tg/ui, apps/chat/ui) as the one sanctioned
   seam the shell composes at build time.
+- **2026-08-22 (Phase 1 revision)** — User answered the open questions and
+  the stores were reworked to match before Phase 2: the strict placement
+  rule (bot state → core; conversation-derived content → owning app;
+  "core just provides tools and features") moved chat summaries into the
+  tg store (`summaries`, plain telegram ids, identity-preserving import);
+  the job coverage markers (chat_summary_days, memory_extraction_days)
+  stay core as job state (user choice on the follow-up question). Owner
+  identity moved out of core settings into a new tg-store settings
+  singleton (user choice: app-level, not per-connection) — the core will
+  receive only the resolved is-owner flag on inbound events;
+  `maintenance_mode_enabled` stays core. Queue retry semantics confirmed:
+  BullMQ `attempts: 1`, re-enqueue decided by the turn runner via the
+  actions-started marker. Both 0000 migrations regenerated; imports,
+  verification and integration tests updated.
 - **2026-08-21/22 (Phase 1)** — Phase 1 executed and verified: scoped-ref
   foundation + shared `EMBEDDING_DIMENSIONS` + `DEFAULT_ASSISTANT_ID` in
   `@assistant-hub/contracts`; three store modules with fresh migration

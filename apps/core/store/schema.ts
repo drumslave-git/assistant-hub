@@ -17,10 +17,10 @@ import {
 
 /**
  * The v2 **core store** (PLAN.md, "Data ownership") — the brain's own
- * database: assistants, settings, LLM backend config, memory, tasks, person
- * links, and the summarization/extraction knowledge derived from
- * conversations. Fresh database, fresh migration chain (`store/migrations`),
- * populated from the v1 database by `store/import-v1.ts` at cutover.
+ * database: assistants, settings, LLM backend config, memory,
+ * self-improvement, tasks, person links, and core-job coverage markers.
+ * Fresh database, fresh migration chain (`store/migrations`), populated
+ * from the v1 database by `store/import-v1.ts` at cutover.
  *
  * Never a foreign key into another app's database: anything that points at a
  * source-owned entity (a telegram user, a web-chat thread) stores a **scoped
@@ -29,11 +29,14 @@ import {
  * (telegram message ids, forum-topic thread ids) keep their own columns and
  * are only meaningful to the source the ref names.
  *
- * Tables the v1 app owns that are NOT here: raw conversation mirrors, media
- * and message search (source-owned — the tg store), analytics rollups and
- * browser-agent runs (start fresh; their tables join this schema when their
- * feature is rewired), search-engine stats (self-healing scoreboard, starts
- * fresh). Traces stay in the file-backed store, not the database.
+ * Tables the v1 app owns that are NOT here: raw conversation mirrors,
+ * media, message search, chat summaries and feedbacks (conversation-derived
+ * content is source-owned — the tg store; the core's features write it
+ * through the owning app's API — user decision, 2026-08-22), analytics
+ * rollups and browser-agent runs (start fresh; their tables join this
+ * schema when their feature is rewired), search-engine stats (self-healing
+ * scoreboard, starts fresh). Traces stay in the file-backed store, not the
+ * database.
  *
  * Conventions unchanged from v1: app-generated UUID text ids for entities,
  * identity bigints for append-only logs, timestamptz everywhere.
@@ -69,9 +72,11 @@ export type BackendInsert = typeof backends.$inferInsert;
  *   assistant, owned by apps/tg).
  * - `active_personality_id` — personalities became assistants; "active" is
  *   replaced by transport connections binding an assistant to a chat.
- *
- * `owner_username` / `owner_user_id` keep their v1 (telegram) semantics for
- * now; whether "owner" generalizes per-source is a Phase 3 question.
+ * - `owner_username` / `owner_user_id` — owner identity and resolution are
+ *   the source app's job (user decision, 2026-08-22): they live in the tg
+ *   store's settings, and the core receives the resolved is-owner flag on
+ *   inbound events. `maintenance_mode_enabled` stays here — the pipeline
+ *   gate that consumes that flag is a core feature.
  */
 export const settings = pgTable(
   "settings",
@@ -144,10 +149,6 @@ export const settings = pgTable(
     }),
     /** Browser-agent model id; null → the chat model. */
     browserModel: text("browser_model"),
-    /** Bot owner's Telegram @username (normalized). v1 semantics — see note. */
-    ownerUsername: text("owner_username"),
-    /** Owner's numeric Telegram user id, resolved on first contact. */
-    ownerUserId: text("owner_user_id"),
     /** Maintenance mode: only the owner can trigger LLM replies. */
     maintenanceModeEnabled: boolean("maintenance_mode_enabled").notNull().default(false),
     /** Operator timezone (IANA name) for wall-clock features. */
@@ -418,41 +419,14 @@ export type TaskRow = typeof tasks.$inferSelect;
 export type TaskInsert = typeof tasks.$inferInsert;
 
 /**
- * One topic discussed in one chat on one day — distilled recall over any
- * source's conversation, keyed by scoped chat ref. `message_ids` are
- * source-local message ids within that chat (the source serves the
- * originals); they are not FKs here. Derived knowledge is core-owned even
- * though the raw mirror is not (Phase 1 placement call — see PROGRESS.md).
+ * Marker of a (chat, day) pair the summarization job has processed. The
+ * summaries themselves are conversation-derived CONTENT and live in the
+ * owning source app's store (user decision, 2026-08-22: bot state → core,
+ * conversation-derived content → app storage; core writes it through the
+ * app's API). These markers are core-JOB state — which app chat-days the
+ * core's summarization feature has covered — so they stay here, keyed by
+ * scoped chat ref (same decision).
  */
-export const chatSummaries = pgTable(
-  "chat_summaries",
-  {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-    /** Scoped ref of the chat this topic belongs to. */
-    chatRef: text("chat_ref").notNull(),
-    /** The summarized day (`YYYY-MM-DD`) in the operator timezone. */
-    summaryDate: text("summary_date").notNull(),
-    /** Self-contained summary of the topic. */
-    content: text("content").notNull(),
-    /** Source-local message ids belonging to this topic. */
-    messageIds: bigint("message_ids", { mode: "number" }).array().notNull().default([]),
-    /** Embedding of `content` for semantic recall. Null when embedding failed. */
-    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    index("chat_summaries_chat_date_idx").on(t.chatRef, t.summaryDate),
-    index("chat_summaries_embedding_idx").using(
-      "hnsw",
-      t.embedding.op("vector_cosine_ops"),
-    ),
-  ],
-);
-
-export type ChatSummaryRow = typeof chatSummaries.$inferSelect;
-export type ChatSummaryInsert = typeof chatSummaries.$inferInsert;
-
-/** Marker of a (chat, day) pair the summarization job has processed. */
 export const chatSummaryDays = pgTable(
   "chat_summary_days",
   {

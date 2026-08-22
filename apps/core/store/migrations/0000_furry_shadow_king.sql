@@ -30,16 +30,6 @@ CREATE TABLE "backends" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "chat_summaries" (
-	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "chat_summaries_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"chat_ref" text NOT NULL,
-	"summary_date" text NOT NULL,
-	"content" text NOT NULL,
-	"message_ids" bigint[] DEFAULT '{}' NOT NULL,
-	"embedding" vector(1024),
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "chat_summary_days" (
 	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "chat_summary_days_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
 	"chat_ref" text NOT NULL,
@@ -132,8 +122,6 @@ CREATE TABLE "settings" (
 	"background_model" text,
 	"browser_backend_id" text,
 	"browser_model" text,
-	"owner_username" text,
-	"owner_user_id" text,
 	"maintenance_mode_enabled" boolean DEFAULT false NOT NULL,
 	"timezone" text DEFAULT 'UTC' NOT NULL,
 	"daily_jobs_run_time" text DEFAULT '04:00' NOT NULL,
@@ -192,8 +180,6 @@ ALTER TABLE "tasks" ADD CONSTRAINT "tasks_assistant_id_assistants_id_fk" FOREIGN
 CREATE UNIQUE INDEX "addressing_exclusions_normalized_idx" ON "addressing_exclusions" USING btree ("normalized");--> statement-breakpoint
 CREATE INDEX "assistants_name_idx" ON "assistants" USING btree ("name");--> statement-breakpoint
 CREATE INDEX "backends_name_idx" ON "backends" USING btree ("name");--> statement-breakpoint
-CREATE INDEX "chat_summaries_chat_date_idx" ON "chat_summaries" USING btree ("chat_ref","summary_date");--> statement-breakpoint
-CREATE INDEX "chat_summaries_embedding_idx" ON "chat_summaries" USING hnsw ("embedding" vector_cosine_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "chat_summary_days_chat_date_idx" ON "chat_summary_days" USING btree ("chat_ref","summary_date");--> statement-breakpoint
 CREATE UNIQUE INDEX "comm_prefs_user_version_idx" ON "communication_preferences" USING btree ("user_ref","version");--> statement-breakpoint
 CREATE INDEX "memory_entries_scope_user_idx" ON "memory_entries" USING btree ("scope","user_ref");--> statement-breakpoint
@@ -203,7 +189,6 @@ CREATE UNIQUE INDEX "self_corrections_version_idx" ON "self_corrections" USING b
 CREATE INDEX "tasks_chat_idx" ON "tasks" USING btree ("chat_ref","enabled");--> statement-breakpoint
 CREATE INDEX "tasks_due_idx" ON "tasks" USING btree ("enabled","next_run_at");--> statement-breakpoint
 CREATE INDEX "user_memories_embedding_idx" ON "user_memories" USING hnsw ("embedding" vector_cosine_ops);--> statement-breakpoint
--- Hand-written: FTS expression indexes drizzle-kit cannot express (carried
--- over from the v1 chain) — the full-text halves of summary and memory search.
-CREATE INDEX "chat_summaries_content_fts_idx" ON "chat_summaries" USING gin (to_tsvector('simple', "content"));--> statement-breakpoint
+-- Hand-written: FTS expression index drizzle-kit cannot express (carried
+-- over from the v1 chain) — the full-text half of memory search.
 CREATE INDEX "user_memories_content_fts_idx" ON "user_memories" USING gin (to_tsvector('simple', "content"));

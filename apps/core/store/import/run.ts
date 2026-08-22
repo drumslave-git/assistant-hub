@@ -3,7 +3,6 @@ import {
   ImportReport,
   countRows,
   insertBatch,
-  keysetCopy,
   requireEmptyTarget,
   syncIdentitySequence,
   withPools,
@@ -17,7 +16,8 @@ import type { Pool } from "pg";
  * by `store/migrations`, and reconciles row counts per table pair.
  *
  * Mapping (v1 → core store):
- * - backends, settings (minus telegram_bot_token / active_personality_id),
+ * - backends, settings (minus telegram_bot_token / active_personality_id /
+ *   owner_username / owner_user_id — token and owner belong to the tg app),
  *   self_corrections, general_memories — copied verbatim.
  * - personalities → assistants, id-preserving; when v1 has no active
  *   personality a default assistant is created under DEFAULT_ASSISTANT_ID so
@@ -27,12 +27,15 @@ import type { Pool } from "pg";
  *   refs; chat provenance becomes `tg:chat:<id>`.
  * - tasks — chat/creator/target ids become scoped refs; every task is
  *   assigned to the default assistant.
- * - chat_summaries / chat_summary_days / memory_extraction_days — identity
- *   ids preserved; chat ids become scoped refs.
+ * - chat_summary_days / memory_extraction_days — core-JOB coverage markers
+ *   (identity ids preserved; chat ids become scoped refs). The summaries
+ *   themselves are conversation-derived content and go to the tg store
+ *   (user decision, 2026-08-22).
  *
- * NOT copied (deliberately): telegram tables (the tg import owns them),
- * analytics rollups and browser-agent runs (start fresh), search-engine
- * stats (self-healing scoreboard), traces (file-backed, not migrated).
+ * NOT copied (deliberately): telegram tables incl. chat_summaries (the tg
+ * import owns them), analytics rollups and browser-agent runs (start
+ * fresh), search-engine stats (self-healing scoreboard), traces
+ * (file-backed, not migrated).
  */
 
 const TARGET_TABLES = [
@@ -46,7 +49,6 @@ const TARGET_TABLES = [
   "self_corrections",
   "addressing_exclusions",
   "tasks",
-  "chat_summaries",
   "chat_summary_days",
   "memory_extraction_days",
   "person_links",
@@ -120,8 +122,6 @@ export async function runCoreImport(input: {
       "background_model",
       "browser_backend_id",
       "browser_model",
-      "owner_username",
-      "owner_user_id",
       "maintenance_mode_enabled",
       "timezone",
       "daily_jobs_run_time",
@@ -357,49 +357,8 @@ export async function runCoreImport(input: {
       await countRows(target, `SELECT count(*) AS count FROM tasks`),
     );
 
-    // --- conversation-derived knowledge (identity-preserving, scoped refs) ---
-    log("summaries…");
-    const summariesCopied = await keysetCopy<Record<string, unknown>>({
-      from: v1,
-      page: (cursor) => ({
-        text:
-          `SELECT id, chat_id, summary_date, content, message_ids,
-                  embedding::text AS embedding, created_at
-             FROM chat_summaries WHERE id > $1 ORDER BY id LIMIT 500`,
-        values: [cursor ? cursor.id : 0],
-      }),
-      write: (rows) =>
-        insertBatch(target, {
-          table: "chat_summaries",
-          columns: [
-            "id",
-            "chat_ref",
-            "summary_date",
-            "content",
-            "message_ids",
-            "embedding",
-            "created_at",
-          ],
-          casts: { message_ids: "::bigint[]", embedding: "::vector" },
-          overridingSystemValue: true,
-          rows: rows.map((r) => [
-            r.id,
-            tgChat(r.chat_id as string),
-            r.summary_date,
-            r.content,
-            r.message_ids,
-            r.embedding,
-            r.created_at,
-          ]),
-        }),
-    });
-    await syncIdentitySequence(target, "chat_summaries");
-    report.count(
-      "chat_summaries",
-      summariesCopied,
-      await countRows(target, `SELECT count(*) AS count FROM chat_summaries`),
-    );
-
+    // --- core-job coverage markers (identity-preserving, scoped refs) ---
+    log("job coverage markers…");
     for (const [source, targetTable, dateCol, countCol, atCol] of [
       ["chat_summary_days", "chat_summary_days", "summary_date", "topic_count", "summarized_at"],
       [

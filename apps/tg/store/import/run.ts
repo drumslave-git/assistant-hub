@@ -22,10 +22,16 @@ import type { Pool } from "pg";
  *   byte-faithful), chat_message_search → message_search (embeddings copied,
  *   not re-computed), message_media → media, media_blobs (pending bytes so
  *   the vision backfill can continue), users_feedbacks → feedbacks.
+ * - chat_summaries → summaries (identity ids preserved) — conversation-
+ *   derived content lives with the mirror it summarizes (user decision,
+ *   2026-08-22); the core keeps only the job's coverage markers.
  * - settings.telegram_bot_token → one `connections` row bound to the default
  *   assistant (the v1 active personality's id, else DEFAULT_ASSISTANT_ID —
  *   the same rule the core import applies, so the ids agree without
  *   coordination). No token → no row (noted, not an error).
+ * - settings.owner_username / owner_user_id → this app's settings singleton
+ *   (owner identity is the source app's to hold and resolve — user
+ *   decision, 2026-08-22).
  */
 
 const TARGET_TABLES = [
@@ -37,7 +43,9 @@ const TARGET_TABLES = [
   "media",
   "media_blobs",
   "feedbacks",
+  "summaries",
   "connections",
+  "settings",
 ];
 
 export async function runTgImport(input: {
@@ -288,10 +296,54 @@ export async function runTgImport(input: {
       await countRows(target, `SELECT count(*) AS count FROM feedbacks`),
     );
 
-    // --- the bot token → a connection on the default assistant ---
-    log("connection…");
+    // --- chat summaries (identity-preserving) ---
+    log("summaries…");
+    const summariesCopied = await keysetCopy<Record<string, unknown>>({
+      from: v1,
+      page: (cursor) => ({
+        text:
+          `SELECT id, chat_id, summary_date, content, message_ids,
+                  embedding::text AS embedding, created_at
+             FROM chat_summaries WHERE id > $1 ORDER BY id LIMIT 500`,
+        values: [cursor ? cursor.id : 0],
+      }),
+      write: (rows) =>
+        insertBatch(target, {
+          table: "summaries",
+          columns: [
+            "id",
+            "chat_id",
+            "summary_date",
+            "content",
+            "message_ids",
+            "embedding",
+            "created_at",
+          ],
+          casts: { message_ids: "::bigint[]", embedding: "::vector" },
+          overridingSystemValue: true,
+          rows: rows.map((r) => [
+            r.id,
+            r.chat_id,
+            r.summary_date,
+            r.content,
+            r.message_ids,
+            r.embedding,
+            r.created_at,
+          ]),
+        }),
+    });
+    await syncIdentitySequence(target, "summaries");
+    report.count(
+      "summaries",
+      summariesCopied,
+      await countRows(target, `SELECT count(*) AS count FROM summaries`),
+    );
+
+    // --- the bot token → a connection; the owner → this app's settings ---
+    log("connection + settings…");
     const v1Settings = await v1.query(
-      `SELECT telegram_bot_token, active_personality_id FROM settings`,
+      `SELECT telegram_bot_token, active_personality_id, owner_username, owner_user_id
+         FROM settings`,
     );
     const token: string | null = v1Settings.rows[0]?.telegram_bot_token ?? null;
     const assistantId: string = v1Settings.rows[0]?.active_personality_id ?? DEFAULT_ASSISTANT_ID;
@@ -311,6 +363,19 @@ export async function runTgImport(input: {
       await countRows(target, `SELECT count(*) AS count FROM connections`),
     );
 
+    if (v1Settings.rows.length > 0) {
+      await insertBatch(target, {
+        table: "settings",
+        columns: ["id", "owner_username", "owner_user_id"],
+        rows: [["singleton", v1Settings.rows[0].owner_username, v1Settings.rows[0].owner_user_id]],
+      });
+    }
+    report.count(
+      "settings",
+      v1Settings.rows.length,
+      await countRows(target, `SELECT count(*) AS count FROM settings`),
+    );
+
     // --- spot checks ---
     log("verifying…");
     await spotCheckMessages(v1, target, report);
@@ -319,6 +384,14 @@ export async function runTgImport(input: {
       report.check(
         stored.rows[0]?.bot_token === token && stored.rows[0]?.assistant_id === assistantId,
         "connection carries the v1 bot token bound to the default assistant",
+      );
+    }
+    if (v1Settings.rows.length > 0) {
+      const owner = await target.query(`SELECT owner_username, owner_user_id FROM settings`);
+      report.check(
+        owner.rows[0]?.owner_username === v1Settings.rows[0].owner_username &&
+          owner.rows[0]?.owner_user_id === v1Settings.rows[0].owner_user_id,
+        "owner identity moved into this app's settings",
       );
     }
     const pendingBlobless = await countRows(

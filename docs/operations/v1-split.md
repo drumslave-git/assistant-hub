@@ -10,9 +10,16 @@ pointed at copies.
 
 | v1 tables | Destination | Script |
 | --- | --- | --- |
-| known_users, known_groups, group_members, chat_messages, chat_message_search, message_media, media_blobs, users_feedbacks, settings.telegram_bot_token | tg store | `npm run import:v1 -w @assistant-hub/tg` |
-| backends, settings (rest), personalities → assistants, memory_*, user_memories, general_memories, users_communication_preferences, self_corrections, addressing_exclusions, tasks, chat_summaries, chat_summary_days, memory_extraction_days | core store | `npm run import:v1 -w @assistant-hub/core` |
+| known_users, known_groups, group_members, chat_messages, chat_message_search, message_media, media_blobs, users_feedbacks, chat_summaries, settings.telegram_bot_token, settings.owner_username + owner_user_id | tg store | `npm run import:v1 -w @assistant-hub/tg` |
+| backends, settings (rest), personalities → assistants, memory_*, user_memories, general_memories, users_communication_preferences, self_corrections, addressing_exclusions, tasks, chat_summary_days, memory_extraction_days | core store | `npm run import:v1 -w @assistant-hub/core` |
 | traces (file-backed), analytics rollups, browser_agent_runs + screenshots, search_engine_stats | not migrated (start fresh) | — |
+
+The placement rule (user decision, 2026-08-22): bot state — memory,
+self-improvement, tasks, job coverage markers — lives in the **core**
+store; conversation-derived content — messages, search, media, summaries,
+feedbacks — lives in the **owning app's** store, which the core's features
+read and write through that app's API. Owner identity and resolution are
+the source app's job; the core only ever sees the resolved is-owner flag.
 
 Both scripts derive the **default assistant** the same way (the v1 active
 personality's id, else the fixed `assistant-default`), so the tg connection

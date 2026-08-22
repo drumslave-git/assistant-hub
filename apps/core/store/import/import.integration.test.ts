@@ -36,9 +36,11 @@ async function seedV1(v1: Pool): Promise<void> {
   await v1.query(
     `INSERT INTO settings (id, chat_backend_id, model, active_personality_id,
                            telegram_bot_token, operator_password_hash, timezone,
-                           daily_jobs_run_time, maintenance_mode_enabled)
+                           daily_jobs_run_time, maintenance_mode_enabled,
+                           owner_username, owner_user_id)
      VALUES ('singleton', 'backend-1', 'fixture-model', 'persona-1',
-             '12345:fixture-token', 'scrypt:fixture', 'Europe/Kyiv', '05:30', true)`,
+             '12345:fixture-token', 'scrypt:fixture', 'Europe/Kyiv', '05:30', true,
+             'alice_example', '1001')`,
   );
   await v1.query(
     `INSERT INTO memory_entries (id, scope, user_id, content, chat_id)
@@ -130,6 +132,9 @@ describe("v1 → core store import", () => {
     });
     expect(settings.rows[0].telegram_bot_token).toBeUndefined();
     expect(settings.rows[0].active_personality_id).toBeUndefined();
+    // Owner identity is the tg app's now — the columns do not exist here.
+    expect(settings.rows[0].owner_username).toBeUndefined();
+    expect(settings.rows[0].owner_user_id).toBeUndefined();
 
     // Personalities became assistants, id-preserving; the active one is the
     // default, so no synthetic assistant was created.
@@ -177,17 +182,13 @@ describe("v1 → core store import", () => {
       },
     ]);
 
-    // Summaries kept identity ids and message ids; the sequence continues.
-    const summaries = await target.query(
-      `SELECT id, chat_ref, message_ids, embedding IS NULL AS no_embedding FROM chat_summaries`,
+    // Summaries are tg-store content now — only the job's coverage markers
+    // land here, identity-preserved, with the sequence continuing.
+    const days = await target.query(
+      `SELECT id, chat_ref, summary_date, message_count FROM chat_summary_days`,
     );
-    expect(summaries.rows).toEqual([
-      {
-        id: "1",
-        chat_ref: "tg:chat:-2001",
-        message_ids: ["11", "12"],
-        no_embedding: false,
-      },
+    expect(days.rows).toEqual([
+      { id: "1", chat_ref: "tg:chat:-2001", summary_date: "2026-08-01", message_count: 2 },
     ]);
     const nextSummary = await target.query(
       `INSERT INTO chat_summary_days (chat_ref, summary_date, message_count, topic_count)

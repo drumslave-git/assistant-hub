@@ -100,6 +100,24 @@ CREATE TABLE "messages" (
 	CONSTRAINT "messages_role_check" CHECK ("messages"."role" in ('user', 'assistant'))
 );
 --> statement-breakpoint
+CREATE TABLE "settings" (
+	"id" text PRIMARY KEY DEFAULT 'singleton' NOT NULL,
+	"owner_username" text,
+	"owner_user_id" text,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "settings_singleton" CHECK ("settings"."id" = 'singleton')
+);
+--> statement-breakpoint
+CREATE TABLE "summaries" (
+	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "summaries_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"chat_id" text NOT NULL,
+	"summary_date" text NOT NULL,
+	"content" text NOT NULL,
+	"message_ids" bigint[] DEFAULT '{}' NOT NULL,
+	"embedding" vector(1024),
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "users" (
 	"user_id" text PRIMARY KEY NOT NULL,
 	"username" text,
@@ -131,8 +149,11 @@ CREATE INDEX "media_status_idx" ON "media" USING btree ("status","created_at");-
 CREATE INDEX "message_search_embedding_idx" ON "message_search" USING hnsw ("embedding" vector_cosine_ops);--> statement-breakpoint
 CREATE INDEX "messages_chat_sent_idx" ON "messages" USING btree ("chat_id","sent_at");--> statement-breakpoint
 CREATE INDEX "messages_content_trgm_idx" ON "messages" USING gin ("content" gin_trgm_ops);--> statement-breakpoint
+CREATE INDEX "summaries_chat_date_idx" ON "summaries" USING btree ("chat_id","summary_date");--> statement-breakpoint
+CREATE INDEX "summaries_embedding_idx" ON "summaries" USING hnsw ("embedding" vector_cosine_ops);--> statement-breakpoint
 CREATE INDEX "users_username_idx" ON "users" USING btree ("username");--> statement-breakpoint
 -- Hand-written: expression indexes drizzle-kit cannot express (carried over
--- from the v1 chain) — the FTS and substring halves of message search.
+-- from the v1 chain) — the FTS/substring halves of message and summary search.
 CREATE INDEX "message_search_content_fts_idx" ON "message_search" USING gin (to_tsvector('simple', "content"));--> statement-breakpoint
-CREATE INDEX "message_search_content_trgm_idx" ON "message_search" USING gin ("content" gin_trgm_ops);
+CREATE INDEX "message_search_content_trgm_idx" ON "message_search" USING gin ("content" gin_trgm_ops);--> statement-breakpoint
+CREATE INDEX "summaries_content_fts_idx" ON "summaries" USING gin (to_tsvector('simple', "content"));
