@@ -11,8 +11,27 @@ Phases 0 (scaffold) and 1 (schemas + migration) are done on the long-lived
 `redesign` branch (created 2026-08-21 from main at the tracing-unification
 commit).
 
-Next best task: Phase 2 (source split). The open questions were answered
-by the user (2026-08-22) and applied:
+Phase 2 is in progress: boundary study done, the source-app event
+contract and the Redis bus/queue foundation are built and tested (see the
+Phase 2 criteria below). Next best task — the runtime extraction, in this
+order:
+
+1. Design tg's internal API surface first (the boundary study shows core
+   will need: media bytes for vision/voice transcription, summaries
+   read/write, search read/write, mirror writes for `recordReply` — plus
+   the operator listing/CRUD API). The vision/voice split is the tricky
+   part: media NORMALIZATION (sharp/ffmpeg) moves to tg with ingestion,
+   media DESCRIPTION (LLM) stays core and reads bytes through tg's API.
+2. Build the apps/tg runtime additively (poller from connections, mirror
+   + ingestion into its store, owner resolution, inbound events with
+   context onto the queue, reply-delivery + lifecycle consumption) while
+   core keeps running v1 — the swap is its own later commit.
+3. Rewire core: queue consumer around `handleIncomingMessage` with
+   source-agnostic deps, actions-started marker, then delete
+   `server/telegram` and re-route its consumers (list in the boundary
+   study).
+
+The open questions were answered by the user (2026-08-22) and applied:
 
 1. **Queue retry semantics**: confirmed — BullMQ `attempts: 1`; the turn
    runner alone decides re-enqueue via the "actions started" marker.
@@ -338,6 +357,17 @@ and stamps `senderIsOwner` on inbound events.
   chat user, linkable via person links); and the dashboard UI packages
   move inside their apps (apps/tg/ui, apps/chat/ui) as the one sanctioned
   seam the shell composes at build time.
+- **2026-08-22 (Phase 2 start)** — Acceptance criteria written; boundary
+  study done (the injected `BotMessagingDeps` seam splits cleanly —
+  inventory in the criteria). Source-app event contract landed in
+  contracts (inbound with context + resolved isOwner, reply-delivery,
+  turn lifecycle, queue/channel names) and `@assistant-hub/bus` built on
+  BullMQ/ioredis with the decided `attempts: 1` semantics — both tested,
+  the bus against a real Redis (exactly-once, failure stays failed,
+  poisoned pub/sub message survives). Compose gained the `redis` service
+  (AOF + volume). Feedback/reaction bus events deliberately deferred to
+  the extraction (their consumers shape them). Next: tg internal API
+  design, then the additive runtime build (see Current state).
 - **2026-08-22 (Phase 1 revision)** — User answered the open questions and
   the stores were reworked to match before Phase 2: the strict placement
   rule (bot state → core; conversation-derived content → owning app;
