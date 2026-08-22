@@ -1,0 +1,23 @@
+{
+  "name": "@assistant-hub/bus",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Redis-backed cross-app plumbing: the BullMQ inbound queue (attempts: 1 — the turn runner alone decides re-enqueue) and the pub/sub event bus every app publishes on.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "dependencies": {
+    "bullmq": "^5.66.5",
+    "ioredis": "^5.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "testcontainers": "^12.0.4",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}

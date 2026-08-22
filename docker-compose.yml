@@ -35,6 +35,23 @@ services:
       start_period: 40s
     restart: unless-stopped
 
+  redis:
+    # The cross-app bus + inbound queue (v2 redesign; unused by the v1 app).
+    # AOF persistence: queued inbound messages must survive a restart — the
+    # no-message-loss guarantee lives here and in each app's store.
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - "./data/redis:/data"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   db:
     # pgvector image: plain Postgres today, with the vector extension available
     # for future embedding/memory features.

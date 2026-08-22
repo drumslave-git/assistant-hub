@@ -59,7 +59,7 @@ Known pitfalls for whoever starts:
 | --- | --- | --- |
 | 0 | Monorepo scaffold, apps/core + packages carve-out, extension registry, CI, docker | done |
 | 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | done |
-| 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | todo |
+| 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | in-progress |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | todo |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
@@ -206,6 +206,69 @@ non-Next workspaces is a small standalone task). The tg import test
 applies the frozen v1 migration chain via a cross-app path — test-only,
 deleted with `apps/core/db` at cutover. Person links have schema +
 foundations only; no UI/service until the aggregation phases.
+
+## Phase 2 — Source split (acceptance criteria)
+
+Scope from PLAN.md: the Telegram runtime moves out of the core into
+`apps/tg` behind the source contract (inbound events with context,
+reply-delivery events, listing API, tg MCP server); Redis bus + queue; the
+pipeline consumes the queue; dashboard controls go through tg's operator
+API + bus. Decisions applied: BullMQ `attempts: 1` with the turn runner
+deciding re-enqueue via the actions-started marker; conversation-derived
+content is written/read through the owning app's API; the source resolves
+and stamps `senderIsOwner` on inbound events.
+
+- [x] Boundary study (2026-08-22). The seam already exists:
+      `handleIncomingMessage` takes injected `BotMessagingDeps`, which
+      split cleanly into **source-supplied** (loadHistory 24h window,
+      loadChatContext participants/roster, loadCurrentTurn transcript
+      line + reply target incl. quote, loadVision media notes,
+      sendReply/sendVoiceReply, recordReply mirror write, startTyping →
+      lifecycle events, policy owner/maintenance) and **core-owned**
+      (generateReply, analyzers, loadMemory, loadSenderPreferences,
+      exclusions, persona/self-correction/tasks blocks, time/language
+      context, trace). The telegram runtime to move is
+      `apps/core/server/telegram/*` (~1.6k lines: process-update,
+      bot-manager, transport, process-reaction/callback) plus media
+      ingestion. Outside consumers of that dir — the full list of seams
+      to re-route: instrumentation.ts (boot), app/api/telegram/bot
+      (dashboard control → tg operator API), dashboard layout/page (bot
+      status), bot-messaging mcp-tools (outbound sends → tg MCP server),
+      image-gen deliver + browser-agent runner + tasks scheduler
+      (deliveries → reply-delivery events / tg MCP tools),
+      server/mcp/context, test/simulate. Note: reactions/callbacks
+      (feedback flow) become tg-local now that feedbacks live in the tg
+      store, with a bus event feeding core's reflection/folding jobs —
+      its event shape gets designed during extraction, not up front.
+- [ ] `packages/contracts`: the source-app contract — inbound message
+      event (scoped refs, resolved `senderIsOwner`, conversation context:
+      history window + participants + chat metadata), reply-delivery
+      event, turn-lifecycle events (accepted / progress / settled), bus
+      event envelope, queue names/payloads; the listing/CRUD API shapes
+      the dashboard aggregates.
+- [ ] Redis infrastructure: compose service (dev + prod), `packages/bus`
+      (BullMQ queue helpers with `attempts: 1`; pub/sub with typed
+      envelopes); integration-tested against a real Redis.
+- [ ] `apps/tg` runtime: poller(s) from tg-store connections, inbound
+      persistence (mirror, media ingestion) in its own store, normalized
+      inbound events with context onto the queue, reply-delivery
+      consumption → send, lifecycle events → typing indicator, owner
+      resolution from its settings, MCP server for outbound actions,
+      operator listing/CRUD API for its entities.
+- [ ] `apps/core`: telegram code removed; the pipeline consumes the
+      queue; deterministic replies published as reply-delivery events;
+      turn-lifecycle events published; the actions-started marker gates
+      retry; core features that touch tg content (history tools,
+      summarization, search indexing, vision describe) go through tg's
+      API; dashboard telegram controls proxied to tg's operator API; the
+      SSE layer bridges Redis pub/sub.
+- [ ] Trace client: apps record through the shared client over the bus;
+      the core persists all traces (PLAN "Traces and debug");
+      correlation ids tie a turn's cross-app flow into one trace.
+- [ ] Docker: `assistant-hub-tg` image + compose service + release-matrix
+      entry; both apps boot together in compose.
+- [ ] Tests at each seam; lint/typecheck/test/build green from the root;
+      proof and risks recorded.
 
 ## Session log
 
