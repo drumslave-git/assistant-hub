@@ -303,6 +303,24 @@ and stamps `senderIsOwner` on inbound events.
       API; (C) core queue consumer wiring `handleIncomingMessage` from
       the event (additive, v1-backed services); (D) feedback flows +
       MCP outbound tools + operator API; then the swap.
+      **Slice C landed (2026-08-23)**: the core consumes the queue. The
+      service seam (`IncomingMessage.message?`/`addressing?`, nullable
+      delivered id), the shared `turn-bindings.ts` (generateReply +
+      applyStandingTasks + classifier, extracted from process-update —
+      one implementation for both paths), `server/turn/` (render:
+      byte-identical v1 transcript/roster/current-turn from the event;
+      actions: `turn_actions` markers in the v2 core store, migration
+      0001; consume: deps-from-event, lifecycle publishing, per-chat
+      ordering chain, retry policy), env-gated boot from register-node
+      (REDIS_URL + STORE_DATABASE_URL). 6 integration tests prove:
+      composed prompt parity, accepted→delivery→settled ordering,
+      unaddressed turns settle without typing, generation failures
+      deliver the v1 error notice (an action → handled, never retried),
+      pre-action infrastructure failures re-enqueue without settling,
+      acted/out-of-tries failures settle + rethrow. A live end-to-end
+      topology smoke (tg poller → queue → core → bus → tg send with a
+      real bot) is deliberately left for the swap slice — it needs the
+      operator's environment.
       **Slice C implementation notes (worked out 2026-08-23)**:
       - `IncomingMessage` gets `message?` + `addressing?` — the consumer
         passes the event's verdict; the v1 path keeps calling

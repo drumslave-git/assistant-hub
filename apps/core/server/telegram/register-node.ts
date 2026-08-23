@@ -28,6 +28,7 @@ import {
 } from "@/features/self-improvement/server/scheduler";
 import { startVisionBackfill, stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import { startTraceStore, stopTraceStore } from "@/server/trace";
+import { startTurnConsumerFromEnv, type TurnConsumer } from "@/server/turn/consume";
 
 import { startBot, stopBot } from "./bot-manager";
 
@@ -41,9 +42,11 @@ export function registerNode(): void {
   // Release the single getUpdates lock promptly on shutdown so a restart/redeploy
   // doesn't collide with the previous poller.
   let shuttingDown = false;
+  let turnConsumer: TurnConsumer | null = null;
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    await turnConsumer?.close().catch(() => undefined);
     stopVisionBackfill();
     stopMessageIndexing();
     stopTaskScheduler();
@@ -69,6 +72,19 @@ export function registerNode(): void {
   // the periodic flush that appends settled traces to their monthly log file.
   // Best-effort — a failure here must never gate server startup.
   void startTraceStore().catch(() => undefined);
+
+  // Start the inbound-turn queue consumer (redesign Phase 2) — only when the
+  // bus and the v2 core store are configured (REDIS_URL + STORE_DATABASE_URL),
+  // so a v1-only deployment boots exactly as before. Best-effort: a Redis
+  // that is down surfaces in logs, never gates startup.
+  void startTurnConsumerFromEnv()
+    .then((consumer) => {
+      turnConsumer = consumer;
+      if (consumer) console.log("Inbound turn consumer started (queue: inbound-messages)");
+    })
+    .catch((err) => {
+      console.error("Inbound turn consumer failed to start:", err);
+    });
 
   // Start the in-process vision-backfill scheduler. It arms an initial run so any
   // media left `pending` from before boot is captioned during the first quiet

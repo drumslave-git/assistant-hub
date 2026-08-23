@@ -97,7 +97,20 @@ export interface GeneratedReply {
 
 /** Normalized view of an incoming Telegram message (built by the runtime). */
 export interface IncomingMessage {
-  message: Message;
+  /**
+   * The raw source update, when the in-process telegram runtime is the
+   * caller — the deterministic addressing check reads its wire shapes.
+   * Absent on the queue-consumer path (redesign Phase 2), which supplies
+   * {@link addressing} instead: the source computed the deterministic
+   * verdict, and the wire format never crosses the contract.
+   */
+  message?: Message;
+  /**
+   * Pre-decided deterministic addressing verdict from the source app.
+   * When present, {@link checkAddressed} is not run here; only the LLM
+   * analyzer still runs for the undecided case.
+   */
+  addressing?: AddressResult;
   chatId: number;
   chatType: string;
   messageId: number;
@@ -120,9 +133,15 @@ export interface IncomingMessage {
   isVoice?: boolean;
 }
 
-/** A delivered Telegram message, as reported back by the runtime. */
+/** A delivered message, as reported back by the runtime. */
 export interface SentMessage {
-  messageId: number;
+  /**
+   * The delivered message's source-local id, or null when the caller cannot
+   * know it — the queue-consumer path publishes a reply-delivery event and
+   * the owning source app performs the send and mirrors the result
+   * (redesign Phase 2). Null skips the local mirror write below.
+   */
+  messageId: number | null;
   /** True when the reply was delivered as a voice bubble (TTS), not text. */
   asVoice?: boolean;
 }
@@ -520,12 +539,17 @@ export async function handleIncomingMessage(
   // is processed like any other message rather than ignored as empty.
   if (!text && !incoming.hasVision) return ignoredEarly("no_content");
 
-  let decision = checkAddressed(
-    incoming.message,
-    incoming.chatType,
-    deps.bot,
-    incoming.isVoice ? incoming.text : undefined,
-  );
+  let decision =
+    incoming.addressing ??
+    (incoming.message
+      ? checkAddressed(
+          incoming.message,
+          incoming.chatType,
+          deps.bot,
+          incoming.isVoice ? incoming.text : undefined,
+        )
+      : // Neither a raw update nor a pre-decided verdict: nothing to judge.
+        ({ addressed: false } satisfies AddressResult));
   // Maintenance mode turns the analyzer off entirely (owner included): settling
   // an undecided message costs an LLM call, and maintenance means no LLM work
   // except turns the deterministic checks already addressed. The undecided
@@ -1105,15 +1129,18 @@ export async function handleIncomingMessage(
         });
         // Mirror each delivered chunk into history under its own message id
         // (best-effort — never fail a delivered reply because persistence
-        // hiccupped).
-        try {
-          await deps.recordReply({
-            content: chunk,
-            telegramMessageId: sent.messageId,
-            replyToMessageId: incoming.messageId,
-          });
-        } catch {
-          // swallow — the reply was delivered; the mirror is a side record
+        // hiccupped). A null id means the owning source app mirrors the
+        // delivery itself (queue-consumer path) — nothing to record here.
+        if (sent.messageId != null) {
+          try {
+            await deps.recordReply({
+              content: chunk,
+              telegramMessageId: sent.messageId,
+              replyToMessageId: incoming.messageId,
+            });
+          } catch {
+            // swallow — the reply was delivered; the mirror is a side record
+          }
         }
       }
       await trace.succeed({ outputSummary: outgoing });

@@ -52,6 +52,14 @@ const optionalString = z
 const envSchema = z.object({
   // Persistence
   DATABASE_URL: optionalString,
+  /**
+   * The v2 core store (redesign transition) — a separate database with its
+   * own migration chain (`store/`). Collapses to DATABASE_URL at cutover.
+   */
+  STORE_DATABASE_URL: optionalString,
+
+  // Redis (bus + inbound queue). Unset → the queue consumer stays off.
+  REDIS_URL: optionalString,
 
   // Runtime
   TZ: optionalString,

@@ -471,6 +471,23 @@ export type MemoryExtractionDayRow = typeof memoryExtractionDays.$inferSelect;
 export type MemoryExtractionDayInsert = typeof memoryExtractionDays.$inferInsert;
 
 /**
+ * Actions-started markers — the turn-failure rule's mechanical half (PLAN.md
+ * "Turn failure handling"; user decision 2026-08-22: queue `attempts: 1`,
+ * the turn runner alone decides re-enqueue). A row appears the moment a turn
+ * performs its first action (a send, a tool execution) and is deleted when
+ * the turn settles terminally. A failed queue job re-enqueues ONLY when no
+ * row exists for its correlation id — so transient failures before any work
+ * never drop messages, and nothing ever double-sends or double-executes.
+ */
+export const turnActions = pgTable("turn_actions", {
+  /** The turn's correlation id (`<chatId>:<sourceMessageId>` today). */
+  correlationId: text("correlation_id").primaryKey(),
+  actedAt: timestamp("acted_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type TurnActionRow = typeof turnActions.$inferSelect;
+
+/**
  * Person links — the operator-managed declaration that identities across
  * sources are the same human (PLAN.md): "tg user X = web user Y". One link
  * row is one person; members are that person's scoped user refs. Memory

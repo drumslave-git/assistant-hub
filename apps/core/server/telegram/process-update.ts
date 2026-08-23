@@ -5,23 +5,14 @@ import type { Message } from "@grammyjs/types";
 import {
   getBotPolicy,
   getClassifierRuntime,
-  getLlmRuntime,
   getTimezone,
 } from "@/features/settings/server/service";
 import type { BotPolicy } from "@/features/settings/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/exclusions-repository";
-import {
-  buildStandingTasksBlock,
-  buildTaskTriggerDirective,
-  resolveTaskAuthority,
-} from "@/features/tasks/format";
-import {
-  buildTaskMatchMessages,
-  parseTaskMatchVerdict,
-} from "@/features/tasks/server/matcher";
+import { buildStandingTasksBlock } from "@/features/tasks/format";
 import type { Task } from "@/features/tasks/types";
-import { getActiveTasksForChat, recordTaskDeliveries } from "@/features/tasks/server/service";
+import { getActiveTasksForChat } from "@/features/tasks/server/service";
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import {
   handleIncomingMessage,
@@ -30,8 +21,8 @@ import {
   type HandleOutcome,
   type IncomingMessage,
 } from "@/features/bot-messaging/server/service";
+import { createTurnBindings } from "@/features/bot-messaging/server/turn-bindings";
 import { registerRunAck } from "@/features/browser-agent/server/ack";
-import { extractMessageUrls } from "@/features/browser-agent/urls";
 import { pokeMessageIndexing } from "@/features/history/server/index-scheduler";
 import { getChatMessagesByTelegramIds } from "@/features/history/server/repository";
 import {
@@ -46,7 +37,6 @@ import {
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import {
   getUserContext,
-  getUserLabels,
   getUserLanguage,
   rememberUser,
 } from "@/features/known-users/server/service";
@@ -56,7 +46,6 @@ import {
   rememberGroupActivity,
 } from "@/features/known-groups/server/service";
 import { getMemoryContext } from "@/features/memory/server/service";
-import { getToolset } from "@/features/mcp-tools/server/service";
 import { findReplyMediaMessage, messageHasVisionMedia } from "@/features/vision/detect";
 import { mediaKindLabel } from "@/features/vision/format";
 import {
@@ -76,7 +65,6 @@ import { pokeVisionBackfill } from "@/features/vision/server/backfill-scheduler"
 import { VOICE_TURN_NOTE, VOICE_UNAVAILABLE_NOTE } from "@/features/voice/format";
 import { synthesizeVoiceReply } from "@/features/voice/server/speak";
 import { ApiError } from "@/lib/api-error";
-import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
 import {
   runClassifier,
@@ -84,16 +72,9 @@ import {
   HONESTY_GATE_TIMEOUT_MS,
   type ClassifierBudget,
 } from "@/server/llm/classifier";
-import {
-  chatCompletion,
-  REPLY_CHAT_COMPLETION_TIMEOUT_MS,
-  type ChatMessage,
-  type LlmCallTrace,
-} from "@/server/llm/client";
+import type { ChatMessage, LlmCallTrace } from "@/server/llm/client";
 import { getDb } from "@/db/drizzle";
 import { findMessageRefs } from "@/lib/telegram";
-import { chatCompletionWithTools } from "@/server/llm/tool-loop";
-import { runWithToolContext } from "@/server/mcp/context";
 import type { TraceRecorder } from "@/server/trace";
 
 import type { IncomingUpdate, ReplyTransport } from "./transport";
@@ -122,16 +103,6 @@ async function classify(
   }
   return runClassifier(runtime, messages, budget, trace);
 }
-
-/**
- * Hard stop on tokens generated per reply round (thinking included). A guard
- * against runaway generation, not a style guide — the brevity instruction in
- * the base system prompt is what keeps ordinary replies short. Sized well above
- * the largest completions observed on the live bot (~3,000 tokens) because a
- * reply cut off mid-think surfaces as a failed turn, which is worse than a slow
- * one. User decision, 2026-08-01: cap reply completion length.
- */
-const REPLY_MAX_TOKENS = 4_096;
 
 /**
  * Transport-agnostic message-processing pipeline. This is the whole runtime
@@ -304,36 +275,34 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
   const botLabel = `You (@${bot.username})`;
   const threadId = message.message_thread_id;
 
-  /**
-   * Whose rights this turn's tool calls carry, set by `applyStandingTasks` when
-   * a standing task matched and read when the tool context is bound below.
-   * Scoped to this one message's collaborators — not module state — and the
-   * service awaits the match before generating, so it is settled before any
-   * tool runs.
-   */
-  let taskAuthorityUserId: string | null = null;
-  /**
-   * Whether a `message` task opened this turn — set by `applyStandingTasks` on
-   * the same pass that sets the authority above, and read when the toolset and
-   * tool context are resolved.
-   *
-   * It changes how the turn *delivers*: a task-opened turn does not send its own
-   * text at all (user decision, 2026-08-14). It gets `reply_to_message` and the
-   * model's call is the delivery, which is what makes the "a task turn must call
-   * a tool" guard true rather than a guess — before this, a task whose action was
-   * simply to say something had no tool it could honestly call, and its correct
-   * answer was suppressed (trace `d1c01591…`).
-   */
-  let taskOpenedTurn = false;
-  /**
-   * The `message` tasks that opened this turn, set alongside `taskOpenedTurn`.
-   * Read by the deliver binding: what the turn sends is stamped onto these
-   * tasks' `recent_deliveries`, feeding the wording-variation block their next
-   * match composes — the same anti-repetition loop timed fires have.
-   */
-  let openingTaskIds: string[] = [];
-  /** A matched `message` task can open a turn nobody addressed the bot in. */
-  const canOpenTurn = messageTasks.length > 0;
+  // The generateReply + applyStandingTasks pair — the tool loop, the tool
+  // context, the standing-task match, and the authority/opened-turn state the
+  // two share — is the shared implementation in `turn-bindings.ts` (also used
+  // by the queue-consumer path). This runtime injects only its delivery: a
+  // task-opened turn sends through the transport and mirrors + acks the
+  // result. A task-opened turn does not send its own text at all (user
+  // decision, 2026-08-14) — `reply_to_message` is its delivery.
+  const bindings = createTurnBindings({
+    chatId,
+    senderId,
+    threadId: threadId ?? null,
+    correlationId: `${chatId}:${currentMessageId}`,
+    messageText,
+    chatType: message.chat.type,
+    policy,
+    tasks: { prompt: promptTasks, message: messageTasks },
+    collectImage,
+    onBrowserRunEnqueued: (runId) => enqueuedBrowserRuns.push(runId),
+    deliverTaskReply: async (text: string) => {
+      const sent = await transport.sendReply(text, {
+        replyToMessageId: currentMessageId,
+        threadId,
+      });
+      await recordDeliveredMessage(sent.messageId, text);
+      return { messageId: sent.messageId };
+    },
+    overrideGenerateReply: overrides?.generateReply,
+  });
 
   /**
    * Register a delivered reply message as the acknowledgement of this turn's
@@ -381,18 +350,6 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
       await registerBrowserRunAck(telegramMessageId);
     }
   };
-
-  /**
-   * A matched task can lend rights only if its author had rights to lend, and
-   * only to somebody who does not already have them — so the owner's own
-   * messages never pay for a match they cannot benefit from.
-   */
-  const canElevate =
-    policy.ownerUserId != null &&
-    senderId !== policy.ownerUserId &&
-    promptTasks.some(
-      (task) => task.source === "dashboard" || task.createdByUserId === policy.ownerUserId,
-    );
 
   return {
     bot,
@@ -531,91 +488,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     loadSenderPreferences:
       senderId != null ? () => getPreferencesContext(senderId).catch(() => null) : undefined,
     recordReply: (input) => recordDeliveredMessage(input.telegramMessageId, input.content),
-    generateReply:
-      overrides?.generateReply ??
-      (async (messages: ChatMessage[], callTrace, onToolCall) => {
-        const runtime = await getLlmRuntime();
-        if (!runtime) {
-          throw ApiError.serviceUnavailable(
-            "LLM is not configured — set the endpoint and model in Settings",
-          );
-        }
-        const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
-        // No tools registered → a single inference (cache-friendly path). A reply
-        // that needs no tool still costs one inference even when tools are offered.
-        // A turn a `message` task opened delivers through `reply_to_message`;
-        // an ordinary reply turn is offered no delivery tool at all, because
-        // its own text is already on its way to the chat.
-        const toolset = await getToolset(taskOpenedTurn ? { delivery: "reply" } : undefined);
-        if (!toolset) {
-          return chatCompletion(conn, {
-            model: runtime.model,
-            messages,
-            maxTokens: REPLY_MAX_TOKENS,
-            timeoutMs: REPLY_CHAT_COMPLETION_TIMEOUT_MS,
-            trace: callTrace,
-          });
-        }
-        // Run the tool-call loop with the current chat bound, so tools only ever
-        // read this conversation's data. The sender + thread are bound too, so a
-        // task tool records who created a task and delivers into the right thread.
-        // `collectImage` gives the image tool somewhere to put its bytes: they are
-        // delivered after the reply, never through the model or the trace.
-        return runWithToolContext(
-          {
-            chatId,
-            userId: senderId,
-            // The turn's correlation — every tool call's own trace carries it,
-            // so the reply and its tool traces read as one process in Debug.
-            correlationId: `${chatId}:${currentMessageId}`,
-            // Permissions only, and only when a standing task drove this turn:
-            // the task's author lends the rights, the sender keeps the identity
-            // (`userId` above still decides who authored a memory or a task).
-            authorityUserId: taskAuthorityUserId,
-            // Hard data extracted in code: the model re-typing a URL into a tool
-            // argument has corrupted one before (2026-08-01), so `browse_web`
-            // takes the links from here, never from the goal text.
-            messageUrls: extractMessageUrls(messageText),
-            threadId,
-            collectImage,
-            // A task-opened turn sends nothing of its own, so this binding is
-            // the only way it reaches the chat. Where the message lands is
-            // decided here, not by the model: under the message that triggered
-            // the task. Absent on an ordinary turn, which makes the delivery
-            // tools refuse there even if a stale registry offers one.
-            ...(taskOpenedTurn
-              ? {
-                  deliveryKind: "reply" as const,
-                  deliver: async (text: string) => {
-                    const sent = await transport.sendReply(text, {
-                      replyToMessageId: currentMessageId,
-                      threadId,
-                    });
-                    await recordDeliveredMessage(sent.messageId, text);
-                    // Stamp the delivery onto the tasks that opened this turn,
-                    // so their next match sees it in the wording-variation
-                    // block. Best-effort inside — the message is already sent.
-                    await recordTaskDeliveries(openingTaskIds, text);
-                    return { messageId: sent.messageId };
-                  },
-                }
-              : {}),
-            onBrowserRunEnqueued: (runId) => enqueuedBrowserRuns.push(runId),
-          },
-          () =>
-          chatCompletionWithTools(conn, {
-            model: runtime.model,
-            messages,
-            tools: toolset.tools,
-            callTool: toolset.callTool,
-            maxTokens: REPLY_MAX_TOKENS,
-            timeoutMs: REPLY_CHAT_COMPLETION_TIMEOUT_MS,
-            trace: callTrace,
-            onToolCall: (rec) =>
-              onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
-          }),
-        );
-      }),
+    generateReply: bindings.generateReply,
     // Settles a group message that named nobody recognizable but might still be
     // calling the bot by name in another alphabet or an inflected form.
     analyzeAddressing:
@@ -639,102 +512,8 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     // analyzer stops answering to someone else's name. Read only when the
     // analyzer actually runs (the service calls this lazily).
     loadAddressExclusions: () => listAddressingExclusionTerms().catch(() => []),
-    // Standing tasks: which of them does this message trigger? The answer opens
-    // a turn nobody addressed (a matched `message` task) and decides whose
-    // rights the turn's tool calls carry (`taskAuthorityUserId` above). Wired
-    // only when one of those could come of it, so ordinary traffic pays
-    // nothing. Like the analyzer, a plain completion: one classification of one
-    // message, no tools, no history.
-    applyStandingTasks:
-      canOpenTurn || canElevate
-        ? async (replyTrace, { addressed }) => {
-            // Nothing to be gained on this branch: an addressed turn where no
-            // task could lend rights, or an unaddressed one where none could
-            // open the turn. Skipped before the call, so it costs nothing.
-            if (addressed ? !canElevate : !canOpenTurn) return null;
-            // The matcher judges the message's words; a message with none (a bare
-            // photo or sticker) has nothing for a task to quote, so it is left
-            // alone without spending a call.
-            const text = messageText.trim();
-            if (!text) return null;
-            // Same role as the addressing checks above: one classification of
-            // one message, and the third such call an ordinary group message
-            // can pay for.
-            const runtime = await getClassifierRuntime();
-            if (!runtime) return null;
-
-            // Every enabled prompt task is offered, not only the `message`
-            // ones: an `on-reply` task cannot open a turn but still lends its
-            // author's rights to what it asks for on a turn the bot was
-            // addressed in.
-            const offered = addressed ? promptTasks : messageTasks;
-            // Names for the people involved: the sender, and anyone a task is
-            // limited to. A task whose condition is *who is speaking* is
-            // unjudgeable without them — the model would be shown an
-            // instruction with no visible trigger and would rightly decline it
-            // (trace `c08283a8…`). One indexed read next to a classification
-            // call; unreadable degrades to no names rather than no match.
-            const labels = await getUserLabels([
-              ...(senderId ? [senderId] : []),
-              ...offered.flatMap((task) => task.targetUserIds),
-            ]).catch(() => new Map<string, string>());
-            const matchable = offered.map((task) => ({
-              id: task.id,
-              instruction: task.instruction,
-              targetLabels: task.targetUserIds.map((id) => labels.get(id) ?? `User ${id}`),
-            }));
-            const messages = buildTaskMatchMessages({
-              tasks: matchable,
-              text,
-              chatType: message.chat.type,
-              senderLabel: senderId ? labels.get(senderId) : null,
-            });
-            const result = await runClassifier(runtime, messages, undefined, {
-              recorder: replyTrace,
-              callKind: "task-match",
-              label: "task match",
-            });
-
-            const verdict = parseTaskMatchVerdict(result.content, { tasks: matchable, text });
-            const matched = offered.filter((task) => verdict.matchedIds.includes(task.id));
-            // A task is its author's standing order: the actions it calls for
-            // run with the author's rights, not the sender's. Bound here, read
-            // by the tool context when the generator runs (both inside this
-            // closure's scope, and the service awaits this before generating).
-            const authority = resolveTaskAuthority(matched, policy.ownerUserId ?? null);
-            taskAuthorityUserId = authority;
-            await replyTrace.event({
-              type: "step",
-              level: matched.length > 0 ? "success" : "info",
-              message: "task match",
-              data: {
-                offered: matchable,
-                matchedIds: verdict.matchedIds,
-                reason: verdict.reason,
-                // Whose rights the turn now carries — null when the sender's own.
-                authorityUserId: authority,
-              },
-            });
-            if (matched.length === 0) return null;
-            // This turn is now these tasks' run — relate their ids so the
-            // per-task Debug view (`/debug?relatedId=<taskId>`) finds the
-            // replies a `message`/`on-reply` task produced, not only its fires.
-            replyTrace.relate(FEATURES.tasks.relatedIdsKey, verdict.matchedIds);
-            // Only a `message` task may open a turn nobody addressed.
-            const opening = matched.filter((task) => task.triggerKind === "message");
-            // Read below when the toolset and tool context are resolved: this is
-            // the turn that delivers through `reply_to_message` instead of by
-            // answering. Set here for the same reason the authority is — this
-            // closure is the only place that knows, and the service awaits it
-            // before generating.
-            taskOpenedTurn = opening.length > 0;
-            openingTaskIds = opening.map((task) => task.id);
-            return {
-              taskIds: verdict.matchedIds,
-              directive: opening.length > 0 ? buildTaskTriggerDirective(opening) : null,
-            };
-          }
-        : undefined,
+    // Standing tasks + tool loop live in the shared bindings (see above).
+    applyStandingTasks: bindings.applyStandingTasks,
     async sendReply(text: string) {
       return transport.sendReply(text, {
         replyToMessageId: currentMessageId,
