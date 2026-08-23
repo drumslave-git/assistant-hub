@@ -10,6 +10,7 @@ import type { TgDb } from "./db";
 import type { TgOutbound } from "./outbound";
 import { dashboardRefresh } from "./refresh";
 import { appendMessage, filterMirroredMessageIds, markMessageProcessed } from "./store";
+import { busTraceClient } from "./trace-client";
 import { findMessageRefs } from "./telegram";
 
 /**
@@ -83,6 +84,7 @@ export async function startDeliveryConsumer(input: {
   // assistant through when concurrent connections arrive.
   const typing = new TypingLoops(input.senderFor(null));
   const publisher: BusPublisher = openPublisher(input.redisUrl);
+  const traces = busTraceClient(publisher);
 
   const handle = async (payload: unknown): Promise<void> => {
     const type =
@@ -92,41 +94,67 @@ export async function startDeliveryConsumer(input: {
       if (!parsed.success || parsed.data.source !== "tg") return;
       const event = parsed.data;
       const chatId = parseScopedRef(event.chatRef).id;
-      const replyToMessageId =
-        event.replyToSourceMessageId != null ? Number(event.replyToSourceMessageId) : null;
-      // Which `#<id>` citations really exist here decides what links (the
-      // whitelist keeps invented ids as plain text); a failed check drops
-      // the links, never the reply.
-      const linkableMessageIds = await filterMirroredMessageIds(
-        input.db,
-        chatId,
-        findMessageRefs(event.text),
-      ).catch(() => []);
-      // Send first, then mirror what was actually delivered — the mirror
-      // records reality (v1 order: deliver, then record best-effort).
-      const sent = await input.senderFor(event.assistantId).sendMessage(chatId, event.text, {
-        replyToMessageId,
-        threadId: event.threadId != null ? Number(event.threadId) : null,
-        silent: event.silent,
-        linkableMessageIds,
+      // The delivery half of the turn, on the turn's own correlation — in
+      // Debug it lines up right after the core's reply trace.
+      const trace = traces.startTrace({
+        feature: "bot-messaging",
+        action: "deliver",
+        trigger: { kind: "telegram", actor: chatId, correlationId: event.correlationId },
+        inputSummary: event.text,
       });
-      await appendMessage(input.db, {
-        chatId,
-        telegramMessageId: sent.messageId,
-        role: "assistant",
-        userId: null,
-        content: event.text,
-        replyToMessageId,
-        sentAt: new Date(),
-        processed: true,
-      }).catch((error) => {
-        onError(`mirror of delivered reply ${chatId}:${sent.messageId}`, error);
-        return null;
-      });
-      // The mirror grew a reply — ping the history pages (best-effort).
-      void publisher
-        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["history"]))
-        .catch(() => undefined);
+      try {
+        const replyToMessageId =
+          event.replyToSourceMessageId != null ? Number(event.replyToSourceMessageId) : null;
+        // Which `#<id>` citations really exist here decides what links (the
+        // whitelist keeps invented ids as plain text); a failed check drops
+        // the links, never the reply.
+        const linkableMessageIds = await filterMirroredMessageIds(
+          input.db,
+          chatId,
+          findMessageRefs(event.text),
+        ).catch(() => []);
+        // Send first, then mirror what was actually delivered — the mirror
+        // records reality (v1 order: deliver, then record best-effort).
+        const sent = await input.senderFor(event.assistantId).sendMessage(chatId, event.text, {
+          replyToMessageId,
+          threadId: event.threadId != null ? Number(event.threadId) : null,
+          silent: event.silent,
+          linkableMessageIds,
+        });
+        trace.event({
+          message: "reply sent",
+          type: "external_call",
+          level: "success",
+          data: { messageId: sent.messageId, silent: event.silent, linkableMessageIds },
+        });
+        await appendMessage(input.db, {
+          chatId,
+          telegramMessageId: sent.messageId,
+          role: "assistant",
+          userId: null,
+          content: event.text,
+          replyToMessageId,
+          sentAt: new Date(),
+          processed: true,
+        }).catch((error) => {
+          onError(`mirror of delivered reply ${chatId}:${sent.messageId}`, error);
+          trace.event({
+            message: "mirror write failed (message already delivered)",
+            type: "db",
+            level: "warn",
+            data: { error: error instanceof Error ? error.message : String(error) },
+          });
+          return null;
+        });
+        // The mirror grew a reply — ping the history pages (best-effort).
+        void publisher
+          .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["history"]))
+          .catch(() => undefined);
+        await trace.succeed({ outputSummary: `delivered ${chatId}:${sent.messageId}` });
+      } catch (error) {
+        await trace.fail(error);
+        throw error;
+      }
       return;
     }
     if (type === "turn.lifecycle") {

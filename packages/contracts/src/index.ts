@@ -147,3 +147,13 @@ export {
   type ScopedRefString,
   type SourceId,
 } from "./scoped-ref";
+export {
+  createSourceTraceRecorder,
+  sourceTraceEventSchema,
+  sourceTraceSchema,
+  traceRecordedEventSchema,
+  type SourceTrace,
+  type SourceTraceClient,
+  type SourceTraceRecorder,
+  type TraceRecordedEvent,
+} from "./trace";

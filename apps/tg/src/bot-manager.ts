@@ -3,6 +3,7 @@ import {
   BUS_EVENTS_CHANNEL,
   INBOUND_MESSAGES_QUEUE,
   type InboundMessageEvent,
+  type SourceTraceClient,
 } from "@assistant-hub/contracts";
 import { run, sequentialize, type RunnerHandle } from "@grammyjs/runner";
 import { Bot, HttpError, type Context } from "grammy";
@@ -18,6 +19,7 @@ import {
 import { processIncomingMessage } from "./inbound";
 import { createBotOutbound, type TgOutbound } from "./outbound";
 import { dashboardRefresh } from "./refresh";
+import { busTraceClient } from "./trace-client";
 import { applyMessageEdit, listEnabledConnections } from "./store";
 
 /**
@@ -137,6 +139,7 @@ export class BotManager {
   private pollers = new Map<string, Poller>();
   private queue: ReturnType<typeof openQueue<InboundMessageEvent>>;
   private publisher: BusPublisher;
+  private traces: SourceTraceClient;
 
   constructor(
     private readonly deps: {
@@ -147,6 +150,7 @@ export class BotManager {
   ) {
     this.queue = openQueue<InboundMessageEvent>(INBOUND_MESSAGES_QUEUE, deps.redisUrl);
     this.publisher = openPublisher(deps.redisUrl);
+    this.traces = busTraceClient(this.publisher);
   }
 
   /** The feedback flows' collaborators over one running bot. */
@@ -336,9 +340,24 @@ export class BotManager {
   private async onMessage(poller: Poller, botToken: string, ctx: Context): Promise<void> {
     const message = ctx.message;
     if (!message || !ctx.chat) return;
+    // This app's half of the turn, correlated the way the core's reply trace
+    // is (`<chatId>:<messageId>`) so the whole cross-app flow filters as one.
+    // Settled — and therefore published — only for a message that became an
+    // inbound event, or that failed: plain mirrored chatter leaves nothing
+    // behind (the v1 noise rule).
+    const trace = this.traces.startTrace({
+      feature: "bot-messaging",
+      action: "inbound",
+      trigger: {
+        kind: "telegram",
+        actor: message.from ? String(message.from.id) : String(ctx.chat.id),
+        correlationId: `${ctx.chat.id}:${message.message_id}`,
+      },
+      inputSummary: message.text ?? message.caption ?? "(media)",
+    });
     try {
       const bot = poller.bot;
-      await processIncomingMessage(message, {
+      const result = await processIncomingMessage(message, {
         db: this.deps.db,
         assistantId: poller.assistantId,
         identity: {
@@ -362,34 +381,104 @@ export class BotManager {
       void this.publisher
         .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["history", "users", "groups"]))
         .catch(() => undefined);
+      if (result.status === "enqueued") {
+        trace.event({
+          message: "inbound event enqueued",
+          type: "output",
+          level: "success",
+          data: { eventId: result.event?.eventId ?? null },
+        });
+        await trace.succeed({ outputSummary: "enqueued for the core" });
+      }
     } catch (err) {
       console.error(
         `Inbound processing failed for ${ctx.chat.id}:${message.message_id}:`,
         errorMessage(err),
       );
+      await trace.fail(err);
     }
   }
 
   private async onReaction(bot: Bot, ctx: Context): Promise<void> {
     const reaction = ctx.messageReaction;
     if (!reaction) return;
+    // Correlated to the reacted reply's turn, like the completion event —
+    // the menu, the answer, and the learning jobs all group under it.
+    // Settles only when a menu actually opened (or on failure); ignored
+    // reactions — other emoji, non-bot messages — leave nothing behind.
+    const trace = this.traces.startTrace({
+      feature: "self-improvement",
+      action: "collect-feedback",
+      trigger: {
+        kind: "telegram",
+        actor: reaction.user ? String(reaction.user.id) : String(reaction.chat.id),
+        correlationId: `${reaction.chat.id}:${reaction.message_id}`,
+      },
+      inputSummary: "reaction on a bot reply",
+    });
     try {
-      await processReactionUpdate(reaction, this.feedbackDeps(bot));
+      const outcome = await processReactionUpdate(reaction, this.feedbackDeps(bot));
+      if (outcome.status === "menu_sent") {
+        trace.event({
+          message: "feedback menu sent",
+          type: "output",
+          level: "success",
+          data: { feedbackId: outcome.feedback.id, reaction: outcome.feedback.reaction },
+        });
+        await trace.succeed({ outputSummary: `menu sent (${outcome.feedback.reaction})` });
+      }
     } catch (err) {
       console.error(
         `Reaction processing failed for ${reaction.chat.id}:${reaction.message_id}:`,
         errorMessage(err),
       );
+      await trace.fail(err);
     }
   }
 
   private async onCallbackQuery(bot: Bot, ctx: Context): Promise<void> {
     const query = ctx.callbackQuery;
     if (!query) return;
+    const chatId = query.message ? String(query.message.chat.id) : null;
+    // Settles for a press that changed feedback state (answered, or flipped
+    // to awaiting free text) or failed; foreign menus and stale presses drop.
+    const trace = this.traces.startTrace({
+      feature: "self-improvement",
+      action: "collect-feedback",
+      trigger: {
+        kind: "telegram",
+        actor: String(query.from.id),
+        ...(chatId && query.message
+          ? { correlationId: `${chatId}:${query.message.message_id}` }
+          : {}),
+      },
+      inputSummary: "feedback menu press",
+    });
     try {
-      await processCallbackUpdate(query, this.feedbackDeps(bot));
+      const outcome = await processCallbackUpdate(query, this.feedbackDeps(bot));
+      if (outcome.status === "recorded") {
+        trace.event({
+          message: "feedback recorded",
+          type: "output",
+          level: "success",
+          data: { feedbackId: outcome.feedback.id, answer: outcome.feedback.feedback },
+        });
+        await trace.succeed({
+          outputSummary: outcome.feedback.feedback ?? "recorded",
+          // The row lives in this store, but the completion's correlation is
+          // the REACTED reply's turn (what the completion event carries).
+          correlationId: `${outcome.feedback.chatId}:${outcome.feedback.telegramMessageId}`,
+        });
+      } else if (outcome.status === "awaiting_text") {
+        trace.event({ message: "awaiting free-text answer", type: "step" });
+        await trace.succeed({
+          outputSummary: "awaiting free-text answer",
+          correlationId: `${outcome.feedback.chatId}:${outcome.feedback.telegramMessageId}`,
+        });
+      }
     } catch (err) {
       console.error(`Callback processing failed for query ${query.id}:`, errorMessage(err));
+      await trace.fail(err);
     }
   }
 
