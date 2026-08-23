@@ -272,7 +272,23 @@ export const feedbackRecordedEventSchema = eventEnvelopeSchema.extend({
   }),
 });
 
+/**
+ * A live-refresh ping for the dashboard: something changed in a source
+ * app's store (a mirrored message, a poller status flip, an opened
+ * feedback menu) and the pages watching the named SSE topics should
+ * re-read. The core bridges these onto its in-process `publishEvent` —
+ * the `publishEvent`/`useLiveRefresh` contract survives the split, its
+ * backbone changes (PLAN "Events").
+ */
+export const dashboardRefreshEventSchema = eventEnvelopeSchema.extend({
+  type: z.literal("dashboard.refresh"),
+  source: sourceIdSchema,
+  /** The SSE topics to ping (the core's `RealtimeTopic` names). */
+  topics: z.array(z.string().min(1)).min(1).max(16),
+});
+
 export type EventEnvelope = z.infer<typeof eventEnvelopeSchema>;
+export type DashboardRefreshEvent = z.infer<typeof dashboardRefreshEventSchema>;
 export type FeedbackRecordedEvent = z.infer<typeof feedbackRecordedEventSchema>;
 export type ConnectionIdentity = z.infer<typeof connectionIdentitySchema>;
 export type Addressing = z.infer<typeof addressingSchema>;

@@ -242,7 +242,9 @@ describe("tg feedback flows", () => {
       feedback: LIKE_OPTIONS[0],
       topic: "quality",
     });
-    const event = feedbackRecordedEventSchema.parse(published[0]);
+    const event = feedbackRecordedEventSchema.parse(
+      published.find((p) => (p as { type?: string }).type === "feedback.recorded"),
+    );
     expect(event.feedback).toMatchObject({
       id: feedback!.id,
       chatRef: `tg:chat:${CHAT_ID}`,
@@ -279,7 +281,9 @@ describe("tg feedback flows", () => {
       },
       d,
     );
-    const event = feedbackRecordedEventSchema.parse(published[0]);
+    const event = feedbackRecordedEventSchema.parse(
+      published.find((p) => (p as { type?: string }).type === "feedback.recorded"),
+    );
     expect(event.feedback).toMatchObject({
       reaction: "down",
       text: NOT_ADDRESSED_OPTION,
@@ -346,7 +350,9 @@ describe("tg feedback flows", () => {
 
     const stored = await getFeedback(db, feedback!.id);
     expect(stored).toMatchObject({ status: "completed", feedback: "too formal for this chat" });
-    const event = feedbackRecordedEventSchema.parse(published[0]);
+    const event = feedbackRecordedEventSchema.parse(
+      published.find((p) => (p as { type?: string }).type === "feedback.recorded"),
+    );
     expect(event.feedback.text).toBe("too formal for this chat");
 
     // The answer stays mirrored, and its live-processing hold is released —

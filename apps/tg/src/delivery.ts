@@ -4,10 +4,11 @@ import {
   replyDeliveryEventSchema,
   turnLifecycleEventSchema,
 } from "@assistant-hub/contracts";
-import { openSubscriber, type BusSubscription } from "@assistant-hub/bus";
+import { openPublisher, openSubscriber, type BusPublisher, type BusSubscription } from "@assistant-hub/bus";
 
 import type { TgDb } from "./db";
 import type { TgOutbound } from "./outbound";
+import { dashboardRefresh } from "./refresh";
 import { appendMessage, filterMirroredMessageIds, markMessageProcessed } from "./store";
 import { findMessageRefs } from "./telegram";
 
@@ -81,6 +82,7 @@ export async function startDeliveryConsumer(input: {
   // connection the null resolution is "the bot"; Phase 3 threads the
   // assistant through when concurrent connections arrive.
   const typing = new TypingLoops(input.senderFor(null));
+  const publisher: BusPublisher = openPublisher(input.redisUrl);
 
   const handle = async (payload: unknown): Promise<void> => {
     const type =
@@ -121,6 +123,10 @@ export async function startDeliveryConsumer(input: {
         onError(`mirror of delivered reply ${chatId}:${sent.messageId}`, error);
         return null;
       });
+      // The mirror grew a reply — ping the history pages (best-effort).
+      void publisher
+        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["history"]))
+        .catch(() => undefined);
       return;
     }
     if (type === "turn.lifecycle") {
@@ -155,6 +161,7 @@ export async function startDeliveryConsumer(input: {
     async close(): Promise<void> {
       typing.stopAll();
       await subscription.close();
+      await publisher.close();
     },
   };
 }

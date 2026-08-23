@@ -3,11 +3,13 @@ import { randomUUID } from "node:crypto";
 import {
   feedbackRecordedEventSchema,
   scopedRef,
+  type DashboardRefreshEvent,
   type FeedbackRecordedEvent,
 } from "@assistant-hub/contracts";
 import type { CallbackQuery, MessageReactionUpdated, ReactionType } from "@grammyjs/types";
 
 import type { TgDb } from "../db";
+import { dashboardRefresh } from "../refresh";
 import { getMessageByTelegramId } from "../store";
 import {
   MENU_AWAITING_TEXT,
@@ -77,7 +79,7 @@ export interface FeedbackDeps {
   db: TgDb;
   transport: FeedbackTransport;
   /** Publish one bus event; failures surface to the caller's error handling. */
-  publish: (event: FeedbackRecordedEvent) => Promise<void>;
+  publish: (event: FeedbackRecordedEvent | DashboardRefreshEvent) => Promise<void>;
 }
 
 /** The completed row, shaped as the bus event the core's learning jobs consume. */
@@ -180,6 +182,8 @@ export async function processReactionUpdate(
     replyToMessageId: update.message_id,
   });
   await setFeedbackMenuMessage(deps.db, feedback.id, sent.messageId);
+  // A fresh pending row — the dashboard's feedback listing shows it live.
+  await deps.publish(dashboardRefresh(["feedback"])).catch(() => undefined);
   return { status: "menu_sent", feedback, menuMessageId: sent.messageId };
 }
 

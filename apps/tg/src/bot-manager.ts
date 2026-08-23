@@ -17,6 +17,7 @@ import {
 } from "./feedback/flows";
 import { processIncomingMessage } from "./inbound";
 import { createBotOutbound, type TgOutbound } from "./outbound";
+import { dashboardRefresh } from "./refresh";
 import { applyMessageEdit, listEnabledConnections } from "./store";
 
 /**
@@ -203,6 +204,11 @@ export class BotManager {
       ...status,
     };
     this.deps.onStatusChange?.({ ...poller.status });
+    // The dashboard's bot card watches `status` — a poller that dies or
+    // reconnects must show up without a reload (v1 behavior, over the bus).
+    void this.publisher
+      .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["status"]))
+      .catch(() => undefined);
   }
 
   private cancelReconnect(poller: Poller): void {
@@ -351,6 +357,11 @@ export class BotManager {
           ? async (input) => (await captureFeedbackReply(input, this.feedbackDeps(bot))) != null
           : undefined,
       });
+      // The mirror and the directory just changed — ping the pages that
+      // show them (best-effort; the message is already stored).
+      void this.publisher
+        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["history", "users", "groups"]))
+        .catch(() => undefined);
     } catch (err) {
       console.error(
         `Inbound processing failed for ${ctx.chat.id}:${message.message_id}:`,
