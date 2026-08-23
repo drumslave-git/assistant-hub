@@ -286,6 +286,24 @@ and stamps `senderIsOwner` on inbound events.
       consumption → send, lifecycle events → typing indicator, owner
       resolution from its settings, MCP server for outbound actions,
       operator listing/CRUD API for its entities.
+      **Slice A landed (2026-08-23, `c41e6b7`)**: the service runs —
+      poller lifecycle ported (tokens from connections), text-turn
+      inbound processing (mirror + hold, owner resolution, composed
+      context, one validated event per message, idempotent), delivery +
+      lifecycle consumers (send → mirror; typing accepted→settled;
+      settle releases the hold), Hono `/health` + `/internal/*` with the
+      shared token, graceful shutdown; 5 integration tests green against
+      real Postgres + Redis. Contract grew what the port surfaced:
+      connection identity (bot username/display name), reply-target
+      `stored`/`fromAssistant`, lifecycle `threadId`.
+      **Remaining slices**: (B) media/voice ingestion + internal media
+      API; (C) core queue consumer wiring `handleIncomingMessage` from
+      the event (additive, v1-backed services); (D) feedback flows +
+      MCP outbound tools + operator API; then the swap. Known slice-C
+      surgery point: post-split the core never learns the delivered
+      message id (delivery is an event) — `recordReply` becomes tg's
+      mirror-on-delivery, and id-dependent core paths (browser ack,
+      reaction targets) move source-side with the outbound tools.
 - [ ] `apps/core`: telegram code removed; the pipeline consumes the
       queue; deterministic replies published as reply-delivery events;
       turn-lifecycle events published; the actions-started marker gates

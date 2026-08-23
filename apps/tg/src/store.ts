@@ -102,6 +102,20 @@ export async function appendMessage(
   return rows[0] ?? null;
 }
 
+/** Whether a message is in the mirror (reply targets render as anchors then). */
+export async function isMessageMirrored(
+  db: TgDb,
+  chatId: string,
+  telegramMessageId: number,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(and(eq(messages.chatId, chatId), eq(messages.telegramMessageId, telegramMessageId)))
+    .limit(1);
+  return rows.length > 0;
+}
+
 /** Release a message's live-processing hold (see `messages.processed`). */
 export async function markMessageProcessed(
   db: TgDb,

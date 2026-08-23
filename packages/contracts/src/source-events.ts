@@ -118,6 +118,11 @@ export const senderInfoSchema = z.object({
 /** The reply target of the inbound message, when it quoted another message. */
 export const replyTargetSchema = z.object({
   sourceMessageId: z.string().min(1),
+  /**
+   * True when the target is in the source's mirror — the core then renders
+   * it as a dereferenceable `#<id>` anchor; false inlines sender + text.
+   */
+  stored: z.boolean().default(false),
   /** Sender label of the quoted message, resolved by the source. */
   senderLabel: z.string().nullable(),
   /** True when the quoted message is the assistant's own (label is then the core's call). */

@@ -11,7 +11,7 @@ import type { Message } from "@grammyjs/types";
 import type { TgDb } from "./db";
 import { buildChatInfo, buildConversationContext, buildSenderInfo } from "./context";
 import { formatUserLabel } from "./format";
-import { appendMessage, upsertChatActivity, upsertUser } from "./store";
+import { appendMessage, isMessageMirrored, upsertChatActivity, upsertUser } from "./store";
 
 /**
  * Transport-agnostic inbound processing (the tg half of what v1's
@@ -148,6 +148,9 @@ export async function processIncomingMessage(
       replyTo: replyTo
         ? {
             sourceMessageId: String(replyTo.message_id),
+            // Mirrored targets render as dereferenceable anchors in the
+            // core's transcript; unmirrored ones get sender + text inlined.
+            stored: await isMessageMirrored(deps.db, chatId, replyTo.message_id),
             senderLabel: replyTo.from
               ? replyTo.from.id === deps.botId
                 ? null
