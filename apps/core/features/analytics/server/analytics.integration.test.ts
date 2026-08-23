@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { chatMessages } from "@/db/schema";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces, startTrace } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
+import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
 
 
 import { getMetricTotals, getModels, getMoodForPeriod, getSeries } from "./metrics";
@@ -12,6 +12,10 @@ import { getPeriodInsight } from "./repository";
 import { resetInsightScanFloor } from "./watermark";
 
 let ctx: TestDb;
+// The mirror lives with the owning source since the swap; these tests seed the
+// contract-faithful in-memory client (SQL bucket semantics are pinned in the
+// tg app's own analytics suite against a real database).
+let content: FakeSourceContent;
 
 beforeAll(async () => {
   ctx = await startTestDb();
@@ -23,6 +27,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  content = fakeSourceContent();
   // The due-scan floor lives on globalThis and would otherwise carry proof from
   // one test's data into the next test's freshly-truncated database.
   resetInsightScanFloor();
@@ -40,14 +45,7 @@ async function seedMessage(input: {
   content: string;
   sentAt: Date;
 }) {
-  await ctx.db.insert(chatMessages).values({
-    chatId: input.chatId,
-    telegramMessageId: input.telegramMessageId,
-    role: input.role,
-    userId: input.userId ?? null,
-    content: input.content,
-    sentAt: input.sentAt,
-  });
+  content.addMessage({ ...input, userId: input.userId ?? null });
 }
 
 /**
@@ -223,7 +221,7 @@ describe("getSeries", () => {
       sentAt: new Date("2026-07-15T09:31:00Z"),
     });
 
-    const s = await getSeries({ unit: "day", anchor: "2026-07-15", section: "volume" }, ctx.db);
+    const s = await getSeries({ unit: "day", anchor: "2026-07-15", section: "volume" }, ctx.db, content);
     expect(s.bucketUnit).toBe("hour");
     expect(s.buckets).toHaveLength(24);
     expect(s.buckets[0]).toBe("2026-07-15 00");
@@ -245,7 +243,7 @@ describe("getSeries", () => {
       content: "hello",
       sentAt: new Date("2026-03-15T09:30:00Z"),
     });
-    const s = await getSeries({ unit: "year", anchor: "2026", section: "volume" }, ctx.db);
+    const s = await getSeries({ unit: "year", anchor: "2026", section: "volume" }, ctx.db, content);
     expect(s.bucketUnit).toBe("month");
     expect(s.buckets).toHaveLength(12);
     const human = s.series.find((x) => x.name === "From users");
@@ -259,7 +257,7 @@ describe("getSeries", () => {
       latencyMs: 10,
       tokens: { p: 30, c: 12 },
     });
-    const s = await getSeries({ unit: "day", anchor: "2026-07-15", section: "tokens" }, ctx.db);
+    const s = await getSeries({ unit: "day", anchor: "2026-07-15", section: "tokens" }, ctx.db, content);
     expect(s.series.find((x) => x.name === "Processed")?.data[14]).toBe(30);
     expect(s.series.find((x) => x.name === "Generated")?.data[14]).toBe(12);
   });
@@ -358,6 +356,7 @@ describe("runAnalyticsInsights", () => {
       timeZone: "UTC",
       now: NOW,
       db: ctx.db,
+      content,
     });
 
     expect(result.unitsComputed).toBe(1);
@@ -390,7 +389,7 @@ describe("runAnalyticsInsights", () => {
     await seedFinishedHour("c1", 1);
     await seedFinishedHour("c2", 10);
 
-    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     for (const chatId of ["c1", "c2"]) {
       const day = await getPeriodInsight(ctx.db, {
@@ -444,7 +443,7 @@ describe("runAnalyticsInsights", () => {
       };
     };
 
-    await runAnalyticsInsights({ complete, timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete, timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const day = await getPeriodInsight(ctx.db, {
       granularity: "day",
@@ -458,7 +457,7 @@ describe("runAnalyticsInsights", () => {
 
   it("gives the Mood tile and the Mood trend the same answer for a period", async () => {
     await seedFinishedHour();
-    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const mood = await getMoodForPeriod(
       { unit: "day", anchor: "2026-07-14", chatId: "c1" },
@@ -515,7 +514,7 @@ describe("runAnalyticsInsights", () => {
       return { content, model: "test-model", latencyMs: 5, requestBody: {}, responseBody: {} };
     };
 
-    await runAnalyticsInsights({ complete, timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete, timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const day = await getPeriodInsight(ctx.db, {
       granularity: "day",
@@ -528,13 +527,14 @@ describe("runAnalyticsInsights", () => {
 
   it("is idempotent — an unchanged hour is not recomputed", async () => {
     await seedFinishedHour();
-    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const again = await runAnalyticsInsights({
       complete: stubComplete(),
       timeZone: "UTC",
       now: NOW,
       db: ctx.db,
+      content,
     });
     expect(again.unitsComputed).toBe(0);
     expect(again.summary).toContain("nothing to compute");
@@ -542,7 +542,7 @@ describe("runAnalyticsInsights", () => {
 
   it("does not re-score a scored hour when its message count changes", async () => {
     await seedFinishedHour();
-    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     // A late message lands in an already-scored hour. A scored hour is final until an
     // operator asks for it again, so the nightly spend stays predictable.
@@ -559,6 +559,7 @@ describe("runAnalyticsInsights", () => {
       timeZone: "UTC",
       now: NOW,
       db: ctx.db,
+      content,
     });
     expect(again.unitsComputed).toBe(0);
   });
@@ -577,6 +578,7 @@ describe("runAnalyticsInsights", () => {
       timeZone: "UTC",
       now: NOW,
       db: ctx.db,
+      content,
     });
     expect(result.unitsComputed).toBe(0);
   });
@@ -589,6 +591,7 @@ describe("runAnalyticsInsights", () => {
       timeZone: "UTC",
       now: NOW,
       db: ctx.db,
+      content,
     });
     expect(result.unitsComputed).toBe(0);
     expect(result.unitsFailed).toBe(1);
@@ -617,12 +620,12 @@ describe("regenerateAnalyticsInsights", () => {
 
   it("drops an hour's insights and computes them again", async () => {
     await seedHour("2026-07-14T09:00:00Z");
-    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     // Re-scored with a different mood, proving it was really re-read rather than
     // left alone as an already-scored hour.
     const result = await regenerateAnalyticsInsights(
-      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db },
+      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db, content },
       { granularity: "day", bucket: "2026-07-14" },
     );
 
@@ -638,10 +641,10 @@ describe("regenerateAnalyticsInsights", () => {
 
   it("rebuilds the wider roll-ups that contained the dropped hour", async () => {
     await seedHour("2026-07-14T09:00:00Z");
-    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     await regenerateAnalyticsInsights(
-      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db },
+      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db, content },
       { granularity: "day", bucket: "2026-07-14" },
     );
 
@@ -666,7 +669,7 @@ describe("regenerateAnalyticsInsights", () => {
     // recoverable only by re-scoring all history.
     await seedHour("2026-07-14T09:00:00Z", "c1", 1);
     await seedHour("2026-06-10T09:00:00Z", "c2", 2);
-    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const before = await getPeriodInsight(ctx.db, {
       granularity: "all",
@@ -677,7 +680,7 @@ describe("regenerateAnalyticsInsights", () => {
 
     // c2 has no hour on 2026-07-14, so nothing of its own became stale.
     await regenerateAnalyticsInsights(
-      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db },
+      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db, content },
       { granularity: "day", bucket: "2026-07-14" },
     );
 
@@ -696,10 +699,10 @@ describe("regenerateAnalyticsInsights", () => {
   it("leaves hours outside the dropped period untouched", async () => {
     await seedHour("2026-06-10T09:00:00Z", "c1", 1);
     await seedHour("2026-07-14T09:00:00Z", "c1", 2);
-    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const result = await regenerateAnalyticsInsights(
-      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db },
+      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db, content },
       { granularity: "month", bucket: "2026-07" },
     );
 
@@ -715,10 +718,10 @@ describe("regenerateAnalyticsInsights", () => {
   it("all/all re-scores the whole history", async () => {
     await seedHour("2026-06-10T09:00:00Z", "c1", 1);
     await seedHour("2026-07-14T09:00:00Z", "c1", 2);
-    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const result = await regenerateAnalyticsInsights(
-      { complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db },
+      { complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content },
       { granularity: "all", bucket: "all" },
     );
     expect(result.unitsComputed).toBe(2);
@@ -727,7 +730,7 @@ describe("regenerateAnalyticsInsights", () => {
 
 describe("insight due-scan floor", () => {
   const NOW = new Date("2026-07-15T12:00:00Z");
-  const deps = () => ({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+  const deps = () => ({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
   it("skips hours below the floor until something resets it", async () => {
     await seedMessage({

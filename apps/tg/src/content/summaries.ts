@@ -58,11 +58,16 @@ export async function listChatSummaries(
   db: TgDb,
   chatId: string,
   limit = 200,
+  /** Restrict to one day's topics (the insight job's extra-context read). */
+  date?: string,
 ): Promise<SummaryRecord[]> {
+  const where = date
+    ? and(eq(summaries.chatId, chatId), eq(summaries.summaryDate, date))
+    : eq(summaries.chatId, chatId);
   const rows = await db
     .select()
     .from(summaries)
-    .where(eq(summaries.chatId, chatId))
+    .where(where)
     .orderBy(desc(summaries.summaryDate), asc(summaries.id))
     .limit(limit);
   return rows.map(mapSummaryRow);

@@ -2,6 +2,7 @@ import "server-only";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
+import { requireSourceContent, type SourceContentClient } from "@/server/source/tg-content";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { getTimezone } from "@/features/settings/server/service";
@@ -116,13 +117,14 @@ async function seriesFor(
   ctx: MetricContext,
   scope: MetricScope,
   keys: string[],
+  content?: SourceContentClient,
 ): Promise<{ series: NamedSeries[]; yMax?: number }> {
   const bucketUnit = subUnitOf(ctx.unit);
   const timeZone = ctx.timezone;
 
   switch (section) {
     case "volume": {
-      const rows = await getMessageSeries(db, { ...scope, bucketUnit, timeZone });
+      const rows = await getMessageSeries(content ?? requireSourceContent(), { ...scope, bucketUnit, timeZone });
       const byBucket = new Map(rows.map((r) => [r.bucket, r]));
       return {
         series: [
@@ -145,9 +147,15 @@ async function seriesFor(
       // The Users chart takes no chat/user filter: "new users" is a global fact about
       // a person's first sighting, and per-chat activity is what Message volume
       // already reports. So both lines are unconditionally global here.
+      const source = content ?? requireSourceContent();
       const [rows, newUsers] = await Promise.all([
-        getMessageSeries(db, { startUtc: scope.startUtc, endUtc: scope.endUtc, bucketUnit, timeZone }),
-        getNewUserSeries(db, {
+        getMessageSeries(source, {
+          startUtc: scope.startUtc,
+          endUtc: scope.endUtc,
+          bucketUnit,
+          timeZone,
+        }),
+        getNewUserSeries(source, {
           startUtc: scope.startUtc,
           endUtc: scope.endUtc,
           bucketUnit,
@@ -184,10 +192,11 @@ async function seriesFor(
 export async function getSeries(
   query: SeriesQuery,
   db: DrizzleDb = getDb(),
+  content?: SourceContentClient,
 ): Promise<SeriesPayload> {
   const { ctx, scope } = await resolvePeriod(query, db);
   const buckets = subBucketKeys(ctx.unit, ctx.anchor);
-  const { series, yMax } = await seriesFor(query.section, db, ctx, scope, buckets);
+  const { series, yMax } = await seriesFor(query.section, db, ctx, scope, buckets, content);
   return { ...ctx, section: query.section, bucketUnit: subUnitOf(ctx.unit), buckets, series, yMax };
 }
 
@@ -205,9 +214,10 @@ export async function getModels(
 export async function getTopUsersCard(
   query: MetricsQuery,
   db: DrizzleDb = getDb(),
+  content?: SourceContentClient,
 ): Promise<TopUsersPayload> {
   const { ctx, scope } = await resolvePeriod(query, db);
-  const rows = await getTopUsers(db, {
+  const rows = await getTopUsers(content ?? requireSourceContent(), {
     startUtc: scope.startUtc,
     endUtc: scope.endUtc,
     chatId: ctx.chatId,
@@ -328,6 +338,7 @@ export async function getPeriodInsightCard(
 export async function getAvailability(
   query: AvailabilityQuery,
   db: DrizzleDb = getDb(),
+  content?: SourceContentClient,
 ): Promise<string[]> {
   const timezone = await getTimezone(db);
   const startUtc = periodRange(query.unit, query.from, timezone).startUtc;
@@ -335,7 +346,7 @@ export async function getAvailability(
 
   switch (query.source) {
     case "messages":
-      return getMessageAvailability(db, {
+      return getMessageAvailability(content ?? requireSourceContent(), {
         startUtc,
         endUtc,
         bucketUnit: query.unit,

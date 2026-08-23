@@ -22,13 +22,14 @@ import {
   type OperatorUser,
 } from "@assistant-hub/contracts";
 import {
+  contentBucketUnitSchema,
   contentImportRequestSchema,
   contentIndexRowsRequestSchema,
   contentReplaceSummariesRequestSchema,
   contentSearchMessagesRequestSchema,
   contentSearchSummariesRequestSchema,
 } from "@assistant-hub/contracts";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 
 import type { TgDb } from "./db";
 import type { BotManager, ConnectionStatus } from "./bot-manager";
@@ -39,6 +40,13 @@ import {
   listMessagesNeedingIndex,
   upsertMessageIndex,
 } from "./content/index-store";
+import {
+  getMessageAvailability,
+  getMessageSeries,
+  getNewUserSeries,
+  getTopUsers,
+  listChatHourCounts,
+} from "./content/analytics";
 import { searchMessagesHybrid, searchSummariesHybrid } from "./content/search";
 import {
   countSummariesByChat,
@@ -566,6 +574,77 @@ export function createApi(input: {
     return c.json({ days });
   });
 
+  /**
+   * Parse the shared analytics query surface: a half-open UTC range
+   * (`to` exclusive), a bucket unit, and a timezone. Null → a 400 was sent.
+   */
+  const analyticsScope = (c: Context) => {
+    const from = new Date(c.req.query("from") ?? "");
+    const to = new Date(c.req.query("to") ?? "");
+    const unit = contentBucketUnitSchema.safeParse(c.req.query("unit"));
+    const timeZone = c.req.query("tz");
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || !unit.success || !timeZone) {
+      return null;
+    }
+    return { fromUtc: from, toUtc: to, unit: unit.data, timeZone };
+  };
+  const ANALYTICS_SCOPE_ERROR = { error: { message: "from, to, unit and tz are required" } };
+
+  internal.get("/analytics/message-series", async (c) => {
+    const scope = analyticsScope(c);
+    if (!scope) return c.json(ANALYTICS_SCOPE_ERROR, 400);
+    const rows = await getMessageSeries(input.db, {
+      ...scope,
+      chatId: c.req.query("chatId") || null,
+      userId: c.req.query("userId") || null,
+    });
+    return c.json({ rows });
+  });
+
+  internal.get("/analytics/new-user-series", async (c) => {
+    const scope = analyticsScope(c);
+    if (!scope) return c.json(ANALYTICS_SCOPE_ERROR, 400);
+    return c.json({ rows: await getNewUserSeries(input.db, scope) });
+  });
+
+  internal.get("/analytics/top-users", async (c) => {
+    const from = new Date(c.req.query("from") ?? "");
+    const to = new Date(c.req.query("to") ?? "");
+    const limit = Number(c.req.query("limit") ?? "10");
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || !Number.isFinite(limit)) {
+      return c.json({ error: { message: "from, to and limit are required" } }, 400);
+    }
+    const rows = await getTopUsers(input.db, {
+      fromUtc: from,
+      toUtc: to,
+      chatId: c.req.query("chatId") || null,
+      limit,
+    });
+    return c.json({ rows });
+  });
+
+  internal.get("/analytics/availability", async (c) => {
+    const scope = analyticsScope(c);
+    if (!scope) return c.json(ANALYTICS_SCOPE_ERROR, 400);
+    const buckets = await getMessageAvailability(input.db, {
+      ...scope,
+      chatId: c.req.query("chatId") || null,
+    });
+    return c.json({ buckets });
+  });
+
+  internal.get("/analytics/hour-counts", async (c) => {
+    const timeZone = c.req.query("tz");
+    if (!timeZone) return c.json({ error: { message: "tz is required" } }, 400);
+    const fromRaw = c.req.query("from");
+    const fromUtc = fromRaw ? new Date(fromRaw) : undefined;
+    if (fromUtc && Number.isNaN(fromUtc.getTime())) {
+      return c.json({ error: { message: "from must be an ISO instant" } }, 400);
+    }
+    const hours = await listChatHourCounts(input.db, { timeZone, fromUtc });
+    return c.json({ hours });
+  });
+
   internal.put("/chats/:chatId/summaries/:date", async (c) => {
     const parsed = contentReplaceSummariesRequestSchema.safeParse(
       await c.req.json().catch(() => null),
@@ -587,6 +666,7 @@ export function createApi(input: {
       input.db,
       c.req.param("chatId"),
       Number.isFinite(limit) ? limit : 200,
+      c.req.query("date") || undefined,
     );
     return c.json({ summaries: stored });
   });

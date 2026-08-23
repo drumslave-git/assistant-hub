@@ -210,3 +210,65 @@ export const contentIndexClearResponseSchema = z.object({
 export const contentEmbeddedCountResponseSchema = z.object({
   count: z.number().int().nonnegative(),
 });
+
+/* -------------------------- analytics aggregates -------------------------- *
+ * Message-volume analytics read the mirror where it lives: the aggregation
+ * SQL runs source-side and only the bucketed numbers cross the API. Bucket
+ * keys are wall-clock strings in the requested timezone (`YYYY-MM-DD HH24` /
+ * `YYYY-MM-DD` / `YYYY-MM` / `YYYY`, or the literal `all`), matching the
+ * core's period module bucket keys exactly.
+ * -------------------------------------------------------------------------- */
+
+/** The bucketing unit for the analytics series/availability endpoints. */
+export const contentBucketUnitSchema = z.enum(["hour", "day", "week", "month", "year", "all"]);
+
+export type ContentBucketUnit = z.infer<typeof contentBucketUnitSchema>;
+
+/** GET /internal/analytics/message-series?from=&to=&unit=&tz=[&chatId=][&userId=] */
+export const contentMessageSeriesResponseSchema = z.object({
+  rows: z.array(
+    z.object({
+      bucket: z.string().min(1),
+      human: z.number().int().nonnegative(),
+      bot: z.number().int().nonnegative(),
+      activeUsers: z.number().int().nonnegative(),
+    }),
+  ),
+});
+
+/** GET /internal/analytics/new-user-series?from=&to=&unit=&tz= (first sightings). */
+export const contentNewUserSeriesResponseSchema = z.object({
+  rows: z.array(
+    z.object({ bucket: z.string().min(1), newUsers: z.number().int().nonnegative() }),
+  ),
+});
+
+/** GET /internal/analytics/top-users?from=&to=&limit=[&chatId=] */
+export const contentTopUsersResponseSchema = z.object({
+  rows: z.array(
+    z.object({ userId: z.string().min(1), messages: z.number().int().nonnegative() }),
+  ),
+});
+
+/** GET /internal/analytics/availability?from=&to=&unit=&tz=[&chatId=] */
+export const contentBucketsResponseSchema = z.object({
+  buckets: z.array(z.string()),
+});
+
+/**
+ * GET /internal/analytics/hour-counts?tz=[&from=] — the insight due-scan's
+ * source half: every (chat, wall-clock hour) pair holding visible messages,
+ * with counts. The core joins these against its own scored-hour rows in JS
+ * (the same split-scan shape as the summarizer's day counts); `from` is the
+ * scan floor as a UTC instant, bounding the group-by to recent rows.
+ */
+export const contentHourCountsResponseSchema = z.object({
+  hours: z.array(
+    z.object({
+      chatId: z.string().min(1),
+      /** `YYYY-MM-DD HH24` in the requested timezone. */
+      insightHour: z.string().min(1),
+      messageCount: z.number().int().nonnegative(),
+    }),
+  ),
+});

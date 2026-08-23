@@ -1,8 +1,14 @@
 import "server-only";
 
 import {
+  contentBucketsResponseSchema,
   contentDayCountsResponseSchema,
   contentEmbeddedCountResponseSchema,
+  contentHourCountsResponseSchema,
+  contentMessageSeriesResponseSchema,
+  contentNewUserSeriesResponseSchema,
+  contentTopUsersResponseSchema,
+  type ContentBucketUnit,
   contentImportResponseSchema,
   contentIndexClearResponseSchema,
   contentIndexDueResponseSchema,
@@ -152,6 +158,48 @@ export interface SourceContentClient {
   ): Promise<number>;
   /** Per-(chat, day) visible message counts before `before` (the day scan's half). */
   dayCounts(timeZone: string, before: string): Promise<{ chatId: string; date: string; messageCount: number }[]>;
+  /** Per-bucket message volume + active users (the analytics charts' source). */
+  messageSeries(params: {
+    fromUtc: Date;
+    toUtc: Date;
+    unit: ContentBucketUnit;
+    timeZone: string;
+    chatId?: string | null;
+    userId?: string | null;
+  }): Promise<{ bucket: string; human: number; bot: number; activeUsers: number }[]>;
+  /** Per-bucket first sightings (the Users chart's "new users" line, global). */
+  newUserSeries(params: {
+    fromUtc: Date;
+    toUtc: Date;
+    unit: ContentBucketUnit;
+    timeZone: string;
+  }): Promise<{ bucket: string; newUsers: number }[]>;
+  /** The most active human senders in a period (optionally within one chat). */
+  topUsers(params: {
+    fromUtc: Date;
+    toUtc: Date;
+    chatId?: string | null;
+    limit: number;
+  }): Promise<{ userId: string; messages: number }[]>;
+  /** Bucket keys in a range holding any message (the period calendar's marks). */
+  messageAvailability(params: {
+    fromUtc: Date;
+    toUtc: Date;
+    unit: ContentBucketUnit;
+    timeZone: string;
+    chatId?: string | null;
+  }): Promise<string[]>;
+  /**
+   * Every (chat, wall-clock hour) pair holding visible messages, with counts
+   * — the insight due-scan's source half; the core joins against its own
+   * scored rows in JS. `fromUtc` bounds the scan (the floor).
+   */
+  hourCounts(params: {
+    timeZone: string;
+    fromUtc?: Date;
+  }): Promise<{ chatId: string; insightHour: string; messageCount: number }[]>;
+  /** One day's stored topics for a chat (the insight job's extra context). */
+  listSummariesForDay(chatId: string, date: string): Promise<SourceSummary[]>;
   /** Replace one day's topics (idempotent); the caller stamps its own marker. */
   replaceSummaries(
     chatId: string,
@@ -269,6 +317,73 @@ export function resolveSourceContent(): SourceContentClient | null {
         await request(`/internal/messages/day-counts?${query.toString()}`),
       );
       return body.days;
+    },
+    async messageSeries(params) {
+      const query = new URLSearchParams({
+        from: params.fromUtc.toISOString(),
+        to: params.toUtc.toISOString(),
+        unit: params.unit,
+        tz: params.timeZone,
+        ...(params.chatId ? { chatId: params.chatId } : {}),
+        ...(params.userId ? { userId: params.userId } : {}),
+      });
+      const body = contentMessageSeriesResponseSchema.parse(
+        await request(`/internal/analytics/message-series?${query.toString()}`),
+      );
+      return body.rows;
+    },
+    async newUserSeries(params) {
+      const query = new URLSearchParams({
+        from: params.fromUtc.toISOString(),
+        to: params.toUtc.toISOString(),
+        unit: params.unit,
+        tz: params.timeZone,
+      });
+      const body = contentNewUserSeriesResponseSchema.parse(
+        await request(`/internal/analytics/new-user-series?${query.toString()}`),
+      );
+      return body.rows;
+    },
+    async topUsers(params) {
+      const query = new URLSearchParams({
+        from: params.fromUtc.toISOString(),
+        to: params.toUtc.toISOString(),
+        limit: String(params.limit),
+        ...(params.chatId ? { chatId: params.chatId } : {}),
+      });
+      const body = contentTopUsersResponseSchema.parse(
+        await request(`/internal/analytics/top-users?${query.toString()}`),
+      );
+      return body.rows;
+    },
+    async messageAvailability(params) {
+      const query = new URLSearchParams({
+        from: params.fromUtc.toISOString(),
+        to: params.toUtc.toISOString(),
+        unit: params.unit,
+        tz: params.timeZone,
+        ...(params.chatId ? { chatId: params.chatId } : {}),
+      });
+      const body = contentBucketsResponseSchema.parse(
+        await request(`/internal/analytics/availability?${query.toString()}`),
+      );
+      return body.buckets;
+    },
+    async hourCounts(params) {
+      const query = new URLSearchParams({
+        tz: params.timeZone,
+        ...(params.fromUtc ? { from: params.fromUtc.toISOString() } : {}),
+      });
+      const body = contentHourCountsResponseSchema.parse(
+        await request(`/internal/analytics/hour-counts?${query.toString()}`),
+      );
+      return body.hours;
+    },
+    async listSummariesForDay(chatId, date) {
+      const body = contentSummariesResponseSchema.parse(
+        await request(chatPath(chatId, `/summaries?date=${encodeURIComponent(date)}`)),
+      );
+      return body.summaries.map(toSummary);
     },
     async replaceSummaries(chatId, summaryDate, topics) {
       const body = contentSummariesResponseSchema.parse(

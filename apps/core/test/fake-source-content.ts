@@ -1,3 +1,6 @@
+import type { ContentBucketUnit } from "@assistant-hub/contracts";
+
+import { bucketKeyOfInstant } from "@/features/analytics/period";
 import type {
   SourceChatMessage,
   SourceContentClient,
@@ -14,6 +17,8 @@ import type {
 export interface FakeSourceContent extends SourceContentClient {
   rows: SourceChatMessage[];
   summariesStore: SourceSummary[];
+  /** First sightings, for `newUserSeries` — tests seed it directly. */
+  usersStore: { userId: string; firstSeenAt: Date }[];
   /** `chatId|telegramMessageId` → indexed content; null embedding tracked. */
   index: Map<string, { content: string; embedding: number[] | null }>;
   addMessage(input: {
@@ -49,9 +54,16 @@ export function fakeSourceContent(): FakeSourceContent {
   const keyOf = (chatId: string, telegramMessageId: number) => `${chatId}|${telegramMessageId}`;
   const visible = (row: SourceChatMessage) => row.deletedAt == null;
 
+  const usersStore: { userId: string; firstSeenAt: Date }[] = [];
+
+  /** The core period module's bucket key — the source formats to match it. */
+  const bucketOf = (instant: Date, unit: ContentBucketUnit, timeZone: string) =>
+    unit === "all" ? "all" : bucketKeyOfInstant(instant, unit, timeZone);
+
   const client: FakeSourceContent = {
     rows,
     summariesStore,
+    usersStore,
     index,
     addMessage(input) {
       const row: SourceChatMessage = {
@@ -123,6 +135,89 @@ export function fakeSourceContent(): FakeSourceContent {
       return [...counts.values()].sort(
         (a, b) => a.date.localeCompare(b.date) || a.chatId.localeCompare(b.chatId),
       );
+    },
+    async messageSeries(params) {
+      const buckets = new Map<
+        string,
+        { human: number; bot: number; activeUsers: Set<string | null> }
+      >();
+      for (const row of rows) {
+        if (!visible(row)) continue;
+        const at = new Date(row.sentAt);
+        if (at < params.fromUtc || at >= params.toUtc) continue;
+        if (params.chatId && row.chatId !== params.chatId) continue;
+        if (params.userId && row.userId !== params.userId) continue;
+        const bucket = bucketOf(at, params.unit, params.timeZone);
+        const entry = buckets.get(bucket) ?? { human: 0, bot: 0, activeUsers: new Set() };
+        if (row.role === "user") {
+          entry.human += 1;
+          entry.activeUsers.add(row.userId);
+        } else {
+          entry.bot += 1;
+        }
+        buckets.set(bucket, entry);
+      }
+      return [...buckets.entries()].map(([bucket, entry]) => ({
+        bucket,
+        human: entry.human,
+        bot: entry.bot,
+        activeUsers: entry.activeUsers.size,
+      }));
+    },
+    async newUserSeries(params) {
+      const buckets = new Map<string, number>();
+      for (const user of usersStore) {
+        if (user.firstSeenAt < params.fromUtc || user.firstSeenAt >= params.toUtc) continue;
+        const bucket = bucketOf(user.firstSeenAt, params.unit, params.timeZone);
+        buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
+      }
+      return [...buckets.entries()].map(([bucket, newUsers]) => ({ bucket, newUsers }));
+    },
+    async topUsers(params) {
+      const counts = new Map<string, number>();
+      for (const row of rows) {
+        if (!visible(row) || row.role !== "user" || row.userId == null) continue;
+        const at = new Date(row.sentAt);
+        if (at < params.fromUtc || at >= params.toUtc) continue;
+        if (params.chatId && row.chatId !== params.chatId) continue;
+        counts.set(row.userId, (counts.get(row.userId) ?? 0) + 1);
+      }
+      return [...counts.entries()]
+        .map(([userId, messages]) => ({ userId, messages }))
+        .sort((a, b) => b.messages - a.messages)
+        .slice(0, params.limit);
+    },
+    async messageAvailability(params) {
+      const buckets = new Set<string>();
+      for (const row of rows) {
+        if (!visible(row)) continue;
+        const at = new Date(row.sentAt);
+        if (at < params.fromUtc || at >= params.toUtc) continue;
+        if (params.chatId && row.chatId !== params.chatId) continue;
+        buckets.add(bucketOf(at, params.unit, params.timeZone));
+      }
+      return [...buckets].sort();
+    },
+    async hourCounts(params) {
+      const counts = new Map<string, { chatId: string; insightHour: string; messageCount: number }>();
+      for (const row of rows) {
+        if (!visible(row)) continue;
+        const at = new Date(row.sentAt);
+        if (params.fromUtc && at < params.fromUtc) continue;
+        const insightHour = bucketKeyOfInstant(at, "hour", params.timeZone);
+        const key = `${row.chatId}|${insightHour}`;
+        const entry = counts.get(key) ?? { chatId: row.chatId, insightHour, messageCount: 0 };
+        entry.messageCount += 1;
+        counts.set(key, entry);
+      }
+      return [...counts.values()].sort(
+        (a, b) => a.insightHour.localeCompare(b.insightHour) || a.chatId.localeCompare(b.chatId),
+      );
+    },
+    async listSummariesForDay(chatId, date) {
+      return summariesStore
+        .filter((summary) => summary.chatId === chatId && summary.summaryDate === date)
+        .sort((a, b) => a.id - b.id);
     },
     async replaceSummaries(chatId, summaryDate, topics) {
       for (let i = summariesStore.length - 1; i >= 0; i -= 1) {

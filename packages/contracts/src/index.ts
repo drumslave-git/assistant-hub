@@ -9,8 +9,11 @@
  */
 export { DEFAULT_ASSISTANT_ID } from "./assistants";
 export {
+  contentBucketUnitSchema,
+  contentBucketsResponseSchema,
   contentDayCountsResponseSchema,
   contentEmbeddedCountResponseSchema,
+  contentHourCountsResponseSchema,
   contentImportRequestSchema,
   contentImportResponseSchema,
   contentIndexClearResponseSchema,
@@ -18,7 +21,9 @@ export {
   contentIndexRowsRequestSchema,
   contentMessageMatchSchema,
   contentMessageSchema,
+  contentMessageSeriesResponseSchema,
   contentMessagesResponseSchema,
+  contentNewUserSeriesResponseSchema,
   contentReplaceSummariesRequestSchema,
   contentSearchMessagesRequestSchema,
   contentSearchMessagesResponseSchema,
@@ -27,6 +32,8 @@ export {
   contentSummariesResponseSchema,
   contentSummaryCountsResponseSchema,
   contentSummarySchema,
+  contentTopUsersResponseSchema,
+  type ContentBucketUnit,
   type ContentMessage,
   type ContentMessageMatch,
   type ContentSummary,

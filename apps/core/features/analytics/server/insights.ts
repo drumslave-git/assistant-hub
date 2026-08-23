@@ -10,6 +10,10 @@ import type {
   LlmCallTrace,
 } from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
+import {
+  requireSourceContent,
+  type SourceContentClient,
+} from "@/server/source/tg-content";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
@@ -88,6 +92,8 @@ export interface AnalyticsInsightsDeps {
   /** Publish live per-hour / per-period progress (drives the Jobs dashboard). */
   onProgress?: (progress: JobProgress | null) => void;
   db?: DrizzleDb;
+  /** The owning source's content API; the default resolves from env. */
+  content?: SourceContentClient;
 }
 
 export interface AnalyticsInsightsResult {
@@ -164,12 +170,13 @@ function weightedMood(children: { moodScore: number; messageCount: number }[]): 
 
 /** The (chat, hour) pairs owed a score right now. */
 async function pendingHours(
+  content: SourceContentClient,
   db: DrizzleDb,
   deps: AnalyticsInsightsDeps,
 ): Promise<PendingInsightHour[]> {
   const now = deps.now ?? new Date();
   const currentHour = bucketKeyOfInstant(now, "hour", deps.timeZone);
-  const pending = await listHoursNeedingInsight(db, {
+  const pending = await listHoursNeedingInsight(content, db, {
     timeZone: deps.timeZone,
     // The in-progress hour is excluded: scoring it would freeze a partial
     // conversation, and a scored hour is never re-read.
@@ -198,9 +205,10 @@ export async function runAnalyticsInsights(
   deps: AnalyticsInsightsDeps,
 ): Promise<AnalyticsInsightsResult> {
   const db = deps.db ?? getDb();
-  const pending = await pendingHours(db, deps);
+  const content = deps.content ?? requireSourceContent();
+  const pending = await pendingHours(content, db, deps);
   if (pending.length === 0) return { ...EMPTY, summary: "nothing to compute" };
-  return runInsightPass(deps, db, pending, {
+  return runInsightPass(deps, db, content, pending, {
     action: "insights",
     inputSummary: `${pending.length} hour(s) pending`,
   });
@@ -220,18 +228,19 @@ export async function regenerateAnalyticsInsights(
   params: { granularity: Granularity; bucket: string },
 ): Promise<AnalyticsInsightsResult> {
   const db = deps.db ?? getDb();
+  const content = deps.content ?? requireSourceContent();
   const dropped = await deleteInsightsForPeriod(db, params);
   // The drop just un-scored hours that may lie below the due-scan's floor — the
   // next scan must be unbounded so it sees them owed again.
   resetInsightScanFloor();
-  const pending = await pendingHours(db, deps);
+  const pending = await pendingHours(content, db, deps);
   if (pending.length === 0) {
     return {
       ...EMPTY,
       summary: `dropped ${dropped.units} hour score(s) and ${dropped.periods} roll-up(s); no finished hour to re-score`,
     };
   }
-  return runInsightPass(deps, db, pending, {
+  return runInsightPass(deps, db, content, pending, {
     action: "regenerate",
     inputSummary: `${params.granularity} ${params.bucket}: dropped ${dropped.units} hour score(s), ${dropped.periods} roll-up(s); re-scoring ${pending.length} hour(s)`,
     dropped,
@@ -246,6 +255,7 @@ export async function regenerateAnalyticsInsights(
 async function runInsightPass(
   deps: AnalyticsInsightsDeps,
   db: DrizzleDb,
+  content: SourceContentClient,
   pending: PendingInsightHour[],
   meta: { action: string; inputSummary: string; dropped?: { units: number; periods: number } },
 ): Promise<AnalyticsInsightsResult> {
@@ -300,12 +310,15 @@ async function runInsightPass(
         total: pending.length,
       });
       const [messages, topics] = await Promise.all([
-        getHourMessages(db, {
+        getHourMessages(content, {
           chatId: unit.chatId,
           insightHour: unit.insightHour,
           timeZone: deps.timeZone,
         }),
-        getDaySummaryTopics(db, { chatId: unit.chatId, date: unit.insightHour.slice(0, 10) }),
+        getDaySummaryTopics(content, {
+          chatId: unit.chatId,
+          date: unit.insightHour.slice(0, 10),
+        }),
       ]);
       const transcript = formatTranscript(messages);
       if (!transcript) {
