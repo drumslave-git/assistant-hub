@@ -7,8 +7,9 @@ import { withAdvisoryLock } from "@/server/jobs/lock";
 import { listTraces } from "@/server/trace";
 import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
 
-import { runVisionBackfill } from "./backfill";
+import { runVisionBackfill, type VisionBackfillSource } from "./backfill";
 import { countPendingMedia, insertMedia, listPendingMedia } from "./repository";
+import { dbMediaStore } from "./service";
 
 let ctx: TestDb;
 
@@ -44,6 +45,15 @@ async function seedPending(
   });
 }
 
+/** The source seam over this test's database — what the tg API provides live. */
+function source(): VisionBackfillSource {
+  return {
+    store: dbMediaStore(ctx.db),
+    listPending: (limit) => listPendingMedia(ctx.db, limit),
+    countPending: () => countPendingMedia(ctx.db),
+  };
+}
+
 function fakeComplete(content: string): ChatCompletionResult {
   return {
     content,
@@ -63,6 +73,7 @@ describe("runVisionBackfill", () => {
 
     const result = await runVisionBackfill(
       { complete: async () => fakeComplete("a photo") },
+      source(),
       {},
       ctx.db,
     );
@@ -82,9 +93,14 @@ describe("runVisionBackfill", () => {
 
   it("is idempotent — a second run finds nothing pending", async () => {
     await seedPending(10);
-    await runVisionBackfill({ complete: async () => fakeComplete("x") }, {}, ctx.db);
+    await runVisionBackfill({ complete: async () => fakeComplete("x") }, source(), {}, ctx.db);
 
-    const second = await runVisionBackfill({ complete: async () => fakeComplete("y") }, {}, ctx.db);
+    const second = await runVisionBackfill(
+      { complete: async () => fakeComplete("y") },
+      source(),
+      {},
+      ctx.db,
+    );
     expect(second.described).toBe(0);
     expect(second.summary).toBe("nothing pending");
   });
@@ -93,6 +109,7 @@ describe("runVisionBackfill", () => {
     await seedPending(10);
     const result = await runVisionBackfill(
       { complete: async () => fakeComplete("   ") }, // empty after trim → describeAndStore skips
+      source(),
       {},
       ctx.db,
     );
@@ -114,6 +131,7 @@ describe("runVisionBackfill", () => {
     });
     const result = await runVisionBackfill(
       { complete },
+      source(),
       { isAborted: () => calls >= 1 },
       ctx.db,
     );
@@ -133,6 +151,7 @@ describe("runVisionBackfill", () => {
     // …so a run describes only the leftover and never races the live pass.
     const result = await runVisionBackfill(
       { complete: async () => fakeComplete("a photo") },
+      source(),
       {},
       ctx.db,
     );
@@ -159,7 +178,7 @@ describe("runVisionBackfill", () => {
     const inner = await withAdvisoryLock(
       "vision-backfill",
       async () => {
-        return runVisionBackfill({ complete: async () => fakeComplete("z") }, {}, ctx.db);
+        return runVisionBackfill({ complete: async () => fakeComplete("z") }, source(), {}, ctx.db);
       },
       ctx.db,
     );

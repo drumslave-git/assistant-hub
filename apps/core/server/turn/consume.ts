@@ -47,6 +47,8 @@ import {
 } from "@/features/vision/server/service";
 import { VOICE_TURN_NOTE, VOICE_UNAVAILABLE_NOTE } from "@/features/voice/format";
 import { synthesizeVoiceReply } from "@/features/voice/server/speak";
+import { pokeVisionBackfill } from "@/features/vision/server/backfill-scheduler";
+import { pokeMessageIndexing } from "@/features/history/server/index-scheduler";
 import { registerRunAck } from "@/features/browser-agent/server/ack";
 import { resolveRequiredLanguage } from "@/lib/language";
 import {
@@ -462,6 +464,11 @@ export async function processInboundEvent(
   const isVoice = media?.kind === "voice";
   const store = resolveMediaStore(ctx);
   const outbound = resolveOutbound(ctx);
+
+  // Live traffic: push the idle background runs out and yield any batch in
+  // flight, so they only ever run while the bot is quiet (v1 behavior).
+  pokeVisionBackfill();
+  pokeMessageIndexing();
 
   // Transitional shadow of the source's directory into the v1 tables the
   // brain still FKs and reads (see shadow-directory.ts). Awaited so the

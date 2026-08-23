@@ -6,10 +6,10 @@ import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import type { JobProgress } from "@/server/jobs/progress";
+import type { SourceMediaBrowse } from "@/server/turn/tg-media";
 import { startTrace } from "@/server/trace";
 
 import { describeAndStore, type DescribeDeps } from "./service";
-import { countPendingMedia, listPendingMedia } from "./repository";
 
 /**
  * Vision backfill job — describe the media rows still `status='pending'` (bytes
@@ -35,6 +35,13 @@ const MAX_ROWS_PER_RUN = 200;
 
 /** Collaborators for the describe pass — the same shape the live path injects. */
 export type VisionBackfillDeps = DescribeDeps;
+
+/**
+ * Where the pending rows live: the owning source's media over its internal
+ * API (real), or a store-backed fake in tests. The describe pass writes back
+ * through the same `store`, and the source drops the bytes.
+ */
+export type VisionBackfillSource = Pick<SourceMediaBrowse, "store" | "listPending" | "countPending">;
 
 export interface VisionBackfillOptions {
   /** Cooperative stop signal from the scheduler; checked between rows. */
@@ -71,7 +78,9 @@ function summarize(described: number, unresolved: number, interrupted: boolean):
  */
 export async function runVisionBackfill(
   deps: VisionBackfillDeps,
+  source: VisionBackfillSource,
   options: VisionBackfillOptions = {},
+  /** Where the advisory lock lives (the app's own DB; injectable in tests). */
   db: DrizzleDb = getDb(),
 ): Promise<VisionBackfillResult> {
   const isAborted = options.isAborted ?? (() => false);
@@ -92,14 +101,14 @@ export async function runVisionBackfill(
         let interrupted = false;
         // The pending count when the run starts is this run's denominator; rows
         // leave `pending` as they are described, so it only shrinks from here.
-        const total = await countPendingMedia(db);
+        const total = await source.countPending();
 
         while (attempted.size < MAX_ROWS_PER_RUN) {
           if (isAborted()) {
             interrupted = true;
             break;
           }
-          const batch = await listPendingMedia(db, BATCH_SIZE);
+          const batch = await source.listPending(BATCH_SIZE);
           const fresh = batch.filter((row) => !attempted.has(row.id));
           if (fresh.length === 0) break; // nothing new to do
 
@@ -113,7 +122,7 @@ export async function runVisionBackfill(
             const result = await describeAndStore(
               { chatId: row.chatId, telegramMessageId: row.telegramMessageId },
               deps,
-              { db },
+              { store: source.store },
             );
             if (result && result.status === "described") described += 1;
             else unresolved += 1;

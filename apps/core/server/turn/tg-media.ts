@@ -3,12 +3,14 @@ import "server-only";
 import {
   internalMediaDescribeResponseSchema,
   internalMediaResponseSchema,
+  internalPendingMediaResponseSchema,
+  internalRecentMediaResponseSchema,
   type InternalMedia,
 } from "@assistant-hub/contracts";
 
 import type { MediaStorePort } from "@/features/vision/server/service";
 import type { MediaRecord } from "@/features/vision/server/repository";
-import { requireEnv } from "@/server/env";
+import { getEnv, requireEnv } from "@/server/env";
 
 /**
  * The tg store's media, reached over its internal API (contract schemas in
@@ -84,6 +86,58 @@ export function tgApiMediaStore(config?: { baseUrl?: string; token?: string }): 
         await request(`/internal/media/${encodeURIComponent(id)}`),
       );
       return body.media ? toMediaRecord(body.media) : null;
+    },
+  };
+}
+
+/**
+ * What the vision feature needs of the source's media beyond the per-row
+ * store: the backfill's work list and the dashboard gallery's recent rows.
+ */
+export interface SourceMediaBrowse {
+  store: MediaStorePort;
+  listPending(limit: number): Promise<{ id: string; chatId: string; telegramMessageId: number }[]>;
+  countPending(): Promise<number>;
+  listRecent(limit: number): Promise<MediaRecord[]>;
+}
+
+/** The tg-API-backed browse surface, or null when the source API is unset. */
+export function resolveSourceMediaBrowse(): SourceMediaBrowse | null {
+  const env = getEnv();
+  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
+  const baseUrl = env.TG_API_URL.replace(/\/$/, "");
+  const token = env.INTERNAL_API_TOKEN;
+  const request = async (path: string): Promise<unknown> => {
+    const res = await fetch(`${baseUrl}${path}`, {
+      headers: { "x-internal-token": token },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`tg internal API ${path} answered ${res.status}`);
+    return res.json();
+  };
+  return {
+    store: tgApiMediaStore(),
+    async listPending(limit) {
+      const body = internalPendingMediaResponseSchema.parse(
+        await request(`/internal/media/pending?limit=${limit}`),
+      );
+      return body.media.map((row) => ({
+        id: row.id,
+        chatId: row.chatId,
+        telegramMessageId: Number(row.sourceMessageId),
+      }));
+    },
+    async countPending() {
+      const body = internalPendingMediaResponseSchema.parse(
+        await request(`/internal/media/pending?limit=0`),
+      );
+      return body.total;
+    },
+    async listRecent(limit) {
+      const body = internalRecentMediaResponseSchema.parse(
+        await request(`/internal/media/recent?limit=${limit}`),
+      );
+      return body.media.map(toMediaRecord);
     },
   };
 }

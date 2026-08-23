@@ -4,6 +4,8 @@ import {
   inboundMessageEventSchema,
   internalMediaDescribeResponseSchema,
   internalMediaResponseSchema,
+  internalPendingMediaResponseSchema,
+  internalRecentMediaResponseSchema,
   type InboundMessageEvent,
 } from "@assistant-hub/contracts";
 import {
@@ -210,5 +212,53 @@ describe("tg media", () => {
     // An unknown message has no media.
     const missing = await api.request("/internal/chats/5001/messages/999/media", { headers });
     expect(internalMediaResponseSchema.parse(await missing.json()).media).toBeNull();
+  });
+
+  it("serves the backfill work list and the recent gallery", async () => {
+    const api = createApi({
+      db,
+      manager: {
+        statuses: () => [],
+        senderFor: () => {
+          throw new Error("no connection in this test");
+        },
+        reconcileConnection: async () => undefined,
+        removeConnection: async () => undefined,
+      },
+      internalToken: "secret-token",
+    });
+    const headers = { "x-internal-token": "secret-token" };
+
+    // The rows accumulated above: at least the voice row is still pending
+    // and its message is not live-held (holds released by the tests' flow).
+    await pool.query(`UPDATE messages SET processed = true`);
+    const pending = internalPendingMediaResponseSchema.parse(
+      await (await api.request("/internal/media/pending?limit=10", { headers })).json(),
+    );
+    expect(pending.total).toBeGreaterThan(0);
+    expect(pending.media.length).toBeGreaterThan(0);
+    // Byte-free refs only.
+    expect(Object.keys(pending.media[0]).sort()).toEqual(["chatId", "id", "sourceMessageId"]);
+
+    // A live-held message parks its media out of the work list, but not the count.
+    await pool.query(`UPDATE messages SET processed = false`);
+    const held = internalPendingMediaResponseSchema.parse(
+      await (await api.request("/internal/media/pending?limit=10", { headers })).json(),
+    );
+    expect(held.media).toHaveLength(0);
+    expect(held.total).toBe(pending.total);
+    await pool.query(`UPDATE messages SET processed = true`);
+
+    const recent = internalRecentMediaResponseSchema.parse(
+      await (await api.request("/internal/media/recent?limit=50", { headers })).json(),
+    );
+    expect(recent.media.length).toBeGreaterThan(0);
+    // Pending rows carry frames for the gallery; described rows are byte-free.
+    for (const row of recent.media) {
+      if (row.status === "described") expect(row.frames).toEqual([]);
+    }
+    expect(recent.media.some((row) => row.status === "pending" && row.frames.length > 0)).toBe(
+      true,
+    );
   });
 });

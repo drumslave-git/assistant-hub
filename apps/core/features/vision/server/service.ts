@@ -12,6 +12,7 @@ import type {
   LlmCallTrace,
 } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
+import { resolveSourceMediaBrowse } from "@/server/turn/tg-media";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 
 import {
@@ -680,18 +681,31 @@ function toView(record: MediaRecord): MediaView {
   };
 }
 
-/** Recent media for the dashboard, newest first. */
-export async function listMedia(limit = 100, db: DrizzleDb = getDb()): Promise<MediaView[]> {
-  const rows = await listRecentMedia(db, limit);
+/**
+ * The media rows live with the owning source since the split; an
+ * unconfigured source API throws for the caller (the vision page renders
+ * its unavailable state) rather than silently listing nothing.
+ */
+function requireSourceMedia() {
+  const source = resolveSourceMediaBrowse();
+  if (!source) {
+    throw new Error("telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
+  }
+  return source;
+}
+
+/** Recent media for the dashboard, newest first (from the owning source). */
+export async function listMedia(limit = 100): Promise<MediaView[]> {
+  const rows = await requireSourceMedia().listRecent(limit);
   return rows.map(toView);
 }
 
 /** One media row by id (dashboard detail), or null. */
-export async function getMediaDetail(id: string, db: DrizzleDb = getDb()): Promise<MediaRecord | null> {
-  return getMediaById(db, id);
+export async function getMediaDetail(id: string): Promise<MediaRecord | null> {
+  return requireSourceMedia().store.getById(id);
 }
 
 /** Count of media rows still awaiting a description (backfill backlog size). */
-export async function getPendingMediaCount(db: DrizzleDb = getDb()): Promise<number> {
-  return countPendingMedia(db);
+export async function getPendingMediaCount(): Promise<number> {
+  return requireSourceMedia().countPending();
 }

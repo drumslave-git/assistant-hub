@@ -43,6 +43,34 @@ export const internalMediaResponseSchema = z.object({
   media: internalMediaSchema.nullable(),
 });
 
+/**
+ * GET /internal/media/pending?limit=N — the backfill's work list: pending
+ * rows the source is willing to hand over (live-processing holds respected,
+ * oldest first), plus the whole backlog size. Byte-free — the describe pass
+ * fetches each row's frames when it gets to it.
+ */
+export const internalPendingMediaResponseSchema = z.object({
+  media: z.array(
+    z.object({
+      id: z.string().min(1),
+      chatId: z.string().min(1),
+      sourceMessageId: z.string().min(1),
+    }),
+  ),
+  total: z.number().int().nonnegative(),
+});
+
+export type InternalPendingMediaResponse = z.infer<typeof internalPendingMediaResponseSchema>;
+
+/**
+ * GET /internal/media/recent?limit=N — the newest media rows (the dashboard
+ * gallery). Frames ride along for pending rows only; a described row's
+ * bytes are gone by design.
+ */
+export const internalRecentMediaResponseSchema = z.object({
+  media: z.array(internalMediaSchema),
+});
+
 /** PUT /internal/media/:id/description — store the produced text, drop bytes. */
 export const internalMediaDescribeRequestSchema = z.object({
   description: z.string().min(1),

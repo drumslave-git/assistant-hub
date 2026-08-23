@@ -1,6 +1,6 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq, lt, or, sql } from "drizzle-orm";
 
-import { media, mediaBlobs } from "../../store/schema";
+import { media, mediaBlobs, messages } from "../../store/schema";
 import type { TgDb } from "../db";
 import type { StoredMedia } from "./types";
 
@@ -127,6 +127,65 @@ export async function getMediaByMessage(
 export async function getMediaById(db: TgDb, id: string): Promise<StoredMedia | null> {
   const rows = await db.select().from(media).where(eq(media.id, id)).limit(1);
   return rows[0] ? withFrames(db, rows[0]) : null;
+}
+
+/**
+ * A message's live-processing hold expires after this long: a core that
+ * crashed mid-turn must not park its media out of the backfill's reach
+ * forever (v1 rule, carried over).
+ */
+const LIVE_HOLD_TIMEOUT = sql`now() - interval '10 minutes'`;
+
+/** What the core's backfill needs to target a pending row — no bytes. */
+export interface PendingMediaRef {
+  id: string;
+  chatId: string;
+  telegramMessageId: number;
+}
+
+/**
+ * Pending rows the backfill may claim, oldest first: media of messages not
+ * currently held by a live turn (`messages.processed`), or held longer than
+ * the timeout (v1 `listPendingMedia` semantics).
+ */
+export async function listPendingMediaRefs(db: TgDb, limit = 20): Promise<PendingMediaRef[]> {
+  return db
+    .select({
+      id: media.id,
+      chatId: media.chatId,
+      telegramMessageId: media.telegramMessageId,
+    })
+    .from(media)
+    .innerJoin(
+      messages,
+      and(
+        eq(messages.chatId, media.chatId),
+        eq(messages.telegramMessageId, media.telegramMessageId),
+      ),
+    )
+    .where(
+      and(eq(media.status, "pending"), or(eq(messages.processed, true), lt(media.createdAt, LIVE_HOLD_TIMEOUT))),
+    )
+    .orderBy(asc(media.createdAt))
+    .limit(limit);
+}
+
+/** Rows still awaiting a description (the backfill's backlog size). */
+export async function countPendingMedia(db: TgDb): Promise<number> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(media)
+    .where(eq(media.status, "pending"));
+  return row?.value ?? 0;
+}
+
+/**
+ * The newest media rows (dashboard gallery), frames included for pending
+ * rows only — a described row's bytes are gone by design.
+ */
+export async function listRecentMedia(db: TgDb, limit = 100): Promise<StoredMedia[]> {
+  const rows = await db.select().from(media).orderBy(desc(media.createdAt)).limit(limit);
+  return Promise.all(rows.map((row) => withFrames(db, row)));
 }
 
 /**

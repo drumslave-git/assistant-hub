@@ -4,6 +4,8 @@ import { FEATURES } from "@/lib/features";
 import { createIdleScheduler, type IdleJobStatus, type IdleScheduler } from "@/server/jobs/idle-scheduler";
 import { publishEvent } from "@/server/realtime/hub";
 
+import { resolveSourceMediaBrowse } from "@/server/turn/tg-media";
+
 import { runVisionBackfill } from "./backfill";
 import { resolveDescribeDeps } from "./service";
 
@@ -33,9 +35,12 @@ function scheduler(): IdleScheduler {
       debounceMs: DEBOUNCE_MS,
       onStatusChange: () => publishEvent(FEATURE.realtimeTopic),
       run: async (ctx) => {
+        // The pending rows live with the owning source since the split.
+        const source = resolveSourceMediaBrowse();
+        if (!source) return { summary: "telegram service not configured (TG_API_URL / INTERNAL_API_TOKEN)" };
         const deps = await resolveDescribeDeps("background").catch(() => null);
         if (!deps) return { summary: "LLM not configured" };
-        const result = await runVisionBackfill(deps, {
+        const result = await runVisionBackfill(deps, source, {
           isAborted: ctx.isAborted,
           onProgress: ctx.reportProgress,
         });

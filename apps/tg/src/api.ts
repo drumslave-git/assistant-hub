@@ -34,7 +34,14 @@ import {
 } from "./feedback/store";
 import { formatUserLabel } from "./format";
 import { ingestGeneratedImage } from "./media/ingest";
-import { getMediaByMessage, getMediaById, markDescribed } from "./media/store";
+import {
+  countPendingMedia,
+  getMediaByMessage,
+  getMediaById,
+  listPendingMediaRefs,
+  listRecentMedia,
+  markDescribed,
+} from "./media/store";
 import type { StoredMedia } from "./media/types";
 import type { TgOutbound } from "./outbound";
 import {
@@ -387,6 +394,29 @@ export function createApi(input: {
     }
     const media = await getMediaByMessage(input.db, chatId, messageId);
     return c.json({ media: media ? toInternalMedia(media) : null });
+  });
+
+  // Specific media routes before `/media/:id` — Hono matches in order.
+  internal.get("/media/pending", async (c) => {
+    const limit = Number(c.req.query("limit") ?? "20");
+    const [refs, total] = await Promise.all([
+      listPendingMediaRefs(input.db, Number.isFinite(limit) ? limit : 20),
+      countPendingMedia(input.db),
+    ]);
+    return c.json({
+      media: refs.map((ref) => ({
+        id: ref.id,
+        chatId: ref.chatId,
+        sourceMessageId: String(ref.telegramMessageId),
+      })),
+      total,
+    });
+  });
+
+  internal.get("/media/recent", async (c) => {
+    const limit = Number(c.req.query("limit") ?? "100");
+    const rows = await listRecentMedia(input.db, Number.isFinite(limit) ? limit : 100);
+    return c.json({ media: rows.map(toInternalMedia) });
   });
 
   internal.get("/media/:id", async (c) => {
