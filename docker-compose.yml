@@ -8,12 +8,23 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      # The core boots (degraded) without its source app; started is enough.
+      tg:
+        condition: service_started
     environment:
       NODE_ENV: production
       PORT: 3200
       # Built from the bundled db service; override DATABASE_URL to use an
       # external database.
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@db:5432/${POSTGRES_DB:-bot}}
+      # The cross-app bus + inbound queue, and the tg source app's internal
+      # API (the split topology). The token authenticates both directions and
+      # must match the tg service's — set a real one in .env.
+      REDIS_URL: redis://redis:6379
+      TG_API_URL: http://tg:3210
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-change-me}
       TZ: ${TZ:-UTC}
     volumes:
       # Bind-mounted so trace/debug logs persist across restarts. The app writes
@@ -33,6 +44,36 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
+    restart: unless-stopped
+
+  tg:
+    # The Telegram source app: pollers, mirror/media store, feedback flows,
+    # and the internal API the core reads conversation content through.
+    build:
+      context: .
+      dockerfile: apps/tg/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3210
+      # The tg store — its OWN database on the bundled Postgres server
+      # (created on first init by docker/initdb; see the db service).
+      DATABASE_URL: ${TG_DATABASE_URL:-postgres://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@db:5432/${TG_POSTGRES_DB:-tg}}
+      REDIS_URL: redis://redis:6379
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-change-me}
+      TZ: ${TZ:-UTC}
+    # No published port: the internal API is for the core service only.
+    healthcheck:
+      test:
+        ["CMD-SHELL", "wget -qO- http://127.0.0.1:3210/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   redis:
@@ -60,12 +101,17 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-bot}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bot}
       POSTGRES_DB: ${POSTGRES_DB:-bot}
+      # Second database for the tg source app, created by the initdb hook
+      # below on FIRST init only — an existing data directory upgrading to
+      # the split topology creates it by hand (see docker/initdb).
+      TG_POSTGRES_DB: ${TG_POSTGRES_DB:-tg}
       TZ: ${TZ:-UTC}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       # Bind-mounted host directory for persistence.
       - "./data/pg:/var/lib/postgresql/data"
+      - "./docker/initdb:/docker-entrypoint-initdb.d:ro"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-bot}"]
       interval: 5s

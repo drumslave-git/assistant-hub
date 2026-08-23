@@ -108,6 +108,8 @@ jobs:
         include:
           - image: assistant-hub-core
             dockerfile: apps/core/Dockerfile
+          - image: assistant-hub-tg
+            dockerfile: apps/tg/Dockerfile
     env:
       VERSION: ${{ needs.version.outputs.version }}
       IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
