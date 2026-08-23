@@ -2,6 +2,8 @@ import type { ChatContentPart } from "@/server/llm/client";
 
 import type { ImagePayload, MediaAnnotation, MediaKind } from "./types";
 
+export type { MediaAnnotation } from "./types";
+
 /**
  * Pure formatting helpers for vision: how media reads in a transcript, how an
  * image becomes a model content part, and human labels. No server imports, so

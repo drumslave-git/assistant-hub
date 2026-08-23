@@ -21,14 +21,14 @@ import {
   type SummaryDate,
   type SummaryTopic,
 } from "../summary";
+import {
+  requireSourceContent,
+  type SourceContentClient,
+} from "@/server/source/tg-content";
+
 import { completeTranscriptBatches } from "./batched-completion";
 import { loadChatDayTranscript } from "./service";
-import {
-  countDaysNeedingSummary,
-  listDaysNeedingSummary,
-  replaceSummariesForDay,
-  type InsertChatSummary,
-} from "./summaries-repository";
+import { listSummaryDayMarkers, upsertSummaryDayMarker } from "./summaries-repository";
 
 /**
  * History summarization — the long-term half of conversation recall.
@@ -80,6 +80,8 @@ export interface SummarizeDeps {
    * is traceable start to end from the Debug filter. Absent → generated.
    */
   runCorrelationId?: string;
+  /** The owning source's content (real: the tg internal API). */
+  content?: SourceContentClient;
 }
 
 /** Outcome of summarizing one chat-day. */
@@ -119,7 +121,9 @@ export async function summarizeChatDay(
   );
 
   try {
+    const content = deps.content ?? requireSourceContent();
     const { messages, dayMessageCount } = await loadChatDayTranscript(
+      content,
       db,
       params.chatId,
       params.summaryDate,
@@ -140,11 +144,12 @@ export async function summarizeChatDay(
     // A day with nothing readable (all rows deleted, or only blank media rows)
     // still needs its marker stamped, so it stops showing up as pending work.
     if (messages.length === 0) {
-      await replaceSummariesForDay(db, {
+      await content.replaceSummaries(params.chatId, params.summaryDate, []);
+      await upsertSummaryDayMarker(db, {
         chatId: params.chatId,
         summaryDate: params.summaryDate,
         messageCount: dayMessageCount,
-        topics: [],
+        topicCount: 0,
       });
       await trace.skip("no messages", { outputSummary: "no messages to summarize" });
       return {
@@ -185,16 +190,20 @@ export async function summarizeChatDay(
       }
     }
 
-    const rows: InsertChatSummary[] = topics.map((topic, index) => ({
+    const rows = topics.map((topic, index) => ({
       content: topic.content,
       messageIds: topic.messageIds,
       embedding: vectors?.[index] ?? null,
     }));
-    const stored = await replaceSummariesForDay(db, {
+    // Topics land in the source's store first, then the coverage marker on
+    // this side — a crash between the two just re-summarizes the day (the
+    // replace is idempotent), never loses it.
+    const stored = await content.replaceSummaries(params.chatId, params.summaryDate, rows);
+    await upsertSummaryDayMarker(db, {
       chatId: params.chatId,
       summaryDate: params.summaryDate,
       messageCount: dayMessageCount,
-      topics: rows,
+      topicCount: stored.length,
     });
 
     await trace.event({
@@ -254,12 +263,45 @@ export interface SummarizationRunResult {
  * *excluded* from further iterations — otherwise it would be handed back by the
  * next scan forever and the run would never end.
  */
+/**
+ * (chat, day) pairs that need summarizing: every finished day holding
+ * messages whose marker is missing or whose recorded count no longer
+ * matches the day's live count. The counts come from the owning source;
+ * the markers are this side's job state — compared here (the v1 SQL join,
+ * split across the stores).
+ */
+export async function listDaysNeedingSummary(
+  content: SourceContentClient,
+  db: DrizzleDb,
+  params: { timeZone: string; today: SummaryDate; limit: number },
+): Promise<{ chatId: string; summaryDate: SummaryDate; messageCount: number }[]> {
+  const [days, markers] = await Promise.all([
+    content.dayCounts(params.timeZone, params.today),
+    listSummaryDayMarkers(db),
+  ]);
+  return days
+    .filter((day) => markers.get(`${day.chatId}|${day.date}`) !== day.messageCount)
+    .slice(0, params.limit)
+    .map((day) => ({ chatId: day.chatId, summaryDate: day.date, messageCount: day.messageCount }));
+}
+
+/** How many (chat, day) pairs are still awaiting summarization — for the dashboard. */
+export async function countDaysNeedingSummary(
+  content: SourceContentClient,
+  db: DrizzleDb,
+  params: { timeZone: string; today: SummaryDate },
+): Promise<number> {
+  const pending = await listDaysNeedingSummary(content, db, { ...params, limit: 1_000_000 });
+  return pending.length;
+}
+
 export async function runSummarization(
   deps: SummarizeDeps,
   db: DrizzleDb = getDb(),
 ): Promise<SummarizationRunResult> {
   const now = deps.now?.() ?? new Date();
   const today = currentSummaryDate(now, deps.timeZone);
+  const content = deps.content ?? requireSourceContent();
 
   let days = 0;
   let topics = 0;
@@ -268,10 +310,10 @@ export async function runSummarization(
   const runId = deps.runCorrelationId ?? newRunCorrelationId("history-summaries", now);
   // The backlog when the run starts is this run's denominator for the live bar;
   // days leave the scan as they are summarized, so it only shrinks from here.
-  const total = await countDaysNeedingSummary(db, { timeZone: deps.timeZone, today });
+  const total = await countDaysNeedingSummary(content, db, { timeZone: deps.timeZone, today });
 
   while (days + failed.size < MAX_DAYS_PER_RUN) {
-    const pending = await listDaysNeedingSummary(db, {
+    const pending = await listDaysNeedingSummary(content, db, {
       timeZone: deps.timeZone,
       today,
       limit: DUE_SCAN_PAGE,

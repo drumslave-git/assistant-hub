@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listTraces } from "@/server/trace";
+import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
 import { startTestDb, type TestDb } from "@/test/db";
 import {
   fromColumn,
@@ -10,8 +11,38 @@ import {
   HISTORY_CSV_HEADERS,
   type ColumnMapping,
 } from "../csv";
-import { getChatHistory, recordAssistantMessage, recordIncomingMessage } from "./service";
 import { exportHistoryCsv, importHistoryCsv } from "./transfer";
+
+/**
+ * CSV transfer over the source-owned mirror: export reads and import writes
+ * through the content client (the in-memory fake here; the tg internal API
+ * live), with the parsing/mapping/validation — this side's whole job —
+ * exercised for real. Traces land in the real store.
+ */
+
+// The mirror lives with the owning source; both directions go through it.
+let content: FakeSourceContent;
+vi.mock("@/server/source/tg-content", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/source/tg-content")>();
+  return { ...actual, requireSourceContent: () => content, resolveSourceContent: () => content };
+});
+vi.mock("@/server/source/tg-operator", () => ({
+  tgOperatorClient: () => ({
+    listChats: async () => {
+      const ids = [...new Set(content.rows.map((row) => row.chatId))];
+      return ids.map((id) => ({
+        id,
+        kind: id.startsWith("-") ? "group" : "direct",
+        title: null,
+        type: null,
+        notes: null,
+        language: null,
+        messageCount: content.rows.filter((row) => row.chatId === id).length,
+        lastMessageAt: new Date().toISOString(),
+      }));
+    },
+  }),
+}));
 
 let ctx: TestDb;
 
@@ -25,6 +56,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  content = fakeSourceContent();
 });
 
 const trigger = { kind: "dashboard" } as const;
@@ -33,45 +65,53 @@ const SENT = new Date("2026-07-14T10:00:00.000Z");
 /** The identity mapping an exported file auto-detects. */
 const CANONICAL: ColumnMapping = guessMapping(HISTORY_CSV_HEADERS);
 
-async function seedConversation() {
-  await recordIncomingMessage(
-    { chatId: "5", telegramMessageId: 1, userId: "100", content: "hello", sentAt: SENT },
-    ctx.db,
-  );
-  await recordAssistantMessage(
-    {
-      chatId: "5",
-      telegramMessageId: 2,
-      content: 'hi — "quoted", multi\nline',
-      replyToMessageId: 1,
-      sentAt: new Date("2026-07-14T10:00:05.000Z"),
-    },
-    ctx.db,
-  );
-  await recordIncomingMessage(
-    { chatId: "-1009", telegramMessageId: 8, userId: "200", content: "group chatter", sentAt: SENT },
-    ctx.db,
-  );
+function seedConversation() {
+  content.addMessage({
+    chatId: "5",
+    telegramMessageId: 1,
+    userId: "100",
+    content: "hello",
+    sentAt: SENT,
+  });
+  content.addMessage({
+    chatId: "5",
+    telegramMessageId: 2,
+    role: "assistant",
+    content: 'hi — "quoted", multi\nline',
+    replyToMessageId: 1,
+    sentAt: new Date("2026-07-14T10:00:05.000Z"),
+  });
+  content.addMessage({
+    chatId: "-1009",
+    telegramMessageId: 8,
+    userId: "200",
+    content: "group chatter",
+    sentAt: SENT,
+  });
+}
+
+async function chatRows(chatId: string) {
+  return content.allMessages(chatId);
 }
 
 describe("exportHistoryCsv", () => {
   it("exports every chat with the canonical header", async () => {
-    await seedConversation();
-    const table = parseCsv(await exportHistoryCsv(undefined, ctx.db));
+    seedConversation();
+    const table = parseCsv(await exportHistoryCsv());
     expect(table.headers).toEqual(HISTORY_CSV_HEADERS);
     expect(table.rows).toHaveLength(3);
     expect(guessMapping(table.headers)).toEqual(CANONICAL);
   });
 
   it("scopes to one chat when asked", async () => {
-    await seedConversation();
-    const table = parseCsv(await exportHistoryCsv("5", ctx.db));
+    seedConversation();
+    const table = parseCsv(await exportHistoryCsv("5"));
     expect(table.rows).toHaveLength(2);
     expect(table.rows.every((row) => row[0] === "5")).toBe(true);
   });
 
   it("exports a header-only file when the mirror is empty", async () => {
-    const table = parseCsv(await exportHistoryCsv(undefined, ctx.db));
+    const table = parseCsv(await exportHistoryCsv());
     expect(table.headers).toEqual(HISTORY_CSV_HEADERS);
     expect(table.rows).toEqual([]);
   });
@@ -79,11 +119,11 @@ describe("exportHistoryCsv", () => {
 
 describe("importHistoryCsv", () => {
   it("round-trips an export back into an empty mirror, preserving every field", async () => {
-    await seedConversation();
-    const csv = await exportHistoryCsv(undefined, ctx.db);
-    await ctx.truncate();
+    seedConversation();
+    const csv = await exportHistoryCsv();
+    content = fakeSourceContent(); // a fresh, empty mirror
 
-    const result = await importHistoryCsv({ csv, mapping: CANONICAL }, trigger, ctx.db);
+    const result = await importHistoryCsv({ csv, mapping: CANONICAL }, trigger);
     expect(result).toMatchObject({
       totalRows: 3,
       imported: 3,
@@ -92,7 +132,7 @@ describe("importHistoryCsv", () => {
     });
     expect(result.chatIds).toEqual(["-1009", "5"]);
 
-    const restored = await getChatHistory("5", {}, ctx.db);
+    const restored = await chatRows("5");
     expect(restored).toHaveLength(2);
     expect(restored.find((m) => m.telegramMessageId === 2)).toMatchObject({
       role: "assistant",
@@ -108,21 +148,21 @@ describe("importHistoryCsv", () => {
   });
 
   it("skips messages already stored instead of duplicating or overwriting them", async () => {
-    await seedConversation();
-    const csv = await exportHistoryCsv("5", ctx.db);
+    seedConversation();
+    const csv = await exportHistoryCsv("5");
 
-    const result = await importHistoryCsv({ csv, mapping: CANONICAL }, trigger, ctx.db);
+    const result = await importHistoryCsv({ csv, mapping: CANONICAL }, trigger);
     expect(result).toMatchObject({ totalRows: 2, imported: 0, skippedDuplicates: 2 });
-    expect(await getChatHistory("5", {}, ctx.db)).toHaveLength(2);
+    expect(await chatRows("5")).toHaveLength(2);
 
     // A second run of a file with one new row imports only that row.
     const mixed =
       `${HISTORY_CSV_HEADERS.join(",")}\n` +
       `5,1,user,hello,2026-07-14T10:00:00.000Z,100,,,\n` +
       `5,3,user,brand new,2026-07-14T11:00:00.000Z,100,,,\n`;
-    const second = await importHistoryCsv({ csv: mixed, mapping: CANONICAL }, trigger, ctx.db);
+    const second = await importHistoryCsv({ csv: mixed, mapping: CANONICAL }, trigger);
     expect(second).toMatchObject({ totalRows: 2, imported: 1, skippedDuplicates: 1 });
-    expect(await getChatHistory("5", {}, ctx.db)).toHaveLength(3);
+    expect(await chatRows("5")).toHaveLength(3);
   });
 
   it("imports a foreign CSV through an operator column mapping", async () => {
@@ -143,12 +183,15 @@ describe("importHistoryCsv", () => {
         },
       },
       trigger,
-      ctx.db,
     );
     expect(result).toMatchObject({ imported: 2, skippedDuplicates: 0, errors: [] });
 
-    const restored = await getChatHistory("777", {}, ctx.db);
-    expect(restored.map((m) => ({ role: m.role, content: m.content, userId: m.userId }))).toEqual([
+    const restored = await chatRows("777");
+    expect(
+      restored
+        .sort((a, b) => b.telegramMessageId - a.telegramMessageId)
+        .map((m) => ({ role: m.role, content: m.content, userId: m.userId })),
+    ).toEqual([
       { role: "assistant", content: "imported answer", userId: null },
       { role: "user", content: "imported question", userId: "900" },
     ]);
@@ -160,10 +203,10 @@ describe("importHistoryCsv", () => {
       `5,1,user,good,2026-07-14T10:00:00Z,100,,,\n` +
       `5,nope,user,bad id,2026-07-14T10:00:00Z,100,,,\n` +
       `5,3,alien,bad role,2026-07-14T10:00:00Z,100,,,\n`;
-    const result = await importHistoryCsv({ csv, mapping: CANONICAL }, trigger, ctx.db);
+    const result = await importHistoryCsv({ csv, mapping: CANONICAL }, trigger);
     expect(result).toMatchObject({ totalRows: 3, imported: 1, skippedDuplicates: 0 });
     expect(result.errors.map((e) => e.line)).toEqual([2, 3]);
-    expect(await getChatHistory("5", {}, ctx.db)).toHaveLength(1);
+    expect(await chatRows("5")).toHaveLength(1);
   });
 
   it("fills columns the file lacks with fixed values applied to every row", async () => {
@@ -185,15 +228,14 @@ describe("importHistoryCsv", () => {
         },
       },
       trigger,
-      ctx.db,
     );
     expect(result).toMatchObject({ imported: 2, skippedDuplicates: 0, errors: [] });
     expect(result.chatIds).toEqual(["-1001234567890"]);
 
-    const restored = await getChatHistory("-1001234567890", {}, ctx.db);
+    const restored = await chatRows("-1001234567890");
     expect(restored.map((m) => ({ role: m.role, userId: m.userId, content: m.content }))).toEqual([
-      { role: "user", userId: "900", content: "second" },
       { role: "user", userId: "900", content: "first" },
+      { role: "user", userId: "900", content: "second" },
     ]);
   });
 
@@ -208,7 +250,7 @@ describe("importHistoryCsv", () => {
     };
 
     await expect(
-      importHistoryCsv({ csv, mapping: { ...base, role: fromConstant("alien") } }, trigger, ctx.db),
+      importHistoryCsv({ csv, mapping: { ...base, role: fromConstant("alien") } }, trigger),
     ).rejects.toThrow(/role must be user or assistant/);
 
     // The unique key can never be a fixed value — every row would collapse into one.
@@ -216,34 +258,33 @@ describe("importHistoryCsv", () => {
       importHistoryCsv(
         { csv, mapping: { ...base, telegram_message_id: fromConstant("7") } },
         trigger,
-        ctx.db,
       ),
     ).rejects.toThrow(/must come from a column/);
 
-    expect(await getChatHistory("5", {}, ctx.db)).toHaveLength(0);
+    expect(await chatRows("5")).toHaveLength(0);
   });
 
   it("rejects a file with an unmapped required column, an empty file, and an all-invalid file", async () => {
     const csv = `${HISTORY_CSV_HEADERS.join(",")}\n5,1,user,x,2026-07-14T10:00:00Z,,,,\n`;
     await expect(
-      importHistoryCsv({ csv, mapping: { chat_id: fromColumn("chat_id") } }, trigger, ctx.db),
+      importHistoryCsv({ csv, mapping: { chat_id: fromColumn("chat_id") } }, trigger),
     ).rejects.toThrow(/Unmapped required column/);
 
     await expect(
-      importHistoryCsv({ csv: HISTORY_CSV_HEADERS.join(","), mapping: CANONICAL }, trigger, ctx.db),
+      importHistoryCsv({ csv: HISTORY_CSV_HEADERS.join(","), mapping: CANONICAL }, trigger),
     ).rejects.toThrow(/no data rows/);
 
     const allBad = `${HISTORY_CSV_HEADERS.join(",")}\n5,x,user,bad,not-a-date,,,,\n`;
-    await expect(
-      importHistoryCsv({ csv: allBad, mapping: CANONICAL }, trigger, ctx.db),
-    ).rejects.toThrow(/No valid rows/);
+    await expect(importHistoryCsv({ csv: allBad, mapping: CANONICAL }, trigger)).rejects.toThrow(
+      /No valid rows/,
+    );
 
-    expect(await getChatHistory("5", {}, ctx.db)).toHaveLength(0);
+    expect(await chatRows("5")).toHaveLength(0);
   });
 
   it("traces the import under the history feature, with the mapping and outcome", async () => {
     const csv = `${HISTORY_CSV_HEADERS.join(",")}\n5,1,user,traced,2026-07-14T10:00:00Z,100,,,\n`;
-    await importHistoryCsv({ csv, mapping: CANONICAL }, trigger, ctx.db);
+    await importHistoryCsv({ csv, mapping: CANONICAL }, trigger);
 
     const { traces } = await listTraces({ feature: "history" });
     expect(traces[0]).toMatchObject({ feature: "history", action: "import", status: "success" });
@@ -251,9 +292,7 @@ describe("importHistoryCsv", () => {
   });
 
   it("records a failed import as a failed trace", async () => {
-    await expect(
-      importHistoryCsv({ csv: "a,b\n1,2\n", mapping: {} }, trigger, ctx.db),
-    ).rejects.toThrow();
+    await expect(importHistoryCsv({ csv: "a,b\n1,2\n", mapping: {} }, trigger)).rejects.toThrow();
     const { traces } = await listTraces({ feature: "history" });
     expect(traces[0]).toMatchObject({ action: "import", status: "error" });
   });

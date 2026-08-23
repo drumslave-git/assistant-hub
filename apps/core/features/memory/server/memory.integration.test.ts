@@ -10,6 +10,7 @@ import {
 } from "@/db/schema";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces } from "@/server/trace";
+import { fakeSourceContent } from "@/test/fake-source-content";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import { runMemoryConsolidation, type ConsolidateDeps } from "./consolidate";
@@ -757,14 +758,21 @@ describe("passive extraction (the un-addressed half of memory)", () => {
   const DAY = "2026-07-13";
   const NOW = new Date("2026-07-15T12:00:00.000Z");
 
-  /** Mirror a message into history, exactly as the runtime does for every update. */
-  async function seedMessage(input: {
+  // The mirror lives with the owning source since the split — the extraction
+  // reads it through the content client, in-memory here.
+  let sourceContent: ReturnType<typeof fakeSourceContent>;
+  beforeEach(() => {
+    sourceContent = fakeSourceContent();
+  });
+
+  /** Mirror a message into the source, exactly as its runtime does per update. */
+  function seedMessage(input: {
     telegramMessageId: number;
     userId: string | null;
     content: string;
     at?: string;
-  }): Promise<void> {
-    await ctx.db.insert(chatMessages).values({
+  }): void {
+    sourceContent.addMessage({
       chatId: GROUP_ID,
       telegramMessageId: input.telegramMessageId,
       role: input.userId ? "user" : "assistant",
@@ -791,6 +799,7 @@ describe("passive extraction (the un-addressed half of memory)", () => {
         },
         timeZone: "UTC",
         now: () => NOW,
+        content: sourceContent,
       },
     };
   }
@@ -801,8 +810,8 @@ describe("passive extraction (the un-addressed half of memory)", () => {
     await seedGroup();
     // Two people talking to each other. The bot is not mentioned once, so under the
     // reply path alone none of this would ever have reached memory.
-    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "I finally moved to Lisbon." });
-    await seedMessage({ telegramMessageId: 2, userId: GRACE, content: "nice! I'm still in Porto" });
+    seedMessage({ telegramMessageId: 1, userId: ADA, content: "I finally moved to Lisbon." });
+    seedMessage({ telegramMessageId: 2, userId: GRACE, content: "nice! I'm still in Porto" });
 
     const { deps, calls } = scriptedExtractor([
       JSON.stringify({
@@ -840,8 +849,8 @@ describe("passive extraction (the un-addressed half of memory)", () => {
     await seedUser(ADA, "Ada", ["Ace", "A."]);
     await seedUser(GRACE, "Grace");
     await seedGroup();
-    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "Ace here, I'm a vet" });
-    await seedMessage({ telegramMessageId: 2, userId: GRACE, content: "hi Ace" });
+    seedMessage({ telegramMessageId: 1, userId: ADA, content: "Ace here, I'm a vet" });
+    seedMessage({ telegramMessageId: 2, userId: GRACE, content: "hi Ace" });
 
     const { deps, calls } = scriptedExtractor([JSON.stringify({ facts: [] })]);
     await runMemoryExtraction(deps, ctx.db);
@@ -854,7 +863,7 @@ describe("passive extraction (the un-addressed half of memory)", () => {
 
   it("hands the extracted facts to consolidation, reaching durable memory the same night", async () => {
     await seedUser(ADA, "Ada");
-    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "I'm a vet, by the way" });
+    seedMessage({ telegramMessageId: 1, userId: ADA, content: "I'm a vet, by the way" });
 
     await runMemoryExtraction(
       scriptedExtractor([
@@ -876,7 +885,7 @@ describe("passive extraction (the un-addressed half of memory)", () => {
 
   it("never re-reads an unchanged day, but re-reads one that gained messages", async () => {
     await seedUser(ADA, "Ada");
-    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "hi" });
+    seedMessage({ telegramMessageId: 1, userId: ADA, content: "hi" });
 
     const first = scriptedExtractor([JSON.stringify({ facts: [] })]);
     await runMemoryExtraction(first.deps, ctx.db);
@@ -890,7 +899,7 @@ describe("passive extraction (the un-addressed half of memory)", () => {
     expect(rerun.summary).toBe("nothing to extract");
 
     // But a day that gained a message is genuinely new work again (self-healing).
-    await seedMessage({ telegramMessageId: 2, userId: ADA, content: "I'm a vet" });
+    seedMessage({ telegramMessageId: 2, userId: ADA, content: "I'm a vet" });
     const third = scriptedExtractor([
       JSON.stringify({ facts: [{ scope: "user", user_id: ADA, content: "Ada is a vet." }] }),
     ]);
@@ -901,7 +910,7 @@ describe("passive extraction (the un-addressed half of memory)", () => {
 
   it("skips today â€” it is unfinished and already injected verbatim", async () => {
     await seedUser(ADA, "Ada");
-    await seedMessage({
+    seedMessage({
       telegramMessageId: 1,
       userId: ADA,
       content: "said today",
@@ -923,8 +932,8 @@ describe("passive extraction (the un-addressed half of memory)", () => {
   it("keeps an unregistered sender off the roster instead of harvesting facts it cannot store", async () => {
     await seedUser(ADA, "Ada");
     // GRACE speaks in the mirror but was never registered as a known user.
-    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "I'm a vet" });
-    await seedMessage({ telegramMessageId: 2, userId: GRACE, content: "I live in Porto" });
+    seedMessage({ telegramMessageId: 1, userId: ADA, content: "I'm a vet" });
+    seedMessage({ telegramMessageId: 2, userId: GRACE, content: "I live in Porto" });
 
     const { deps, calls } = scriptedExtractor([
       JSON.stringify({
@@ -945,7 +954,7 @@ describe("passive extraction (the un-addressed half of memory)", () => {
 
   it("drops a fact attributed to someone who was not in the day", async () => {
     await seedUser(ADA, "Ada");
-    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "hey" });
+    seedMessage({ telegramMessageId: 1, userId: ADA, content: "hey" });
 
     const result = await runMemoryExtraction(
       scriptedExtractor([
@@ -967,7 +976,7 @@ describe("passive extraction (the un-addressed half of memory)", () => {
 
   it("traces the day under its own feature, so the operator can audit what it decided", async () => {
     await seedUser(ADA, "Ada");
-    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "I have a dog named Rex" });
+    seedMessage({ telegramMessageId: 1, userId: ADA, content: "I have a dog named Rex" });
 
     await runMemoryExtraction(
       scriptedExtractor([

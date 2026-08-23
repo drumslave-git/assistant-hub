@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildResult, mergeMatches, SELF_AUTHORED_ONLY_NOTE, unquote } from "./mcp-tools";
 import type { ChatMessageRecord } from "./repository";
-import type { MessageSearchMatch } from "./search-repository";
+import type { SourceMessageMatch } from "@/server/source/tg-content";
 
 /**
  * The history tools' result format, pinned on the one property grounding depends
@@ -203,7 +203,7 @@ describe("unquote", () => {
 });
 
 describe("mergeMatches", () => {
-  function match(over: Partial<MessageSearchMatch> & { id: number; score: number }): MessageSearchMatch {
+  function match(over: Partial<SourceMessageMatch> & { id: number; score: number }): SourceMessageMatch {
     return {
       ...record({ id: over.id, telegramMessageId: over.id + 10 }),
       indexedContent: null,

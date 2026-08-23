@@ -8,6 +8,29 @@
  * dashboard aggregates. Landing with later phases: source-status events.
  */
 export { DEFAULT_ASSISTANT_ID } from "./assistants";
+export {
+  contentDayCountsResponseSchema,
+  contentEmbeddedCountResponseSchema,
+  contentImportRequestSchema,
+  contentImportResponseSchema,
+  contentIndexClearResponseSchema,
+  contentIndexDueResponseSchema,
+  contentIndexRowsRequestSchema,
+  contentMessageMatchSchema,
+  contentMessageSchema,
+  contentMessagesResponseSchema,
+  contentReplaceSummariesRequestSchema,
+  contentSearchMessagesRequestSchema,
+  contentSearchMessagesResponseSchema,
+  contentSearchSummariesRequestSchema,
+  contentSearchSummariesResponseSchema,
+  contentSummariesResponseSchema,
+  contentSummaryCountsResponseSchema,
+  contentSummarySchema,
+  type ContentMessage,
+  type ContentMessageMatch,
+  type ContentSummary,
+} from "./content-api";
 export { EMBEDDING_DIMENSIONS } from "./embeddings";
 export {
   internalDeleteMessageResponseSchema,

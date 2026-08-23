@@ -4,6 +4,10 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { completeTranscriptBatches } from "@/features/history/server/batched-completion";
 import { loadChatDayTranscript } from "@/features/history/server/service";
+import {
+  requireSourceContent,
+  type SourceContentClient,
+} from "@/server/source/tg-content";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { currentSummaryDate, type SummaryDate } from "@/features/history/summary";
 import { FEATURES } from "@/lib/features";
@@ -85,6 +89,8 @@ export interface ExtractDeps {
    * own, so a standalone extraction is still internally correlated.
    */
   runCorrelationId?: string;
+  /** The owning source's content (real: the tg internal API). */
+  content?: SourceContentClient;
 }
 
 /** Outcome of extracting one chat-day. */
@@ -162,7 +168,9 @@ export async function extractChatDay(
   );
 
   try {
+    const content = deps.content ?? requireSourceContent();
     const { messages, dayMessageCount } = await loadChatDayTranscript(
+      content,
       db,
       params.chatId,
       params.extractionDate,
@@ -307,6 +315,7 @@ export async function runMemoryExtraction(
 ): Promise<ExtractionRunResult> {
   const now = deps.now?.() ?? new Date();
   const today = currentSummaryDate(now, deps.timeZone);
+  const content = deps.content ?? requireSourceContent();
 
   let days = 0;
   let notes = 0;
@@ -316,10 +325,10 @@ export async function runMemoryExtraction(
   const runId = deps.runCorrelationId ?? newRunCorrelationId("memory-extraction", now);
   // The backlog when the run starts is this run's denominator for the live bar;
   // days leave the scan as they are extracted, so it only shrinks from here.
-  const total = await countDaysNeedingExtraction(db, { timeZone: deps.timeZone, today });
+  const total = await countDaysNeedingExtraction(content, db, { timeZone: deps.timeZone, today });
 
   while (days + failed.size < MAX_DAYS_PER_RUN) {
-    const pending = await listDaysNeedingExtraction(db, {
+    const pending = await listDaysNeedingExtraction(content, db, {
       timeZone: deps.timeZone,
       today,
       limit: DUE_SCAN_PAGE,

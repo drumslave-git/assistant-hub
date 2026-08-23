@@ -1,4 +1,4 @@
-import { and, asc, count, eq, gte, inArray, isNull, max, ne, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNull, lt, lte, max, ne, sql } from "drizzle-orm";
 
 import {
   chatMembers,
@@ -412,6 +412,71 @@ export async function updateChatLanguage(
 /** One chat's full mirror, oldest first (the dashboard's history detail). */
 export async function listChatMessages(db: TgDb, chatId: string): Promise<MessageRow[]> {
   return db.select().from(messages).where(eq(messages.chatId, chatId)).orderBy(asc(messages.id));
+}
+
+/** Specific mirror rows by their Telegram ids, insertion order, as stored. */
+export async function getMessagesByTelegramIds(
+  db: TgDb,
+  chatId: string,
+  telegramMessageIds: number[],
+): Promise<MessageRow[]> {
+  if (telegramMessageIds.length === 0) return [];
+  return db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.chatId, chatId), inArray(messages.telegramMessageId, telegramMessageIds)))
+    .orderBy(asc(messages.id));
+}
+
+/**
+ * Mirror rows sent within a window, insertion order, as stored. The end is
+ * inclusive for user-facing range reads and exclusive for calendar-day
+ * reads (a day ends exactly where the next begins — v1 semantics).
+ */
+export async function getMessagesInWindow(
+  db: TgDb,
+  chatId: string,
+  window: { from: Date; to: Date; endExclusive: boolean },
+): Promise<MessageRow[]> {
+  return db
+    .select()
+    .from(messages)
+    .where(
+      and(
+        eq(messages.chatId, chatId),
+        gte(messages.sentAt, window.from),
+        window.endExclusive ? lt(messages.sentAt, window.to) : lte(messages.sentAt, window.to),
+      ),
+    )
+    .orderBy(asc(messages.id));
+}
+
+/**
+ * Append many mirror rows in one statement, skipping any whose
+ * `(chat, telegram id)` already exists — the CSV import's write path.
+ * Returns how many were actually inserted.
+ */
+export async function appendMessagesBulk(
+  db: TgDb,
+  values: readonly {
+    chatId: string;
+    telegramMessageId: number;
+    role: "user" | "assistant";
+    userId: string | null;
+    content: string;
+    replyToMessageId: number | null;
+    sentAt: Date;
+    editedAt: Date | null;
+    deletedAt: Date | null;
+  }[],
+): Promise<number> {
+  if (values.length === 0) return 0;
+  const rows = await db
+    .insert(messages)
+    .values(values.map((v) => ({ ...v, processed: true })))
+    .onConflictDoNothing({ target: [messages.chatId, messages.telegramMessageId] })
+    .returning({ id: messages.id });
+  return rows.length;
 }
 
 /** All connections, oldest first (the operator listing). */

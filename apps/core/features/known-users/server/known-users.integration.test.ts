@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { recordIncomingMessage } from "@/features/history/server/service";
+import {
+  recordGroupMembership,
+  upsertKnownGroup,
+} from "@/features/known-groups/server/repository";
 import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getKnownUser, upsertKnownUser } from "./repository";
@@ -149,25 +152,18 @@ describe("updateAliases", () => {
 });
 
 describe("addAliasByReference", () => {
-  const CHAT = "500";
-  let seq = 0;
+  // A group chat: participant resolution reads the (shadow-kept) membership
+  // roster since the split — the mirror lives with the owning source.
+  const CHAT = "-500";
 
-  /** Make a known user a participant of a chat by recording a message from them. */
+  /** Make a known user a participant of a chat via the membership roster. */
   async function seedParticipant(
     profile: { userId: string; username: string | null; firstName: string | null; lastName: string | null },
     chatId = CHAT,
   ) {
     await upsertKnownUser(ctx.db, profile);
-    await recordIncomingMessage(
-      {
-        chatId,
-        telegramMessageId: ++seq,
-        userId: profile.userId,
-        content: `hi from ${profile.userId}`,
-        sentAt: new Date("2026-07-12T10:00:00.000Z"),
-      },
-      ctx.db,
-    );
+    await upsertKnownGroup(ctx.db, { chatId, title: "Fixture Group", type: "supergroup" });
+    await recordGroupMembership(ctx.db, chatId, profile.userId);
   }
 
   it("resolves a participant by name and appends the new alias, tracing the change", async () => {
@@ -220,7 +216,7 @@ describe("addAliasByReference", () => {
   });
 
   it("only matches participants of the current chat, not users from other chats", async () => {
-    await seedParticipant({ userId: "9", username: "alice", firstName: "Alice", lastName: null }, "999");
+    await seedParticipant({ userId: "9", username: "alice", firstName: "Alice", lastName: null }, "-999");
     const result = await addAliasByReference(
       { chatId: CHAT, reference: "alice", aliases: ["Ali"] },
       { kind: "telegram", actor: CHAT },

@@ -1,7 +1,5 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
 import { resetInsightScanFloor } from "@/features/analytics/server/watermark";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
@@ -17,11 +15,8 @@ import {
   MAX_IMPORT_ROWS,
   type RowError,
 } from "../csv";
-import {
-  appendChatMessages,
-  listChatMessagesForExport,
-  type ChatMessageRecord,
-} from "./repository";
+import { requireSourceContent } from "@/server/source/tg-content";
+import { tgOperatorClient } from "@/server/source/tg-operator";
 import type { ImportHistoryInput } from "./schema";
 
 /**
@@ -42,11 +37,19 @@ const FEATURE = FEATURES["history"];
 const IMPORT_CHUNK_SIZE = 500;
 
 /** The mirror as CSV — one chat, or every chat when `chatId` is omitted. */
-export async function exportHistoryCsv(
-  chatId?: string,
-  db: DrizzleDb = getDb(),
-): Promise<string> {
-  const records = await listChatMessagesForExport(db, chatId);
+export async function exportHistoryCsv(chatId?: string): Promise<string> {
+  const content = requireSourceContent();
+  if (chatId) return rowsToCsv(await content.allMessages(chatId));
+  const operator = tgOperatorClient();
+  if (!operator) {
+    throw new Error("telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
+  }
+  const chats = await operator.listChats();
+  const records = [];
+  // Ordered by chat then insertion, like the v1 export.
+  for (const chat of [...chats].sort((a, b) => a.id.localeCompare(b.id))) {
+    records.push(...(await content.allMessages(chat.id)));
+  }
   return rowsToCsv(records);
 }
 
@@ -72,7 +75,6 @@ export interface ImportResult {
 export async function importHistoryCsv(
   input: ImportHistoryInput,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
 ): Promise<ImportResult> {
   const trace = await startTrace(
     { feature: FEATURE.id, action: "import", trigger, inputSummary: "CSV import" }
@@ -122,17 +124,40 @@ export async function importHistoryCsv(
       );
     }
 
-    const inserted: ChatMessageRecord[] = [];
-    for (let i = 0; i < rows.length; i += IMPORT_CHUNK_SIZE) {
-      inserted.push(...(await appendChatMessages(db, rows.slice(i, i + IMPORT_CHUNK_SIZE))));
+    // Rows land in the owning source's store, grouped per chat (its write
+    // path is chat-scoped), chunked so one request never carries the file.
+    const content = requireSourceContent();
+    const byChat = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const list = byChat.get(row.chatId);
+      if (list) list.push(row);
+      else byChat.set(row.chatId, [row]);
+    }
+    let imported = 0;
+    for (const [chatId, chatRows] of byChat) {
+      for (let i = 0; i < chatRows.length; i += IMPORT_CHUNK_SIZE) {
+        imported += await content.importMessages(
+          chatId,
+          chatRows.slice(i, i + IMPORT_CHUNK_SIZE).map((row) => ({
+            telegramMessageId: row.telegramMessageId,
+            role: row.role,
+            userId: row.userId ?? null,
+            content: row.content,
+            replyToMessageId: row.replyToMessageId ?? null,
+            sentAt: row.sentAt,
+            editedAt: row.editedAt ?? null,
+            deletedAt: row.deletedAt ?? null,
+          })),
+        );
+      }
     }
 
     const result: ImportResult = {
       totalRows: table.rows.length,
-      imported: inserted.length,
-      skippedDuplicates: rows.length - inserted.length,
+      imported,
+      skippedDuplicates: rows.length - imported,
       errors,
-      chatIds: [...new Set(inserted.map((r) => r.chatId))].sort(),
+      chatIds: [...byChat.keys()].sort(),
     };
     await trace.event({
       type: "db",
@@ -153,7 +178,7 @@ export async function importHistoryCsv(
     }
     await trace.succeed({
       outputSummary: `imported ${result.imported}, skipped ${result.skippedDuplicates}, invalid ${errors.length}`,
-      relatedIds: { [FEATURE.relatedIdsKey]: inserted.map((r) => String(r.id)) },
+      relatedIds: { [FEATURE.relatedIdsKey]: result.chatIds },
     });
     return result;
   } catch (err) {

@@ -8,20 +8,16 @@ import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { resolveChatUserByReference } from "@/features/known-users/server/service";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
-import { getMediaSuffixesForMessages } from "@/features/vision/server/service";
+import { renderMediaSuffix, type MediaAnnotation } from "@/features/vision/format";
 import { MEDIA_KINDS, type MediaKind } from "@/features/vision/types";
 import { embedOne } from "@/server/llm/embeddings";
 import { getToolContext } from "@/server/mcp/context";
+import {
+  requireSourceContent,
+  type SourceMessageMatch,
+} from "@/server/source/tg-content";
 import { recallChatTopics } from "./recall";
-import {
-  getChatMessagesByTelegramIds,
-  getChatMessagesInRange,
-  type ChatMessageRecord,
-} from "./repository";
-import {
-  searchChatMessagesHybrid,
-  type MessageSearchMatch,
-} from "./search-repository";
+import type { ChatMessageRecord } from "./repository";
 
 /**
  * History exposed as MCP tools — deeper-than-the-window lookups the model can
@@ -204,11 +200,33 @@ export function buildResult(
  * messages come back, but a transcript that jumps around in time is hard to read
  * and its `[reply to #…]` anchors stop lining up with anything above them.
  */
+/**
+ * Media annotations for a set of search hits: the annotation source rides
+ * the mirror rows, so one by-ids read resolves every hit that has media.
+ */
+async function loadMediaSuffixes(
+  chatId: string,
+  matches: readonly SourceMessageMatch[],
+): Promise<Map<number, string>> {
+  const withMedia = matches.filter((m) => m.mediaKind != null).map((m) => m.telegramMessageId);
+  if (withMedia.length === 0) return new Map();
+  const rows = await requireSourceContent()
+    .messagesByIds(chatId, withMedia)
+    .catch(() => []);
+  const suffixes = new Map<number, string>();
+  for (const row of rows) {
+    if (!row.media) continue;
+    const suffix = renderMediaSuffix(row.media as MediaAnnotation);
+    if (suffix) suffixes.set(row.telegramMessageId, suffix);
+  }
+  return suffixes;
+}
+
 export function mergeMatches(
-  batches: MessageSearchMatch[][],
+  batches: SourceMessageMatch[][],
   limit: number,
-): MessageSearchMatch[] {
-  const best = new Map<number, MessageSearchMatch>();
+): SourceMessageMatch[] {
+  const best = new Map<number, SourceMessageMatch>();
   for (const batch of batches) {
     for (const match of batch) {
       const existing = best.get(match.id);
@@ -386,7 +404,7 @@ export function registerHistoryMcpTools(server: McpServer): void {
       const { chatId } = getToolContext();
       const queries = query == null ? [] : Array.isArray(query) ? query : [query];
       const cap = limit ?? SEARCH_LIMIT_DEFAULT;
-      const db = getDb();
+      const content = requireSourceContent();
 
       if (queries.length === 0 && !author && !media_kinds) {
         return {
@@ -429,7 +447,7 @@ export function registerHistoryMcpTools(server: McpServer): void {
       const batches =
         queries.length === 0
           ? [
-              await searchChatMessagesHybrid(db, {
+              await content.searchMessages({
                 chatId,
                 queryText: "",
                 queryVector: null,
@@ -440,7 +458,7 @@ export function registerHistoryMcpTools(server: McpServer): void {
           : await Promise.all(
               queries.map(async (q) => {
                 const vector = embedding ? await embedOne(embedding, q).catch(() => null) : null;
-                return searchChatMessagesHybrid(db, {
+                return content.searchMessages({
                   chatId,
                   queryText: q,
                   queryVector: vector,
@@ -451,13 +469,11 @@ export function registerHistoryMcpTools(server: McpServer): void {
             );
 
       const matches = mergeMatches(batches, cap);
+      // Media annotations ride the matched rows themselves since the split —
+      // one by-ids read resolves them (search hits carry only the kind).
       const [labels, mediaSuffixes] = await Promise.all([
         resolveLabels(matches),
-        getMediaSuffixesForMessages(
-          chatId,
-          matches.map((m) => m.telegramMessageId),
-          db,
-        ),
+        loadMediaSuffixes(chatId, matches),
       ]);
       return buildResult(matches, {
         labels,
@@ -503,7 +519,11 @@ export function registerHistoryMcpTools(server: McpServer): void {
         };
       }
       const { chatId } = getToolContext();
-      const records = await getChatMessagesInRange(getDb(), chatId, fromDate, toDate);
+      const records = await requireSourceContent().messagesWindow(chatId, {
+        from: fromDate,
+        to: toDate,
+        endExclusive: false,
+      });
       return buildResult(records);
     },
   );
@@ -534,7 +554,7 @@ export function registerHistoryMcpTools(server: McpServer): void {
     },
     async ({ ids }) => {
       const { chatId } = getToolContext();
-      const records = await getChatMessagesByTelegramIds(getDb(), chatId, ids);
+      const records = await requireSourceContent().messagesByIds(chatId, ids);
       return buildResult(records);
     },
   );

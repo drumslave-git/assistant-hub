@@ -4,9 +4,13 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
 import { embedOne } from "@/server/llm/embeddings";
+import {
+  requireSourceContent,
+  type SourceContentClient,
+  type SourceMessageMatch,
+} from "@/server/source/tg-content";
 import { getLatestTraceIdsByCorrelation } from "@/server/trace";
 
-import { searchChatMessagesHybrid, type MessageSearchMatch } from "./search-repository";
 import { resolveSpeakerLabels, traceCorrelationFor } from "./service";
 
 /**
@@ -37,7 +41,7 @@ import { resolveSpeakerLabels, traceCorrelationFor } from "./service";
 export const MESSAGE_SEARCH_LIMIT = 25;
 
 /** A search hit, resolved for display. */
-export interface MessageSearchHit extends MessageSearchMatch {
+export interface MessageSearchHit extends SourceMessageMatch {
   /** Known-user label of the sender, or null for the bot's own rows. */
   senderLabel: string | null;
   /** Trace that handled this message's turn, when one is still stored. */
@@ -52,6 +56,7 @@ export interface MessageSearchHit extends MessageSearchMatch {
 export async function searchHistoryMessages(
   params: { query: string; chatId?: string | null; limit?: number },
   db: DrizzleDb = getDb(),
+  content: SourceContentClient = requireSourceContent(),
 ): Promise<MessageSearchHit[]> {
   const query = params.query.trim();
   if (!query) return [];
@@ -59,7 +64,7 @@ export async function searchHistoryMessages(
   const embedding = await getEmbeddingRuntime(db).catch(() => null);
   const vector = embedding ? await embedOne(embedding, query).catch(() => null) : null;
 
-  const matches = await searchChatMessagesHybrid(db, {
+  const matches = await content.searchMessages({
     chatId: params.chatId ?? null,
     queryText: query,
     queryVector: vector,

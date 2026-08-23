@@ -1,10 +1,9 @@
 import "server-only";
 
-import { sql } from "drizzle-orm";
-
 import type { DrizzleDb } from "@/db/drizzle";
 import { memoryExtractionDays } from "@/db/schema";
 import type { SummaryDate } from "@/features/history/summary";
+import type { SourceContentClient } from "@/server/source/tg-content";
 
 /**
  * Typed persistence for the passive-extraction markers (`memory_extraction_days`)
@@ -74,45 +73,39 @@ export async function stampExtractionDay(
  * redone tonight.
  */
 export async function listDaysNeedingExtraction(
+  content: SourceContentClient,
   db: DrizzleDb,
   params: { timeZone: string; today: SummaryDate; limit: number },
 ): Promise<PendingExtractionDay[]> {
-  const rows = await db.execute<{
-    chat_id: string;
-    extraction_date: string;
-    message_count: number;
-  }>(sql`
-    with days as (
-      select
-        chat_id,
-        to_char((sent_at at time zone ${params.timeZone})::date, 'YYYY-MM-DD') as extraction_date,
-        count(*)::int as message_count
-      from chat_messages
-      where deleted_at is null
-      group by 1, 2
-    )
-    select days.chat_id, days.extraction_date, days.message_count
-    from days
-    left join memory_extraction_days m
-      on m.chat_id = days.chat_id and m.extraction_date = days.extraction_date
-    where days.extraction_date < ${params.today}
-      and (m.id is null or m.message_count <> days.message_count)
-    order by days.extraction_date asc, days.chat_id asc
-    limit ${params.limit}
-  `);
-
-  return rows.rows.map((row) => ({
-    chatId: row.chat_id,
-    extractionDate: row.extraction_date,
-    messageCount: Number(row.message_count),
-  }));
+  // The counts come from the owning source's mirror; the markers are this
+  // job's own state — compared here (the v1 SQL join, split across stores).
+  const [days, markers] = await Promise.all([
+    content.dayCounts(params.timeZone, params.today),
+    db
+      .select({
+        chatId: memoryExtractionDays.chatId,
+        extractionDate: memoryExtractionDays.extractionDate,
+        messageCount: memoryExtractionDays.messageCount,
+      })
+      .from(memoryExtractionDays)
+      .then((rows) => new Map(rows.map((row) => [`${row.chatId}|${row.extractionDate}`, row.messageCount]))),
+  ]);
+  return days
+    .filter((day) => markers.get(`${day.chatId}|${day.date}`) !== day.messageCount)
+    .slice(0, params.limit)
+    .map((day) => ({
+      chatId: day.chatId,
+      extractionDate: day.date,
+      messageCount: day.messageCount,
+    }));
 }
 
 /** How many (chat, day) pairs are still awaiting extraction — for the dashboard. */
 export async function countDaysNeedingExtraction(
+  content: SourceContentClient,
   db: DrizzleDb,
   params: { timeZone: string; today: SummaryDate },
 ): Promise<number> {
-  const pending = await listDaysNeedingExtraction(db, { ...params, limit: 10_000 });
+  const pending = await listDaysNeedingExtraction(content, db, { ...params, limit: 1_000_000 });
   return pending.length;
 }

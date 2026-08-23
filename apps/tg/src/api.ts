@@ -21,10 +21,31 @@ import {
   type OperatorMessage,
   type OperatorUser,
 } from "@assistant-hub/contracts";
+import {
+  contentImportRequestSchema,
+  contentIndexRowsRequestSchema,
+  contentReplaceSummariesRequestSchema,
+  contentSearchMessagesRequestSchema,
+  contentSearchSummariesRequestSchema,
+} from "@assistant-hub/contracts";
 import { Hono } from "hono";
 
 import type { TgDb } from "./db";
 import type { BotManager, ConnectionStatus } from "./bot-manager";
+import {
+  clearMessageIndex,
+  countEmbeddedMessages,
+  countMessagesNeedingIndex,
+  listMessagesNeedingIndex,
+  upsertMessageIndex,
+} from "./content/index-store";
+import { searchMessagesHybrid, searchSummariesHybrid } from "./content/search";
+import {
+  countSummariesByChat,
+  listChatDayCounts,
+  listChatSummaries,
+  replaceSummariesForDay,
+} from "./content/summaries";
 import {
   getFeedback as getFeedbackById,
   listFeedbacks,
@@ -46,10 +67,13 @@ import type { StoredMedia } from "./media/types";
 import type { TgOutbound } from "./outbound";
 import {
   appendMessage,
+  appendMessagesBulk,
   deleteConnection,
   filterMirroredMessageIds,
   getConnection,
   getMessageByTelegramId,
+  getMessagesByTelegramIds,
+  getMessagesInWindow,
   getTgSettings,
   getUserById,
   insertConnection,
@@ -439,6 +463,227 @@ export function createApi(input: {
     const current = await getMediaById(input.db, id);
     if (!current) return c.json({ error: { message: "media not found" } }, 404);
     return c.json({ updated: false, media: toInternalMedia(current) });
+  });
+
+  // ---- Conversation content (the swap) ------------------------------------
+  // The mirror, search index, and summaries live in this store; the core's
+  // content features (history tools, summarization, indexing, dashboard
+  // search) read and write them here. The SQL runs beside the data; the
+  // core supplies query text and embedding vectors.
+
+  const toContentMessage = (
+    row: MessageRow,
+    media: Map<number, { kind: string; description: string | null; status: string }>,
+  ) => {
+    const attached = media.get(row.telegramMessageId) ?? null;
+    return {
+      id: row.id,
+      chatId: row.chatId,
+      sourceMessageId: String(row.telegramMessageId),
+      role: row.role === "assistant" ? ("assistant" as const) : ("user" as const),
+      userId: row.userId,
+      content: row.content,
+      replyToSourceMessageId: row.replyToMessageId != null ? String(row.replyToMessageId) : null,
+      sentAt: row.sentAt.toISOString(),
+      editedAt: row.editedAt ? row.editedAt.toISOString() : null,
+      deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
+      botReaction: row.botReaction,
+      createdAt: row.createdAt.toISOString(),
+      media: attached
+        ? {
+            kind: attached.kind,
+            status: attached.status as "pending" | "described" | "unavailable",
+            description: attached.description,
+          }
+        : null,
+    };
+  };
+
+  internal.get("/chats/:chatId/content-messages", async (c) => {
+    const chatId = c.req.param("chatId");
+    const idsParam = c.req.query("ids");
+    const from = c.req.query("from");
+    const to = c.req.query("to");
+    let rows: MessageRow[];
+    if (idsParam != null) {
+      const ids = idsParam
+        .split(",")
+        .map((raw) => Number(raw))
+        .filter((id) => Number.isFinite(id));
+      rows = await getMessagesByTelegramIds(input.db, chatId, ids);
+    } else if (from != null && to != null) {
+      const fromDate = new Date(from);
+      const toDate = new Date(to);
+      if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+        return c.json({ error: { message: "from/to must be ISO instants" } }, 400);
+      }
+      rows = await getMessagesInWindow(input.db, chatId, {
+        from: fromDate,
+        to: toDate,
+        endExclusive: c.req.query("endExclusive") === "true",
+      });
+    } else {
+      rows = await listChatMessages(input.db, chatId);
+    }
+    const media = await getMediaForMessages(
+      input.db,
+      chatId,
+      rows.map((row) => row.telegramMessageId),
+    );
+    return c.json({ messages: rows.map((row) => toContentMessage(row, media)) });
+  });
+
+  internal.post("/chats/:chatId/messages/import", async (c) => {
+    const parsed = contentImportRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: { message: "messages are required" } }, 400);
+    }
+    const chatId = c.req.param("chatId");
+    const inserted = await appendMessagesBulk(
+      input.db,
+      parsed.data.messages.map((m) => ({
+        chatId,
+        telegramMessageId: Number(m.sourceMessageId),
+        role: m.role,
+        userId: m.userId ?? null,
+        content: m.content,
+        replyToMessageId: m.replyToSourceMessageId != null ? Number(m.replyToSourceMessageId) : null,
+        sentAt: new Date(m.sentAt),
+        editedAt: m.editedAt ? new Date(m.editedAt) : null,
+        deletedAt: m.deletedAt ? new Date(m.deletedAt) : null,
+      })),
+    );
+    return c.json({ inserted });
+  });
+
+  internal.get("/messages/day-counts", async (c) => {
+    const timeZone = c.req.query("tz");
+    const before = c.req.query("before");
+    if (!timeZone || !before) {
+      return c.json({ error: { message: "tz and before are required" } }, 400);
+    }
+    const days = await listChatDayCounts(input.db, { timeZone, before });
+    return c.json({ days });
+  });
+
+  internal.put("/chats/:chatId/summaries/:date", async (c) => {
+    const parsed = contentReplaceSummariesRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: { message: "topics are required" } }, 400);
+    }
+    const stored = await replaceSummariesForDay(input.db, {
+      chatId: c.req.param("chatId"),
+      summaryDate: c.req.param("date"),
+      topics: parsed.data.topics,
+    });
+    return c.json({ summaries: stored });
+  });
+
+  internal.get("/chats/:chatId/summaries", async (c) => {
+    const limit = Number(c.req.query("limit") ?? "200");
+    const stored = await listChatSummaries(
+      input.db,
+      c.req.param("chatId"),
+      Number.isFinite(limit) ? limit : 200,
+    );
+    return c.json({ summaries: stored });
+  });
+
+  internal.get("/summaries/counts", async (c) => {
+    const counts = await countSummariesByChat(input.db);
+    return c.json({
+      counts: [...counts.entries()].map(([chatId, topicCount]) => ({ chatId, topicCount })),
+    });
+  });
+
+  internal.post("/search/messages", async (c) => {
+    const parsed = contentSearchMessagesRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: { message: "a search request is required" } }, 400);
+    }
+    const matches = await searchMessagesHybrid(input.db, parsed.data);
+    return c.json({
+      matches: matches.map((match) => ({
+        id: match.id,
+        chatId: match.chatId,
+        sourceMessageId: String(match.telegramMessageId),
+        role: match.role,
+        userId: match.userId,
+        content: match.content,
+        replyToSourceMessageId:
+          match.replyToMessageId != null ? String(match.replyToMessageId) : null,
+        sentAt: match.sentAt,
+        editedAt: match.editedAt,
+        // The pools only ever select visible rows, so a hit is never deleted.
+        deletedAt: null,
+        botReaction: match.botReaction,
+        createdAt: match.createdAt,
+        indexedContent: match.indexedContent,
+        mediaKind: match.mediaKind,
+        score: match.score,
+      })),
+    });
+  });
+
+  internal.post("/search/summaries", async (c) => {
+    const parsed = contentSearchSummariesRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: { message: "a search request is required" } }, 400);
+    }
+    const matches = await searchSummariesHybrid(input.db, parsed.data);
+    return c.json({ matches });
+  });
+
+  internal.get("/index/due", async (c) => {
+    const limit = Number(c.req.query("limit") ?? "50");
+    const [due, total] = await Promise.all([
+      listMessagesNeedingIndex(input.db, Number.isFinite(limit) ? limit : 50),
+      countMessagesNeedingIndex(input.db),
+    ]);
+    return c.json({
+      messages: due.map((row) => ({
+        chatId: row.chatId,
+        sourceMessageId: String(row.telegramMessageId),
+        content: row.content,
+        media: row.media,
+      })),
+      total,
+    });
+  });
+
+  internal.put("/index/rows", async (c) => {
+    const parsed = contentIndexRowsRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: { message: "rows are required" } }, 400);
+    }
+    await upsertMessageIndex(
+      input.db,
+      parsed.data.rows.map((row) => ({
+        chatId: row.chatId,
+        telegramMessageId: Number(row.sourceMessageId),
+        content: row.content,
+        embedding: row.embedding,
+      })),
+    );
+    return c.json({ ok: true });
+  });
+
+  internal.post("/index/clear", async (c) => {
+    const removed = await clearMessageIndex(input.db);
+    return c.json({ removed });
+  });
+
+  internal.get("/index/embedded-count", async (c) => {
+    const chatId = c.req.query("chatId");
+    if (!chatId) return c.json({ error: { message: "chatId is required" } }, 400);
+    const value = await countEmbeddedMessages(input.db, chatId);
+    return c.json({ count: value });
   });
 
   // ---- Outbound sends (slice D) -------------------------------------------

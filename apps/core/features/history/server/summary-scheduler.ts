@@ -16,9 +16,10 @@ import { withAdvisoryLock } from "@/server/jobs/lock";
 import { chatCompletion } from "@/server/llm/client";
 import { embed } from "@/server/llm/embeddings";
 
+import { resolveSourceContent } from "@/server/source/tg-content";
+
 import { currentSummaryDate } from "../summary";
-import { countDaysNeedingSummary } from "./summaries-repository";
-import { runSummarization, type SummarizeDeps } from "./summarize";
+import { countDaysNeedingSummary, runSummarization, type SummarizeDeps } from "./summarize";
 
 /**
  * Daily scheduler for history summarization — the shared daily-job model
@@ -61,6 +62,10 @@ async function resolveDeps(): Promise<SummarizeDeps | null> {
 
 /** One summarization run with the real collaborators, under the advisory lock. */
 async function runJob(ctx?: IntervalRunContext): Promise<string> {
+  // The mirror and the summaries live with the owning source.
+  if (!resolveSourceContent()) {
+    return "telegram service not configured (TG_API_URL / INTERNAL_API_TOKEN)";
+  }
   const deps = await resolveDeps();
   if (!deps) return "LLM not configured";
 
@@ -106,10 +111,13 @@ export async function getSummaryJobInfo(): Promise<SummaryJobInfo> {
     scheduler.getBaseInfo(),
     getEmbeddingRuntime().catch(() => null),
   ]);
-  const pendingDays = await countDaysNeedingSummary(getDb(), {
-    timeZone: base.timezone,
-    today: currentSummaryDate(new Date(), base.timezone),
-  }).catch(() => 0);
+  const content = resolveSourceContent();
+  const pendingDays = content
+    ? await countDaysNeedingSummary(content, getDb(), {
+        timeZone: base.timezone,
+        today: currentSummaryDate(new Date(), base.timezone),
+      }).catch(() => 0)
+    : 0;
 
   return { ...base, pendingDays, embeddingsConfigured: embedding != null };
 }

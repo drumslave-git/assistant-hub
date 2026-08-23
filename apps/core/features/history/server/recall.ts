@@ -1,11 +1,12 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
 import { embedOne } from "@/server/llm/embeddings";
-
-import { searchChatSummaries, type SummaryMatch } from "./summaries-repository";
+import {
+  requireSourceContent,
+  type SourceContentClient,
+  type SourceSummaryMatch,
+} from "@/server/source/tg-content";
 
 /**
  * Long-term recall: find the past topics of one chat that match what is being
@@ -20,20 +21,20 @@ import { searchChatSummaries, type SummaryMatch } from "./summaries-repository";
 /** Recall past topics in a chat. Never throws: a recall failure must not fail a reply. */
 export async function recallChatTopics(
   params: { chatId: string; queries: string[]; limit: number },
-  db: DrizzleDb = getDb(),
-): Promise<SummaryMatch[]> {
+  content: SourceContentClient = requireSourceContent(),
+): Promise<SourceSummaryMatch[]> {
   // Embeddings are optional. Without a configured model the search runs on full
   // text alone — worse recall, but the tool still works, which beats telling the
   // model "unavailable" and having it claim it cannot remember.
   const embedding = await getEmbeddingRuntime().catch(() => null);
 
-  const best = new Map<number, SummaryMatch>();
+  const best = new Map<number, SourceSummaryMatch>();
   for (const query of params.queries) {
     let vector: number[] | null = null;
     if (embedding) {
       vector = await embedOne(embedding, query).catch(() => null);
     }
-    const matches = await searchChatSummaries(db, {
+    const matches = await content.searchSummaries({
       chatId: params.chatId,
       queryText: query,
       queryVector: vector,

@@ -2,7 +2,8 @@ import "server-only";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
-import { getChatParticipantIds } from "@/features/history/server/repository";
+import { getGroupMembers } from "@/features/known-groups/server/repository";
+import { isGroupChatId } from "@/lib/telegram";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
@@ -191,7 +192,12 @@ export async function resolveChatUserByReference(
   reference: string,
   db: DrizzleDb = getDb(),
 ): Promise<ResolveChatUserResult> {
-  const participantIds = await getChatParticipantIds(db, chatId);
+  // The chat's participants: for a group, its (shadow-kept) membership
+  // roster; a private chat's one participant is its peer (chat id = user
+  // id). The mirror itself lives with the owning source since the split.
+  const participantIds = isGroupChatId(chatId)
+    ? (await getGroupMembers(db, chatId)).map((member) => member.userId)
+    : [chatId];
   const users = await getKnownUsersByIds(db, participantIds);
   const matches = matchUsersByReference(users, reference);
   if (matches.length === 0) return { status: "not_found" };

@@ -1,16 +1,12 @@
 import { ArrowLeft, Database, Download } from "lucide-react";
 import Link from "next/link";
 
-import { getDb } from "@/db/drizzle";
 import { Button, EmptyState, PageHeader, Tabs } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { getChatHistory } from "@/features/history/server/service";
 import type { ChatMessageWithTrace } from "@/features/history/server/schema";
-import {
-  listChatSummaries,
-  type ChatSummaryRecord,
-} from "@/features/history/server/summaries-repository";
-import { getMediaSuffixesForMessages } from "@/features/vision/server/service";
+import type { ChatSummaryRecord } from "@/features/history/server/summaries-repository";
+import { requireSourceContent } from "@/server/source/tg-content";
 import { ChatHistoryTable } from "@/features/history/ui/ChatHistoryTable";
 import { ChatSummariesList } from "@/features/history/ui/ChatSummariesList";
 
@@ -34,10 +30,8 @@ export default async function ChatHistoryPage({
   let dbError: string | null = null;
   try {
     [messages, summaries] = await Promise.all([
-      getChatHistory(chatId, {
-        loadMediaSuffixes: (ids) => getMediaSuffixesForMessages(chatId, ids),
-      }),
-      listChatSummaries(getDb(), chatId),
+      getChatHistory(chatId),
+      requireSourceContent().listSummaries(chatId),
     ]);
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read history from the database";

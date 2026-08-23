@@ -3,7 +3,7 @@ import "server-only";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
-import { renderMediaSuffix } from "@/features/vision/format";
+import { renderMediaSuffix, type MediaAnnotation } from "@/features/vision/format";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { withAdvisoryLock } from "@/server/jobs/lock";
@@ -12,12 +12,10 @@ import { embed, type EmbeddingRuntime } from "@/server/llm/embeddings";
 import { startTrace } from "@/server/trace";
 
 import {
-  countMessagesNeedingIndex,
-  listMessagesNeedingIndex,
-  upsertMessageIndex,
-  type IndexedMessage,
-  type UnindexedMessage,
-} from "./search-repository";
+  requireSourceContent,
+  type SourceContentClient,
+  type SourceUnindexedMessage,
+} from "@/server/source/tg-content";
 
 /**
  * Message search-indexing job — build the searchable text of every mirrored
@@ -80,8 +78,9 @@ export interface IndexMessagesResult {
  * with a brass number 12…]` — which is the whole point, since its own text is
  * empty and no amount of lexical search over `chat_messages` could ever reach it.
  */
-export function buildSearchableText(message: UnindexedMessage): string {
-  const suffix = message.media ? renderMediaSuffix(message.media) : "";
+export function buildSearchableText(message: SourceUnindexedMessage): string {
+  // The source's kinds/statuses ARE the v1 values (same store shapes).
+  const suffix = message.media ? renderMediaSuffix(message.media as MediaAnnotation) : "";
   return `${message.content}${suffix}`.trim();
 }
 
@@ -122,6 +121,7 @@ async function embedBatch(
 export async function runMessageIndexing(
   options: IndexMessagesOptions = {},
   db: DrizzleDb = getDb(),
+  content: SourceContentClient = requireSourceContent(),
 ): Promise<IndexMessagesResult> {
   const isAborted = options.isAborted ?? (() => false);
   const onProgress = options.onProgress ?? (() => {});
@@ -150,14 +150,14 @@ export async function runMessageIndexing(
         let attempted = 0;
         // The backlog when the run starts is this run's denominator; messages
         // leave it as they are indexed, so it only shrinks from here.
-        const total = await countMessagesNeedingIndex(db);
+        const { total } = await content.indexDue(0);
 
         while (attempted < MAX_MESSAGES_PER_RUN) {
           if (isAborted()) {
             interrupted = true;
             break;
           }
-          const batch = await listMessagesNeedingIndex(db, BATCH_SIZE);
+          const { messages: batch } = await content.indexDue(BATCH_SIZE);
           if (batch.length === 0) break;
           attempted += batch.length;
           onProgress({ step: "Indexing messages", current: attempted, total });
@@ -198,13 +198,13 @@ export async function runMessageIndexing(
             });
           }
 
-          const rows: IndexedMessage[] = batch.map((message, i) => ({
+          const rows = batch.map((message, i) => ({
             chatId: message.chatId,
             telegramMessageId: message.telegramMessageId,
             content: texts[i],
             embedding: vectorByIndex.get(i) ?? null,
           }));
-          await upsertMessageIndex(db, rows);
+          await content.putIndexRows(rows);
           indexed += rows.length;
           embedded += vectorByIndex.size;
         }

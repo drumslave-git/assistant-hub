@@ -4,257 +4,27 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
-import { getMediaSuffixesForMessages } from "@/features/vision/server/service";
-import type { ChatMessage } from "@/server/llm/client";
-import { FEATURES } from "@/lib/features";
-import type { TraceTrigger } from "@/lib/trace";
-import { publishEvent } from "@/server/realtime/hub";
-import { getLatestTraceIdsByCorrelation, withTrace } from "@/server/trace";
+import { renderMediaSuffix, type MediaAnnotation } from "@/features/vision/format";
+import { requireSourceContent, type SourceChatMessage } from "@/server/source/tg-content";
+import { tgOperatorClient } from "@/server/source/tg-operator";
+import { getLatestTraceIdsByCorrelation } from "@/server/trace";
 import {
   botReactionSuffix,
   collectUserIds,
   fallbackSpeakerLabel,
-  historyWindowStart,
-  renderTranscript,
-  renderTranscriptLine,
-  type ReplyRef,
 } from "./format";
 import { summaryDayBounds, type SummarizableMessage, type SummaryDate } from "../summary";
-import {
-  appendChatMessage,
-  getChatMessageByTelegramId,
-  getChatMessages,
-  getChatMessagesForDay,
-  getChatMessagesSince,
-  listChatSummaries,
-  markChatMessageDeleted,
-  markMessageProcessed,
-  setBotReaction,
-  updateChatMessageContent,
-  type ChatMessageRecord,
-  type ChatSummary,
-} from "./repository";
-import {
-  applyEditSchema,
-  recordMediaMessageSchema,
-  recordMessageSchema,
-  type ApplyEditInput,
-  type ChatMessageWithTrace,
-  type RecordMessageInput,
-} from "./schema";
+import type { ChatMessageRecord, ChatSummary } from "./repository";
+import type { ChatMessageWithTrace } from "./schema";
+import type { SourceContentClient } from "@/server/source/tg-content";
 
 /**
- * History domain service — the boundary the Telegram runtime and dashboard call.
- *
- * The runtime records every human message (passively, even un-addressed group
- * chatter) and every delivered reply, so `chat_messages` becomes a 1:1 mirror of
- * the conversation. For each reply the service assembles the last 24 hours as an
- * id-anchored transcript (one user message) and renders the current turn in the
- * same format. Passive capture is high-volume and intentionally untraced (the
- * mirror itself is the record); mutating edits are traced.
+ * History domain service — the read side the dashboard and the day-reading
+ * jobs call. The mirror lives in the owning source app's store since the
+ * source split: the source captures every message itself and mirrors every
+ * delivered reply, so nothing here writes any more — this service composes
+ * views and transcripts from what the source serves.
  */
-
-const FEATURE = FEATURES["history"];
-
-/** Input for capturing an incoming human message (role is always `user`). */
-export interface IncomingHistoryMessage {
-  chatId: string;
-  telegramMessageId: number;
-  userId: string | null;
-  content: string;
-  replyToMessageId?: number | null;
-  sentAt: Date;
-  /** When true, empty content is allowed (a media message with no caption). */
-  hasMedia?: boolean;
-  /**
-   * Live-processing semaphore: the live reply pipeline mirrors with `false` and
-   * releases via {@link markIncomingMessageProcessed} once the turn settles.
-   * Omitted (imports, tests) → the row lands released (`true`).
-   */
-  processed?: boolean;
-}
-
-/** Input for capturing a delivered assistant reply. */
-export interface AssistantHistoryMessage {
-  chatId: string;
-  telegramMessageId: number;
-  content: string;
-  replyToMessageId?: number | null;
-  sentAt?: Date;
-  /** When true, empty content is allowed (a delivered image with no caption). */
-  hasMedia?: boolean;
-}
-
-/**
- * Capture an incoming human message into the mirror. Best-effort and untraced:
- * returns the stored record, or null when it was empty/invalid or already stored
- * (a re-delivered update). Never throws on validation — a bad row must not break
- * message handling.
- */
-export async function recordIncomingMessage(
-  input: IncomingHistoryMessage,
-  db: DrizzleDb = getDb(),
-): Promise<ChatMessageRecord | null> {
-  // A media message may have no caption; a text message must have content.
-  const schema = input.hasMedia ? recordMediaMessageSchema : recordMessageSchema;
-  const parsed = schema.safeParse({ ...input, role: "user" } satisfies RecordMessageInput);
-  if (!parsed.success) return null;
-  const record = await appendChatMessage(db, {
-    chatId: parsed.data.chatId,
-    telegramMessageId: parsed.data.telegramMessageId,
-    role: "user",
-    userId: parsed.data.userId ?? null,
-    content: parsed.data.content,
-    replyToMessageId: parsed.data.replyToMessageId ?? null,
-    sentAt: parsed.data.sentAt,
-    // Internal flag, not user input — carried past validation on purpose.
-    processed: input.processed,
-  });
-  if (record) publishEvent(FEATURE.realtimeTopic);
-  return record;
-}
-
-/**
- * Release a message's live-processing hold (see `chat_messages.processed`).
- * Called from the reply pipeline's `finally` so every exit path — replied,
- * ignored, errored — frees the message's media for the vision backfill.
- */
-export async function markIncomingMessageProcessed(
-  chatId: string,
-  telegramMessageId: number,
-  db: DrizzleDb = getDb(),
-): Promise<void> {
-  await markMessageProcessed(db, chatId, telegramMessageId);
-}
-
-/**
- * Capture a delivered assistant reply into the mirror. Best-effort and untraced
- * (the reply is already traced by bot-messaging). Returns the stored record or
- * null.
- */
-export async function recordAssistantMessage(
-  input: AssistantHistoryMessage,
-  db: DrizzleDb = getDb(),
-): Promise<ChatMessageRecord | null> {
-  // Mirrors the incoming rule: a media message may carry no text. The bot sends
-  // one when it delivers a generated image — the picture is the message.
-  const schema = input.hasMedia ? recordMediaMessageSchema : recordMessageSchema;
-  const parsed = schema.safeParse({
-    chatId: input.chatId,
-    telegramMessageId: input.telegramMessageId,
-    role: "assistant",
-    userId: null,
-    content: input.content,
-    replyToMessageId: input.replyToMessageId ?? null,
-    sentAt: input.sentAt ?? new Date(),
-  } satisfies RecordMessageInput);
-  if (!parsed.success) return null;
-  const record = await appendChatMessage(db, {
-    chatId: parsed.data.chatId,
-    telegramMessageId: parsed.data.telegramMessageId,
-    role: "assistant",
-    userId: null,
-    content: parsed.data.content,
-    replyToMessageId: parsed.data.replyToMessageId ?? null,
-    sentAt: parsed.data.sentAt,
-  });
-  if (record) publishEvent(FEATURE.realtimeTopic);
-  return record;
-}
-
-/**
- * Record the bot's own reaction on a message — set/replace with an emoji, or
- * clear with null. State of the history record itself (`chat_messages.
- * bot_reaction`, like an edit), which is what keeps a reaction from being
- * invisible to the bot's own memory: every transcript renders it on the line
- * (`[you reacted: 👍]`), so the next turn *knows* it liked the message instead
- * of denying it (operator report, 2026-08-15). Throws when the target message
- * is not mirrored; the caller decides how to report that.
- */
-export async function recordBotReaction(
-  input: { chatId: string; telegramMessageId: number; emoji: string | null },
-  db: DrizzleDb = getDb(),
-): Promise<void> {
-  const recorded = await setBotReaction(db, input.chatId, input.telegramMessageId, input.emoji);
-  if (!recorded) {
-    throw new Error(
-      `message ${input.telegramMessageId} is not mirrored in chat ${input.chatId} — nothing to record the reaction on`,
-    );
-  }
-  publishEvent(FEATURE.realtimeTopic);
-}
-
-/**
- * Soft-delete a mirrored message the bot removed from the live chat (e.g. a
- * browsing-run acknowledgement), keeping the mirror 1:1 with what the chat
- * shows. Untraced like the capture path — the deletion is already recorded on
- * the flow that performed it. Returns the updated record, or null when the
- * message was never mirrored.
- */
-export async function markMessageDeleted(
-  chatId: string,
-  telegramMessageId: number,
-  db: DrizzleDb = getDb(),
-): Promise<ChatMessageRecord | null> {
-  const record = await markChatMessageDeleted(db, chatId, telegramMessageId);
-  if (record) publishEvent(FEATURE.realtimeTopic);
-  return record;
-}
-
-/**
- * Apply a Telegram `edited_message` to the mirror, keeping it 1:1 with the live
- * chat. Traced (a mutation). If the edited message was never stored, the trace
- * records that the target was unknown rather than fabricating a row.
- */
-export async function applyMessageEdit(
-  input: ApplyEditInput,
-  trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
-): Promise<ChatMessageRecord | null> {
-  return withTrace(
-    { feature: FEATURE.id, action: "edit", trigger, inputSummary: input.content },
-    async (trace) => {
-      const parsed = applyEditSchema.parse(input);
-      const before = await updateChatMessageContent(
-        db,
-        parsed.chatId,
-        parsed.telegramMessageId,
-        parsed.content,
-        parsed.editedAt,
-      );
-      if (!before) {
-        await trace.event({
-          type: "db",
-          level: "warn",
-          message: "edit target not found",
-          data: { chatId: parsed.chatId, telegramMessageId: parsed.telegramMessageId },
-        });
-        await trace.skip("edit target not found");
-        return null;
-      }
-      await trace.event({
-        type: "db",
-        message: "message edited",
-        data: { telegramMessageId: parsed.telegramMessageId, content: parsed.content },
-      });
-      publishEvent(FEATURE.realtimeTopic);
-      await trace.succeed({
-        outputSummary: parsed.content,
-        relatedIds: { [FEATURE.relatedIdsKey]: [String(before.id)] },
-      });
-      return before;
-    },
-  );
-}
-
-/**
- * The recent-history window for a reply: zero or one `user` message holding the
- * id-anchored transcript. `count` is the number of transcript rows (for tracing).
- */
-export interface ConversationWindow {
-  messages: ChatMessage[];
-  count: number;
-}
 
 /** Resolve known-user labels for every sender in a set of rows. */
 export async function resolveSpeakerLabels(
@@ -290,34 +60,28 @@ export interface ChatDayTranscript {
 
 /**
  * Load one wall-clock chat-day's messages with their speakers resolved and
- * their media annotated.
- *
- * Shared by the two nightly jobs that read a day as a whole — history
- * summarization and passive memory extraction — because both need exactly this:
- * the day's rows in the operator's timezone, each carrying a human label. The
- * boundaries are the operator's day, not UTC's, so an evening conversation is not
- * split across two runs.
+ * their media annotated. Shared by the two nightly jobs that read a day as
+ * a whole — history summarization and passive memory extraction. The
+ * boundaries are the operator's day, not UTC's, so an evening conversation
+ * is not split across two runs. Rows come from the owning source; labels
+ * from the (shadowed) local directory.
  */
 export async function loadChatDayTranscript(
+  content: SourceContentClient,
   db: DrizzleDb,
   chatId: string,
   date: SummaryDate,
   timeZone: string,
 ): Promise<ChatDayTranscript> {
   const { from, to } = summaryDayBounds(date, timeZone);
-  const records = await getChatMessagesForDay(db, chatId, from, to);
+  const records = await content.messagesWindow(chatId, { from, to, endExclusive: true });
   if (records.length === 0) return { messages: [], dayMessageCount: 0 };
   const labels = await resolveSpeakerLabels(db, records);
-  const mediaSuffixes = await getMediaSuffixesForMessages(
-    chatId,
-    records.map((record) => record.telegramMessageId),
-    db,
-  );
   const messages = records
     .map((record) => ({
       telegramMessageId: record.telegramMessageId,
       role: record.role,
-      content: `${record.content}${mediaSuffixes.get(record.telegramMessageId) ?? ""}${botReactionSuffix(record)}`.trim(),
+      content: `${record.content}${mediaSuffixOf(record)}${botReactionSuffix(record)}`.trim(),
       label:
         record.role === "assistant"
           ? BOT_TRANSCRIPT_LABEL
@@ -330,132 +94,26 @@ export async function loadChatDayTranscript(
   return { messages, dayMessageCount: records.length };
 }
 
-/**
- * Build the recent-history window for a reply: the chat's messages from the last
- * 24 hours (excluding the current turn), rendered as one id-anchored transcript
- * in a single `user` message. Every human turn is labelled with the sender's
- * known-user name; the bot's own rows use `botLabel`.
- */
-export async function getConversationWindow(
-  params: {
-    chatId: string;
-    botLabel?: string;
-    excludeTelegramMessageId?: number;
-    now?: Date;
-    /**
-     * Cap the window to the newest N messages. Unset → the whole 24-hour window.
-     * Used by the context-overflow retry: a day too big for the model's context
-     * is re-injected progressively smaller until the request fits.
-     */
-    maxMessages?: number;
-    /**
-     * Resolve media suffixes (e.g. ` [photo: <description>]`) for the window's
-     * message ids, so past image turns read as text. Injected so history stays
-     * decoupled from the vision feature. Best-effort — omit or resolve empty when
-     * there is no media.
-     */
-    loadMediaSuffixes?: (telegramMessageIds: number[]) => Promise<ReadonlyMap<number, string>>;
-  },
-  db: DrizzleDb = getDb(),
-): Promise<ConversationWindow> {
-  const since = historyWindowStart(params.now ?? new Date());
-  const fetched = await getChatMessagesSince(db, params.chatId, since, {
-    excludeTelegramMessageId: params.excludeTelegramMessageId,
-  });
-  // Keep the newest N: recency matters most for a reply, so a shrunken window
-  // drops the oldest turns first.
-  const records =
-    params.maxMessages != null && params.maxMessages < fetched.length
-      ? fetched.slice(fetched.length - params.maxMessages)
-      : fetched;
-
-  const speakerLabels = await resolveSpeakerLabels(db, records);
-  const mediaSuffixes = params.loadMediaSuffixes
-    ? await params.loadMediaSuffixes(records.map((r) => r.telegramMessageId)).catch(() => undefined)
-    : undefined;
-  // The bot's own reactions need no extra read: they are state on the records
-  // themselves, and `toTranscriptLine` renders them after any media suffix.
-  const transcript = renderTranscript(records, {
-    speakerLabels,
-    botLabel: params.botLabel,
-    mediaSuffixes: mediaSuffixes ?? undefined,
-  });
-  return {
-    messages: transcript ? [{ role: "user", content: transcript }] : [],
-    count: records.length,
-  };
-}
-
-/** The reply target of the current turn, as extracted from the Telegram update. */
-export interface CurrentTurnReplyTo {
-  telegramMessageId: number;
-  /** Sender label resolved by the runtime from the quoted message's `from`. */
-  senderLabel: string | null;
-  /** The quoted message's text/caption, or null when it had none. */
-  text: string | null;
-  /** Telegram partial-quote text, when the user quoted a specific fragment. */
-  quote?: string | null;
-}
-
-/** The current turn rendered in transcript format, plus data for the trace. */
-export interface ComposedCurrentTurn {
-  content: string;
-  senderLabel: string | null;
-  data: Record<string, unknown>;
-}
-
-/**
- * Render the message being answered as a transcript line, resolving its reply
- * target against the mirror: a stored target becomes a `[reply to #<id>]` anchor
- * (dereferenceable via the history tools even when outside the injected window);
- * an unstored one gets its sender and full text inlined, never trimmed.
- */
-export async function composeCurrentTurn(
-  params: {
-    chatId: string;
-    telegramMessageId: number;
-    senderLabel: string | null;
-    content: string;
-    replyTo?: CurrentTurnReplyTo | null;
-  },
-  db: DrizzleDb = getDb(),
-): Promise<ComposedCurrentTurn> {
-  let replyRef: ReplyRef | null = null;
-  if (params.replyTo) {
-    const stored = await getChatMessageByTelegramId(
-      db,
-      params.chatId,
-      params.replyTo.telegramMessageId,
-    );
-    replyRef = stored
-      ? {
-          kind: "anchor",
-          telegramMessageId: params.replyTo.telegramMessageId,
-          quote: params.replyTo.quote ?? null,
-        }
-      : { kind: "inline", label: params.replyTo.senderLabel, text: params.replyTo.text };
-  }
-  const content = renderTranscriptLine({
-    telegramMessageId: params.telegramMessageId,
-    label: params.senderLabel ?? fallbackSpeakerLabel(null),
-    replyRef,
-    content: params.content,
-  });
-  return {
-    content,
-    senderLabel: params.senderLabel,
-    data: {
-      line: content,
-      replyTo: params.replyTo
-        ? { telegramMessageId: params.replyTo.telegramMessageId, resolved: replyRef?.kind ?? null }
-        : null,
-    },
-  };
+/** The media annotation suffix for one source row, or the empty string. */
+export function mediaSuffixOf(record: SourceChatMessage): string {
+  // The source's kinds ARE the v1 kinds (its store carries the same values).
+  return record.media ? renderMediaSuffix(record.media as MediaAnnotation) : "";
 }
 
 /** Per-chat rollups for the History dashboard. */
-export async function getHistoryOverview(db: DrizzleDb = getDb()): Promise<ChatSummary[]> {
-  return listChatSummaries(db);
+export async function getHistoryOverview(): Promise<ChatSummary[]> {
+  const operator = tgOperatorClient();
+  if (!operator) {
+    throw new Error("telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
+  }
+  const chats = await operator.listChats();
+  return chats
+    .filter((chat) => chat.messageCount > 0 && chat.lastMessageAt != null)
+    .map((chat) => ({
+      chatId: chat.id,
+      messageCount: chat.messageCount,
+      lastSentAt: chat.lastMessageAt!,
+    }));
 }
 
 /**
@@ -471,34 +129,20 @@ export function traceCorrelationFor(record: ChatMessageRecord): string | null {
 
 /**
  * The full stored mirror for one chat (dashboard detail view), each message
- * annotated with the id of the trace that handled its turn so the UI can link
- * straight to `/debug/[id]`.
+ * annotated with the id of the trace that handled its turn so the UI can
+ * link straight to `/debug/[id]`.
  */
-export async function getChatHistory(
-  chatId: string,
-  options: {
-    /**
-     * Resolve media annotations (` [photo: <description>]`) for the given message
-     * ids so a media message shows its recognition instead of blank content.
-     * Injected so history stays decoupled from the vision feature.
-     */
-    loadMediaSuffixes?: (telegramMessageIds: number[]) => Promise<ReadonlyMap<number, string>>;
-  } = {},
-  db: DrizzleDb = getDb(),
-): Promise<ChatMessageWithTrace[]> {
-  const records = await getChatMessages(db, chatId);
+export async function getChatHistory(chatId: string): Promise<ChatMessageWithTrace[]> {
+  const records = await requireSourceContent().allMessages(chatId);
   const correlations = records
     .map(traceCorrelationFor)
     .filter((value): value is string => value != null);
   const traceIds = await getLatestTraceIdsByCorrelation(correlations);
-  const mediaSuffixes = options.loadMediaSuffixes
-    ? await options.loadMediaSuffixes(records.map((r) => r.telegramMessageId)).catch(() => undefined)
-    : undefined;
   return records.map((record) => {
     const correlation = traceCorrelationFor(record);
     // The bot's own reaction rides the annotation slot after any media suffix —
     // the dashboard shows it exactly where the transcript renders it.
-    const annotation = `${mediaSuffixes?.get(record.telegramMessageId) ?? ""}${botReactionSuffix(record)}`;
+    const annotation = `${mediaSuffixOf(record)}${botReactionSuffix(record)}`;
     return {
       ...record,
       traceId: correlation ? (traceIds.get(correlation) ?? null) : null,

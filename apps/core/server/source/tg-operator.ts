@@ -3,6 +3,7 @@ import "server-only";
 import {
   DEFAULT_ASSISTANT_ID,
   operatorChatResponseSchema,
+  operatorChatsResponseSchema,
   operatorConnectionResponseSchema,
   operatorConnectionsResponseSchema,
   operatorSourceSettingsResponseSchema,
@@ -42,6 +43,8 @@ export interface BotStatus {
 const REQUEST_TIMEOUT_MS = 5_000;
 
 export interface TgOperatorClient {
+  /** Every conversation the source carries (mirror aggregates + metadata). */
+  listChats(): Promise<OperatorChat[]>;
   listConnections(): Promise<OperatorConnection[]>;
   createConnection(input: {
     assistantId: string;
@@ -97,6 +100,10 @@ export function tgOperatorClient(): TgOperatorClient | null {
   };
 
   return {
+    async listChats() {
+      const body = operatorChatsResponseSchema.parse(await request("/internal/chats"));
+      return body.chats;
+    },
     async listConnections() {
       const body = operatorConnectionsResponseSchema.parse(await request("/internal/connections"));
       return body.connections;

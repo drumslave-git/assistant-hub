@@ -1,9 +1,8 @@
-import { getDb } from "@/db/drizzle";
 import {
   getMessageIndexingStatus,
   runMessageIndexingNow,
 } from "@/features/history/server/index-scheduler";
-import { clearMessageIndex, countMessagesNeedingIndex } from "@/features/history/server/search-repository";
+import { requireSourceContent } from "@/server/source/tg-content";
 import { defineRoute, ok } from "@/server/http";
 
 /**
@@ -17,7 +16,7 @@ import { defineRoute, ok } from "@/server/http";
  */
 
 async function snapshot() {
-  const pending = await countMessagesNeedingIndex(getDb());
+  const { total: pending } = await requireSourceContent().indexDue(0);
   return { status: getMessageIndexingStatus(), pending };
 }
 
@@ -29,7 +28,7 @@ export const POST = defineRoute(async () => {
 });
 
 export const DELETE = defineRoute(async () => {
-  const cleared = await clearMessageIndex(getDb());
+  const cleared = await requireSourceContent().clearIndex();
   runMessageIndexingNow();
   return ok({ ...(await snapshot()), cleared });
 });
