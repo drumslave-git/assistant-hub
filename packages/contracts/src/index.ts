@@ -1,11 +1,11 @@
 /**
  * Cross-app contracts (PLAN.md, "The source-app contract").
  *
- * Present: scoped entity refs, the shared embedding width, and the
- * source-app event contract (inbound events with conversation context,
- * reply-delivery, turn lifecycle, queue/channel names). Landing with later
- * phases: the operator listing/CRUD API shapes the dashboard aggregates
- * (Phase 2, as tg's operator API is built), source-status events.
+ * Present: scoped entity refs, the shared embedding width, the source-app
+ * event contract (inbound events with conversation context, reply-delivery,
+ * turn lifecycle, feedback completions, queue/channel names), the internal
+ * media + outbound-send API, and the operator listing/CRUD API shapes the
+ * dashboard aggregates. Landing with later phases: source-status events.
  */
 export { DEFAULT_ASSISTANT_ID } from "./assistants";
 export { EMBEDDING_DIMENSIONS } from "./embeddings";
@@ -31,6 +31,31 @@ export {
   type InternalSentPhotosResponse,
   type InternalSentVoiceResponse,
 } from "./internal-api";
+export {
+  operatorChatResponseSchema,
+  operatorChatSchema,
+  operatorChatUpdateRequestSchema,
+  operatorChatsResponseSchema,
+  operatorConnectionCreateRequestSchema,
+  operatorConnectionResponseSchema,
+  operatorConnectionSchema,
+  operatorConnectionUpdateRequestSchema,
+  operatorConnectionsResponseSchema,
+  operatorMessageSchema,
+  operatorMessagesResponseSchema,
+  operatorSourceSettingsResponseSchema,
+  operatorSourceSettingsSchema,
+  operatorSourceSettingsUpdateRequestSchema,
+  operatorUserResponseSchema,
+  operatorUserSchema,
+  operatorUserUpdateRequestSchema,
+  operatorUsersResponseSchema,
+  type OperatorChat,
+  type OperatorConnection,
+  type OperatorMessage,
+  type OperatorSourceSettings,
+  type OperatorUser,
+} from "./operator-api";
 export {
   BUS_EVENTS_CHANNEL,
   INBOUND_MESSAGES_QUEUE,

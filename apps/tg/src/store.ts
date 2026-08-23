@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNull, max, ne, sql } from "drizzle-orm";
 
 import {
   chatMembers,
@@ -291,6 +291,184 @@ export async function getMediaForMessages(
 /** Enabled telegram connections — what the reconciler runs pollers for. */
 export async function listEnabledConnections(db: TgDb): Promise<ConnectionRow[]> {
   return db.select().from(connections).where(eq(connections.enabled, true));
+}
+
+// ---- Operator listing/CRUD (slice D) ---------------------------------------
+// The reads and writes behind the shared operator contract
+// (`@assistant-hub/contracts` operator-api): what the dashboard's users /
+// groups / history / bot-control views need, ported from the v1
+// known-users / known-groups / history repositories.
+
+/** Every user this source knows, oldest first (v1 listing order). */
+export async function listUsers(db: TgDb): Promise<UserRow[]> {
+  return db.select().from(users).orderBy(asc(users.firstSeenAt));
+}
+
+/** Replace a user's operator-curated aliases. Null when the user is unknown. */
+export async function updateUserAliases(
+  db: TgDb,
+  userId: string,
+  aliases: string[],
+): Promise<UserRow | null> {
+  const rows = await db
+    .update(users)
+    .set({ aliases, updatedAt: new Date() })
+    .where(eq(users.userId, userId))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Set (or clear) a user's DM reply language. Null when the user is unknown. */
+export async function updateUserLanguage(
+  db: TgDb,
+  userId: string,
+  language: string | null,
+): Promise<UserRow | null> {
+  const rows = await db
+    .update(users)
+    .set({ language, updatedAt: new Date() })
+    .where(eq(users.userId, userId))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Mirror aggregates + chat metadata for the operator chat listing. */
+export interface ChatListing {
+  chatId: string;
+  chat: ChatRow | null;
+  messageCount: number;
+  lastMessageAt: Date | null;
+}
+
+/**
+ * Every conversation the source carries, newest activity first: mirror
+ * aggregates for every chat that has messages (soft-deleted rows excluded),
+ * merged with the chat rows (groups) — a group the bot joined but that has
+ * no mirrored traffic yet still lists.
+ */
+export async function listChatListings(db: TgDb): Promise<ChatListing[]> {
+  const [aggregates, chatRows] = await Promise.all([
+    db
+      .select({
+        chatId: messages.chatId,
+        messageCount: count(),
+        lastMessageAt: max(messages.sentAt),
+      })
+      .from(messages)
+      .where(isNull(messages.deletedAt))
+      .groupBy(messages.chatId),
+    db.select().from(chats),
+  ]);
+  const byId = new Map<string, ChatListing>();
+  for (const row of aggregates) {
+    byId.set(row.chatId, {
+      chatId: row.chatId,
+      chat: null,
+      messageCount: Number(row.messageCount),
+      lastMessageAt: row.lastMessageAt,
+    });
+  }
+  for (const chat of chatRows) {
+    const existing = byId.get(chat.chatId);
+    if (existing) {
+      existing.chat = chat;
+    } else {
+      byId.set(chat.chatId, { chatId: chat.chatId, chat, messageCount: 0, lastMessageAt: null });
+    }
+  }
+  return [...byId.values()].sort(
+    (a, b) => (b.lastMessageAt?.getTime() ?? 0) - (a.lastMessageAt?.getTime() ?? 0),
+  );
+}
+
+/** Set (or clear) a group's operator notes. Null when the chat is unknown. */
+export async function updateChatNotes(
+  db: TgDb,
+  chatId: string,
+  notes: string | null,
+): Promise<ChatRow | null> {
+  const rows = await db
+    .update(chats)
+    .set({ notes, updatedAt: new Date() })
+    .where(eq(chats.chatId, chatId))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Set (or clear) a group's reply language. Null when the chat is unknown. */
+export async function updateChatLanguage(
+  db: TgDb,
+  chatId: string,
+  language: string | null,
+): Promise<ChatRow | null> {
+  const rows = await db
+    .update(chats)
+    .set({ language, updatedAt: new Date() })
+    .where(eq(chats.chatId, chatId))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** One chat's full mirror, oldest first (the dashboard's history detail). */
+export async function listChatMessages(db: TgDb, chatId: string): Promise<MessageRow[]> {
+  return db.select().from(messages).where(eq(messages.chatId, chatId)).orderBy(asc(messages.id));
+}
+
+/** All connections, oldest first (the operator listing). */
+export async function listConnections(db: TgDb): Promise<ConnectionRow[]> {
+  return db.select().from(connections).orderBy(asc(connections.createdAt));
+}
+
+export async function getConnection(db: TgDb, id: string): Promise<ConnectionRow | null> {
+  const rows = await db.select().from(connections).where(eq(connections.id, id)).limit(1);
+  return rows[0] ?? null;
+}
+
+/** Create one connection (one bot per assistant — the unique index enforces it). */
+export async function insertConnection(
+  db: TgDb,
+  values: { id: string; assistantId: string; botToken: string; enabled: boolean },
+): Promise<ConnectionRow> {
+  const rows = await db.insert(connections).values(values).returning();
+  return rows[0];
+}
+
+/** Update a connection's desired state. Null when the connection is unknown. */
+export async function updateConnection(
+  db: TgDb,
+  id: string,
+  values: { botToken?: string; enabled?: boolean },
+): Promise<ConnectionRow | null> {
+  const rows = await db
+    .update(connections)
+    .set({ ...values, updatedAt: new Date() })
+    .where(eq(connections.id, id))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Delete a connection. Null when it was already gone. */
+export async function deleteConnection(db: TgDb, id: string): Promise<ConnectionRow | null> {
+  const rows = await db.delete(connections).where(eq(connections.id, id)).returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * Set (or clear) the owner's @username. Changing it resets the resolved
+ * numeric id — the new owner is re-resolved on their first message (v1
+ * semantics, owned by this app since the split).
+ */
+export async function setOwnerUsername(db: TgDb, ownerUsername: string | null): Promise<void> {
+  const current = await getTgSettings(db);
+  const normalized = ownerUsername?.trim().replace(/^@/, "").toLowerCase() || null;
+  await db
+    .update(settings)
+    .set({
+      ownerUsername: normalized,
+      ...(normalized !== current.ownerUsername ? { ownerUserId: null } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(settings.id, "singleton"));
 }
 
 /** This app's settings singleton, created empty on first read. */

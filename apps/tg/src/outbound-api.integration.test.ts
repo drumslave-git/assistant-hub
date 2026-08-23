@@ -114,7 +114,12 @@ describe("tg outbound API", () => {
   function api(sender: TgOutbound) {
     return createApi({
       db,
-      manager: { statuses: () => [], senderFor: () => sender },
+      manager: {
+        statuses: () => [],
+        senderFor: () => sender,
+        reconcileConnection: async () => undefined,
+        removeConnection: async () => undefined,
+      },
       internalToken: TOKEN,
     });
   }

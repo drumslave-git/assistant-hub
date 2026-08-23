@@ -397,6 +397,42 @@ export class BotManager {
     });
   }
 
+  /**
+   * Reconcile one connection to its desired state (operator API writes):
+   * enabled starts/restarts its poller (a token change takes effect by
+   * restart — start is idempotent and always replaces the running bot),
+   * disabled stops it. The status row stays for the listing.
+   */
+  async reconcileConnection(row: {
+    id: string;
+    assistantId: string;
+    botToken: string;
+    enabled: boolean;
+  }): Promise<void> {
+    if (row.enabled) {
+      await this.startConnection({
+        connectionId: row.id,
+        assistantId: row.assistantId,
+        botToken: row.botToken,
+      });
+      return;
+    }
+    const poller = this.pollers.get(row.id);
+    if (poller) {
+      poller.desired = false;
+      await this.stopPoller(poller);
+    }
+  }
+
+  /** Stop a deleted connection's poller and drop it from the status listing. */
+  async removeConnection(connectionId: string): Promise<void> {
+    const poller = this.pollers.get(connectionId);
+    if (!poller) return;
+    poller.desired = false;
+    await this.stopPoller(poller);
+    this.pollers.delete(connectionId);
+  }
+
   private async stopPoller(poller: Poller): Promise<void> {
     this.cancelReconnect(poller);
     const runner = poller.runner;

@@ -160,6 +160,8 @@ describe("tg media", () => {
         senderFor: () => {
           throw new Error("no connection in this test");
         },
+        reconcileConnection: async () => undefined,
+        removeConnection: async () => undefined,
       },
       internalToken: "secret-token",
     });

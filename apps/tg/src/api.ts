@@ -1,28 +1,58 @@
+import { randomUUID } from "node:crypto";
+
 import {
   internalMediaDescribeRequestSchema,
   internalReactionRequestSchema,
   internalSendMessageRequestSchema,
   internalSendPhotosRequestSchema,
   internalSendVoiceRequestSchema,
+  operatorChatUpdateRequestSchema,
+  operatorConnectionCreateRequestSchema,
+  operatorConnectionUpdateRequestSchema,
+  operatorSourceSettingsUpdateRequestSchema,
+  operatorUserUpdateRequestSchema,
   type InternalMedia,
   type InternalReactionResponse,
   type InternalSentPhotosResponse,
+  type OperatorChat,
+  type OperatorConnection,
+  type OperatorMessage,
+  type OperatorUser,
 } from "@assistant-hub/contracts";
 import { Hono } from "hono";
 
 import type { TgDb } from "./db";
-import type { BotManager } from "./bot-manager";
+import type { BotManager, ConnectionStatus } from "./bot-manager";
+import { formatUserLabel } from "./format";
 import { ingestGeneratedImage } from "./media/ingest";
 import { getMediaByMessage, getMediaById, markDescribed } from "./media/store";
 import type { StoredMedia } from "./media/types";
 import type { TgOutbound } from "./outbound";
 import {
   appendMessage,
+  deleteConnection,
   filterMirroredMessageIds,
+  getConnection,
   getMessageByTelegramId,
+  getTgSettings,
+  getUserById,
+  insertConnection,
+  listChatListings,
+  listChatMessages,
+  listConnections,
+  listUsers,
+  getMediaForMessages,
   markMessageDeleted,
   recordBotReaction,
+  setOwnerUsername,
+  updateChatLanguage,
+  updateChatNotes,
+  updateConnection,
+  updateUserAliases,
+  updateUserLanguage,
+  type ChatListing,
 } from "./store";
+import type { ConnectionRow, MessageRow, UserRow } from "../store/schema";
 import { findMessageRefs } from "./telegram";
 
 /**
@@ -45,7 +75,10 @@ import { findMessageRefs } from "./telegram";
 
 export function createApi(input: {
   db: TgDb;
-  manager: Pick<BotManager, "statuses" | "senderFor">;
+  manager: Pick<
+    BotManager,
+    "statuses" | "senderFor" | "reconcileConnection" | "removeConnection"
+  >;
   internalToken: string;
 }): Hono {
   const app = new Hono();
@@ -68,9 +101,208 @@ export function createApi(input: {
     }
     await next();
   });
-  // First real internal endpoint: the connection statuses the dashboard's
-  // bot card shows (reached via the core proxy).
-  internal.get("/connections", (c) => c.json({ connections: input.manager.statuses() }));
+  // ---- Operator listing/CRUD (slice D) ------------------------------------
+  // The shared operator contract (`operator-api` in contracts): users,
+  // chats, messages, connections, and this app's settings — what the
+  // dashboard's users / groups / history / bot-control views aggregate
+  // through the core proxy (which owns the operator session; this surface
+  // trusts the internal token).
+
+  const toOperatorUser = (row: UserRow): OperatorUser => ({
+    id: row.userId,
+    username: row.username,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    label: formatUserLabel({
+      userId: row.userId,
+      username: row.username,
+      firstName: row.firstName,
+      lastName: row.lastName,
+    }),
+    aliases: row.aliases,
+    language: row.language,
+    firstSeenAt: row.firstSeenAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  });
+
+  const toOperatorChat = (listing: ChatListing): OperatorChat => ({
+    id: listing.chatId,
+    // Telegram encodes the kind in the sign: group ids are negative.
+    kind: listing.chatId.startsWith("-") ? "group" : "direct",
+    title: listing.chat?.title ?? null,
+    type: listing.chat?.type ?? null,
+    notes: listing.chat?.notes ?? null,
+    language: listing.chat?.language ?? null,
+    messageCount: listing.messageCount,
+    lastMessageAt: listing.lastMessageAt ? listing.lastMessageAt.toISOString() : null,
+  });
+
+  const toOperatorMessage = (
+    row: MessageRow,
+    media: Map<number, { kind: string; description: string | null; status: string }>,
+  ): OperatorMessage => {
+    const attached = media.get(row.telegramMessageId) ?? null;
+    return {
+      sourceMessageId: String(row.telegramMessageId),
+      role: row.role === "assistant" ? "assistant" : "user",
+      userId: row.userId,
+      content: row.content,
+      replyToSourceMessageId: row.replyToMessageId != null ? String(row.replyToMessageId) : null,
+      sentAt: row.sentAt.toISOString(),
+      editedAt: row.editedAt ? row.editedAt.toISOString() : null,
+      deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
+      botReaction: row.botReaction,
+      media: attached
+        ? {
+            kind: attached.kind,
+            status: attached.status as "pending" | "described" | "unavailable",
+            description: attached.description,
+          }
+        : null,
+    };
+  };
+
+  const toOperatorConnection = (
+    row: ConnectionRow,
+    statuses: ConnectionStatus[],
+  ): OperatorConnection => {
+    const status = statuses.find((s) => s.connectionId === row.id) ?? null;
+    return {
+      id: row.id,
+      assistantId: row.assistantId,
+      enabled: row.enabled,
+      // Enough to tell tokens apart, never the token (schema: secret).
+      botTokenHint: row.botToken.slice(-4),
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      status: status
+        ? {
+            state: status.state,
+            username: status.username,
+            since: status.since,
+            error: status.error,
+          }
+        : null,
+    };
+  };
+
+  internal.get("/users", async (c) => {
+    const rows = await listUsers(input.db);
+    return c.json({ users: rows.map(toOperatorUser) });
+  });
+
+  internal.get("/users/:userId", async (c) => {
+    const row = await getUserById(input.db, c.req.param("userId"));
+    if (!row) return c.json({ error: { message: "user not found" } }, 404);
+    return c.json({ user: toOperatorUser(row) });
+  });
+
+  internal.patch("/users/:userId", async (c) => {
+    const parsed = operatorUserUpdateRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: { message: "aliases or language is required" } }, 400);
+    }
+    const userId = c.req.param("userId");
+    const row =
+      "aliases" in parsed.data
+        ? await updateUserAliases(input.db, userId, parsed.data.aliases)
+        : await updateUserLanguage(input.db, userId, parsed.data.language);
+    if (!row) return c.json({ error: { message: "user not found" } }, 404);
+    return c.json({ user: toOperatorUser(row) });
+  });
+
+  internal.get("/chats", async (c) => {
+    const listings = await listChatListings(input.db);
+    return c.json({ chats: listings.map(toOperatorChat) });
+  });
+
+  internal.patch("/chats/:chatId", async (c) => {
+    const parsed = operatorChatUpdateRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: { message: "notes or language is required" } }, 400);
+    }
+    const chatId = c.req.param("chatId");
+    const row =
+      "notes" in parsed.data
+        ? await updateChatNotes(input.db, chatId, parsed.data.notes)
+        : await updateChatLanguage(input.db, chatId, parsed.data.language);
+    if (!row) return c.json({ error: { message: "chat not found" } }, 404);
+    const listings = await listChatListings(input.db);
+    const listing = listings.find((l) => l.chatId === chatId);
+    return c.json({
+      chat: listing ? toOperatorChat(listing) : null,
+    });
+  });
+
+  internal.get("/chats/:chatId/messages", async (c) => {
+    const chatId = c.req.param("chatId");
+    const rows = await listChatMessages(input.db, chatId);
+    const media = await getMediaForMessages(
+      input.db,
+      chatId,
+      rows.map((row) => row.telegramMessageId),
+    );
+    return c.json({ messages: rows.map((row) => toOperatorMessage(row, media)) });
+  });
+
+  internal.get("/connections", async (c) => {
+    const rows = await listConnections(input.db);
+    const statuses = input.manager.statuses();
+    return c.json({ connections: rows.map((row) => toOperatorConnection(row, statuses)) });
+  });
+
+  internal.post("/connections", async (c) => {
+    const parsed = operatorConnectionCreateRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: { message: "assistantId and botToken are required" } }, 400);
+    }
+    let row: ConnectionRow;
+    try {
+      row = await insertConnection(input.db, { id: randomUUID(), ...parsed.data });
+    } catch {
+      // The unique index: one bot per assistant.
+      return c.json({ error: { message: "this assistant already has a connection" } }, 409);
+    }
+    await input.manager.reconcileConnection(row);
+    return c.json({ connection: toOperatorConnection(row, input.manager.statuses()) });
+  });
+
+  internal.patch("/connections/:id", async (c) => {
+    const parsed = operatorConnectionUpdateRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: { message: "botToken or enabled is required" } }, 400);
+    }
+    const row = await updateConnection(input.db, c.req.param("id"), parsed.data);
+    if (!row) return c.json({ error: { message: "connection not found" } }, 404);
+    await input.manager.reconcileConnection(row);
+    return c.json({ connection: toOperatorConnection(row, input.manager.statuses()) });
+  });
+
+  internal.delete("/connections/:id", async (c) => {
+    const row = await deleteConnection(input.db, c.req.param("id"));
+    if (!row) return c.json({ error: { message: "connection not found" } }, 404);
+    await input.manager.removeConnection(row.id);
+    return c.json({ connection: toOperatorConnection(row, []) });
+  });
+
+  internal.get("/settings", async (c) => {
+    return c.json({ settings: await getTgSettings(input.db) });
+  });
+
+  internal.put("/settings", async (c) => {
+    const parsed = operatorSourceSettingsUpdateRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: { message: "ownerUsername is required (or null)" } }, 400);
+    }
+    await setOwnerUsername(input.db, parsed.data.ownerUsername);
+    return c.json({ settings: await getTgSettings(input.db) });
+  });
 
   // The media surface (slice B): the core's vision/voice features read a
   // pending row's bytes here, run the describe/transcribe model, and write
