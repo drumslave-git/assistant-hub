@@ -359,6 +359,7 @@ export function registerTasksMcpTools(server: McpServer): void {
           {
             chatId: ctx.chatId,
             userId: ctx.userId ?? null,
+            senderIsOwner: ctx.senderIsOwner ?? false,
             threadId: ctx.threadId ?? null,
             instruction: instruction.trim(),
             context: context.trim() ? context.trim() : null,
@@ -536,7 +537,8 @@ export function registerTasksMcpTools(server: McpServer): void {
           {
             chatId: ctx.chatId,
             userId: ctx.userId ?? null,
-            authorityUserId: ctx.authorityUserId ?? null,
+            senderIsOwner: ctx.senderIsOwner ?? false,
+            authorityIsOwner: ctx.authorityIsOwner ?? false,
             id,
             patch,
           },
@@ -588,7 +590,8 @@ export function registerTasksMcpTools(server: McpServer): void {
           {
             chatId: ctx.chatId,
             userId: ctx.userId ?? null,
-            authorityUserId: ctx.authorityUserId ?? null,
+            senderIsOwner: ctx.senderIsOwner ?? false,
+            authorityIsOwner: ctx.authorityIsOwner ?? false,
             id,
           },
           toolContextTrigger(ctx),

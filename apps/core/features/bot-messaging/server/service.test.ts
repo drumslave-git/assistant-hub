@@ -71,6 +71,7 @@ function deps(over: Partial<BotMessagingDeps> = {}): BotMessagingDeps {
   return {
     bot: BOT,
     policy: OPEN_POLICY,
+    senderIsOwner: false,
     // Mirror the real generator: the shared LLM tracing layer records the
     // "request" and "response" events, driven by the trace options the service
     // passes. A reply with no tools is one round, and that round is the answer.
@@ -685,7 +686,7 @@ describe("handleIncomingMessage", () => {
   });
 
   it("blocks a non-owner in maintenance mode: sends a static notice, traces (skipped), no LLM", async () => {
-    const d = deps({ policy: { ownerUserId: "1", maintenanceModeEnabled: true } });
+    const d = deps({ policy: { maintenanceModeEnabled: true }, senderIsOwner: false });
     const out = await handleIncomingMessage(incoming({ text: "hello", fromId: 100 }), d);
     expect(out).toEqual({ status: "ignored", reason: "maintenance_mode", source: "private" });
     // Addressed-but-blocked is still traced for operator visibility, then skipped.
@@ -703,8 +704,8 @@ describe("handleIncomingMessage", () => {
     expect(blocked.data).toEqual({ reason: "not_owner" });
   });
 
-  it("lets the owner through in maintenance mode (matched by id)", async () => {
-    const d = deps({ policy: { ownerUserId: "7", maintenanceModeEnabled: true } });
+  it("lets the owner through in maintenance mode (source's isOwner stamp)", async () => {
+    const d = deps({ policy: { maintenanceModeEnabled: true }, senderIsOwner: true });
     const out = await handleIncomingMessage(incoming({ text: "hi", fromId: 7 }), d);
     expect(out).toEqual({ status: "replied", text: "hi back" });
     expect(d.generateReply).toHaveBeenCalledOnce();
@@ -720,7 +721,7 @@ describe("handleIncomingMessage", () => {
       text: "thanks",
       reply_to_message: { message_id: 1, from: BOT_USER },
     });
-    const d = deps({ policy: { ownerUserId: "7", maintenanceModeEnabled: true } });
+    const d = deps({ policy: { maintenanceModeEnabled: true }, senderIsOwner: true });
     const out = await handleIncomingMessage(
       incoming({ message: m, chatType: "group", text: "thanks", fromId: 7 }),
       d,
@@ -1087,7 +1088,7 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     const analyzeAddressing = analyzer("other_alphabet", "Ари");
     const d = deps({
       analyzeAddressing,
-      policy: { ownerUserId: "1", maintenanceModeEnabled: true },
+      policy: { maintenanceModeEnabled: true },
     });
     const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
 
@@ -1102,7 +1103,8 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     const analyzeAddressing = analyzer("other_alphabet", "Ари");
     const d = deps({
       analyzeAddressing,
-      policy: { ownerUserId: "100", maintenanceModeEnabled: true },
+      policy: { maintenanceModeEnabled: true },
+      senderIsOwner: true,
     });
     const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
 
@@ -1219,7 +1221,7 @@ describe("voice turns", () => {
     const sendVoiceReply = vi.fn();
     const d = deps({
       sendVoiceReply,
-      policy: { ownerUserId: "1", maintenanceModeEnabled: true },
+      policy: { maintenanceModeEnabled: true },
     });
     const out = await handleIncomingMessage(
       incoming({ text: "hello", isVoice: true, fromId: 100 }),
@@ -1317,7 +1319,7 @@ describe("handleIncomingMessage — standing tasks", () => {
     const applyStandingTasks = matched();
     const d = deps({
       applyStandingTasks,
-      policy: { ownerUserId: "1", maintenanceModeEnabled: true },
+      policy: { maintenanceModeEnabled: true },
     });
 
     const out = await handleIncomingMessage(groupChatter("look https://example.com/clip"), d);

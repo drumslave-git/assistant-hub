@@ -6,7 +6,7 @@ import {
   buildTaskTriggerDirective,
   messageTasks,
   promptTasks,
-  resolveTaskAuthority,
+  taskLendsOwnerRights,
   sameTargets,
   TASK_ENFORCEMENT_DIRECTIVE,
   tasksForSender,
@@ -28,6 +28,7 @@ function task(over: Partial<Task> = {}): Task {
     threadId: null,
     createdByUserId: null,
     source: "dashboard",
+    createdByOwner: false,
     instruction: "Answer briefly.",
     context: null,
     triggerKind: "on-reply",
@@ -219,38 +220,31 @@ describe("sameTargets", () => {
  * privileged identity here, so elevation is exactly: a task the owner wrote, or
  * one written in the operator-only dashboard.
  */
-describe("resolveTaskAuthority", () => {
-  const OWNER = "1";
-
-  it("elevates to the owner for a task the owner set from chat", () => {
-    const matched = [task({ source: "chat", createdByUserId: OWNER })];
-    expect(resolveTaskAuthority(matched, OWNER)).toBe(OWNER);
+describe("taskLendsOwnerRights", () => {
+  it("lends owner rights for a task the owner set from chat (creation-time stamp)", () => {
+    const matched = [task({ source: "chat", createdByOwner: true })];
+    expect(taskLendsOwnerRights(matched)).toBe(true);
   });
 
-  it("elevates to the owner for a task the operator set in the dashboard", () => {
+  it("lends owner rights for a task the operator set in the dashboard", () => {
     const matched = [task({ source: "dashboard", createdByUserId: null })];
-    expect(resolveTaskAuthority(matched, OWNER)).toBe(OWNER);
+    expect(taskLendsOwnerRights(matched)).toBe(true);
   });
 
-  it("elevates nothing for a task an ordinary user set in their own DM", () => {
+  it("lends nothing for a task an ordinary user set in their own DM", () => {
     const matched = [task({ source: "chat", createdByUserId: "77" })];
-    expect(resolveTaskAuthority(matched, OWNER)).toBeNull();
+    expect(taskLendsOwnerRights(matched)).toBe(false);
   });
 
-  it("elevates when any one of the matched tasks qualifies", () => {
+  it("lends when any one of the matched tasks qualifies", () => {
     const matched = [
       task({ id: "a", source: "chat", createdByUserId: "77" }),
-      task({ id: "b", source: "chat", createdByUserId: OWNER }),
+      task({ id: "b", source: "chat", createdByOwner: true }),
     ];
-    expect(resolveTaskAuthority(matched, OWNER)).toBe(OWNER);
+    expect(taskLendsOwnerRights(matched)).toBe(true);
   });
 
-  it("elevates nothing when nothing matched", () => {
-    expect(resolveTaskAuthority([], OWNER)).toBeNull();
-  });
-
-  it("elevates nothing when no owner is configured", () => {
-    const matched = [task({ source: "dashboard", createdByUserId: null })];
-    expect(resolveTaskAuthority(matched, null)).toBeNull();
+  it("lends nothing when nothing matched", () => {
+    expect(taskLendsOwnerRights([])).toBe(false);
   });
 });

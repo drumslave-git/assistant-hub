@@ -1,10 +1,9 @@
 import "server-only";
 
-import type { BotPolicy } from "@/features/settings/server/service";
 import { getClassifierRuntime, getLlmRuntime } from "@/features/settings/server/service";
 import {
   buildTaskTriggerDirective,
-  resolveTaskAuthority,
+  taskLendsOwnerRights,
 } from "@/features/tasks/format";
 import {
   buildTaskMatchMessages,
@@ -80,7 +79,12 @@ export interface TurnBindingsInput {
   /** The current turn's effective text (message text / caption / transcript). */
   messageText: string;
   chatType: string;
-  policy: BotPolicy;
+  /**
+   * Whether the sender holds owner rights, as the owning source stamped it on
+   * the inbound event (`sender.isOwner`) — authoritative since the split; the
+   * core compares no user ids of its own.
+   */
+  senderIsOwner: boolean;
   /** The chat's enabled prompt tasks: all of them + the turn-opening subset. */
   tasks: { prompt: Task[]; message: Task[] };
   /** Sink the `image_generate` tool fills; delivered after the reply. */
@@ -122,17 +126,17 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
     correlationId,
     messageText,
     chatType,
-    policy,
+    senderIsOwner,
     tasks: { prompt: promptTasks, message: messageTasks },
   } = input;
 
   /**
-   * Whose rights this turn's tool calls carry, set by `applyStandingTasks`
-   * when a standing task matched and read when the tool context is bound.
-   * Scoped to this one turn's bindings — the service awaits the match before
+   * Whether a matched standing task lent this turn owner rights, set by
+   * `applyStandingTasks` and read when the tool context is bound. Scoped to
+   * this one turn's bindings — the service awaits the match before
    * generating, so it is settled before any tool runs.
    */
-  let taskAuthorityUserId: string | null = null;
+  let taskAuthorityIsOwner = false;
   /** Whether a `message` task opened this turn — decides the delivery shape. */
   let taskOpenedTurn = false;
   /** The `message` tasks that opened this turn (their deliveries are stamped). */
@@ -144,12 +148,7 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
    * A matched task can lend rights only if its author had rights to lend, and
    * only to somebody who does not already have them.
    */
-  const canElevate =
-    policy.ownerUserId != null &&
-    senderId !== policy.ownerUserId &&
-    promptTasks.some(
-      (task) => task.source === "dashboard" || task.createdByUserId === policy.ownerUserId,
-    );
+  const canElevate = !senderIsOwner && taskLendsOwnerRights(promptTasks);
 
   const generateReply: BotMessagingDeps["generateReply"] =
     input.overrideGenerateReply ??
@@ -189,8 +188,10 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
           chatId,
           userId: senderId,
           correlationId,
+          // The sender's own owner status, as the source stamped it.
+          senderIsOwner,
           // Permissions only, and only when a standing task drove this turn.
-          authorityUserId: taskAuthorityUserId,
+          authorityIsOwner: taskAuthorityIsOwner,
           // Hard data extracted in code — `browse_web` takes links from here,
           // never from the goal text (the model has corrupted re-typed URLs).
           messageUrls: extractMessageUrls(messageText),
@@ -273,8 +274,8 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
           const matched = offered.filter((task) => verdict.matchedIds.includes(task.id));
           // A task is its author's standing order: its actions run with the
           // author's rights, not the sender's.
-          const authority = resolveTaskAuthority(matched, policy.ownerUserId ?? null);
-          taskAuthorityUserId = authority;
+          const lendsOwner = taskLendsOwnerRights(matched);
+          taskAuthorityIsOwner = lendsOwner;
           await replyTrace.event({
             type: "step",
             level: matched.length > 0 ? "success" : "info",
@@ -283,7 +284,7 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
               offered: matchable,
               matchedIds: verdict.matchedIds,
               reason: verdict.reason,
-              authorityUserId: authority,
+              authorityIsOwner: lendsOwner,
             },
           });
           if (matched.length === 0) return null;

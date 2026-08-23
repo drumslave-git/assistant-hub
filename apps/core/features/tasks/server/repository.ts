@@ -21,6 +21,7 @@ export interface InsertTask {
   threadId: number | null;
   createdByUserId: string | null;
   source: TaskSource;
+  createdByOwner: boolean;
   instruction: string;
   context: string | null;
   triggerKind: TriggerKind;
@@ -57,6 +58,7 @@ function mapRow(row: TaskRow): Task {
     threadId: row.threadId,
     createdByUserId: row.createdByUserId,
     source: row.source as TaskSource,
+    createdByOwner: row.createdByOwner,
     instruction: row.instruction,
     context: row.context,
     triggerKind: row.trigger as TriggerKind,
@@ -190,6 +192,7 @@ export async function insertTask(db: DrizzleDb, id: string, values: InsertTask):
       threadId: values.threadId,
       createdByUserId: values.createdByUserId,
       source: values.source,
+      createdByOwner: values.createdByOwner,
       instruction: values.instruction,
       context: values.context,
       trigger: values.triggerKind,

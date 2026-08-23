@@ -469,23 +469,23 @@ export async function getActivePersonalityId(db: DrizzleDb = getDb()): Promise<s
   return (await getSettingsRecord(db))?.activePersonalityId ?? null;
 }
 
-/** The owner + maintenance state the bot needs to police an incoming message. */
+/**
+ * The maintenance state the bot needs to police an incoming message. Owner
+ * identity is deliberately NOT here since the split: the owning source stamps
+ * `sender.isOwner` on every inbound event (its settings are authoritative —
+ * the core's owner columns are a display denormalization only), and tasks
+ * carry `createdByOwner` stamped at creation, so no core code compares user
+ * ids against an owner id.
+ */
 export interface BotPolicy {
-  /** Owner's numeric user id (chosen from known users), or null when unset. */
-  ownerUserId: string | null;
   /** Whether maintenance mode is on. */
   maintenanceModeEnabled: boolean;
 }
 
-/**
- * Server-only: read the owner/maintenance policy. The owner is chosen by id from
- * the known-users list, so this is a pure read — no resolution needed. Cheap
- * enough to run per message.
- */
+/** Server-only: read the maintenance policy. Cheap enough to run per message. */
 export async function getBotPolicy(db: DrizzleDb = getDb()): Promise<BotPolicy> {
   const record = await getSettingsRecord(db);
   return {
-    ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
   };
 }

@@ -281,6 +281,11 @@ export async function fireTask(
         {
           chatId: task.chatId!,
           userId: task.createdByUserId ?? null,
+          // A fire has no inbound event to stamp owner status from; the
+          // task's own creation-time stamp carries the creator's rights
+          // (dashboard fires stay non-owner here, as they always were —
+          // their created_by_user_id is null and the stamp false).
+          senderIsOwner: task.createdByOwner,
           // The fire's correlation is the task id (what its trace opened with),
           // so the fire and any tool calls it makes group in Debug.
           correlationId: task.id,

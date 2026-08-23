@@ -1,10 +1,12 @@
 import type { BotPolicy } from "@/features/settings/server/service";
 
 /**
- * Owner and maintenance-mode policy. Pure and deterministic — no DB, no network —
- * so it is fully unit-testable and cheap to run per message. The {@link BotPolicy}
- * data (owner + maintenance state) is resolved by the settings service and passed
- * in; this module only decides.
+ * Maintenance-mode policy. Pure and deterministic — no DB, no network — so it
+ * is fully unit-testable and cheap to run per message. The {@link BotPolicy}
+ * data (maintenance state) is resolved by the settings service and passed in;
+ * whether the sender is the owner arrives with the inbound event
+ * (`sender.isOwner`, stamped by the owning source — authoritative since the
+ * split, the core matches no user ids of its own). This module only decides.
  *
  * Maintenance mode: the bot stays functional for the owner (deterministic
  * addressing — private chat, reply, command, mention, exact display name — still
@@ -13,23 +15,6 @@ import type { BotPolicy } from "@/features/settings/server/service";
  */
 
 export type { BotPolicy };
-
-/** Identity of the message sender, as far as owner matching needs. */
-export interface MessageSender {
-  fromId?: number;
-}
-
-/**
- * Whether the sender is the configured owner. The owner is chosen by id from the
- * known-users list, so this is an exact numeric-id match.
- */
-export function isOwner(sender: MessageSender, policy: BotPolicy): boolean {
-  return (
-    policy.ownerUserId != null &&
-    sender.fromId != null &&
-    String(sender.fromId) === policy.ownerUserId
-  );
-}
 
 export type MaintenanceDecision =
   | { blocked: false }

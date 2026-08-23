@@ -16,11 +16,9 @@ import { BROWSE_WEB_TOOL, registerBrowserAgentMcpTools } from "./mcp-tools";
  * the real sender.
  */
 
-vi.mock("@/features/settings/server/service", () => ({ getBotPolicy: vi.fn() }));
 vi.mock("./service", () => ({ enqueueBrowserRun: vi.fn() }));
 vi.mock("./signal", () => ({ emitRunEnqueued: vi.fn() }));
 
-const settings = vi.mocked(await import("@/features/settings/server/service"));
 const service = vi.mocked(await import("./service"));
 
 const OWNER = "1";
@@ -39,14 +37,14 @@ function handler() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  settings.getBotPolicy.mockResolvedValue({ ownerUserId: OWNER, maintenanceModeEnabled: false });
   service.enqueueBrowserRun.mockResolvedValue({ id: "run-1" } as never);
 });
 
 /** The enqueued run's fields, after invoking the tool in the given context. */
 async function enqueuedFrom(ctx: {
   userId: string | null;
-  authorityUserId?: string | null;
+  senderIsOwner?: boolean;
+  authorityIsOwner?: boolean;
   messageUrls?: string[];
   chatId?: string;
 }) {
@@ -59,7 +57,7 @@ async function enqueuedFrom(ctx: {
 
 describe(`${BROWSE_WEB_TOOL} download rights`, () => {
   it("grants them to the owner's own request, unrestricted", async () => {
-    expect(await enqueuedFrom({ userId: OWNER })).toMatchObject({
+    expect(await enqueuedFrom({ userId: OWNER, senderIsOwner: true })).toMatchObject({
       isOwner: true,
       restricted: false,
       createdByUserId: OWNER,
@@ -74,7 +72,7 @@ describe(`${BROWSE_WEB_TOOL} download rights`, () => {
   });
 
   it("grants them when a rule the owner set drove the turn, whoever sent the message", async () => {
-    const enqueued = await enqueuedFrom({ userId: OTHER, authorityUserId: OWNER });
+    const enqueued = await enqueuedFrom({ userId: OTHER, authorityIsOwner: true });
 
     // Borrowed rights restrict the run: downloads are fenced to the triggering
     // message's own links and must attach to the chat or be discarded.
@@ -89,7 +87,9 @@ describe(`${BROWSE_WEB_TOOL} download rights`, () => {
     // 2026-08-01): a rule-driven download in a group is limited to what
     // Telegram can send, whoever posted the link — the group's audience cannot
     // reach the server's disk either way.
-    expect(await enqueuedFrom({ userId: OWNER, authorityUserId: OWNER })).toMatchObject({
+    expect(
+      await enqueuedFrom({ userId: OWNER, senderIsOwner: true, authorityIsOwner: true }),
+    ).toMatchObject({
       isOwner: true,
       restricted: true,
     });
@@ -97,30 +97,27 @@ describe(`${BROWSE_WEB_TOOL} download rights`, () => {
 
   it("leaves the owner's own rule-driven run in their DM unrestricted", async () => {
     expect(
-      await enqueuedFrom({ userId: OWNER, authorityUserId: OWNER, chatId: OWNER }),
+      await enqueuedFrom({
+        userId: OWNER,
+        senderIsOwner: true,
+        authorityIsOwner: true,
+        chatId: OWNER,
+      }),
     ).toMatchObject({ isOwner: true, restricted: false });
   });
 
   it("carries the message's code-extracted URLs onto the run verbatim", async () => {
     const urls = ["https://youtu.be/oh9VTJFPzHo?si=7OBKm0Ft5918u0yd"];
 
-    expect(await enqueuedFrom({ userId: OTHER, authorityUserId: OWNER, messageUrls: urls })).toMatchObject(
+    expect(await enqueuedFrom({ userId: OTHER, authorityIsOwner: true, messageUrls: urls })).toMatchObject(
       { sourceUrls: urls },
     );
   });
 
   it("withholds them when the matched rule's author had none to lend", async () => {
-    // `resolveRuleAuthority` returns null for a rule an ordinary user wrote, and
-    // a null authority must not be read as "no check needed".
-    expect(await enqueuedFrom({ userId: OTHER, authorityUserId: null })).toMatchObject({
-      isOwner: false,
-    });
-  });
-
-  it("withholds them from everyone when no owner is configured", async () => {
-    settings.getBotPolicy.mockResolvedValue({ ownerUserId: null, maintenanceModeEnabled: false });
-
-    expect(await enqueuedFrom({ userId: OTHER, authorityUserId: null })).toMatchObject({
+    // `taskLendsOwnerRights` is false for a rule an ordinary user wrote, and
+    // that must not be read as "no check needed".
+    expect(await enqueuedFrom({ userId: OTHER, authorityIsOwner: false })).toMatchObject({
       isOwner: false,
     });
   });

@@ -3,7 +3,6 @@ import "server-only";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { getBotPolicy } from "@/features/settings/server/service";
 import { isGroupChatId } from "@/lib/telegram";
 import { getToolContext } from "@/server/mcp/context";
 
@@ -91,15 +90,15 @@ export function registerBrowserAgentMcpTools(server: McpServer): void {
       // It is resolved from the turn's *authority* — the sender normally, but
       // the author of the standing chat rule when a rule drove this turn, so an
       // owner's "download any media link posted here" rule works for everyone's
-      // links. Provenance below stays the real sender either way.
-      const policy = await getBotPolicy().catch(() => null);
-      const authorityUserId = ctx.authorityUserId ?? ctx.userId;
-      const isOwner = Boolean(policy?.ownerUserId && authorityUserId === policy.ownerUserId);
-      const senderIsOwner = Boolean(policy?.ownerUserId && ctx.userId === policy.ownerUserId);
-      // A rule drove this turn: `authorityUserId` is bound only when a standing
+      // links. Provenance below stays the real sender either way. Both flags
+      // come from the bound context (the source's `sender.isOwner` stamp and
+      // the matched task's stamps) — no owner-id comparison here.
+      const senderIsOwner = ctx.senderIsOwner === true;
+      const isOwner = senderIsOwner || ctx.authorityIsOwner === true;
+      // A rule drove this turn: `authorityIsOwner` is set only when a standing
       // rule matched and its author had rights to lend (never on a direct
       // request, even the owner's own — the matcher is skipped there).
-      const ruleDriven = ctx.authorityUserId != null;
+      const ruleDriven = ctx.authorityIsOwner === true;
       // Restricted = downloads are fenced to the message's own links and must
       // attach to the chat or be discarded (user decisions, 2026-08-01): every
       // rule-driven run in a group — the owner's own message included, since a

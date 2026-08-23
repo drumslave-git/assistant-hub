@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 
 import { getDb, type DrizzleDb } from "@/db/drizzle";
 import { getGroupMembers } from "@/features/known-groups/server/repository";
-import { getSettingsRecord } from "@/features/settings/server/repository";
 import { getTimezone } from "@/features/settings/server/service";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
@@ -354,6 +353,8 @@ export async function createTaskService(
   input: CreateTask & {
     createdByUserId?: string | null;
     source?: "chat" | "dashboard";
+    /** The chat creator's owner stamp; dashboard tasks never need it. */
+    createdByOwner?: boolean;
   },
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
@@ -394,6 +395,7 @@ export async function createTaskService(
         threadId: input.threadId ?? null,
         createdByUserId: input.createdByUserId ?? null,
         source: input.source ?? "dashboard",
+        createdByOwner: input.createdByOwner ?? false,
         instruction,
         context,
         triggerKind: normalized.triggerKind,
@@ -551,33 +553,24 @@ export type TaskWriteResult =
   | { status: "denied"; reason: string }
   | { status: "not_found" };
 
-/** The configured owner's user id, or null. Fails closed (null) on a bad read. */
-async function ownerUserId(db: DrizzleDb): Promise<string | null> {
-  try {
-    return (await getSettingsRecord(db))?.ownerUserId ?? null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * May this user create a task of this kind here, from inside the chat?
  * Prompt kinds mirror the old rules gate (user decision, 2026-07-29): in a
  * private chat the user manages their own chat's standing tasks; in a group
- * only the configured owner may. Timed kinds are open — any chat participant
- * may schedule (recorded decision, priority 9). Resolves a refusal reason, or
- * null when allowed.
+ * only the owner may — judged by the sender's `isOwner` stamp from the
+ * inbound event (the source is authoritative for owner identity since the
+ * split). Timed kinds are open — any chat participant may schedule (recorded
+ * decision, priority 9). Resolves a refusal reason, or null when allowed.
  */
-async function createDenyReason(
-  db: DrizzleDb,
+function createDenyReason(
   chatId: string,
   userId: string | null,
+  senderIsOwner: boolean,
   kind: TriggerKind,
-): Promise<string | null> {
+): string | null {
   if (!isPromptTask({ triggerKind: kind })) return null;
   if (isGroupChatId(chatId)) {
-    const owner = await ownerUserId(db);
-    if (!owner || !userId || userId !== owner) {
+    if (!senderIsOwner) {
       return "Only the bot owner can change this group's standing rules.";
     }
     return null;
@@ -595,12 +588,19 @@ async function createDenyReason(
  * "forbidden": the chat has no business learning it exists), and a global task
  * is visible but read-only from chat. Prompt kinds take the rules gate; timed
  * kinds take the creator-or-owner gate (owner exemption: user decision,
- * 2026-08-07), judged on the turn's *authority* — the sender normally, a matched
- * task's author when a task drove the turn.
+ * 2026-08-07), judged on the turn's *authority* — the sender normally
+ * (`senderIsOwner`, the source's stamp), a matched task's author when a task
+ * drove the turn (`authorityIsOwner`).
  */
 async function resolveMutationTarget(
   db: DrizzleDb,
-  input: { chatId: string; userId: string | null; authorityUserId?: string | null; id: string },
+  input: {
+    chatId: string;
+    userId: string | null;
+    senderIsOwner?: boolean;
+    authorityIsOwner?: boolean;
+    id: string;
+  },
 ): Promise<{ ok: true; task: Task } | { ok: false; result: TaskWriteResult }> {
   const task = await getChatVisibleTask(input.id, input.chatId, db);
   if (!task) {
@@ -617,13 +617,16 @@ async function resolveMutationTarget(
     };
   }
   if (isPromptTask(task)) {
-    const denied = await createDenyReason(db, input.chatId, input.userId, task.triggerKind);
+    const denied = createDenyReason(
+      input.chatId,
+      input.userId,
+      input.senderIsOwner === true,
+      task.triggerKind,
+    );
     if (denied) return { ok: false, result: { status: "denied", reason: denied } };
     return { ok: true, task };
   }
-  const owner = await ownerUserId(db);
-  const authority = input.authorityUserId ?? input.userId;
-  const isOwner = Boolean(owner && authority === owner);
+  const isOwner = input.senderIsOwner === true || input.authorityIsOwner === true;
   if (!isOwner && (!input.userId || task.createdByUserId !== input.userId)) {
     return {
       ok: false,
@@ -643,6 +646,8 @@ export async function createTaskFromChat(
   input: {
     chatId: string;
     userId: string | null;
+    /** The sender's owner stamp from the inbound event; recorded on the task. */
+    senderIsOwner?: boolean;
     threadId?: number | null;
     instruction: string;
     context?: string | null;
@@ -657,7 +662,12 @@ export async function createTaskFromChat(
   traceTrigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<TaskWriteResult> {
-  const denied = await createDenyReason(db, input.chatId, input.userId, input.triggerKind);
+  const denied = createDenyReason(
+    input.chatId,
+    input.userId,
+    input.senderIsOwner === true,
+    input.triggerKind,
+  );
   if (denied) return { status: "denied", reason: denied };
   // Normalized here rather than trusted from the caller: the duplicate check
   // compares stored text, so untrimmed input from a tool would slip past it and
@@ -703,6 +713,7 @@ export async function createTaskFromChat(
         enabled: true,
         createdByUserId: input.userId,
         source: "chat",
+        createdByOwner: input.senderIsOwner === true,
       },
       traceTrigger,
       db,
@@ -730,7 +741,8 @@ export async function updateTaskFromChat(
   input: {
     chatId: string;
     userId: string | null;
-    authorityUserId?: string | null;
+    senderIsOwner?: boolean;
+    authorityIsOwner?: boolean;
     id: string;
     patch: Omit<UpdateTaskInput, "enabled">;
   },
@@ -758,7 +770,13 @@ export async function updateTaskFromChat(
 
 /** Delete one of the current chat's tasks from a chat turn, gated and traced. */
 export async function deleteTaskFromChat(
-  input: { chatId: string; userId: string | null; authorityUserId?: string | null; id: string },
+  input: {
+    chatId: string;
+    userId: string | null;
+    senderIsOwner?: boolean;
+    authorityIsOwner?: boolean;
+    id: string;
+  },
   traceTrigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<TaskWriteResult> {

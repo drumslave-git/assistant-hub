@@ -156,8 +156,7 @@ export const TASK_ENFORCEMENT_DIRECTIVE =
   "options.";
 
 /**
- * The identity whose permissions a task-driven turn carries, or null when no
- * matched task elevates anything.
+ * Whether these matched tasks lend the turn owner rights.
  *
  * A task is its author's standing order (user decision, 2026-07-29 — "rule
  * creator beats message source"): when the bot acts because a task told it to,
@@ -168,20 +167,16 @@ export const TASK_ENFORCEMENT_DIRECTIVE =
  * everybody else's — the opposite of what the task says.
  *
  * Only the owner is a privileged identity in this app, so elevation is exactly:
- * a matched task the **owner** wrote in chat, or one the **operator** wrote in
- * the dashboard (which has no author id and is operator-only by definition).
- * A task written by an ordinary user in their own DM elevates nothing — they
- * had no rights to lend.
+ * a matched task the **owner** wrote in chat (`createdByOwner`, stamped at
+ * creation from the source's `sender.isOwner` — the core compares no user ids),
+ * or one the **operator** wrote in the dashboard (which has no author id and is
+ * operator-only by definition). A task written by an ordinary user in their own
+ * DM elevates nothing — they had no rights to lend.
  */
-export function resolveTaskAuthority(
-  matched: readonly Pick<Task, "source" | "createdByUserId">[],
-  ownerUserId: string | null,
-): string | null {
-  if (!ownerUserId) return null;
-  const privileged = matched.some(
-    (task) => task.source === "dashboard" || task.createdByUserId === ownerUserId,
-  );
-  return privileged ? ownerUserId : null;
+export function taskLendsOwnerRights(
+  matched: readonly Pick<Task, "source" | "createdByOwner">[],
+): boolean {
+  return matched.some((task) => task.source === "dashboard" || task.createdByOwner);
 }
 
 /**

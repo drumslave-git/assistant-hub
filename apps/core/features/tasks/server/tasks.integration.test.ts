@@ -7,7 +7,6 @@ import {
   upsertKnownGroup,
 } from "@/features/known-groups/server/repository";
 import { upsertKnownUser } from "@/features/known-users/server/repository";
-import { upsertSettings } from "@/features/settings/server/repository";
 import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
@@ -177,17 +176,16 @@ describe("paused tasks", () => {
   });
 
   it("reads a paused task as an unknown id, and refuses to change or delete it", async () => {
-    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
     const paused = await create({ instruction: "Paused rule.", enabled: false });
 
     const read = await getChatVisibleTask(paused.id, GROUP, ctx.db);
     const updated = await updateTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, id: paused.id, patch: { instruction: "Reworded." } },
+      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: paused.id, patch: { instruction: "Reworded." } },
       chatTrigger,
       ctx.db,
     );
     const deleted = await deleteTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, id: paused.id },
+      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: paused.id },
       chatTrigger,
       ctx.db,
     );
@@ -200,13 +198,13 @@ describe("paused tasks", () => {
   });
 
   it("refuses a chat-side patch that would pause a task, and leaves it running", async () => {
-    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
     const task = await create({ instruction: "Answer briefly." });
 
     const result = await updateTaskFromChat(
       {
         chatId: GROUP,
         userId: DM_USER,
+        senderIsOwner: true,
         id: task.id,
         // The tool schema cannot express this; every other caller of the
         // service gets an honest refusal rather than a silent drop.
@@ -224,11 +222,10 @@ describe("paused tasks", () => {
   });
 
   it("creates a fresh standing task rather than claiming a paused twin is in force", async () => {
-    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
     await create({ instruction: "Answer briefly.", enabled: false });
 
     const result = await createTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, instruction: "Answer briefly.", triggerKind: "on-reply" },
+      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, instruction: "Answer briefly.", triggerKind: "on-reply" },
       chatTrigger,
       ctx.db,
     );
@@ -326,6 +323,7 @@ describe("dashboard CRUD", () => {
       threadId: null,
       createdByUserId: null,
       source: "dashboard",
+      createdByOwner: false,
       instruction: "Ping us.",
       context: null,
       triggerKind: "interval",
@@ -447,11 +445,11 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
 
   it("amends the audience when the same standing task is set again for other people", async () => {
     await joinGroup(GROUP, "11", "22");
-    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
     const first = await createTaskFromChat(
       {
         chatId: GROUP,
         userId: DM_USER,
+        senderIsOwner: true,
         instruction: "Answer briefly.",
         triggerKind: "on-reply",
         targetUserIds: ["11"],
@@ -463,6 +461,7 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
       {
         chatId: GROUP,
         userId: DM_USER,
+        senderIsOwner: true,
         instruction: "Answer briefly.",
         triggerKind: "on-reply",
         targetUserIds: ["22", "11"],
@@ -477,9 +476,8 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
   });
 
   it("refuses a non-owner writing a standing task in a group, before the duplicate check", async () => {
-    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
     await createTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, instruction: "Answer briefly.", triggerKind: "on-reply" },
+      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, instruction: "Answer briefly.", triggerKind: "on-reply" },
       chatTrigger,
       ctx.db,
     );
@@ -497,11 +495,10 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
 
   it("shows a global task to the chat but refuses to change it from there", async () => {
     const global = await create({ chatId: null, instruction: "Never swear." });
-    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
 
     expect((await getChatVisibleTasks(GROUP, ctx.db)).map((t) => t.id)).toContain(global.id);
     const result = await deleteTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, id: global.id },
+      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: global.id },
       chatTrigger,
       ctx.db,
     );
@@ -513,15 +510,14 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
 
   it("cannot see or touch another chat's task", async () => {
     const other = await create({ chatId: "-2002", instruction: "Somebody else's task." });
-    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
 
     const updated = await updateTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, id: other.id, patch: { instruction: "mine now" } },
+      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: other.id, patch: { instruction: "mine now" } },
       chatTrigger,
       ctx.db,
     );
     const deleted = await deleteTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, id: other.id },
+      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: other.id },
       chatTrigger,
       ctx.db,
     );
@@ -580,7 +576,6 @@ describe("chat-side gate — timed kinds (creator or owner)", () => {
   });
 
   it("lets only the creator or the owner change or cancel it", async () => {
-    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
     const created = await createTaskFromChat(timedInput(OTHER_USER), chatTrigger, ctx.db);
     const id = created.status === "created" ? created.task.id : "";
 
@@ -595,7 +590,7 @@ describe("chat-side gate — timed kinds (creator or owner)", () => {
       ctx.db,
     );
     const owner = await deleteTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, id },
+      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id },
       chatTrigger,
       ctx.db,
     );
@@ -609,12 +604,11 @@ describe("chat-side gate — timed kinds (creator or owner)", () => {
   });
 
   it("honours a matched standing task's lent authority for the owner exemption", async () => {
-    await upsertSettings(ctx.db, { ownerUserId: DM_USER });
     const created = await createTaskFromChat(timedInput(OTHER_USER), chatTrigger, ctx.db);
     const id = created.status === "created" ? created.task.id : "";
 
     const viaAuthority = await deleteTaskFromChat(
-      { chatId: GROUP, userId: "300", authorityUserId: DM_USER, id },
+      { chatId: GROUP, userId: "300", authorityIsOwner: true, id },
       chatTrigger,
       ctx.db,
     );

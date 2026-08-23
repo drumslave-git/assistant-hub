@@ -24,18 +24,26 @@ export interface McpToolContext {
    */
   correlationId?: string;
   /**
-   * The identity whose **permissions** this turn's tool calls carry, when it is
-   * not the sender's. Set when a standing chat rule drove the turn: a rule is
-   * its author's standing order, so an action the rule calls for runs with the
-   * author's rights rather than those of whoever happened to send the message
-   * that triggered it (user decision, 2026-07-29 — "rule creator beats message
-   * source"). Absent → the sender's own rights, the ordinary case.
+   * Whether the sender themself holds owner rights, stamped by the owning
+   * source on the inbound event (`sender.isOwner`) — the source is
+   * authoritative for owner identity since the split; the core never compares
+   * user ids against an owner id of its own. Absent (tests, fires) → false.
+   */
+  senderIsOwner?: boolean;
+  /**
+   * Whether the turn's tool calls carry owner **permissions** lent by a
+   * standing rule. Set (true) only when a matched rule drove the turn and its
+   * author had rights to lend: a rule is its author's standing order, so an
+   * action the rule calls for runs with the author's rights rather than those
+   * of whoever happened to send the message that triggered it (user decision,
+   * 2026-07-29 — "rule creator beats message source"). Absent/false → the
+   * sender's own rights, the ordinary case.
    *
    * Permissions **only**. Provenance — who wrote a memory, who created a task,
    * who authored an entry — always stays {@link userId}: elevating the sender's
    * identity would file another person's data under the owner.
    */
-  authorityUserId?: string | null;
+  authorityIsOwner?: boolean;
   /**
    * The http(s) URLs of the triggering message, extracted in code. Hard data the
    * model must not be trusted to re-type: `browse_web` carries them onto the run

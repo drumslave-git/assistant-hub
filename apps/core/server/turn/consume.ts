@@ -72,11 +72,11 @@ import { resolveSourceOutbound, type SourceOutboundPort } from "./tg-outbound";
  * of sent directly, and turn lifecycle published for the owning source to
  * render (typing) and to release its mirror hold on settle.
  *
- * Additive during the transition: everything brain-shaped (memory,
- * preferences, persona, tasks, settings/policy) still reads the v1 database,
- * so behavior matches the v1 path exactly; `event.sender.isOwner` becomes
- * authoritative at the swap (see PROGRESS.md — task-authority rights are the
- * flagged swap blocker).
+ * Everything brain-shaped (memory, preferences, persona, tasks, settings)
+ * still reads the v1 database until the Phase 6 cutover. Owner identity is
+ * the exception since the swap: `event.sender.isOwner` — the source's stamp
+ * — is authoritative, and tasks carry `createdByOwner` from creation, so no
+ * core code compares user ids against an owner id of its own.
  *
  * Media and voice (slice B) run through the owning source's internal media
  * API: bytes are read from the source, the describe/transcribe models run
@@ -265,7 +265,7 @@ async function buildEventDeps(
     correlationId: event.correlationId,
     messageText: turn.effectiveText,
     chatType: isGroup ? "supergroup" : "private",
-    policy,
+    senderIsOwner: event.sender.isOwner,
     tasks: taskSets,
     collectImage: (base64) => turn.generatedImages.push(base64),
     onBrowserRunEnqueued: (runId) => turn.enqueuedBrowserRuns.push(runId),
@@ -291,6 +291,9 @@ async function buildEventDeps(
       displayName: event.connection.botDisplayName,
     },
     policy,
+    // The source's stamp is the owner authority since the swap — the core
+    // holds no owner id to compare against.
+    senderIsOwner: event.sender.isOwner,
     personalityPrompt,
     selfCorrection,
     standingTasks: buildStandingTasksBlock(taskSets.prompt),

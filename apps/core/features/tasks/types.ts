@@ -75,6 +75,13 @@ export interface Task {
   createdByUserId: string | null;
   /** Where the task was authored — provenance, and half the authority rule. */
   source: TaskSource;
+  /**
+   * Whether the creator held owner rights when the task was created — the
+   * other half of the authority rule, stamped from the source's
+   * `sender.isOwner` at creation (the core holds no owner id of its own to
+   * compare against since the split).
+   */
+  createdByOwner: boolean;
   /** The task itself, in the author's own words. */
   instruction: string;
   /**

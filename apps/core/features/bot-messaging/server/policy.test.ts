@@ -1,28 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  openPolicy,
-  ownerlessMaintenancePolicy,
-  ownerMaintenancePolicy,
-} from "@/test/__mocks__/policy";
-import { checkMaintenance, isOwner } from "./policy";
-
-const OWNER = ownerMaintenancePolicy;
-
-describe("isOwner", () => {
-  it("matches the configured owner by numeric id", () => {
-    expect(isOwner({ fromId: 42 }, OWNER)).toBe(true);
-    expect(isOwner({ fromId: 43 }, OWNER)).toBe(false);
-  });
-
-  it("is false when no owner is configured", () => {
-    expect(isOwner({ fromId: 1 }, ownerlessMaintenancePolicy)).toBe(false);
-  });
-
-  it("is false when the sender has no id", () => {
-    expect(isOwner({}, OWNER)).toBe(false);
-  });
-});
+import { maintenancePolicy, openPolicy } from "@/test/__mocks__/policy";
+import { checkMaintenance } from "./policy";
 
 describe("checkMaintenance", () => {
   it("never blocks when maintenance is off", () => {
@@ -30,13 +9,15 @@ describe("checkMaintenance", () => {
   });
 
   it("blocks non-owners when maintenance is on", () => {
-    expect(checkMaintenance({ policy: OWNER, owner: false })).toEqual({
+    expect(checkMaintenance({ policy: maintenancePolicy, owner: false })).toEqual({
       blocked: true,
       reason: "not_owner",
     });
   });
 
   it("lets the owner through with no extra restriction (fully functional)", () => {
-    expect(checkMaintenance({ policy: OWNER, owner: true })).toEqual({ blocked: false });
+    expect(checkMaintenance({ policy: maintenancePolicy, owner: true })).toEqual({
+      blocked: false,
+    });
   });
 });

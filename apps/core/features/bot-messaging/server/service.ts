@@ -29,7 +29,7 @@ import {
   parseVerifierVerdict,
 } from "./address-analyzer";
 import { checkAddressed, type AddressResult, type AddressSource, type BotIdentity } from "./addressing";
-import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
+import { checkMaintenance, type BotPolicy } from "./policy";
 import { buildAddressingHint, buildSystemPrompt, hasPersonality } from "./prompt";
 import { splitReply } from "./reply";
 
@@ -275,8 +275,14 @@ export interface BotMessagingDeps {
    * refreshing the action (Telegram expires it after a few seconds).
    */
   startTyping: () => () => void;
-  /** Owner + maintenance-mode state, resolved from settings by the runtime. */
+  /** Maintenance-mode state, resolved from settings by the runtime. */
   policy: BotPolicy;
+  /**
+   * Whether the sender holds owner rights, as the owning source stamped it on
+   * the inbound event (`sender.isOwner`) — authoritative since the split; the
+   * core compares no user ids of its own.
+   */
+  senderIsOwner: boolean;
   /**
    * Operator-configured persona instructions (from settings), composed into the
    * system prompt for this reply. Null/absent → base prompt only.
@@ -621,7 +627,7 @@ export async function handleIncomingMessage(
   // Maintenance gate: the bot stays fully functional for the owner; everyone
   // else is turned away with a static notice (not silence) and generates no LLM
   // reply. The block is still traced so the operator sees who was turned away.
-  const owner = isOwner({ fromId: incoming.fromId }, deps.policy);
+  const owner = deps.senderIsOwner;
   const maintenance = checkMaintenance({ policy: deps.policy, owner });
   if (maintenance.blocked) {
     const trace = await openTrace();

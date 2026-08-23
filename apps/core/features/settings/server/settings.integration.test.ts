@@ -255,10 +255,9 @@ describe("updateSettings", () => {
     const set = await updateSettings({ ownerUserId: "42" }, trigger, ctx.db);
     expect(set.ownerUserId).toBe("42");
     expect(set.ownerUsername).toBe("operator");
-    expect(await getBotPolicy(ctx.db)).toEqual({
-      ownerUserId: "42",
-      maintenanceModeEnabled: false,
-    });
+    // Owner identity is the source's since the split — the policy carries
+    // only maintenance state; the columns above stay as display data.
+    expect(await getBotPolicy(ctx.db)).toEqual({ maintenanceModeEnabled: false });
 
     await expect(updateSettings({ ownerUserId: "999" }, trigger, ctx.db)).rejects.toThrow(
       /known user/i,

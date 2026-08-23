@@ -42,6 +42,7 @@ function task(over: Partial<Task> = {}): Task {
     chatId: "100",
     threadId: null,
     createdByUserId: "100",
+    createdByOwner: false,
     source: "chat",
     instruction: "Answer briefly.",
     context: null,
