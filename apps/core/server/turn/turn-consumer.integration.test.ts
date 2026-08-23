@@ -15,6 +15,8 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { closePool } from "@/db/pool";
+import type { MediaRecord } from "@/features/vision/server/repository";
+import type { DescribeDeps, MediaStorePort } from "@/features/vision/server/service";
 import type { ChatMessage } from "@/server/llm/client";
 
 import { createTurnActionMarkers } from "./actions";
@@ -270,6 +272,115 @@ describe("inbound turn consumer", () => {
     expect(phases).toContain("settled");
     const markers = await storePool.query(`SELECT * FROM turn_actions`);
     expect(markers.rows).toEqual([]);
+  });
+
+  it("recognizes a pending photo through the media store and folds the text into the turn", async () => {
+    let record: MediaRecord = {
+      id: "media-1",
+      chatId: "-300",
+      telegramMessageId: 12,
+      kind: "photo",
+      fileId: "",
+      fileUniqueId: null,
+      mimeType: "image/jpeg",
+      dataBase64: Buffer.from("fake-jpeg").toString("base64"),
+      frames: null,
+      visionHint: null,
+      description: null,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      describedAt: null,
+    };
+    const described: string[] = [];
+    const mediaStore: MediaStorePort = {
+      getByMessage: async () => record,
+      markDescribed: async (_id, description) => {
+        described.push(description);
+        record = { ...record, description, status: "described", dataBase64: null, frames: null };
+        return record;
+      },
+      getById: async () => record,
+    };
+    const describeDeps: DescribeDeps = {
+      complete: async () => ({
+        content: "a red bicycle",
+        model: "vision-model",
+        latencyMs: 1,
+        requestBody: {},
+        responseBody: {},
+      }),
+    };
+    const seen: ChatMessage[][] = [];
+
+    const event = inboundMessageEventSchema.parse({
+      ...inboundEvent({ eventId: "evt-photo" }),
+      message: {
+        ...inboundEvent().message,
+        sourceMessageId: "12",
+        content: "look at this",
+        replyTo: null,
+        media: [{ id: "media-1", kind: "photo", description: null, status: "pending" }],
+      },
+    });
+    const result = await handleInboundJob(event, 1, {
+      ...ctx({
+        generateReply: async (messages) => {
+          seen.push(messages);
+          return { content: "nice bike", model: "fixture-model", latencyMs: 1 };
+        },
+        describeDeps,
+      }),
+      mediaStore,
+    });
+    expect(result.status === "handled" && result.outcome.status).toBe("replied");
+    // The describe pass ran against the source's store and folded its text
+    // into the current turn (caption case).
+    expect(described).toEqual(["a red bicycle"]);
+    const userTurn = seen[0].find(
+      (m) => typeof m.content === "string" && m.content.startsWith("[#12]"),
+    );
+    expect(userTurn?.content).toContain("look at this");
+    expect(userTurn?.content).toContain("Recognition of the media above: a red bicycle");
+  });
+
+  it("answers a voice turn from its transcript, re-running the name check on the words", async () => {
+    // Re-delivery shape: the transcript already exists on the row, so no
+    // ffmpeg/STT machinery is needed to exercise the flow.
+    const event = inboundMessageEventSchema.parse({
+      ...inboundEvent({ eventId: "evt-voice", addressed: false, needsAnalyzer: false }),
+      connection: { botUsername: "fixture_bot", botDisplayName: "Aria" },
+      message: {
+        ...inboundEvent().message,
+        sourceMessageId: "13",
+        content: "",
+        replyTo: null,
+        media: [
+          {
+            id: "media-v1",
+            kind: "voice",
+            description: "Aria, what time is it?",
+            status: "described",
+          },
+        ],
+      },
+    });
+    const seen: ChatMessage[][] = [];
+    const result = await handleInboundJob(event, 1, ctx({
+      generateReply: async (messages) => {
+        seen.push(messages);
+        return { content: "it is late", model: "fixture-model", latencyMs: 1 };
+      },
+    }));
+    // The group voice message named the bot in speech: addressed by the
+    // transcript-aware name check, answered from the words.
+    expect(result.status === "handled" && result.outcome.status).toBe("replied");
+    const userTurn = seen[0].find(
+      (m) => typeof m.content === "string" && m.content.startsWith("[#13]"),
+    );
+    expect(userTurn?.content).toContain("Aria, what time is it?");
+    expect(userTurn?.content).toContain("voice message");
+    const delivery = published.find((p) => (p as { type: string }).type === "reply.delivery");
+    expect(replyDeliveryEventSchema.parse(delivery).text).toBe("it is late");
   });
 
   it("fails for good when tries run out, even without actions", async () => {

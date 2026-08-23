@@ -101,6 +101,7 @@ describe("tg runtime", () => {
       assistantId: "assistant-1",
       identity: { botUsername: "fixture_bot", botDisplayName: "Fixture" },
       botId: 999,
+      botToken: "12345:fixture-token",
       enqueue: async (event: InboundMessageEvent) => {
         enqueued.push(event);
       },
@@ -217,6 +218,7 @@ describe("tg runtime", () => {
           assistantId: "assistant-1",
           identity: { botUsername: "fixture_bot", botDisplayName: "Fixture" },
           botId: 999,
+          botToken: "12345:fixture-token",
           enqueue: async (event) => {
             await queue.add("message.inbound", event);
           },

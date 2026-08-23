@@ -81,6 +81,10 @@ export function renderHistoryWindow(
  */
 export function renderCurrentTurn(
   event: InboundMessageEvent,
+  options?: {
+    /** The turn's effective text when it differs (a voice transcript). */
+    contentOverride?: string;
+  },
 ): { content: string; senderLabel: string | null; data: Record<string, unknown> } {
   const replyTo = event.message.replyTo ?? null;
   const botLabel = botTranscriptLabel(event.connection.botUsername);
@@ -102,7 +106,7 @@ export function renderCurrentTurn(
     telegramMessageId: Number(event.message.sourceMessageId),
     label: event.sender.label,
     replyRef,
-    content: event.message.content,
+    content: options?.contentOverride ?? event.message.content,
   });
   return {
     content,

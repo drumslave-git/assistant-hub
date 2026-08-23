@@ -321,6 +321,29 @@ and stamps `senderIsOwner` on inbound events.
       topology smoke (tg poller → queue → core → bus → tg send with a
       real bot) is deliberately left for the swap slice — it needs the
       operator's environment.
+      **Slice B landed (2026-08-23)**: media + voice cross the split.
+      tg ingests every media message (detect/normalize/frames/download
+      ported from the v1 vision feature — sharp in-process, ffmpeg
+      sampling with thumbnail fallback, voice bytes raw), mirrors
+      caption-less media as real turns, and serves the internal media
+      API (`/internal/.../media`, `/internal/media/:id[/description]` —
+      contract schemas in `@assistant-hub/contracts`, shared-token auth,
+      describe-then-drop). Core-side: `describeAndStore` gained a
+      `MediaStorePort` (default: the v1 DB — behavior unchanged; the
+      consumer supplies the tg-API-backed port), and the consumer runs
+      the v1 vision/voice flow from the event: in-turn recognize with
+      caption/no-caption note composition, replied-to media resolution
+      (no ingest-on-miss over the API — documented parity edge), eager
+      voice transcription before addressing with the transcript-aware
+      name check re-run core-side, one reply trace across
+      transcription + reply. Env: TG_API_URL + INTERNAL_API_TOKEN on
+      core. Tests: 4 tg media suites (real sharp normalization,
+      unavailable markers, voice bytes, API round-trip incl.
+      concurrent-winner) + 2 new consumer suites (photo recognize into
+      the turn, voice answered from transcript via the re-run name
+      check). Remaining for slice D: voice REPLY synthesis delivery
+      (TTS bytes to tg), generated images, browser acks, `#id` links,
+      feedback flows, MCP outbound tools, operator API.
       **Slice C implementation notes (worked out 2026-08-23)**:
       - `IncomingMessage` gets `message?` + `addressing?` — the consumer
         passes the event's verdict; the v1 path keeps calling

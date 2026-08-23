@@ -12,6 +12,8 @@ import type { TgDb } from "./db";
 import { checkAddressed } from "./addressing";
 import { buildChatInfo, buildConversationContext, buildSenderInfo } from "./context";
 import { formatUserLabel } from "./format";
+import { detectMessageMedia } from "./media/detect";
+import { ingestMessageMedia, type FileDownloader } from "./media/ingest";
 import { appendMessage, isMessageMirrored, upsertChatActivity, upsertUser } from "./store";
 
 /**
@@ -27,9 +29,10 @@ import { appendMessage, isMessageMirrored, upsertChatActivity, upsertUser } from
  * assistant never answers bots, and Phase 3's bot-to-bot rules arrive with
  * assistants.
  *
- * Slice A scope (redesign Phase 2): text turns. Media ingestion
- * (normalization + bytes) and voice are the next slice; a media message is
- * mirrored with its caption and flagged, so nothing is lost meanwhile.
+ * Media (slice B): ingested here — downloaded with the connection's token,
+ * normalized, stored `pending` in this app's store — and carried on the
+ * event as text-or-pending references; the core describes/transcribes over
+ * the internal media API and writes the text back.
  */
 
 export interface InboundResult {
@@ -45,8 +48,12 @@ export interface InboundDeps {
   identity: ConnectionIdentity;
   /** Numeric Telegram id of the receiving bot (self-detection in quotes). */
   botId: number;
+  /** The connection's bot token — media downloads need it. */
+  botToken: string;
   /** Publish the event as one queue job. Failures surface to the caller. */
   enqueue: (event: InboundMessageEvent) => Promise<void>;
+  /** Test seam: fake the Telegram file download. */
+  download?: FileDownloader;
   now?: () => Date;
 }
 
@@ -67,10 +74,9 @@ export async function processIncomingMessage(
   if (!from || from.is_bot) {
     return { status: "skipped", reason: "bot_or_anonymous_sender" };
   }
-  if (!text.trim()) {
-    // A bare media message becomes a real turn in the media slice; today
-    // there is nothing to mirror or answer.
-    return { status: "skipped", reason: "no_text" };
+  const hasMedia = detectMessageMedia(message) !== null;
+  if (!text.trim() && !hasMedia) {
+    return { status: "skipped", reason: "no_content" };
   }
 
   const senderId = String(from.id);
@@ -109,6 +115,20 @@ export async function processIncomingMessage(
     // enqueued. A second queue job would run the same turn twice.
     return { status: "skipped", reason: "already_mirrored" };
   }
+
+  // Ingest media after the mirror (its FK requires the message row). A media
+  // message the ingest cannot store still enqueues — the core answers from
+  // the text, exactly like v1's text-only degradation.
+  const storedMedia = hasMedia
+    ? await ingestMessageMedia({
+        db: deps.db,
+        token: deps.botToken,
+        chatId,
+        telegramMessageId: message.message_id,
+        message,
+        download: deps.download,
+      }).catch(() => null)
+    : null;
 
   const [chatInfo, sender, context] = await Promise.all([
     buildChatInfo(deps.db, { chatId, isGroup, title: chat.title ?? null }),
@@ -159,6 +179,8 @@ export async function processIncomingMessage(
             // Mirrored targets render as dereferenceable anchors in the
             // core's transcript; unmirrored ones get sender + text inlined.
             stored: await isMessageMirrored(deps.db, chatId, replyTo.message_id),
+            // The core resolves replied-to media to text over the media API.
+            hasMedia: detectMessageMedia(replyTo as Message) !== null,
             senderLabel: replyTo.from
               ? replyTo.from.id === deps.botId
                 ? null
@@ -174,7 +196,16 @@ export async function processIncomingMessage(
             quote: message.quote?.text ?? null,
           }
         : null,
-      media: [],
+      media: storedMedia
+        ? [
+            {
+              id: storedMedia.id,
+              kind: storedMedia.kind,
+              description: storedMedia.description,
+              status: storedMedia.status as "pending" | "described" | "unavailable",
+            },
+          ]
+        : [],
     },
     context,
   } satisfies InboundMessageEvent);

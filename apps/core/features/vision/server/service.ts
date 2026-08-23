@@ -417,9 +417,34 @@ export async function resolveDescribeDeps(
   };
 }
 
+/**
+ * Where a describe/transcribe pass reads its media and writes the result.
+ * The default is this app's database (v1); the queue-consumer path (redesign
+ * Phase 2) supplies a port backed by the owning source app's internal media
+ * API — same flow, same trace shape, different storage owner (user decision,
+ * 2026-08-22: core provides the feature, the app provides the storage).
+ */
+export interface MediaStorePort {
+  getByMessage(chatId: string, telegramMessageId: number): Promise<MediaRecord | null>;
+  /** Store a description on a still-pending row (bytes dropped); null = lost race. */
+  markDescribed(id: string, description: string): Promise<MediaRecord | null>;
+  getById(id: string): Promise<MediaRecord | null>;
+}
+
+/** The v1 database-backed {@link MediaStorePort}. */
+export function dbMediaStore(db: DrizzleDb): MediaStorePort {
+  return {
+    getByMessage: (chatId, telegramMessageId) => getMediaByMessage(db, chatId, telegramMessageId),
+    markDescribed: (id, description) => markDescribed(db, id, description),
+    getById: (id) => getMediaById(db, id),
+  };
+}
+
 /** How a describe/transcribe pass records itself and where it reads/writes. */
 export interface DescribeAndStoreOptions {
   db?: DrizzleDb;
+  /** Storage owner override — see {@link MediaStorePort}. Default: this DB. */
+  store?: MediaStorePort;
   /**
    * Record into this (open) trace instead of opening a dedicated one — the live
    * reply path passes its reply trace so the whole turn reads as one flow. The
@@ -448,8 +473,8 @@ export async function describeAndStore(
   deps: DescribeDeps,
   options: DescribeAndStoreOptions = {},
 ): Promise<MediaRecord | null> {
-  const db = options.db ?? getDb();
-  const media = await getMediaByMessage(db, params.chatId, params.telegramMessageId).catch(
+  const store = options.store ?? dbMediaStore(options.db ?? getDb());
+  const media = await store.getByMessage(params.chatId, params.telegramMessageId).catch(
     () => null,
   );
   const isVoice = media?.kind === "voice";
@@ -560,7 +585,7 @@ export async function describeAndStore(
       // reported silence, so leaving the row pending would make the backfill
       // re-transcribe a speechless recording forever.
       const transcript = outcome.kind === "no-speech" ? "(no speech)" : outcome.text;
-      const stored = await storeDescription(db, trace, media, transcript, {
+      const stored = await storeDescription(store, trace, media, transcript, {
         message: "voice message transcribed",
       });
       publishEvent(FEATURE.realtimeTopic);
@@ -588,7 +613,7 @@ export async function describeAndStore(
     const description = result.content.trim();
     if (!description) return await skip("empty description");
 
-    const stored = await storeDescription(db, trace, media, description, {
+    const stored = await storeDescription(store, trace, media, description, {
       message: "media described",
       extra: { kind: media.kind },
     });
@@ -625,13 +650,13 @@ export async function describeAndStore(
  * with a warn event saying so. The returned record always carries a description.
  */
 async function storeDescription(
-  db: DrizzleDb,
+  store: MediaStorePort,
   trace: TraceRecorder,
   media: MediaRecord,
   text: string,
   event: { message: string; extra?: Record<string, unknown> },
 ): Promise<MediaRecord> {
-  const updated = await markDescribed(db, media.id, text);
+  const updated = await store.markDescribed(media.id, text);
   if (updated) {
     await trace.event({
       type: "db",
@@ -640,7 +665,7 @@ async function storeDescription(
     });
     return updated;
   }
-  const current = await getMediaById(db, media.id).catch(() => null);
+  const current = await store.getById(media.id).catch(() => null);
   const description = current?.description ?? text;
   await trace.event({
     type: "db",

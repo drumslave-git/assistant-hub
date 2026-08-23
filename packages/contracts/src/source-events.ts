@@ -123,6 +123,12 @@ export const replyTargetSchema = z.object({
    * it as a dereferenceable `#<id>` anchor; false inlines sender + text.
    */
   stored: z.boolean().default(false),
+  /**
+   * True when the quoted message carries readable media — the core resolves
+   * it to text through the source's internal media API ("what is this?" as a
+   * reply to an earlier image).
+   */
+  hasMedia: z.boolean().default(false),
   /** Sender label of the quoted message, resolved by the source. */
   senderLabel: z.string().nullable(),
   /** True when the quoted message is the assistant's own (label is then the core's call). */

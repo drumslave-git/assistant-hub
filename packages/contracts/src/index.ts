@@ -10,6 +10,14 @@
 export { DEFAULT_ASSISTANT_ID } from "./assistants";
 export { EMBEDDING_DIMENSIONS } from "./embeddings";
 export {
+  internalMediaDescribeRequestSchema,
+  internalMediaDescribeResponseSchema,
+  internalMediaResponseSchema,
+  internalMediaSchema,
+  type InternalMedia,
+  type InternalMediaDescribeResponse,
+} from "./internal-api";
+export {
   BUS_EVENTS_CHANNEL,
   INBOUND_MESSAGES_QUEUE,
   addressingSchema,

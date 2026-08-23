@@ -61,6 +61,12 @@ const envSchema = z.object({
   // Redis (bus + inbound queue). Unset → the queue consumer stays off.
   REDIS_URL: optionalString,
 
+  // The tg source app's internal API (redesign transition): base URL and the
+  // shared secret both sides present. Media describe/transcribe on the
+  // queue-consumer path needs them.
+  TG_API_URL: optionalString,
+  INTERNAL_API_TOKEN: optionalString,
+
   // Runtime
   TZ: optionalString,
   NODE_ENV: z.enum(["development", "production", "test"]).optional(),

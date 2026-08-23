@@ -245,7 +245,7 @@ export class BotManager {
     const bot = new Bot(input.botToken);
     // Per-chat sequential, cross-chat concurrent (v1 decision, 2026-07-20).
     bot.use(sequentialize((ctx) => ctx.chat?.id.toString()));
-    bot.on("message", (ctx) => this.onMessage(poller, ctx));
+    bot.on("message", (ctx) => this.onMessage(poller, input.botToken, ctx));
     bot.on("edited_message", (ctx) => this.onEditedMessage(ctx));
     bot.catch((err) => {
       console.error(`Telegram bot error (${input.connectionId}):`, err.error);
@@ -288,7 +288,7 @@ export class BotManager {
     });
   }
 
-  private async onMessage(poller: Poller, ctx: Context): Promise<void> {
+  private async onMessage(poller: Poller, botToken: string, ctx: Context): Promise<void> {
     const message = ctx.message;
     if (!message || !ctx.chat) return;
     try {
@@ -301,6 +301,7 @@ export class BotManager {
           botDisplayName: ctx.me.first_name,
         },
         botId: ctx.me.id,
+        botToken,
         enqueue: async (event) => {
           await this.queue.add("message.inbound", event);
         },

@@ -16,10 +16,16 @@ import type { Queue, Worker } from "bullmq";
 
 import {
   handleIncomingMessage,
+  startReplyTrace,
   type BotMessagingDeps,
   type HandleOutcome,
 } from "@/features/bot-messaging/server/service";
-import type { AddressResult, AddressSource } from "@/features/bot-messaging/server/addressing";
+import {
+  displayNameMatchable,
+  messageNamesBot,
+  type AddressResult,
+  type AddressSource,
+} from "@/features/bot-messaging/server/addressing";
 import {
   createTurnBindings,
   runTurnClassifier,
@@ -32,15 +38,25 @@ import { getActivePersonalityPrompt } from "@/features/personalities/server/serv
 import { buildStandingTasksBlock } from "@/features/tasks/format";
 import { getActiveTasksForChat } from "@/features/tasks/server/service";
 import { getBotPolicy, getTimezone } from "@/features/settings/server/service";
+import { mediaKindLabel } from "@/features/vision/format";
+import {
+  describeAndStore,
+  resolveDescribeDeps,
+  type DescribeDeps,
+  type MediaStorePort,
+} from "@/features/vision/server/service";
+import { VOICE_TURN_NOTE, VOICE_UNAVAILABLE_NOTE } from "@/features/voice/format";
 import { resolveRequiredLanguage } from "@/lib/language";
 import {
   HONESTY_GATE_MAX_TOKENS,
   HONESTY_GATE_TIMEOUT_MS,
 } from "@/server/llm/classifier";
 import { getEnv } from "@/server/env";
+import type { TraceRecorder } from "@/server/trace";
 
 import { createTurnActionMarkers, closeTurnActionStore, type TurnActionMarkers } from "./actions";
 import { botTranscriptLabel, renderChatContext, renderCurrentTurn, renderHistoryWindow } from "./render";
+import { tgApiMediaStore } from "./tg-media";
 
 /**
  * The queue side of the source split (redesign Phase 2): consume normalized
@@ -56,10 +72,13 @@ import { botTranscriptLabel, renderChatContext, renderCurrentTurn, renderHistory
  * authoritative at the swap (see PROGRESS.md — task-authority rights are the
  * flagged swap blocker).
  *
- * Interim gaps until slices B/D (consumer-path only, which no live traffic
- * takes yet): no vision/voice, generated images are not delivered, browser
- * runs get no self-deleting acknowledgement, and `#id` citations are not
- * resolved into links (replies deliver as plain text).
+ * Media and voice (slice B) run through the owning source's internal media
+ * API: bytes are read from the source, the describe/transcribe models run
+ * here, and the text is written back (describe-then-drop). Interim gaps
+ * until slice D (consumer-path only, which no live traffic takes yet):
+ * generated images are not delivered, browser runs get no self-deleting
+ * acknowledgement, voice replies deliver as text (no TTS delivery path),
+ * and `#id` citations are not resolved into links.
  */
 
 /** Re-enqueue delay for a turn that failed before performing any action. */
@@ -72,11 +91,33 @@ export interface TurnConsumerContext {
   markers: TurnActionMarkers;
   /** Re-enqueue a pre-action failure; absent → no retry (tests, drain mode). */
   reEnqueue?: (event: InboundMessageEvent, attempt: number) => Promise<void>;
+  /**
+   * The owning source's media over its internal API. Resolved from env when
+   * absent; null-resolution (env unset) degrades media turns to their text,
+   * the v1 no-token behavior.
+   */
+  mediaStore?: MediaStorePort;
   overrides?: {
     generateReply?: BotMessagingDeps["generateReply"];
     analyzeAddressing?: BotMessagingDeps["analyzeAddressing"];
+    describeDeps?: DescribeDeps;
   };
   now?: () => Date;
+}
+
+function resolveMediaStore(ctx: TurnConsumerContext): MediaStorePort | null {
+  if (ctx.mediaStore) return ctx.mediaStore;
+  const env = getEnv();
+  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
+  return tgApiMediaStore();
+}
+
+/** What this turn's media resolves to — the v1 `visionAttachment` shape. */
+interface VisionAttachment {
+  note?: string;
+  recognizeMessageId?: number;
+  hasCaption?: boolean;
+  replyTargetMessageId?: number;
 }
 
 function lifecycleEvent(
@@ -99,10 +140,21 @@ function lifecycleEvent(
   };
 }
 
+/** Per-turn inputs the pre-pass resolves before the collaborators are built. */
+interface TurnPlan {
+  /** The turn's effective text (a voice transcript when transcribed). */
+  effectiveText: string;
+  attachment: VisionAttachment | null;
+  /** Pre-opened reply trace (voice turns record transcription into it). */
+  replyTrace?: TraceRecorder;
+  store: MediaStorePort | null;
+}
+
 /** Build the service collaborators from the event + the (v1) brain services. */
 async function buildEventDeps(
   event: InboundMessageEvent,
   ctx: TurnConsumerContext,
+  turn: TurnPlan,
 ): Promise<BotMessagingDeps> {
   const chatId = parseScopedRef(event.chat.ref).id;
   const senderId = parseScopedRef(event.sender.ref).id;
@@ -140,7 +192,7 @@ async function buildEventDeps(
     senderId,
     threadId,
     correlationId: event.correlationId,
-    messageText: event.message.content,
+    messageText: turn.effectiveText,
     chatType: isGroup ? "supergroup" : "private",
     policy,
     tasks: taskSets,
@@ -178,9 +230,90 @@ async function buildEventDeps(
       void ctx.publish(lifecycleEvent(event, "accepted")).catch(() => undefined);
       return () => {};
     },
+    trace: turn.replyTrace,
     loadHistory: async (options) =>
       renderHistoryWindow(event.context.history, botLabel, options),
-    loadCurrentTurn: async () => renderCurrentTurn(event),
+    loadCurrentTurn: async () =>
+      renderCurrentTurn(event, { contentOverride: turn.effectiveText }),
+    // Media resolved to TEXT inside the turn — the v1 `loadVision` flow over
+    // the owning source's media API. Raw bytes never reach the reply request.
+    loadVision: turn.attachment
+      ? async (replyTrace) => {
+          const va = turn.attachment!;
+          const describeDeps = async (): Promise<DescribeDeps | null> =>
+            ctx.overrides?.describeDeps ?? (await resolveDescribeDeps().catch(() => null));
+          // Current media: recognize it and store the description on the row —
+          // the source drops the bytes, so its mirror shows the text and there
+          // is nothing left to backfill.
+          if (va.recognizeMessageId != null) {
+            let description: string | null = null;
+            let mediaLabel = "media";
+            let frameHint: string | null = null;
+            if (turn.store) {
+              const deps = await describeDeps();
+              if (deps) {
+                const described = await describeAndStore(
+                  { chatId, telegramMessageId: va.recognizeMessageId },
+                  deps,
+                  { store: turn.store, trace: replyTrace },
+                ).catch(() => null);
+                if (described?.description) {
+                  description = described.description;
+                  mediaLabel = mediaKindLabel(described.kind);
+                }
+                // The frame-sequence hint stored at ingestion plays the v1
+                // in-turn note role for video/GIF media.
+                if (described && (described.kind === "animation" || described.kind === "video")) {
+                  frameHint = described.visionHint;
+                }
+              }
+            }
+            if (va.hasCaption) {
+              const recognized = description
+                ? `Recognition of the media above: ${description}`
+                : null;
+              const note = [frameHint, recognized].filter(Boolean).join("\n\n");
+              return { note: note || undefined };
+            }
+            return {
+              note: description
+                ? `The user sent a ${mediaLabel} (no caption). Its content: ${description}`
+                : frameHint ?? undefined,
+            };
+          }
+          // Replied-to media: resolve to its stored description, describing a
+          // still-pending row right now. No ingest-on-miss over the API — a
+          // never-stored target reads as unavailable (v1 covered pre-mirror
+          // history by re-downloading, which only the source could do).
+          if (va.replyTargetMessageId != null) {
+            if (!turn.store) return { note: undefined };
+            const record = await turn.store
+              .getByMessage(chatId, va.replyTargetMessageId)
+              .catch(() => null);
+            if (!record) return null;
+            let description = record.description;
+            if (!description && record.status === "pending") {
+              const deps = await describeDeps();
+              if (deps) {
+                const described = await describeAndStore(
+                  { chatId, telegramMessageId: va.replyTargetMessageId },
+                  deps,
+                  { store: turn.store, trace: replyTrace },
+                ).catch(() => null);
+                description = described?.description ?? null;
+              }
+            }
+            const label = mediaKindLabel(record.kind);
+            const base = `The user is asking about the ${label} they replied to.`;
+            return {
+              note: description
+                ? `${base} Its content: ${description}`
+                : `${base} (Its content is not available.)`,
+            };
+          }
+          return { note: va.note };
+        }
+      : undefined,
     loadChatContext: () => Promise.resolve(renderChatContext(event)),
     loadMemory: () => getMemoryContext({ chatId, senderId, isGroup }).catch(() => null),
     loadSenderPreferences: () => getPreferencesContext(senderId).catch(() => null),
@@ -224,18 +357,89 @@ export async function processInboundEvent(
   event: InboundMessageEvent,
   ctx: TurnConsumerContext,
 ): Promise<HandleOutcome> {
-  const deps = await buildEventDeps(event, ctx);
+  const chatId = parseScopedRef(event.chat.ref).id;
+  const media = event.message.media[0] ?? null;
+  const isVoice = media?.kind === "voice";
+  const store = resolveMediaStore(ctx);
+
+  let effectiveText = event.message.content;
+  let addressing = toAddressResult(event);
+  let attachment: VisionAttachment | null = null;
+  let replyTrace: TraceRecorder | undefined;
+
+  if (isVoice && media) {
+    // Voice: transcribe eagerly — before any addressing decision — because in
+    // a group whether the message even summons the bot is only knowable from
+    // the words (v1 flow). The whole turn, transcription included, is one
+    // reply trace, so it opens here ahead of the service.
+    replyTrace = await startReplyTrace({
+      chatId: Number(chatId),
+      messageId: Number(event.message.sourceMessageId),
+      fromId: Number(parseScopedRef(event.sender.ref).id),
+      inputSummary: "",
+    });
+    // Typing during the (seconds-long) transcription wait, but only when the
+    // turn is certain to be answered — a DM or a reply to the bot; typing at
+    // unaddressed group chatter would announce a reply that never comes.
+    if (addressing.addressed) {
+      void ctx.publish(lifecycleEvent(event, "accepted")).catch(() => undefined);
+    }
+    let transcript: string | null = media.status === "described" ? media.description : null;
+    if (!transcript && media.status === "pending" && store) {
+      const deps = ctx.overrides?.describeDeps ?? (await resolveDescribeDeps().catch(() => null));
+      if (deps) {
+        const described = await describeAndStore(
+          { chatId, telegramMessageId: Number(event.message.sourceMessageId) },
+          deps,
+          { store, trace: replyTrace },
+        ).catch(() => null);
+        transcript = described?.description ?? null;
+      }
+    }
+    effectiveText = transcript ?? "";
+    if (effectiveText) replyTrace.setInputSummary(effectiveText);
+    // The source's deterministic check ran without the words; with them, the
+    // spoken name is as much a summons as typed — the same name check, then
+    // the analyzer for the ambiguous case.
+    if (
+      !addressing.addressed &&
+      effectiveText.trim() &&
+      displayNameMatchable(event.connection.botDisplayName)
+    ) {
+      addressing = messageNamesBot(effectiveText, event.connection.botDisplayName)
+        ? { addressed: true, source: "name", reason: "display name spoken" }
+        : { addressed: false, needsAnalyzer: true };
+    }
+    // With a transcript the turn is answered from the words; without one the
+    // bot owns up in a DM (in a group the empty text fails addressing).
+    attachment = { note: transcript ? VOICE_TURN_NOTE : VOICE_UNAVAILABLE_NOTE };
+  } else if (media && media.status !== "unavailable") {
+    attachment = {
+      recognizeMessageId: Number(event.message.sourceMessageId),
+      hasCaption: Boolean(event.message.content.trim()),
+    };
+  } else if (event.message.replyTo?.hasMedia) {
+    attachment = { replyTargetMessageId: Number(event.message.replyTo.sourceMessageId) };
+  }
+
+  const deps = await buildEventDeps(event, ctx, {
+    effectiveText,
+    attachment,
+    replyTrace,
+    store,
+  });
   return handleIncomingMessage(
     {
-      addressing: toAddressResult(event),
-      chatId: Number(parseScopedRef(event.chat.ref).id),
+      addressing,
+      chatId: Number(chatId),
       chatType: event.chat.kind === "group" ? "supergroup" : "private",
       messageId: Number(event.message.sourceMessageId),
       fromId: Number(parseScopedRef(event.sender.ref).id),
       fromIsBot: false,
-      text: event.message.content,
-      hasVision: event.message.media.length > 0,
-      isVoice: false,
+      text: effectiveText,
+      // A loadable attachment makes a caption-less message real content (v1).
+      hasVision: attachment != null,
+      isVoice,
     },
     deps,
   );
