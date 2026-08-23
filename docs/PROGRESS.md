@@ -18,17 +18,13 @@ conversation content only through tg's internal API (see the swap notes
 under the Phase 2 criteria for the commit-by-commit list). What remains
 of Phase 2, in order:
 
-1. **Analytics re-route — the flip blocker.** ⚠️ The analytics feature
-   still reads the now-FROZEN v1 mirror: metrics/series/top-users/
-   availability and the insight hour-scans read v1 `chat_messages`,
-   `getDaySummaryTopics` reads v1 `chat_summaries`, and the new-user
-   series reads the v1 users table. Post-swap nothing writes those
-   tables, so every analytics number silently stops at the swap commit.
-   **The branch must not go live until analytics reads the tg content
-   API** (or the user explicitly accepts frozen analytics for the
-   transition). Also the deferred import→analytics e2e in
-   `analytics.integration.test.ts` returns then, and the ~800-line suite
-   needs its seams reworked.
+1. **Analytics re-route — done (`fe56e5f`).** The former flip blocker:
+   every message-volume read (charts, top users, availability, the
+   insight due-scan, hour transcripts, day topics) now goes through the
+   tg content API (`/internal/analytics/*` + a `?date` summaries
+   filter); the aggregation SQL lives tg-side pinned by a new
+   integration suite, the due-scan is the summarizer's split-scan
+   shape, and the core insight suite runs over the in-memory fake.
 2. **Trace client over the bus** (Phase 2 criterion, likely its own
    slice): the tg app currently console-logs; PLAN says apps record
    through a shared trace client and the core persists all traces.
@@ -454,8 +450,8 @@ and stamps `senderIsOwner` on inbound events.
       retry; core features that touch tg content (history tools,
       summarization, search indexing, vision describe) go through tg's
       API; dashboard telegram controls proxied to tg's operator API; the
-      SSE layer bridges Redis pub/sub. **Exception: analytics still
-      reads the frozen v1 mirror — the flip blocker in Current state.**
+      SSE layer bridges Redis pub/sub. Analytics rides the same API
+      since `fe56e5f` (was the flip blocker — see Current state).
       **The swap (2026-08-23/24, commit by commit)**:
       - `7e52521` (W1): browser-agent runner, tasks scheduler and
         image-gen deliveries re-routed onto `SourceOutboundPort` (+ the
@@ -514,6 +510,13 @@ and stamps `senderIsOwner` on inbound events.
 
 ## Session log
 
+- **2026-08-24 (analytics re-route)** — The flip blocker cleared
+  (`fe56e5f`): analytics reads the living mirror over the tg content
+  API (details under the apps/core criterion and Current state item 1).
+  Proof: tg integration 52 (incl. the new 9-test analytics-SQL suite),
+  core integration 326/30-skipped with the ~800-line analytics suite
+  reworked onto the fake, root turbo green. Phase 2's remaining work is
+  the trace client and the operator-run live smoke.
 - **2026-08-23/24 (the swap)** — The Phase 2 finale executed across nine
   commits (list under the apps/core criterion): outbound features onto
   the port, dashboard controls onto the operator API, the
