@@ -11,25 +11,22 @@ Phases 0 (scaffold) and 1 (schemas + migration) are done on the long-lived
 `redesign` branch (created 2026-08-21 from main at the tracing-unification
 commit).
 
-Phase 2 is in progress: boundary study done, the source-app event
-contract and the Redis bus/queue foundation are built and tested (see the
-Phase 2 criteria below). Next best task — the runtime extraction, in this
-order:
-
-1. Design tg's internal API surface first (the boundary study shows core
-   will need: media bytes for vision/voice transcription, summaries
-   read/write, search read/write, mirror writes for `recordReply` — plus
-   the operator listing/CRUD API). The vision/voice split is the tricky
-   part: media NORMALIZATION (sharp/ffmpeg) moves to tg with ingestion,
-   media DESCRIPTION (LLM) stays core and reads bytes through tg's API.
-2. Build the apps/tg runtime additively (poller from connections, mirror
-   + ingestion into its store, owner resolution, inbound events with
-   context onto the queue, reply-delivery + lifecycle consumption) while
-   core keeps running v1 — the swap is its own later commit.
-3. Rewire core: queue consumer around `handleIncomingMessage` with
-   source-agnostic deps, actions-started marker, then delete
-   `server/telegram` and re-route its consumers (list in the boundary
-   study).
+Phase 2 is in progress: the extraction slices A–D are all landed — the
+tg runtime is functionally complete (pollers, inbound events with
+context, media/voice ingestion + internal media API, delivery/lifecycle
+consumption, the outbound send API, tg-local feedback flows, the
+operator API), and the core consumes the queue with every slice-B/C
+delivery gap closed. **Next best task: the swap slice** — delete
+`apps/core/server/telegram` and re-route its consumers (the boundary
+study's list, plus the swap-deferral list under the slice D notes:
+feedback learning jobs onto `feedback.recorded` + tg feedback
+endpoints, runner/scheduler/image-gen onto `SourceOutboundPort`, a file
+send endpoint, dashboard pages/proxy onto the operator API, the SSE
+bridge, the trace client, the tg Docker image + compose + release
+matrix, and a live end-to-end topology smoke in the operator's
+environment). One design call from slice D awaits user confirmation
+(MCP-outbound shape — see the slice D notes), and the task-authority
+swap blocker from slice C still needs its design.
 
 Phase 2 mechanics decided (user, 2026-08-23): **Hono** for the tg
 service's HTTP surface (operator API + MCP endpoint); the **two-step
@@ -303,6 +300,8 @@ and stamps `senderIsOwner` on inbound events.
       API; (C) core queue consumer wiring `handleIncomingMessage` from
       the event (additive, v1-backed services); (D) feedback flows +
       MCP outbound tools + operator API; then the swap.
+      **Slice D landed (2026-08-23, three commits)** — see the slice D
+      notes below the slice C notes.
       **Slice C landed (2026-08-23)**: the core consumes the queue. The
       service seam (`IncomingMessage.message?`/`addressing?`, nullable
       delivered id), the shared `turn-bindings.ts` (generateReply +
@@ -371,6 +370,65 @@ and stamps `senderIsOwner` on inbound events.
         plain text), vision/voice.
       - Core consumer starts from instrumentation only when REDIS_URL +
         STORE_DATABASE_URL are set.
+      **Slice D landed (2026-08-23, `c0794fe` + `9aa4186` + `6b2725f`)**:
+      - **D-1, outbound surface**: tg owns the transport boundary —
+        `renderTelegramHtml` + `#id` link resolution against its own
+        mirror (whitelist; invented ids stay text) + plain-text fallback
+        — and serves the internal send API: text (silent-capable), voice
+        (source-owned text fallback, reports `asVoice`), photos (mirror
+        row + pending media keyed by the minted file id, real sharp
+        normalization), delete (soft-deletes the mirror row), reaction
+        (mirror-gated `not_found`/`own_message`, platform refusals as
+        502 verbatim). Contract: reply-delivery gains `silent`, loses
+        the never-consumed `preferVoice` (voice bytes cross the API,
+        which can answer with the delivered id). Core consumer closes
+        its slice-B/C gaps via `SourceOutboundPort`
+        (`server/turn/tg-outbound.ts`, env-resolved like the media
+        store): TTS synthesis stays core, audio crosses the API;
+        generated images deliver after the reply; a browsing turn's
+        reply goes over the API silent so its id registers as the run's
+        self-deleting ack; `set_message_reaction` gets a per-turn
+        `reactToMessage` port on the tool context (v1 branch unchanged,
+        dies at the swap).
+      - **D-2, feedback flows tg-local**: `message_reaction` +
+        `callback_query` in allowed_updates; menu/options/codec ported
+        verbatim; flows keep every v1 rule (menus only on the bot's own
+        mirrored replies, single answerable reactor, "Other" →
+        awaiting_text, free-text capture before the turn — mirrored,
+        hold released, never enqueued). Completions publish the new
+        `feedback.recorded` bus event (refs, reaction, text, topic;
+        correlated to the reacted reply's turn). tg migration 0001:
+        `feedbacks.model` nullable — this app cannot read reply traces;
+        the core stamps it on write-back. No tg dev DB exists yet
+        (.env.example only), so nothing local to migrate.
+      - **D-3, operator API**: the shared listing/CRUD contract in
+        `@assistant-hub/contracts` (`operator-api.ts`, source-neutral)
+        served on `/internal`: users (labels + aliases/language PATCH),
+        chats (mirror aggregates + group metadata, notes/language
+        PATCH), a chat's full mirror with media annotations,
+        connections CRUD (create/patch reconcile pollers via the new
+        `BotManager.reconcileConnection`/`removeConnection`, delete
+        stops+drops, token never returned — 4-char hint, one bot per
+        assistant → 409), owner settings (changing the username resets
+        the resolved id).
+      - **Design call to confirm (user)**: PLAN's "source app exposes an
+        MCP server for outbound actions" is implemented as the internal
+        REST send API + core-side tool definitions bound per turn,
+        because the tools' guardrails (delivery-kind refusals, task
+        authority, actions-started marker, chat binding) are turn state
+        only the core has, and the remote-MCP client machinery is
+        Phase 5. The same handlers can be wrapped in an MCP endpoint on
+        tg's Hono at Phase 5 if still wanted.
+      - **Deferred to the swap slice**: core-side consumption of
+        `feedback.recorded` (reflection scheduling, addressing-exclusion
+        filing) + the folds/exchange reads and the model/reflection
+        write-back endpoints on tg (`PATCH /internal/feedbacks/:id` does
+        not exist yet); re-routing browser-agent runner / tasks
+        scheduler / image-gen deliver onto `SourceOutboundPort` (the
+        runner's ack deletion at settle still calls the v1
+        `deleteChatMessage`); a `sendChatFile` equivalent endpoint for
+        browser-run downloads; dashboard pages/proxy onto the operator
+        API; the SSE bridge for tg-published events.
 - [ ] `apps/core`: telegram code removed; the pipeline consumes the
       queue; deterministic replies published as reply-delivery events;
       turn-lifecycle events published; the actions-started marker gates
@@ -388,6 +446,23 @@ and stamps `senderIsOwner` on inbound events.
 
 ## Session log
 
+- **2026-08-23 (slice D)** — The last extraction slice, in three commits
+  (details under the Phase 2 criteria): D-1 the outbound surface (tg
+  transport boundary with HTML + mirror-checked `#id` links, the
+  internal send API for text/voice/photos/delete/reaction, `silent` on
+  reply-delivery replacing `preferVoice`, the core's
+  `SourceOutboundPort` closing the voice/images/acks/reaction consumer
+  gaps); D-2 feedback flows tg-local (reaction → menu → answer on the
+  tg store, free-text capture ahead of the turn, the `feedback.recorded`
+  bus event, `feedbacks.model` nullable via tg migration 0001); D-3 the
+  operator API (shared listing/CRUD contract in contracts, users/chats/
+  messages/connections/settings on `/internal`, connection writes
+  reconciling pollers). Proof: typecheck/lint/build green from the
+  root; unit suites green; integration green (tg 28 across 6 files —
+  outbound API 8, feedback 6, operator 5, media 4, runtime 3, import 2;
+  core turn-consumer 10 incl. the 2 new voice-delivery cases). Flagged
+  for the user: the MCP-outbound design call. Deferred to the swap: the
+  swap-deferral list under the slice D notes.
 - **2026-08-21** — Brainstorm session: all core decisions made by the user
   (monorepo/Turborepo, web+worker apps, Redis, canonical identity,
   assistants, web chat shape, MCP HTTP-only v1, big-bang on a rebased
