@@ -11,22 +11,38 @@ Phases 0 (scaffold) and 1 (schemas + migration) are done on the long-lived
 `redesign` branch (created 2026-08-21 from main at the tracing-unification
 commit).
 
-Phase 2 is in progress: the extraction slices A–D are all landed — the
-tg runtime is functionally complete (pollers, inbound events with
-context, media/voice ingestion + internal media API, delivery/lifecycle
-consumption, the outbound send API, tg-local feedback flows, the
-operator API), and the core consumes the queue with every slice-B/C
-delivery gap closed. **Next best task: the swap slice** — delete
-`apps/core/server/telegram` and re-route its consumers (the boundary
-study's list, plus the swap-deferral list under the slice D notes:
-feedback learning jobs onto `feedback.recorded` + tg feedback
-endpoints, runner/scheduler/image-gen onto `SourceOutboundPort`, a file
-send endpoint, dashboard pages/proxy onto the operator API, the SSE
-bridge, the trace client, the tg Docker image + compose + release
-matrix, and a live end-to-end topology smoke in the operator's
-environment). One design call from slice D awaits user confirmation
-(MCP-outbound shape — see the slice D notes), and the task-authority
-swap blocker from slice C still needs its design.
+Phase 2 is in progress: the extraction slices A–D landed, and **the swap
+slice is essentially done** — `apps/core/server/telegram` is deleted, the
+tg app owns everything Telegram-shaped, and the core reads/writes
+conversation content only through tg's internal API (see the swap notes
+under the Phase 2 criteria for the commit-by-commit list). What remains
+of Phase 2, in order:
+
+1. **Analytics re-route — the flip blocker.** ⚠️ The analytics feature
+   still reads the now-FROZEN v1 mirror: metrics/series/top-users/
+   availability and the insight hour-scans read v1 `chat_messages`,
+   `getDaySummaryTopics` reads v1 `chat_summaries`, and the new-user
+   series reads the v1 users table. Post-swap nothing writes those
+   tables, so every analytics number silently stops at the swap commit.
+   **The branch must not go live until analytics reads the tg content
+   API** (or the user explicitly accepts frozen analytics for the
+   transition). Also the deferred import→analytics e2e in
+   `analytics.integration.test.ts` returns then, and the ~800-line suite
+   needs its seams reworked.
+2. **Trace client over the bus** (Phase 2 criterion, likely its own
+   slice): the tg app currently console-logs; PLAN says apps record
+   through a shared trace client and the core persists all traces.
+3. **Live end-to-end topology smoke** in the operator's environment
+   (tg poller → queue → core → bus → tg send with a real bot): needs a
+   tg dev database (none exists yet — create it, set `DATABASE_URL` in
+   `apps/tg/.env`, run its `db:migrate`), Redis, and
+   `TG_API_URL`/`INTERNAL_API_TOKEN` on both sides.
+
+One design call from slice D still awaits user confirmation
+(MCP-outbound shape — see the slice D notes). The slice-C task-authority
+swap blocker is resolved and landed (`ec2b7ad`): `event.sender.isOwner`
+is authoritative, tasks stamp `created_by_owner` at creation (core
+migration 0059 backfills), `BotPolicy` is maintenance-only.
 
 Phase 2 mechanics decided (user, 2026-08-23): **Hono** for the tg
 service's HTTP surface (operator API + MCP endpoint); the **two-step
@@ -268,13 +284,16 @@ and stamps `senderIsOwner` on inbound events.
       (feedback flow) become tg-local now that feedbacks live in the tg
       store, with a bus event feeding core's reflection/folding jobs —
       its event shape gets designed during extraction, not up front.
-- [ ] `packages/contracts`: the source-app contract — inbound message
+- [x] `packages/contracts`: the source-app contract — inbound message
       event (scoped refs, resolved `senderIsOwner`, conversation context:
       history window + participants + chat metadata), reply-delivery
       event, turn-lifecycle events (accepted / progress / settled), bus
       event envelope, queue names/payloads; the listing/CRUD API shapes
-      the dashboard aggregates.
-- [ ] Redis infrastructure: compose service (dev + prod), `packages/bus`
+      the dashboard aggregates. Grown across the slices with the
+      internal send/media API shapes, `feedback.recorded`,
+      `dashboard.refresh`, and the content API (messages window/ids,
+      import, day-counts, summaries, search, index).
+- [x] Redis infrastructure: compose service (dev + prod), `packages/bus`
       (BullMQ queue helpers with `attempts: 1`; pub/sub with typed
       envelopes); integration-tested against a real Redis.
 - [ ] `apps/tg` runtime: poller(s) from tg-store connections, inbound
@@ -429,23 +448,88 @@ and stamps `senderIsOwner` on inbound events.
         `deleteChatMessage`); a `sendChatFile` equivalent endpoint for
         browser-run downloads; dashboard pages/proxy onto the operator
         API; the SSE bridge for tg-published events.
-- [ ] `apps/core`: telegram code removed; the pipeline consumes the
+- [x] `apps/core`: telegram code removed; the pipeline consumes the
       queue; deterministic replies published as reply-delivery events;
       turn-lifecycle events published; the actions-started marker gates
       retry; core features that touch tg content (history tools,
       summarization, search indexing, vision describe) go through tg's
       API; dashboard telegram controls proxied to tg's operator API; the
-      SSE layer bridges Redis pub/sub.
+      SSE layer bridges Redis pub/sub. **Exception: analytics still
+      reads the frozen v1 mirror — the flip blocker in Current state.**
+      **The swap (2026-08-23/24, commit by commit)**:
+      - `7e52521` (W1): browser-agent runner, tasks scheduler and
+        image-gen deliveries re-routed onto `SourceOutboundPort` (+ the
+        new tg file-send endpoint with document-retry and caption
+        fallback; run-ack deletion over the API); `test/simulate.ts` and
+        `image-gen/deliver.ts` die.
+      - `dbdc320` (W2): dashboard bot control/status/token through the
+        tg operator API (`getSourceBotStatus`/`setSourceBotEnabled`/
+        `saveSourceBotToken`/`saveSourceOwner`); settings owner writes
+        route tg-first; `getTelegramBotToken` deleted.
+      - `1a68b1a`: **the deletion** — `apps/core/server/telegram/*` and
+        its tests are gone; boot is queue-consumer + events-consumer +
+        schedulers only (loud warn when unconfigured); feedback learning
+        re-seamed onto `feedback.recorded` (recorded-consumer →
+        reflect/fold; exchange/analyze read feedbacks over the tg API;
+        model/reflection write-back via `PATCH /internal/feedbacks/:id`;
+        addressing exclusions file with `feedbackId: null` — the v1 FK
+        cannot reference source rows).
+      - `064d271`: the transitional **shadow directory** — the consumer
+        mirrors event identity into v1 known_users/known_groups/
+        group_members (FKs + labels keep working); curated edits
+        (aliases/language/notes/owner) write tg-first, shadow second.
+      - `5f4c0f5`: vision through the source — backfill, gallery and
+        pending counts via `SourceMediaBrowse` (tg pending/recent media
+        endpoints).
+      - `3424deb`: the **content plane** — history service read-only
+        over `SourceContentClient` (messages window/ids, transfer
+        import, split due-scans comparing core job markers against
+        source day/hour counts, summaries stored tg-side, hybrid RRF
+        search + index ported to tg SQL); memory extraction re-seamed
+        the same way; SQL-semantics tests moved to tg against real
+        Postgres, core job tests over the contract-faithful in-memory
+        `fake-source-content.ts`.
+      - `5cdc242`: the SSE bridge (`dashboard.refresh` → in-process
+        `publishEvent`, topics filtered against `REALTIME_TOPICS`; tg
+        publishes on inbound, delivered replies, status flips, feedback
+        menus).
+      - `ec2b7ad`: the task-authority rework (owner stamps, above).
 - [ ] Trace client: apps record through the shared client over the bus;
       the core persists all traces (PLAN "Traces and debug");
       correlation ids tie a turn's cross-app flow into one trace.
-- [ ] Docker: `assistant-hub-tg` image + compose service + release-matrix
-      entry; both apps boot together in compose.
+      Still open — the tg app console-logs today.
+- [x] Docker (`917131b`): `assistant-hub-tg` image (tsx-run Node service,
+      ffmpeg, isolated drizzle migration runner on the tg chain) +
+      compose service (own database via the initdb hook — first init
+      only; existing deployments create it by hand) + release-matrix
+      entry; core service wired with REDIS_URL / TG_API_URL /
+      INTERNAL_API_TOKEN. Image build verified locally (tsx/ffmpeg/
+      migrate runner resolve in-container); the full compose boot rides
+      with the live end-to-end smoke (Current state).
 - [ ] Tests at each seam; lint/typecheck/test/build green from the root;
-      proof and risks recorded.
+      proof and risks recorded. Green as of the swap (core unit 1116 +
+      integration 326/30-skipped; tg integration 43; turbo lint/
+      typecheck/test/build) — stays open until the analytics re-route
+      and trace client land their tests.
 
 ## Session log
 
+- **2026-08-23/24 (the swap)** — The Phase 2 finale executed across nine
+  commits (list under the apps/core criterion): outbound features onto
+  the port, dashboard controls onto the operator API, the
+  `server/telegram` deletion with feedback learning re-seamed onto
+  `feedback.recorded`, the transitional shadow directory, vision and
+  the whole content plane (history/summaries/search/memory-extraction)
+  onto tg's internal API, the SSE bridge, the task-authority rework
+  (owner stamps replace id comparison; core migration 0059), and the
+  `assistant-hub-tg` Docker image + compose + release matrix. Proof:
+  root turbo lint/typecheck/test/build green; core unit 1116 passed,
+  core integration 326 passed / 30 skipped; tg integration 43 passed;
+  migration 0059 applied to the core dev DB; `docker compose config`
+  valid. Risks/remaining: the analytics flip blocker, the trace
+  client, and the operator-run live smoke — ordered in Current state.
+  Still awaiting user confirmation: the slice-D MCP-outbound design
+  call.
 - **2026-08-23 (slice D)** — The last extraction slice, in three commits
   (details under the Phase 2 criteria): D-1 the outbound surface (tg
   transport boundary with HTML + mirror-checked `#id` links, the
