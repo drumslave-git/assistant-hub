@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ReactionTypeEmoji } from "@grammyjs/types";
+import type { FeedbackRecordedEvent } from "@assistant-hub/contracts";
 
 import { closePool } from "@/db/pool";
 import { ADDRESSING_CHECK_EVENT } from "@/features/bot-messaging/addressing-trace";
@@ -8,44 +8,32 @@ import {
   listAddressingExclusions,
   listAddressingExclusionTerms,
 } from "@/features/bot-messaging/server/exclusions-repository";
-import { chatMessages, knownUsers, selfCorrections, usersCommunicationPreferences, usersFeedbacks } from "@/db/schema";
+import { knownUsers, selfCorrections, usersCommunicationPreferences } from "@/db/schema";
 import { stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { getTrace, listTraces, startTrace } from "@/server/trace";
-import { processCallbackUpdate } from "@/server/telegram/process-callback";
-import { processReactionUpdate } from "@/server/telegram/process-reaction";
-import type { FeedbackTransport } from "@/server/telegram/transport";
-import { simulateUpdate } from "@/test/simulate";
 import { startTestDb, type TestDb } from "@/test/db";
 
-import {
-  encodeMenuCallback,
-  MENU_AWAITING_TEXT,
-  MENU_RECORDED_TOAST,
-  OTHER_OPTION,
-} from "../menu";
-import { DISLIKE_OPTIONS, LIKE_OPTIONS, NOT_ADDRESSED_OPTION } from "../options";
+import type { UserFeedback } from "../types";
 import { runSelfImprovement } from "./analyze";
-import { removeAddressingExclusion } from "./service";
+import type {
+  FeedbackPorts,
+  FeedbackStorePort,
+  SourceMessage,
+  SourceMessagePort,
+} from "./feedback-store";
+import { handleFeedbackRecorded } from "./recorded-consumer";
 import { reflectOnFeedback } from "./reflect";
-import {
-  completeFeedback,
-  getFeedback,
-  getLatestCorrection,
-  getLatestPreference,
-  insertCorrection,
-  insertPreference,
-  setFeedbackReflection,
-  upsertFeedback,
-} from "./repository";
+import { getLatestCorrection, getLatestPreference, insertCorrection, insertPreference } from "./repository";
+import { removeAddressingExclusion } from "./service";
 
 /**
- * Integration coverage for the self-improvement feature against a real
- * Postgres: the reaction → menu → answer collection flows (through the real
- * transport-agnostic processors with a capturing feedback transport), the
- * free-text capture through the real message pipeline, the self-reflection pass
- * over an answered feedback, the daily incorporation run with a deterministic
- * LLM, and the resulting prompt injection on a reply.
+ * Integration coverage for the self-improvement learning pipeline against a
+ * real Postgres (the distilled outputs — preferences, corrections,
+ * exclusions — plus real traces), with the source-owned feedback rows and
+ * mirror behind in-memory ports. The collection flows themselves live in
+ * the tg app since the split and are covered by its feedback suite; the
+ * `feedback.recorded` consumer here is where the core's learning starts.
  */
 
 let ctx: TestDb;
@@ -54,7 +42,7 @@ let prevDatabaseUrl: string | undefined;
 beforeAll(async () => {
   ctx = await startTestDb();
   prevDatabaseUrl = process.env.DATABASE_URL;
-  // The flows run through the app's own pool (`getDb()`), so bind it here.
+  // Prefs/corrections/exclusions run through the app's own pool (`getDb()`).
   process.env.DATABASE_URL = ctx.connectionUri;
 });
 
@@ -72,262 +60,113 @@ beforeEach(async () => {
 
 const CHAT_ID = "555";
 const USER_ID = "100";
+/** The tg menu option that files an addressing report (owned by apps/tg). */
+const NOT_ADDRESSED_OPTION = "Wasn't talking to you";
+
+/**
+ * The v1 core tables (preferences, exclusions) still FK `known_users`; the
+ * writes under test need the rows even though the feedback data itself now
+ * lives behind the ports.
+ */
+async function seedKnownUsers(...userIds: string[]): Promise<void> {
+  for (const userId of userIds) {
+    await ctx.db
+      .insert(knownUsers)
+      .values({ userId, username: `user${userId}`, firstName: `U${userId}` })
+      .onConflictDoNothing();
+  }
+}
 const USER_MSG_ID = 10;
 const BOT_MSG_ID = 11;
-const MENU_MSG_ID = 500;
 /** A proactively-sent message (scheduled-task fire) — no reply pointer. */
 const FIRED_MSG_ID = 42;
 
-/** Seed a known user plus one mirrored exchange (user #10 → bot reply #11). */
-async function seedExchange(userId = USER_ID): Promise<void> {
-  await ctx.db
-    .insert(knownUsers)
-    .values({ userId, username: `user${userId}`, firstName: `U${userId}` })
-    .onConflictDoNothing();
-  await ctx.db
-    .insert(chatMessages)
-    .values([
-      {
-        chatId: CHAT_ID,
-        telegramMessageId: USER_MSG_ID,
-        role: "user",
-        userId,
-        content: "what's the weather?",
-        sentAt: new Date("2026-07-14T10:00:00Z"),
-      },
-      {
-        chatId: CHAT_ID,
-        telegramMessageId: BOT_MSG_ID,
-        role: "assistant",
-        content: "Sunny, 25°C.",
-        replyToMessageId: USER_MSG_ID,
-        sentAt: new Date("2026-07-14T10:00:05Z"),
-      },
-    ])
-    .onConflictDoNothing();
-}
+/** In-memory stand-ins for the source's feedback rows + message mirror. */
+function fakePorts(): FeedbackPorts & {
+  rows: Map<string, UserFeedback>;
+  msgs: Map<string, SourceMessage>;
+  seedExchange: () => void;
+  seedCompleted: (input: {
+    userId?: string;
+    feedback: string;
+    topic?: "quality" | "addressing";
+    messageId?: number;
+    reaction?: "up" | "down";
+    reflection?: string | null;
+  }) => UserFeedback;
+} {
+  const rows = new Map<string, UserFeedback>();
+  const msgs = new Map<string, SourceMessage>();
+  let seq = 0;
 
-/** A capturing FeedbackTransport (the simulator's sibling for menu flows). */
-function fakeFeedbackTransport() {
-  const sendMenu = vi.fn().mockResolvedValue({ messageId: MENU_MSG_ID });
-  const editMenu = vi.fn().mockResolvedValue(undefined);
-  const deleteMenu = vi.fn().mockResolvedValue(undefined);
-  const answerCallback = vi.fn().mockResolvedValue(undefined);
-  const transport: FeedbackTransport = { sendMenu, editMenu, deleteMenu, answerCallback };
-  return { transport, sendMenu, editMenu, deleteMenu, answerCallback };
-}
-
-/** A thumbs reaction update on the seeded bot reply. */
-function reactionUpdate(emoji: ReactionTypeEmoji["emoji"], userId = Number(USER_ID)) {
+  const feedbacks: FeedbackStorePort = {
+    async listAll() {
+      return [...rows.values()].reverse();
+    },
+    async listUnincorporated(kind) {
+      return [...rows.values()].filter(
+        (row) =>
+          row.status === "completed" &&
+          row.topic === "quality" &&
+          (kind === "prefs" ? row.prefsVersion == null : row.correctionsVersion == null),
+      );
+    },
+    async get(id) {
+      return rows.get(id) ?? null;
+    },
+    async patch(id, patch) {
+      const row = rows.get(id);
+      if (!row) throw new Error(`feedback ${id} not found`);
+      Object.assign(row, patch, { updatedAt: new Date().toISOString() });
+    },
+  };
+  const messages: SourceMessagePort = {
+    async getMessage(chatId, sourceMessageId) {
+      return msgs.get(`${chatId}:${sourceMessageId}`) ?? null;
+    },
+  };
   return {
-    chat: { id: Number(CHAT_ID), type: "private" as const, first_name: "A" },
-    message_id: BOT_MSG_ID,
-    user: { id: userId, is_bot: false, first_name: `U${userId}` },
-    date: Math.floor(Date.now() / 1000),
-    old_reaction: [],
-    new_reaction: [{ type: "emoji" as const, emoji }],
+    feedbacks,
+    messages,
+    rows,
+    msgs,
+    seedExchange() {
+      msgs.set(`${CHAT_ID}:${USER_MSG_ID}`, {
+        content: "what's the weather?",
+        replyToSourceMessageId: null,
+      });
+      msgs.set(`${CHAT_ID}:${BOT_MSG_ID}`, {
+        content: "Sunny, 25°C.",
+        replyToSourceMessageId: String(USER_MSG_ID),
+      });
+    },
+    seedCompleted(input) {
+      const row: UserFeedback = {
+        id: `fb-${++seq}`,
+        chatId: CHAT_ID,
+        telegramMessageId: input.messageId ?? BOT_MSG_ID,
+        userId: input.userId ?? USER_ID,
+        reaction: input.reaction ?? "down",
+        feedback: input.feedback,
+        status: "completed",
+        topic: input.topic ?? "quality",
+        model: "",
+        reflection: input.reflection ?? null,
+        reflectionModel: input.reflection ? "gemma3:12b" : null,
+        prefsVersion: null,
+        correctionsVersion: null,
+        createdAt: new Date(Date.now() + seq).toISOString(),
+        updatedAt: new Date(Date.now() + seq).toISOString(),
+      };
+      rows.set(row.id, row);
+      return row;
+    },
   };
 }
 
-async function getFeedbackRow() {
-  return ctx.db.query.usersFeedbacks.findFirst();
-}
-
-describe("feedback collection (reaction → menu → answer)", () => {
-  it("opens a feedback row and sends the menu, resolving the clean model from the reply trace", async () => {
-    await seedExchange();
-    // The reply trace (keyed by the incoming message) carries the raw model id.
-    const trace = await startTrace({
-      feature: "bot-messaging",
-      action: "reply",
-      trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
-    });
-    await trace.event({
-      type: "llm_response",
-      message: "response",
-      usage: { model: "docker.io/ai/gemma3:12b" },
-    });
-    await trace.succeed();
-
-    const { transport, sendMenu } = fakeFeedbackTransport();
-    const outcome = await processReactionUpdate(reactionUpdate("👍"), transport);
-
-    expect(outcome.status).toBe("menu_sent");
-    const row = await getFeedbackRow();
-    expect(row).toMatchObject({
-      chatId: CHAT_ID,
-      telegramMessageId: BOT_MSG_ID,
-      userId: USER_ID,
-      reaction: "up",
-      status: "pending",
-      menuMessageId: MENU_MSG_ID,
-      model: "gemma3:12b", // clean name — registry prefix stripped
-      feedback: null,
-    });
-    // Menu posted as a reply to the reacted message: 5 options + Other.
-    expect(sendMenu).toHaveBeenCalledOnce();
-    const menu = sendMenu.mock.calls[0][0];
-    expect(menu.replyToMessageId).toBe(BOT_MSG_ID);
-    expect(menu.keyboard).toHaveLength(6);
-    // Traced under user-feedback.
-    const traces = await listTraces({ feature: "user-feedback" });
-    expect(traces.total).toBe(1);
-    expect(traces.traces[0]).toMatchObject({ status: "success", action: "menu" });
-  });
-
-  it("ignores reactions that are not a thumb, or not on a bot message", async () => {
-    await seedExchange();
-    const { transport, sendMenu } = fakeFeedbackTransport();
-
-    // Not a thumb.
-    expect((await processReactionUpdate(reactionUpdate("🔥"), transport)).status).toBe("ignored");
-    // A thumb on the *user's* message.
-    expect(
-      (
-        await processReactionUpdate(
-          { ...reactionUpdate("👍"), message_id: USER_MSG_ID },
-          transport,
-        )
-      ).status,
-    ).toBe("ignored");
-    // A thumb on a message that was never mirrored.
-    expect(
-      (await processReactionUpdate({ ...reactionUpdate("👍"), message_id: 999 }, transport))
-        .status,
-    ).toBe("ignored");
-
-    expect(sendMenu).not.toHaveBeenCalled();
-    expect(await getFeedbackRow()).toBeUndefined();
-  });
-
-  it("records a predefined option with a toast + menu delete, and rejects presses from other users", async () => {
-    await seedExchange();
-    const { transport, sendMenu, editMenu, deleteMenu, answerCallback } = fakeFeedbackTransport();
-    await processReactionUpdate(reactionUpdate("👍"), transport);
-    const feedbackId = (await getFeedbackRow())!.id;
-    const menuMessage = {
-      message_id: MENU_MSG_ID,
-      date: 0,
-      chat: { id: Number(CHAT_ID), type: "private" as const, first_name: "A" },
-    };
-
-    // Someone else presses → toast only, nothing recorded.
-    const foreign = await processCallbackUpdate(
-      {
-        id: "cb-1",
-        from: { id: 200, is_bot: false, first_name: "Mallory" },
-        data: encodeMenuCallback(feedbackId, 1),
-        message: menuMessage,
-      },
-      transport,
-    );
-    expect(foreign.status).toBe("not_yours");
-    expect(answerCallback).toHaveBeenLastCalledWith(
-      expect.objectContaining({ text: expect.stringContaining("person who reacted") }),
-    );
-    expect((await getFeedbackRow())!.status).toBe("pending");
-    expect(deleteMenu).not.toHaveBeenCalled();
-
-    // The reactor picks option 1 → completed, menu gone, acknowledged by a toast.
-    const pressed = await processCallbackUpdate(
-      {
-        id: "cb-2",
-        from: { id: Number(USER_ID), is_bot: false, first_name: "Alice" },
-        data: encodeMenuCallback(feedbackId, 1),
-        message: menuMessage,
-      },
-      transport,
-    );
-    expect(pressed.status).toBe("recorded");
-    expect(await getFeedbackRow()).toMatchObject({
-      status: "completed",
-      feedback: LIKE_OPTIONS[1],
-    });
-    expect(deleteMenu).toHaveBeenCalledWith({ chatId: CHAT_ID, messageId: MENU_MSG_ID });
-    expect(answerCallback).toHaveBeenLastCalledWith(
-      expect.objectContaining({ text: MENU_RECORDED_TOAST }),
-    );
-    // No confirmation message is left behind — the menu is never rewritten.
-    expect(editMenu).not.toHaveBeenCalled();
-    expect(sendMenu).toHaveBeenCalledOnce(); // no second menu
-  });
-
-  it("captures the free-text answer via a reply to the menu, short-circuiting the bot reply", async () => {
-    await seedExchange();
-    const { transport, editMenu } = fakeFeedbackTransport();
-    await processReactionUpdate(reactionUpdate("👎"), transport);
-    const feedbackId = (await getFeedbackRow())!.id;
-
-    // "Other" → awaiting a reply.
-    const other = await processCallbackUpdate(
-      {
-        id: "cb-3",
-        from: { id: Number(USER_ID), is_bot: false, first_name: "Alice" },
-        data: encodeMenuCallback(feedbackId, OTHER_OPTION),
-        message: {
-          message_id: MENU_MSG_ID,
-          date: 0,
-          chat: { id: Number(CHAT_ID), type: "private" as const, first_name: "A" },
-        },
-      },
-      transport,
-    );
-    expect(other.status).toBe("awaiting_text");
-    expect(editMenu).toHaveBeenCalledWith(expect.objectContaining({ text: MENU_AWAITING_TEXT }));
-    expect((await getFeedbackRow())!.status).toBe("awaiting_text");
-
-    // The reactor replies to the menu message → captured, not answered by the LLM.
-    const generateReply = vi.fn();
-    const deleteFeedbackMenu = vi.fn().mockResolvedValue(undefined);
-    const res = await simulateUpdate(
-      {
-        text: "too sarcastic, keep it factual",
-        chatId: Number(CHAT_ID),
-        messageId: 12,
-        from: { id: Number(USER_ID), username: "alice", firstName: "Alice" },
-        replyTo: { messageId: MENU_MSG_ID },
-      },
-      { generateReply, deleteFeedbackMenu },
-    );
-    expect(res.outcome).toEqual({ status: "ignored", reason: "feedback_captured" });
-    expect(generateReply).not.toHaveBeenCalled();
-    // The answer is acknowledged by the menu going away — nothing is sent back.
-    expect(res.replies).toEqual([]);
-    expect(deleteFeedbackMenu).toHaveBeenCalledWith({ chatId: CHAT_ID, messageId: MENU_MSG_ID });
-    expect(await getFeedbackRow()).toMatchObject({
-      status: "completed",
-      feedback: "too sarcastic, keep it factual",
-    });
-    // A second identical reply is NOT captured again (the row is completed).
-    const res2 = await simulateUpdate(
-      {
-        text: "still bad",
-        chatId: Number(CHAT_ID),
-        messageId: 13,
-        from: { id: Number(USER_ID), username: "alice", firstName: "Alice" },
-        replyTo: { messageId: MENU_MSG_ID },
-      },
-      { generateReply: vi.fn().mockResolvedValue({ content: "ok", model: "m", latencyMs: 1 }) },
-    );
-    expect(res2.outcome.status).toBe("replied");
-  });
-
-  it("a repeat reaction reopens the answered row and asks again", async () => {
-    await seedExchange();
-    const { transport } = fakeFeedbackTransport();
-    await processReactionUpdate(reactionUpdate("👍"), transport);
-    const feedbackId = (await getFeedbackRow())!.id;
-    await completeFeedback(ctx.db, feedbackId, "great");
-
-    await processReactionUpdate(reactionUpdate("👎"), transport);
-    const row = await getFeedbackRow();
-    expect(row).toMatchObject({ id: feedbackId, reaction: "down", status: "pending", feedback: null });
-  });
-});
-
 /**
- * Deterministic LLM for the daily run, answering by the system prompt it is
- * given: a reflection, a preferences profile (JSON), or correction guidelines.
+ * A deterministic "LLM" that answers by which fold prompt it was given: a
+ * reflection, a preferences profile (JSON), or correction guidelines.
  */
 function fakeFoldLlm(outputs?: {
   likes?: string;
@@ -356,21 +195,6 @@ function fakeFoldLlm(outputs?: {
     };
   };
   return { complete, calls };
-}
-
-/** Seed one completed feedback for a user on the shared exchange. */
-async function seedCompletedFeedback(userId: string, feedback: string) {
-  await seedExchange(userId);
-  const row = await upsertFeedback(ctx.db, {
-    id: crypto.randomUUID(),
-    chatId: CHAT_ID,
-    telegramMessageId: BOT_MSG_ID,
-    userId,
-    reaction: "down",
-    model: "gemma3:12b",
-  });
-  await completeFeedback(ctx.db, row.id, feedback);
-  return row.id;
 }
 
 describe("self-reflection (reflectOnFeedback)", () => {
@@ -405,8 +229,11 @@ describe("self-reflection (reflectOnFeedback)", () => {
     await trace.succeed();
   }
 
-  it("reflects from the reply trace and stores the result on the feedback row", async () => {
-    const feedbackId = await seedCompletedFeedback(USER_ID, "too long");
+  it("reflects from the reply trace and stores the result through the port", async () => {
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    const feedback = ports.seedCompleted({ feedback: "too long" });
     await seedReplyTrace();
     const reflection = "The persona demanded full background, so a one-line question got an essay.";
     const complete = vi.fn().mockResolvedValue({
@@ -415,14 +242,14 @@ describe("self-reflection (reflectOnFeedback)", () => {
       latencyMs: 1,
     });
 
-    const result = await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, {
+    const result = await reflectOnFeedback(feedback, {
       complete,
       model: "docker.io/ai/gemma3:12b",
-      db: ctx.db,
+      ports,
     });
 
     expect(result).toBe(reflection);
-    expect(await getFeedback(ctx.db, feedbackId)).toMatchObject({
+    expect(ports.rows.get(feedback.id)).toMatchObject({
       reflection,
       reflectionModel: "gemma3:12b", // clean name — registry prefix stripped
     });
@@ -437,21 +264,19 @@ describe("self-reflection (reflectOnFeedback)", () => {
     expect(traces.traces[0]).toMatchObject({
       status: "success",
       action: "reflect",
-      relatedIds: { users_feedbacks: [feedbackId] },
+      relatedIds: { users_feedbacks: [feedback.id] },
     });
   });
 
   it("reflects on a proactively-sent message from the trace that delivered it", async () => {
     // A task fire has no incoming message to key on, so it settles on
     // what it delivered — the reacted message itself, not a reply anchor.
-    await seedExchange();
-    await ctx.db.insert(chatMessages).values({
-      chatId: CHAT_ID,
-      telegramMessageId: FIRED_MSG_ID,
-      role: "assistant",
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    ports.msgs.set(`${CHAT_ID}:${FIRED_MSG_ID}`, {
       content: "Hey. Just checking in.",
-      replyToMessageId: null,
-      sentAt: new Date("2026-07-14T12:00:00Z"),
+      replyToSourceMessageId: null,
     });
     const fire = await startTrace({
       feature: "tasks",
@@ -471,20 +296,16 @@ describe("self-reflection (reflectOnFeedback)", () => {
     });
     await fire.succeed({ correlationId: `${CHAT_ID}:${FIRED_MSG_ID}` });
 
-    const row = await upsertFeedback(ctx.db, {
-      id: crypto.randomUUID(),
-      chatId: CHAT_ID,
-      telegramMessageId: FIRED_MSG_ID,
-      userId: USER_ID,
+    const feedback = ports.seedCompleted({
+      feedback: "Right tone",
       reaction: "up",
-      model: "gemma3:12b",
+      messageId: FIRED_MSG_ID,
     });
-    await completeFeedback(ctx.db, row.id, "Right tone");
     const complete = vi
       .fn()
       .mockResolvedValue({ content: "Stayed short and unscripted.", model: "m", latencyMs: 1 });
 
-    await reflectOnFeedback((await getFeedback(ctx.db, row.id))!, { complete, db: ctx.db });
+    await reflectOnFeedback(feedback, { complete, ports });
 
     // The fire's own prompt reached the reflection — no reply pointer involved.
     const asked = String(complete.mock.calls[0][0].at(-1).content);
@@ -493,18 +314,21 @@ describe("self-reflection (reflectOnFeedback)", () => {
   });
 
   it("reads the producing trace, not the feedback traces keyed on the same message", async () => {
-    // The menu/answer/reflect traces all key on the reacted message, so an
+    // The recorded/reflect traces all key on the reacted message, so an
     // unscoped "latest trace on this message" would return one of those — and a
     // second reflection would read its own previous output back to itself.
-    const feedbackId = await seedCompletedFeedback(USER_ID, "too long");
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    const feedback = ports.seedCompleted({ feedback: "too long" });
     await seedReplyTrace();
     const complete = vi
       .fn()
       .mockResolvedValue({ content: "Went long.", model: "m", latencyMs: 1 });
 
     // Two runs: the first leaves a `reflect` trace on `CHAT_ID:BOT_MSG_ID`.
-    await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, { complete, db: ctx.db });
-    await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, { complete, db: ctx.db });
+    await reflectOnFeedback(feedback, { complete, ports });
+    await reflectOnFeedback(feedback, { complete, ports });
 
     // The second still read the bot-messaging reply trace, not the first
     // reflection. The reflection prompt's own wording is the tell: it can only
@@ -518,20 +342,21 @@ describe("self-reflection (reflectOnFeedback)", () => {
   });
 
   it("reflects on the exchange alone when the reply has no trace, and says so", async () => {
-    const feedbackId = await seedCompletedFeedback(USER_ID, "wrong tone");
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    const feedback = ports.seedCompleted({ feedback: "wrong tone" });
     const complete = vi
       .fn()
       .mockResolvedValue({ content: "Answered a real question flippantly.", model: "m", latencyMs: 1 });
 
-    await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, { complete, db: ctx.db });
+    await reflectOnFeedback(feedback, { complete, ports });
 
-    // No trace to reason from — the exchange from the history mirror stands in.
+    // No trace to reason from — the exchange from the source's mirror stands in.
     const asked = String(complete.mock.calls[0][0].at(-1).content);
     expect(asked).toContain("what's the weather?");
     expect(asked).toContain("Sunny, 25°C.");
-    expect((await getFeedback(ctx.db, feedbackId))!.reflection).toBe(
-      "Answered a real question flippantly.",
-    );
+    expect(ports.rows.get(feedback.id)!.reflection).toBe("Answered a real question flippantly.");
     // The operator can see the reflection was the thinner kind.
     const header = (await listTraces({ feature: "user-feedback" })).traces[0];
     const events = (await getTrace(header.id))!.events;
@@ -541,13 +366,14 @@ describe("self-reflection (reflectOnFeedback)", () => {
   });
 
   it("leaves the reflection null when the call fails, for the next incorporation run", async () => {
-    const feedbackId = await seedCompletedFeedback(USER_ID, "too long");
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    const feedback = ports.seedCompleted({ feedback: "too long" });
     const complete = vi.fn().mockRejectedValue(new Error("provider down"));
 
-    expect(
-      await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, { complete, db: ctx.db }),
-    ).toBeNull();
-    expect(await getFeedback(ctx.db, feedbackId)).toMatchObject({
+    expect(await reflectOnFeedback(feedback, { complete, ports })).toBeNull();
+    expect(ports.rows.get(feedback.id)).toMatchObject({
       reflection: null,
       reflectionModel: null,
     });
@@ -556,18 +382,17 @@ describe("self-reflection (reflectOnFeedback)", () => {
   });
 
   it("does not reflect on a feedback the user has not answered yet", async () => {
-    await seedExchange();
-    const pending = await upsertFeedback(ctx.db, {
-      id: crypto.randomUUID(),
-      chatId: CHAT_ID,
-      telegramMessageId: BOT_MSG_ID,
-      userId: USER_ID,
-      reaction: "down",
-      model: "gemma3:12b",
-    });
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    const pending: UserFeedback = {
+      ...ports.seedCompleted({ feedback: "ignored" }),
+      status: "pending",
+      feedback: null,
+    };
     const complete = vi.fn();
 
-    expect(await reflectOnFeedback(pending, { complete, db: ctx.db })).toBeNull();
+    expect(await reflectOnFeedback(pending, { complete, ports })).toBeNull();
     expect(complete).not.toHaveBeenCalled();
     // Nothing happened, so nothing is recorded — Debug stays free of noise.
     expect((await listTraces({ feature: "user-feedback" })).total).toBe(0);
@@ -576,14 +401,18 @@ describe("self-reflection (reflectOnFeedback)", () => {
 
 describe("daily incorporation (runSelfImprovement)", () => {
   it("folds the backlog into new preference versions per user + one correction version, stamping every feedback", async () => {
-    await seedCompletedFeedback("100", "too long");
-    await seedCompletedFeedback("200", "wrong tone");
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    ports.seedCompleted({ userId: "100", feedback: "too long" });
+    ports.seedCompleted({ userId: "200", feedback: "wrong tone" });
     const llm = fakeFoldLlm();
 
     const result = await runSelfImprovement({
       complete: llm.complete,
       personalityPrompt: "You are a pirate.",
       model: "docker.io/ai/gemma3:12b",
+      ports,
       db: ctx.db,
     });
 
@@ -601,16 +430,16 @@ describe("daily incorporation (runSelfImprovement)", () => {
       const personaMentions = call.filter((m) => String(m.content).includes("You are a pirate."));
       expect(personaMentions).toHaveLength(1);
     }
-    // Both folds read the exchange from the history mirror, and the reflection the
-    // backfill wrote moments earlier.
+    // Both folds read the exchange from the source's mirror, and the reflection
+    // the backfill wrote moments earlier.
     const prefsCall = llm.calls.find((c) => String(c[0].content).includes("factual profile"))!;
     expect(String(prefsCall.at(-1)!.content)).toContain("what's the weather?");
     expect(String(prefsCall.at(-1)!.content)).toContain("Sunny, 25°C.");
     expect(String(prefsCall.at(-1)!.content)).toContain(
       "Padded a one-line answer with background nobody asked for.",
     );
-    // The reflections are stored, not just passed through.
-    for (const row of await ctx.db.select().from(usersFeedbacks)) {
+    // The reflections are written back through the port, not just passed through.
+    for (const row of ports.rows.values()) {
       expect(row.reflection).toBe("Padded a one-line answer with background nobody asked for.");
       expect(row.reflectionModel).toBe("gemma3:12b");
     }
@@ -628,8 +457,7 @@ describe("daily incorporation (runSelfImprovement)", () => {
       correction: "Be more concise.",
       model: "gemma3:12b",
     });
-    const rows = await ctx.db.select().from(usersFeedbacks);
-    for (const row of rows) {
+    for (const row of ports.rows.values()) {
       expect(row.prefsVersion).toBe(1);
       expect(row.correctionsVersion).toBe(1);
     }
@@ -639,18 +467,20 @@ describe("daily incorporation (runSelfImprovement)", () => {
     expect(traces.traces[0]).toMatchObject({ status: "success", action: "incorporate" });
 
     // A second run with nothing new is a silent no-op (no extra trace).
-    const again = await runSelfImprovement({ complete: llm.complete, db: ctx.db });
+    const again = await runSelfImprovement({ complete: llm.complete, ports, db: ctx.db });
     expect(again.summary).toBe("nothing to incorporate");
     expect((await listTraces({ feature: "self-improvement" })).total).toBe(1);
   });
 
   it("skips the reflection backfill for a feedback that already has one, and folds from it", async () => {
-    const feedbackId = await seedCompletedFeedback("100", "too long");
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
     // The usual case: the answer was reflected on the moment it arrived.
-    await setFeedbackReflection(ctx.db, feedbackId, "Buried the answer in caveats.", "gemma3:12b");
+    ports.seedCompleted({ feedback: "too long", reflection: "Buried the answer in caveats." });
     const llm = fakeFoldLlm();
 
-    await runSelfImprovement({ complete: llm.complete, db: ctx.db });
+    await runSelfImprovement({ complete: llm.complete, ports, db: ctx.db });
 
     // 1 preference fold + 1 correction fold — nothing to re-reflect.
     expect(llm.calls).toHaveLength(2);
@@ -662,60 +492,57 @@ describe("daily incorporation (runSelfImprovement)", () => {
   });
 
   it("seeds the next version from the previous one", async () => {
-    await seedCompletedFeedback("100", "too long");
-    await runSelfImprovement({ complete: fakeFoldLlm().complete, db: ctx.db });
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    ports.seedCompleted({ feedback: "too long" });
+    await runSelfImprovement({ complete: fakeFoldLlm().complete, ports, db: ctx.db });
 
     // A fresh feedback arrives later (a new bot message id to satisfy uniqueness).
-    await ctx.db.insert(chatMessages).values({
-      chatId: CHAT_ID,
-      telegramMessageId: 21,
-      role: "assistant",
+    ports.msgs.set(`${CHAT_ID}:21`, {
       content: "Another reply.",
-      replyToMessageId: USER_MSG_ID,
-      sentAt: new Date("2026-07-14T11:00:00Z"),
+      replyToSourceMessageId: String(USER_MSG_ID),
     });
-    const row = await upsertFeedback(ctx.db, {
-      id: crypto.randomUUID(),
-      chatId: CHAT_ID,
-      telegramMessageId: 21,
-      userId: "100",
-      reaction: "up",
-      model: "gemma3:12b",
-    });
-    await completeFeedback(ctx.db, row.id, "loved the brevity");
+    ports.seedCompleted({ feedback: "loved the brevity", reaction: "up", messageId: 21 });
 
     const llm = fakeFoldLlm({ likes: "brevity", dislikes: "rambling", correction: "Keep it short." });
-    await runSelfImprovement({ complete: llm.complete, db: ctx.db });
+    await runSelfImprovement({ complete: llm.complete, ports, db: ctx.db });
 
     // The preference fold started from version 1's profile.
     const prefsCall = llm.calls.find((c) => String(c[0].content).includes("factual profile"))!;
     expect(String(prefsCall.at(-1)!.content)).toContain("short answers");
-    expect(await getLatestPreference(ctx.db, "100")).toMatchObject({ version: 2, likes: "brevity" });
+    expect(await getLatestPreference(ctx.db, USER_ID)).toMatchObject({ version: 2, likes: "brevity" });
     expect(await getLatestCorrection(ctx.db)).toMatchObject({ version: 2, correction: "Keep it short." });
   });
 
   it("leaves a feedback unstamped for the next run when its fold call fails", async () => {
-    await seedCompletedFeedback("100", "too long");
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    const feedback = ports.seedCompleted({ feedback: "too long" });
     const complete = vi.fn().mockRejectedValue(new Error("provider down"));
 
-    const result = await runSelfImprovement({ complete, db: ctx.db });
+    const result = await runSelfImprovement({ complete, ports, db: ctx.db });
     expect(result.incorporated).toBe(0);
     expect(result.failed).toBeGreaterThan(0);
 
-    const row = (await ctx.db.select().from(usersFeedbacks))[0];
-    expect(row.prefsVersion).toBeNull();
-    expect(row.correctionsVersion).toBeNull();
+    expect(ports.rows.get(feedback.id)).toMatchObject({
+      prefsVersion: null,
+      correctionsVersion: null,
+    });
     expect(await ctx.db.select().from(usersCommunicationPreferences)).toHaveLength(0);
     expect(await ctx.db.select().from(selfCorrections)).toHaveLength(0);
     // The run trace still settles (success with failure counts in the summary).
     const traces = await listTraces({ feature: "self-improvement" });
     expect(traces.total).toBe(1);
   });
-});
 
-describe("prompt injection on the next reply", () => {
-  it("injects the sender's latest preferences and the latest correction", async () => {
-    await seedExchange();
+  it("keeps prompt injection fed: the folds' outputs are what the reply reads", async () => {
+    await seedKnownUsers(USER_ID);
+    // The injection itself (correction block in the system prompt, the
+    // sender's preferences as a system message) is asserted on the composed
+    // prompt in the turn-consumer integration test; here the pipeline's
+    // outputs land in the same tables that read serves from.
     await insertPreference(ctx.db, {
       id: crypto.randomUUID(),
       userId: USER_ID,
@@ -730,41 +557,88 @@ describe("prompt injection on the next reply", () => {
       correction: "Answer in fewer words.",
       version: 1,
     });
+    expect(await getLatestPreference(ctx.db, USER_ID)).toMatchObject({ likes: "short answers" });
+    expect(await getLatestCorrection(ctx.db)).toMatchObject({
+      correction: "Answer in fewer words.",
+    });
+  });
+});
 
-    const seen: ChatMessage[][] = [];
-    const res = await simulateUpdate(
-      {
-        text: "hi bot",
-        chatId: Number(CHAT_ID),
-        messageId: 30,
-        from: { id: Number(USER_ID), username: "alice", firstName: "Alice" },
+describe("feedback.recorded consumer", () => {
+  function recordedEvent(feedback: UserFeedback): FeedbackRecordedEvent {
+    return {
+      v: 1,
+      eventId: `evt-${feedback.id}`,
+      occurredAt: new Date().toISOString(),
+      correlationId: `${feedback.chatId}:${feedback.telegramMessageId}`,
+      type: "feedback.recorded",
+      source: "tg",
+      feedback: {
+        id: feedback.id,
+        chatRef: `tg:chat:${feedback.chatId}`,
+        sourceMessageId: String(feedback.telegramMessageId),
+        userRef: `tg:user:${feedback.userId}`,
+        reaction: feedback.reaction,
+        text: feedback.feedback ?? "",
+        topic: feedback.topic,
       },
-      {
-        generateReply: async (messages) => {
-          seen.push(messages);
-          return { content: "hey", model: "m", latencyMs: 1 };
-        },
-      },
-    );
+    };
+  }
 
-    expect(res.outcome.status).toBe("replied");
-    const messages = seen[0];
-    // The system prompt carries the correction block.
-    expect(String(messages[0].content)).toContain("Self-correction guidelines");
-    expect(String(messages[0].content)).toContain("Answer in fewer words.");
-    // A system message carries the sender's preferences.
-    const prefsMessage = messages.find(
-      (m) => m.role === "system" && String(m.content).includes("Communication preferences"),
+  it("stamps the reacted reply's clean model and runs the reflection", async () => {
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
+    const feedback = ports.seedCompleted({ feedback: "too long" });
+    // The reply trace (keyed by the incoming message) carries the raw model id.
+    const trace = await startTrace({
+      feature: "bot-messaging",
+      action: "reply",
+      trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+    });
+    await trace.event({
+      type: "llm_response",
+      message: "response",
+      usage: { model: "docker.io/ai/gemma3:12b" },
+    });
+    await trace.succeed();
+
+    const complete = vi
+      .fn()
+      .mockResolvedValue({ content: "Went long again.", model: "m", latencyMs: 1 });
+    await handleFeedbackRecorded(recordedEvent(feedback), {
+      ports,
+      reflection: { complete, ports },
+      db: ctx.db,
+    });
+
+    expect(ports.rows.get(feedback.id)).toMatchObject({
+      model: "gemma3:12b", // clean name — registry prefix stripped
+      reflection: "Went long again.",
+    });
+    const traces = await listTraces({ feature: "user-feedback" });
+    expect(traces.traces.some((t) => t.action === "recorded" && t.status === "success")).toBe(
+      true,
     );
-    expect(prefsMessage).toBeDefined();
-    expect(String(prefsMessage!.content)).toContain("short answers");
-    expect(String(prefsMessage!.content)).toContain("emoji walls");
+  });
+
+  it("skips cleanly when the row is gone from the source store", async () => {
+    const ports = fakePorts();
+    const ghost = ports.seedCompleted({ feedback: "gone" });
+    ports.rows.delete(ghost.id);
+
+    await handleFeedbackRecorded(recordedEvent(ghost), {
+      ports,
+      reflection: null,
+      db: ctx.db,
+    });
+
+    const traces = await listTraces({ feature: "user-feedback" });
+    expect(traces.traces[0]).toMatchObject({ action: "recorded", status: "skipped" });
   });
 });
 
 describe("addressing report (👎 → \"Wasn't talking to you\")", () => {
-  const NOT_ADDRESSED_INDEX = DISLIKE_OPTIONS.indexOf(NOT_ADDRESSED_OPTION);
-
   /**
    * The reply trace the report reads back: the bot answered because the analyzer
    * took `matchedText` for its display name.
@@ -794,39 +668,44 @@ describe("addressing report (👎 → \"Wasn't talking to you\")", () => {
     await trace.succeed();
   }
 
-  /** React 👎 and press the "Wasn't talking to you" option. Returns the outcome. */
-  async function reportNotAddressed(transport: FeedbackTransport) {
-    await processReactionUpdate(reactionUpdate("👎"), transport);
-    const feedbackId = (await getFeedbackRow())!.id;
-    return processCallbackUpdate(
+  /** The recorded addressing report, driven through the bus-event consumer. */
+  async function reportNotAddressed(ports: ReturnType<typeof fakePorts>) {
+    const feedback = ports.seedCompleted({
+      feedback: NOT_ADDRESSED_OPTION,
+      topic: "addressing",
+    });
+    await handleFeedbackRecorded(
       {
-        id: `cb-${feedbackId}`,
-        from: { id: Number(USER_ID), is_bot: false, first_name: "Alice" },
-        data: encodeMenuCallback(feedbackId, NOT_ADDRESSED_INDEX),
-        message: {
-          message_id: MENU_MSG_ID,
-          date: 0,
-          chat: { id: Number(CHAT_ID), type: "private" as const, first_name: "A" },
+        v: 1,
+        eventId: `evt-${feedback.id}`,
+        occurredAt: new Date().toISOString(),
+        correlationId: `${CHAT_ID}:${BOT_MSG_ID}`,
+        type: "feedback.recorded",
+        source: "tg",
+        feedback: {
+          id: feedback.id,
+          chatRef: `tg:chat:${CHAT_ID}`,
+          sourceMessageId: String(BOT_MSG_ID),
+          userRef: `tg:user:${USER_ID}`,
+          reaction: "down",
+          text: NOT_ADDRESSED_OPTION,
+          topic: "addressing",
         },
       },
-      transport,
+      { ports, reflection: null, db: ctx.db },
     );
+    return feedback;
   }
 
   it("files the word the analyzer matched, so it stops summoning the bot", async () => {
-    await seedExchange();
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
     await seedAddressingTrace({ source: "analyzer", matchedText: "Георгій" });
-    const { transport } = fakeFeedbackTransport();
 
-    expect((await reportNotAddressed(transport)).status).toBe("recorded");
+    await reportNotAddressed(ports);
 
-    // The row is stored as an addressing report, not a complaint about the reply.
-    expect(await getFeedbackRow()).toMatchObject({
-      status: "completed",
-      topic: "addressing",
-      feedback: NOT_ADDRESSED_OPTION,
-    });
-    // ...and the word is excluded, with the provenance of the report on it.
+    // The word is excluded, with the provenance of the report on it.
     const exclusions = await listAddressingExclusions(ctx.db);
     expect(exclusions).toHaveLength(1);
     expect(exclusions[0]).toMatchObject({
@@ -839,59 +718,58 @@ describe("addressing report (👎 → \"Wasn't talking to you\")", () => {
     });
     // The analyzer reads it back as a plain term list.
     expect(await listAddressingExclusionTerms(ctx.db)).toEqual(["Георгій"]);
-    // The whole report is one story on the feedback trace.
+    // The whole report is one story on the recorded trace.
     const traces = await listTraces({ feature: "user-feedback" });
-    const answer = traces.traces.find((t) => t.action === "answer")!;
-    expect(answer.outputSummary).toContain("excluded from addressing");
-    const full = await getTrace(answer.id);
+    const recorded = traces.traces.find((t) => t.action === "recorded")!;
+    expect(recorded.outputSummary).toContain("excluded from addressing");
+    const full = await getTrace(recorded.id);
     expect(full!.events.some((e) => e.message.includes("addressing exclusion recorded"))).toBe(
       true,
     );
   });
 
   it("keeps one row when the same word is reported again", async () => {
-    await seedExchange();
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
     await seedAddressingTrace({ source: "analyzer", matchedText: "Георгій" });
-    const { transport } = fakeFeedbackTransport();
 
-    await reportNotAddressed(transport);
-    // A repeat reaction reopens the same feedback row; the second report lands on
-    // an already-excluded word.
-    const second = await reportNotAddressed(transport);
+    await reportNotAddressed(ports);
+    await reportNotAddressed(ports);
 
-    expect(second.status).toBe("recorded");
     expect(await listAddressingExclusions(ctx.db)).toHaveLength(1);
     const traces = await listTraces({ feature: "user-feedback" });
-    const answers = traces.traces.filter((t) => t.action === "answer");
-    expect(answers.some((t) => t.outputSummary?.includes("excluded from addressing"))).toBe(true);
+    const recorded = traces.traces.filter((t) => t.action === "recorded");
+    expect(recorded.some((t) => t.outputSummary?.includes("excluded from addressing"))).toBe(true);
   });
 
   // The honest bound of the feature: an @mention, a reply, or the name spelled
   // exactly has no word that could be excluded without deafening the bot.
   it("records the complaint but excludes nothing when the bot was addressed explicitly", async () => {
-    await seedExchange();
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
     await seedAddressingTrace({ source: "mention", matchedText: null });
-    const { transport } = fakeFeedbackTransport();
 
-    expect((await reportNotAddressed(transport)).status).toBe("recorded");
+    await reportNotAddressed(ports);
 
-    expect(await getFeedbackRow()).toMatchObject({ topic: "addressing" });
     expect(await listAddressingExclusions(ctx.db)).toHaveLength(0);
     const traces = await listTraces({ feature: "user-feedback" });
-    const answer = traces.traces.find((t) => t.action === "answer")!;
-    expect(answer.outputSummary).toContain("nothing to exclude");
+    const recorded = traces.traces.find((t) => t.action === "recorded")!;
+    expect(recorded.outputSummary).toContain("nothing to exclude");
   });
 
   it("refuses to exclude the bot's own display name", async () => {
-    await seedExchange();
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
     await seedAddressingTrace({ source: "analyzer", matchedText: "aria", botDisplayName: "Aria" });
-    const { transport } = fakeFeedbackTransport();
 
-    await reportNotAddressed(transport);
+    await reportNotAddressed(ports);
 
     expect(await listAddressingExclusions(ctx.db)).toHaveLength(0);
     const traces = await listTraces({ feature: "user-feedback" });
-    expect(traces.traces.find((t) => t.action === "answer")!.outputSummary).toContain(
+    expect(traces.traces.find((t) => t.action === "recorded")!.outputSummary).toContain(
       "own display name",
     );
   });
@@ -899,26 +777,29 @@ describe("addressing report (👎 → \"Wasn't talking to you\")", () => {
   // An addressing report is a routing fault, not a judgment of the reply: folding
   // it would teach style from a mis-fire (user decision, 2026-07-26).
   it("is never folded into preferences or self-corrections", async () => {
-    await seedExchange();
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
     await seedAddressingTrace({ source: "analyzer", matchedText: "Георгій" });
-    const { transport } = fakeFeedbackTransport();
-    await reportNotAddressed(transport);
+    await reportNotAddressed(ports);
 
     const llm = fakeFoldLlm();
-    const result = await runSelfImprovement({ complete: llm.complete, db: ctx.db });
+    const result = await runSelfImprovement({ complete: llm.complete, ports, db: ctx.db });
 
     expect(result.summary).toBe("nothing to incorporate");
     expect(llm.calls).toHaveLength(0);
-    const row = await getFeedbackRow();
-    expect(row).toMatchObject({ prefsVersion: null, correctionsVersion: null });
+    for (const row of ports.rows.values()) {
+      expect(row).toMatchObject({ prefsVersion: null, correctionsVersion: null });
+    }
     expect(await getLatestCorrection(ctx.db)).toBeNull();
   });
 
   it("lets the operator undo an exclusion, making the word matchable again", async () => {
-    await seedExchange();
+    const ports = fakePorts();
+    ports.seedExchange();
+    await seedKnownUsers("100", "200");
     await seedAddressingTrace({ source: "analyzer", matchedText: "Георгій" });
-    const { transport } = fakeFeedbackTransport();
-    await reportNotAddressed(transport);
+    await reportNotAddressed(ports);
     const [exclusion] = await listAddressingExclusions(ctx.db);
 
     const removed = await removeAddressingExclusion(exclusion.id, ctx.db);

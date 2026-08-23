@@ -1,7 +1,5 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import { getBackgroundRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
@@ -16,7 +14,7 @@ import { startTrace } from "@/server/trace";
 import { normalizeModelName } from "../model-name";
 import type { UserFeedback } from "../types";
 import { getReplyTrace, renderExchange, renderReplyTrace } from "./exchange";
-import { setFeedbackReflection } from "./repository";
+import { resolveFeedbackPorts, type FeedbackPorts } from "./feedback-store";
 
 /**
  * Self-reflection: as soon as a user answers the 👍/👎 menu, the bot reads back
@@ -47,7 +45,8 @@ export interface ReflectionDeps {
   personalityPrompt?: string | null;
   /** Configured model id — fallback for stamping when the provider reports none. */
   model?: string | null;
-  db?: DrizzleDb;
+  /** The source-owned feedback rows + mirror (real: the tg internal API). */
+  ports: FeedbackPorts;
 }
 
 const REFLECTION_PROMPT =
@@ -88,7 +87,6 @@ export async function reflectOnFeedback(
   feedback: UserFeedback,
   deps: ReflectionDeps,
 ): Promise<string | null> {
-  const db = deps.db ?? getDb();
   // Nothing to explain until the user has actually said something.
   if (feedback.status !== "completed" || !feedback.feedback?.trim()) return null;
 
@@ -108,7 +106,11 @@ export async function reflectOnFeedback(
     // How the reply was produced is the evidence. Without it (an old or purged
     // trace) the bot still reflects, but only on the exchange itself — a thinner
     // answer, and one the operator can see is thinner.
-    const replyTrace = await getReplyTrace(db, feedback.chatId, feedback.telegramMessageId);
+    const replyTrace = await getReplyTrace(
+      deps.ports.messages,
+      feedback.chatId,
+      feedback.telegramMessageId,
+    );
     const evidence = replyTrace ? renderReplyTrace(replyTrace) : null;
     if (evidence) {
       await trace.event({
@@ -124,7 +126,7 @@ export async function reflectOnFeedback(
         data: { traceId: replyTrace?.id ?? null },
       });
     }
-    const context = evidence ?? (await renderExchange(db, feedback));
+    const context = evidence ?? (await renderExchange(deps.ports.messages, feedback));
 
     const persona = personaContext(deps.personalityPrompt);
     const messages: ChatMessage[] = [
@@ -155,7 +157,7 @@ export async function reflectOnFeedback(
       return null;
     }
     const model = normalizeModelName(result.model ?? deps.model);
-    await setFeedbackReflection(db, feedback.id, reflection, model);
+    await deps.ports.feedbacks.patch(feedback.id, { reflection, reflectionModel: model });
     await trace.event({
       type: "db",
       level: "success",
@@ -177,10 +179,13 @@ export async function reflectOnFeedback(
 
 /**
  * The real collaborators for a reflection, or null when no LLM is configured
- * (nothing to reflect with — the daily job retries once one is).
+ * or the source API is unreachable from env (nothing to reflect with / no
+ * rows to reach — the daily job retries once both are).
  */
-export async function resolveReflectionDeps(db?: DrizzleDb): Promise<ReflectionDeps | null> {
-  const runtime = await getBackgroundRuntime(db).catch(() => null);
+export async function resolveReflectionDeps(): Promise<ReflectionDeps | null> {
+  const ports = resolveFeedbackPorts();
+  if (!ports) return null;
+  const runtime = await getBackgroundRuntime().catch(() => null);
   if (!runtime) return null;
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
   const personalityPrompt = await getActivePersonalityPrompt().catch(() => null);
@@ -194,25 +199,6 @@ export async function resolveReflectionDeps(db?: DrizzleDb): Promise<ReflectionD
       }),
     personalityPrompt,
     model: runtime.model,
-    db,
+    ports,
   };
-}
-
-/**
- * Start reflecting on a just-answered feedback and return immediately. The
- * inference happens outside the caller's turn on purpose — see the module note.
- */
-export function scheduleReflection(feedback: UserFeedback, db?: DrizzleDb): void {
-  void (async () => {
-    const deps = await resolveReflectionDeps(db);
-    if (!deps) return;
-    await reflectOnFeedback(feedback, deps);
-  })().catch((err) => {
-    // reflectOnFeedback records its own failures; this only catches a broken
-    // settings/persona read, which must not surface as an unhandled rejection.
-    console.error(
-      "Failed to start feedback reflection:",
-      err instanceof Error ? err.message : String(err),
-    );
-  });
 }

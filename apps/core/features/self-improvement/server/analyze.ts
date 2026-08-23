@@ -17,16 +17,13 @@ import { startTrace } from "@/server/trace";
 import { normalizeModelName } from "../model-name";
 import type { UserFeedback } from "../types";
 import { renderExchange } from "./exchange";
+import type { FeedbackPorts } from "./feedback-store";
 import { reflectOnFeedback } from "./reflect";
 import {
   getLatestCorrection,
   getLatestPreference,
   insertCorrection,
   insertPreference,
-  listUnincorporatedForCorrections,
-  listUnincorporatedForPrefs,
-  stampCorrectionsVersion,
-  stampPrefsVersion,
 } from "./repository";
 
 /**
@@ -59,6 +56,9 @@ export interface SelfImprovementDeps {
   model?: string | null;
   /** Publish live per-fold progress to the scheduler (drives the Jobs dashboard). */
   onProgress?: (progress: JobProgress | null) => void;
+  /** The source-owned feedback rows + mirror (real: the tg internal API). */
+  ports: FeedbackPorts;
+  /** The core store the distilled outputs (prefs, corrections) are written to. */
   db?: DrizzleDb;
 }
 
@@ -110,6 +110,17 @@ export function parsePrefsJson(content: string): { likes: string; dislikes: stri
   return { likes: obj.likes, dislikes: obj.dislikes };
 }
 
+/** Stamp the fold version that incorporated each of the given feedbacks. */
+async function stampVersions(
+  ports: FeedbackPorts,
+  ids: string[],
+  patch: { prefsVersion?: number; correctionsVersion?: number },
+): Promise<void> {
+  for (const id of ids) {
+    await ports.feedbacks.patch(id, patch);
+  }
+}
+
 /** Group feedbacks by user, preserving order. */
 function groupByUser(feedbacks: UserFeedback[]): Map<string, UserFeedback[]> {
   const groups = new Map<string, UserFeedback[]>();
@@ -131,8 +142,8 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
   const db = deps.db ?? getDb();
 
   const [prefsBacklog, correctionsBacklog] = await Promise.all([
-    listUnincorporatedForPrefs(db),
-    listUnincorporatedForCorrections(db),
+    deps.ports.feedbacks.listUnincorporated("prefs"),
+    deps.ports.feedbacks.listUnincorporated("corrections"),
   ]);
   if (prefsBacklog.length === 0 && correctionsBacklog.length === 0) {
     return {
@@ -213,7 +224,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
           complete: deps.complete,
           personalityPrompt: deps.personalityPrompt,
           model: deps.model,
-          db,
+          ports: deps.ports,
         });
         if (reflection) written.set(feedback.id, reflection);
       }
@@ -253,7 +264,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
           current: ++processed,
           total,
         });
-        const exchange = await renderExchange(db, feedback);
+        const exchange = await renderExchange(deps.ports.messages, feedback);
         const result = await fold(
           PREFS_FOLD_PROMPT,
           `Current profile:\nLikes: ${draft.likes || "(empty)"}\nDislikes: ${draft.dislikes || "(empty)"}\n\nNew feedback:\n${exchange}`,
@@ -285,7 +296,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
         dislikes: draft.dislikes,
         version,
       });
-      await stampPrefsVersion(db, folded, version);
+      await stampVersions(deps.ports, folded, { prefsVersion: version });
       for (const id of folded) incorporatedIds.add(id);
       prefsUpdated += 1;
       await trace.event({
@@ -312,7 +323,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
 
       for (const feedback of correctionsBacklog) {
         deps.onProgress?.({ step: "Folding self-corrections", current: ++processed, total });
-        const exchange = await renderExchange(db, feedback);
+        const exchange = await renderExchange(deps.ports.messages, feedback);
         const result = await fold(
           CORRECTIONS_FOLD_PROMPT,
           `Current guidelines:\n${draft || "(none yet)"}\n\nNew feedback:\n${exchange}`,
@@ -342,7 +353,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
           correction: draft,
           version,
         });
-        await stampCorrectionsVersion(db, folded, version);
+        await stampVersions(deps.ports, folded, { correctionsVersion: version });
         for (const id of folded) incorporatedIds.add(id);
         correctionsUpdated = true;
         await trace.event({

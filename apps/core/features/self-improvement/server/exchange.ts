@@ -1,11 +1,10 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getChatMessageByTelegramId } from "@/features/history/server/repository";
 import { FEATURES } from "@/lib/features";
 import type { Trace } from "@/lib/trace";
 import { getLatestTraceIdsByCorrelation, getTrace } from "@/server/trace";
 import type { UserFeedback } from "../types";
+import type { SourceMessagePort } from "./feedback-store";
 
 /**
  * Renders what the bot did, as text an LLM can read back. Two shapes, both fed
@@ -68,7 +67,7 @@ const PRODUCER_FEATURES = [FEATURES["bot-messaging"].id, FEATURES.tasks.id];
  * caller, which always has a degraded path.
  */
 export async function getReplyTrace(
-  db: DrizzleDb,
+  messages: SourceMessagePort,
   chatId: string,
   telegramMessageId: number,
 ): Promise<Trace | null> {
@@ -76,8 +75,8 @@ export async function getReplyTrace(
     const direct = await producerTrace(`${chatId}:${telegramMessageId}`);
     if (direct) return direct;
 
-    const replyRow = await getChatMessageByTelegramId(db, chatId, telegramMessageId);
-    const anchor = replyRow?.replyToMessageId;
+    const replyRow = await messages.getMessage(chatId, String(telegramMessageId));
+    const anchor = replyRow?.replyToSourceMessageId;
     if (anchor == null) return null;
     return await producerTrace(`${chatId}:${anchor}`);
   } catch {
@@ -101,11 +100,18 @@ async function producerTrace(correlation: string): Promise<Trace | null> {
  * (the trace's full bodies stay linked for the operator, but the mirror carries
  * the same exchange text without the repeated per-trace boilerplate).
  */
-export async function renderExchange(db: DrizzleDb, feedback: UserFeedback): Promise<string> {
-  const reply = await getChatMessageByTelegramId(db, feedback.chatId, feedback.telegramMessageId);
+export async function renderExchange(
+  messages: SourceMessagePort,
+  feedback: UserFeedback,
+): Promise<string> {
+  const reply = await messages
+    .getMessage(feedback.chatId, String(feedback.telegramMessageId))
+    .catch(() => null);
   const asked =
-    reply?.replyToMessageId != null
-      ? await getChatMessageByTelegramId(db, feedback.chatId, reply.replyToMessageId)
+    reply?.replyToSourceMessageId != null
+      ? await messages
+          .getMessage(feedback.chatId, reply.replyToSourceMessageId)
+          .catch(() => null)
       : null;
   const lines = [
     `User message: ${asked?.content?.trim() || "(not available)"}`,

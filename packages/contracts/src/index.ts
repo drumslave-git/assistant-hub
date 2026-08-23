@@ -11,6 +11,10 @@ export { DEFAULT_ASSISTANT_ID } from "./assistants";
 export { EMBEDDING_DIMENSIONS } from "./embeddings";
 export {
   internalDeleteMessageResponseSchema,
+  internalFeedbackPatchRequestSchema,
+  internalFeedbackResponseSchema,
+  internalFeedbackSchema,
+  internalFeedbacksResponseSchema,
   internalMediaDescribeRequestSchema,
   internalMediaDescribeResponseSchema,
   internalMediaResponseSchema,
@@ -26,6 +30,7 @@ export {
   internalSentPhotosResponseSchema,
   internalSentVoiceResponseSchema,
   type InternalDeleteMessageResponse,
+  type InternalFeedback,
   type InternalMedia,
   type InternalMediaDescribeResponse,
   type InternalReactionResponse,
@@ -44,6 +49,7 @@ export {
   operatorConnectionSchema,
   operatorConnectionUpdateRequestSchema,
   operatorConnectionsResponseSchema,
+  operatorMessageResponseSchema,
   operatorMessageSchema,
   operatorMessagesResponseSchema,
   operatorSourceSettingsResponseSchema,

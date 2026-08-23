@@ -12,6 +12,7 @@ import type { IntervalRunContext } from "@/server/jobs/interval-scheduler";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 
 import { runSelfImprovement } from "./analyze";
+import { resolveFeedbackPorts } from "./feedback-store";
 
 /**
  * Daily scheduler for the self-improvement incorporation job — the shared
@@ -23,6 +24,11 @@ import { runSelfImprovement } from "./analyze";
 
 /** One incorporation run with the real collaborators, under the advisory lock. */
 async function runIncorporation(ctx?: IntervalRunContext): Promise<string> {
+  // The feedback rows live with the owning source; without its API there is
+  // nothing to read or stamp — reported like an unconfigured LLM, never a
+  // silent empty run.
+  const ports = resolveFeedbackPorts();
+  if (!ports) return "telegram service not configured (TG_API_URL / INTERNAL_API_TOKEN)";
   const runtime = await getBackgroundRuntime().catch(() => null);
   if (!runtime) return "LLM not configured";
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
@@ -40,6 +46,7 @@ async function runIncorporation(ctx?: IntervalRunContext): Promise<string> {
       personalityPrompt,
       model: runtime.model,
       onProgress: ctx?.reportProgress,
+      ports,
     });
   });
   if (!outcome.ran) return "skipped (locked elsewhere)";

@@ -169,7 +169,7 @@ function ExclusionsTable({ exclusions }: { exclusions: AddressingExclusionView[]
  */
 export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
   useLiveRefresh("feedback");
-  const { feedbacks, preferences, correction, exclusions } = view;
+  const { feedbacks, preferences, correction, exclusions, feedbacksError } = view;
 
   const feedbackTab = (
     <Card>
@@ -180,7 +180,13 @@ export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {feedbacks.length === 0 ? (
+        {feedbacksError ? (
+          // The rows live in the telegram service's store — an unreachable
+          // service is an outage to surface, never an empty listing.
+          <p className="text-sm text-danger">
+            Feedback could not be loaded: {feedbacksError}
+          </p>
+        ) : feedbacks.length === 0 ? (
           <EmptyState
             icon={MessageSquareHeart}
             title="No feedback yet"

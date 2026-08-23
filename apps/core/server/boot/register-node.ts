@@ -27,26 +27,34 @@ import {
   stopSelfImprovementScheduler,
 } from "@/features/self-improvement/server/scheduler";
 import { startVisionBackfill, stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
+import {
+  startSourceEventsConsumerFromEnv,
+  type SourceEventsConsumer,
+} from "@/server/source/events-consumer";
 import { startTraceStore, stopTraceStore } from "@/server/trace";
 import { startTurnConsumerFromEnv, type TurnConsumer } from "@/server/turn/consume";
 
-import { startBot, stopBot } from "./bot-manager";
-
 /**
- * Node-runtime bot bootstrap, split out of `instrumentation.ts` so the Node-only
+ * Node-runtime bootstrap, split out of `instrumentation.ts` so the Node-only
  * `process` APIs (signal handlers, exit) never appear in the Edge-analyzed
- * instrumentation module. Imported dynamically only when the server runs in the
- * Node.js runtime.
+ * instrumentation module. Imported dynamically only when the server runs in
+ * the Node.js runtime.
+ *
+ * Since the source split the core runs NO Telegram poller: inbound turns
+ * arrive on the queue (the tg app enqueues), replies leave as bus events,
+ * and everything Telegram-shaped is the tg service's. What boots here is
+ * the brain — the queue consumer, the bus subscriber, and the background
+ * jobs.
  */
 export function registerNode(): void {
-  // Release the single getUpdates lock promptly on shutdown so a restart/redeploy
-  // doesn't collide with the previous poller.
   let shuttingDown = false;
   let turnConsumer: TurnConsumer | null = null;
+  let eventsConsumer: SourceEventsConsumer | null = null;
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     await turnConsumer?.close().catch(() => undefined);
+    await eventsConsumer?.close().catch(() => undefined);
     stopVisionBackfill();
     stopMessageIndexing();
     stopTaskScheduler();
@@ -59,10 +67,6 @@ export function registerNode(): void {
     // Flush any settled traces still buffered in memory before the process exits,
     // so a graceful restart doesn't lose the last window of debug history.
     await stopTraceStore().catch(() => undefined);
-    await Promise.race([
-      stopBot().catch(() => undefined),
-      new Promise((resolve) => setTimeout(resolve, 3000)),
-    ]);
     process.exit(0);
   };
   process.once("SIGTERM", () => void shutdown());
@@ -73,23 +77,40 @@ export function registerNode(): void {
   // Best-effort — a failure here must never gate server startup.
   void startTraceStore().catch(() => undefined);
 
-  // Start the inbound-turn queue consumer (redesign Phase 2) — only when the
-  // bus and the v2 core store are configured (REDIS_URL + STORE_DATABASE_URL),
-  // so a v1-only deployment boots exactly as before. Best-effort: a Redis
-  // that is down surfaces in logs, never gates startup.
+  // Start the inbound-turn queue consumer — the pipeline's ONLY entrance
+  // since the source split. Env-gated (REDIS_URL + STORE_DATABASE_URL), and
+  // loudly so: a core without its queue processes no messages at all.
   void startTurnConsumerFromEnv()
     .then((consumer) => {
       turnConsumer = consumer;
-      if (consumer) console.log("Inbound turn consumer started (queue: inbound-messages)");
+      if (consumer) {
+        console.log("Inbound turn consumer started (queue: inbound-messages)");
+      } else {
+        console.warn(
+          "Inbound turn consumer NOT started — set REDIS_URL and STORE_DATABASE_URL; " +
+            "until then the core processes no incoming messages.",
+        );
+      }
     })
     .catch((err) => {
       console.error("Inbound turn consumer failed to start:", err);
     });
 
+  // Start the cross-app event subscriber (feedback.recorded → the learning
+  // steps; the SSE bridge joins here when it lands). Same env gate.
+  void startSourceEventsConsumerFromEnv()
+    .then((consumer) => {
+      eventsConsumer = consumer;
+      if (consumer) console.log("Source events consumer started (channel: assistant-hub:events)");
+    })
+    .catch((err) => {
+      console.error("Source events consumer failed to start:", err);
+    });
+
   // Start the in-process vision-backfill scheduler. It arms an initial run so any
   // media left `pending` from before boot is captioned during the first quiet
-  // window; bot activity re-arms the idle wait thereafter. Independent of the bot
-  // token — a run with no LLM configured settles as a no-op.
+  // window; bot activity re-arms the idle wait thereafter. A run with no LLM
+  // configured settles as a no-op.
   startVisionBackfill();
 
   // Start the in-process message search-indexing scheduler. It builds each
@@ -101,7 +122,7 @@ export function registerNode(): void {
 
   // Start the periodic tasks poller. It fires due tasks at their
   // wall-clock time (independent of bot activity); a tick with no LLM configured,
-  // no due tasks, or the bot stopped settles as a harmless no-op.
+  // no due tasks, or the source unreachable settles as a harmless no-op.
   startTaskScheduler();
 
   // Start the daily self-improvement poller. It checks once a minute whether the
@@ -141,24 +162,4 @@ export function registerNode(): void {
   // why. A machine with no yt-dlp and no upstream build for its platform settles
   // as a harmless no-op.
   startYtDlpUpdater();
-
-  // Fire-and-forget: do not block server startup on the Telegram handshake. A
-  // network failure here is not fatal — the manager reconnects on its own — so
-  // the warning below is the boot-time note, not the last word.
-  void startBot()
-    .then((status) => {
-      if (status.state === "running") {
-        console.log(`Telegram bot @${status.username} started (long polling)`);
-      } else {
-        console.warn(
-          `Telegram bot not autostarted: ${status.error ?? "no bot token configured — set one in Settings and Start it"}`,
-        );
-      }
-    })
-    .catch((err: unknown) => {
-      console.error(
-        "Telegram bot autostart failed:",
-        err instanceof Error ? err.message : String(err),
-      );
-    });
 }

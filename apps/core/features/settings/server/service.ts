@@ -119,14 +119,6 @@ export async function getSettings(db: DrizzleDb = getDb()): Promise<Settings> {
 }
 
 /**
- * Server-only: the raw Telegram bot token, or null when unset. Used by the bot
- * manager to start the poller — never exposed through an API or to clients.
- */
-export async function getTelegramBotToken(db: DrizzleDb = getDb()): Promise<string | null> {
-  return (await getSettingsRecord(db))?.telegramBotToken ?? null;
-}
-
-/**
  * Server-only: the stored Tavily API key, or null when unset. Read at call time
  * by the web-search MCP tool so a key change takes effect without re-registering.
  * Never exposed through an API or to clients.
@@ -813,7 +805,10 @@ export async function updateSettings(
             : `Updated ${fields.join(", ")}`,
         relatedIds: { [FEATURE.relatedIdsKey]: [SETTINGS_ID] },
       });
-      return toClientSettings(record);
+      // Same source-derived flag as getSettings: "configured" is the tg
+      // connection's existence, not a local column.
+      const source = await getSourceBotStatus().catch(() => ({ configured: false }));
+      return { ...toClientSettings(record), telegramBotTokenConfigured: source.configured };
     },
   );
 }

@@ -165,6 +165,63 @@ export const internalDeleteMessageResponseSchema = z.object({
 export type InternalDeleteMessageResponse = z.infer<typeof internalDeleteMessageResponseSchema>;
 
 /**
+ * One feedback row as served over the internal API (the raw material lives
+ * in the source's store; the core's learning jobs read and stamp it here).
+ * Field names mirror the store row: `feedback` is the user's answer text.
+ */
+export const internalFeedbackSchema = z.object({
+  id: z.string().min(1),
+  chatId: z.string().min(1),
+  /** Source-local id of the reacted assistant reply. */
+  sourceMessageId: z.string().min(1),
+  userId: z.string().min(1),
+  reaction: z.enum(["up", "down"]),
+  feedback: z.string().nullable(),
+  status: z.enum(["pending", "awaiting_text", "completed"]),
+  topic: z.enum(["quality", "addressing"]),
+  /** Clean model name of the reacted reply; stamped by the core (write-back). */
+  model: z.string().nullable(),
+  reflection: z.string().nullable(),
+  reflectionModel: z.string().nullable(),
+  prefsVersion: z.number().int().nullable(),
+  correctionsVersion: z.number().int().nullable(),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+});
+
+export type InternalFeedback = z.infer<typeof internalFeedbackSchema>;
+
+/**
+ * GET /internal/feedbacks — all rows newest first (the dashboard listing);
+ * `?needs=prefs` / `?needs=corrections` narrows to the completed `quality`
+ * rows the matching fold has not incorporated yet, oldest first (the daily
+ * job's backlogs; `addressing` rows are deliberately invisible to both).
+ */
+export const internalFeedbacksResponseSchema = z.object({
+  feedbacks: z.array(internalFeedbackSchema),
+});
+
+/** GET /internal/feedbacks/:id and the PATCH response. */
+export const internalFeedbackResponseSchema = z.object({
+  feedback: internalFeedbackSchema.nullable(),
+});
+
+/**
+ * PATCH /internal/feedbacks/:id — the core's write-backs onto a feedback
+ * row: the reacted reply's model (resolved from the reply trace, which only
+ * the core can read), the reflection, and the fold-version stamps.
+ */
+export const internalFeedbackPatchRequestSchema = z
+  .object({
+    model: z.string().min(1).optional(),
+    reflection: z.string().min(1).optional(),
+    reflectionModel: z.string().min(1).optional(),
+    prefsVersion: z.number().int().positive().optional(),
+    correctionsVersion: z.number().int().positive().optional(),
+  })
+  .refine((patch) => Object.keys(patch).length > 0, { message: "empty patch" });
+
+/**
  * POST /internal/chats/:chatId/messages/:messageId/reaction — set (or, with
  * a null emoji, clear) the assistant's reaction badge on a message. The
  * source checks its mirror first: `not_found` (an id the model guessed) and

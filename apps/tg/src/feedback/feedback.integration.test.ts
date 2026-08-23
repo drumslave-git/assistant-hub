@@ -2,6 +2,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   feedbackRecordedEventSchema,
+  internalFeedbackResponseSchema,
+  internalFeedbacksResponseSchema,
+  operatorMessageResponseSchema,
   type InboundMessageEvent,
 } from "@assistant-hub/contracts";
 import {
@@ -15,6 +18,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import * as schema from "../../store/schema";
+import { createApi } from "../api";
 import { processIncomingMessage } from "../inbound";
 import { appendMessage, getMessageByTelegramId, upsertUser } from "../store";
 import {
@@ -406,4 +410,109 @@ describe("tg feedback flows", () => {
     const stored = await getFeedback(db, feedback!.id);
     expect(stored!.status).toBe("awaiting_text");
   });
+
+describe("internal feedback API (the core's learning seam)", () => {
+  function api() {
+    return createApi({
+      db,
+      manager: {
+        statuses: () => [],
+        senderFor: () => {
+          throw new Error("no sends in this test");
+        },
+        reconcileConnection: async () => undefined,
+        removeConnection: async () => undefined,
+      },
+      internalToken: "secret-token",
+    });
+  }
+  const HEADERS = { "x-internal-token": "secret-token", "content-type": "application/json" };
+
+  it("lists rows, narrows to the fold backlogs, and takes the core's write-backs", async () => {
+    const app = api();
+    const listed = internalFeedbacksResponseSchema.parse(
+      await (await app.request("/internal/feedbacks", { headers: HEADERS })).json(),
+    );
+    // Rows accumulated by the flow tests above; completed quality ones are
+    // the prefs backlog until a version stamp lands.
+    const completedQuality = listed.feedbacks.filter(
+      (f) => f.status === "completed" && f.topic === "quality",
+    );
+    expect(completedQuality.length).toBeGreaterThan(0);
+    const backlog = internalFeedbacksResponseSchema.parse(
+      await (await app.request("/internal/feedbacks?needs=prefs", { headers: HEADERS })).json(),
+    );
+    expect(backlog.feedbacks.map((f) => f.id).sort()).toEqual(
+      completedQuality
+        .filter((f) => f.prefsVersion == null)
+        .map((f) => f.id)
+        .sort(),
+    );
+
+    const target = backlog.feedbacks[0];
+    const patched = internalFeedbackResponseSchema.parse(
+      await (
+        await app.request(`/internal/feedbacks/${target.id}`, {
+          method: "PATCH",
+          headers: HEADERS,
+          body: JSON.stringify({
+            model: "gemma3:12b",
+            reflection: "Went long.",
+            reflectionModel: "gemma3:12b",
+            prefsVersion: 1,
+          }),
+        })
+      ).json(),
+    );
+    expect(patched.feedback).toMatchObject({
+      id: target.id,
+      model: "gemma3:12b",
+      reflection: "Went long.",
+      prefsVersion: 1,
+    });
+    // The stamped row left the prefs backlog.
+    const after = internalFeedbacksResponseSchema.parse(
+      await (await app.request("/internal/feedbacks?needs=prefs", { headers: HEADERS })).json(),
+    );
+    expect(after.feedbacks.map((f) => f.id)).not.toContain(target.id);
+
+    // Unknown rows 404; an empty patch is refused.
+    expect(
+      (
+        await app.request("/internal/feedbacks/ghost", {
+          method: "PATCH",
+          headers: HEADERS,
+          body: JSON.stringify({ model: "m" }),
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await app.request(`/internal/feedbacks/${target.id}`, {
+          method: "PATCH",
+          headers: HEADERS,
+          body: JSON.stringify({}),
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  it("serves one mirrored message (the exchange read)", async () => {
+    const app = api();
+    const found = operatorMessageResponseSchema.parse(
+      await (await app.request(`/internal/chats/${CHAT_ID}/messages/31`, { headers: HEADERS })).json(),
+    );
+    expect(found.message).toMatchObject({
+      sourceMessageId: "31",
+      role: "user",
+      content: "a question",
+    });
+    const missing = operatorMessageResponseSchema.parse(
+      await (
+        await app.request(`/internal/chats/${CHAT_ID}/messages/424242`, { headers: HEADERS })
+      ).json(),
+    );
+    expect(missing.message).toBeNull();
+  });
+});
 });

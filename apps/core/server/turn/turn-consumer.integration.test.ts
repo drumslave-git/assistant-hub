@@ -143,6 +143,34 @@ describe("inbound turn consumer", () => {
   }
 
   it("runs an addressed turn: composed context in, delivery + lifecycle out, marker cleared", async () => {
+    // The learned state the reply must read back: the sender's latest
+    // communication preferences and the latest global self-correction
+    // (moved here from the deleted v1-runtime prompt-injection test — the
+    // consumer is the one path composing prompts now).
+    const { insertPreference, insertCorrection } = await import(
+      "@/features/self-improvement/server/repository"
+    );
+    const { getDb } = await import("@/db/drizzle");
+    const { knownUsers } = await import("@/db/schema");
+    await getDb()
+      .insert(knownUsers)
+      .values({ userId: "5001", username: "alice_example", firstName: "Alice" })
+      .onConflictDoNothing();
+    await insertPreference(getDb(), {
+      id: crypto.randomUUID(),
+      userId: "5001",
+      model: "fixture-model",
+      likes: "short answers",
+      dislikes: "emoji walls",
+      version: 1,
+    });
+    await insertCorrection(getDb(), {
+      id: crypto.randomUUID(),
+      model: "fixture-model",
+      correction: "Answer in fewer words.",
+      version: 1,
+    });
+
     const seen: ChatMessage[][] = [];
     const result = await handleInboundJob(inboundEvent(), 1, ctx({
       generateReply: async (messages) => {
@@ -198,6 +226,15 @@ describe("inbound turn consumer", () => {
     expect(currentTurn?.content).toBe(
       '[#11] Alice (@alice_example) [reply to #10]: @fixture_bot what did Bob say?',
     );
+    // The system prompt carries the correction block, and a system message
+    // carries the sender's learned preferences.
+    expect(String(messages[0].content)).toContain("Answer in fewer words.");
+    const prefsMessage = messages.find(
+      (m) => m.role === "system" && String(m.content).includes("Communication preferences"),
+    );
+    expect(prefsMessage).toBeDefined();
+    expect(String(prefsMessage!.content)).toContain("short answers");
+    expect(String(prefsMessage!.content)).toContain("emoji walls");
 
     // The send marked the turn as acted, and the terminal settle cleared it.
     const markers = await storePool.query(`SELECT * FROM turn_actions`);

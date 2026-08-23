@@ -26,7 +26,6 @@ import {
   getLlmRuntime,
   getSettings,
   getSpeechRuntime,
-  getTelegramBotToken,
   getVisionRuntime,
   getWebSearchApiKey,
   testAudio,
@@ -47,6 +46,16 @@ vi.mock("@/server/llm/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/server/llm/client")>();
   return { ...actual, listModels: vi.fn(), chatCompletion: vi.fn() };
 });
+
+// The bot token routes to the tg source app's connection since the split;
+// the operator client is mocked so the save is asserted, not performed.
+vi.mock("@/server/source/tg-operator", () => ({
+  saveSourceBotToken: vi.fn(),
+  getSourceBotStatus: vi.fn(async () => ({
+    status: { state: "stopped", username: null, since: null, error: null },
+    configured: false,
+  })),
+}));
 
 // The browser probe runs a tool round rather than a plain completion.
 vi.mock("@/server/llm/tool-loop", async (importOriginal) => {
@@ -205,15 +214,29 @@ describe("updateSettings", () => {
     expect(updateSettingsSchema.safeParse({ dailyJobsRunTime: "23:45" }).success).toBe(true);
   });
 
-  it("never exposes the bot token but reports it as configured, and can clear it", async () => {
+  it("routes the bot token to the telegram connection and never stores it locally", async () => {
+    const { saveSourceBotToken, getSourceBotStatus } = await import(
+      "@/server/source/tg-operator"
+    );
+    vi.mocked(getSourceBotStatus).mockResolvedValue({
+      status: { state: "running", username: "fixture_bot", since: null, error: null },
+      configured: true,
+    });
     const set = await updateSettings({ telegramBotToken: "12345:secret-token" }, trigger, ctx.db);
+    expect(vi.mocked(saveSourceBotToken)).toHaveBeenCalledWith("12345:secret-token");
+    // Configured is the connection's existence at the source, not a local column…
     expect(set.telegramBotTokenConfigured).toBe(true);
     expect(JSON.stringify(set)).not.toContain("secret-token");
-    expect(await getTelegramBotToken(ctx.db)).toBe("12345:secret-token");
+    // …and nothing token-shaped lands in this database.
+    expect((await getSettingsRecord(ctx.db))?.telegramBotToken ?? null).toBeNull();
 
+    vi.mocked(getSourceBotStatus).mockResolvedValue({
+      status: { state: "stopped", username: null, since: null, error: null },
+      configured: false,
+    });
     const cleared = await updateSettings({ telegramBotToken: "" }, trigger, ctx.db);
+    expect(vi.mocked(saveSourceBotToken)).toHaveBeenLastCalledWith(null);
     expect(cleared.telegramBotTokenConfigured).toBe(false);
-    expect(await getTelegramBotToken(ctx.db)).toBeNull();
   });
 
   it("stores the Tavily key write-only and redacts it from the trace", async () => {

@@ -9,6 +9,7 @@ import { insertAddressingExclusion } from "@/features/bot-messaging/server/exclu
 import type { TraceRecorder } from "@/server/trace";
 import type { UserFeedback } from "../types";
 import { getReplyTrace } from "./exchange";
+import type { SourceMessagePort } from "./feedback-store";
 
 /**
  * "Wasn't talking to you" → an addressing exclusion.
@@ -40,11 +41,12 @@ export type AddressingReportOutcome =
  */
 export async function recordAddressingExclusion(
   db: DrizzleDb,
+  messages: SourceMessagePort,
   feedback: UserFeedback,
   trace: TraceRecorder,
 ): Promise<AddressingReportOutcome> {
   try {
-    const replyTrace = await getReplyTrace(db, feedback.chatId, feedback.telegramMessageId);
+    const replyTrace = await getReplyTrace(messages, feedback.chatId, feedback.telegramMessageId);
     const decision = replyTrace ? readAddressingCheck(replyTrace) : null;
     if (!decision) {
       return await noMatch(
@@ -92,7 +94,11 @@ export async function recordAddressingExclusion(
       chatId: feedback.chatId,
       telegramMessageId: feedback.telegramMessageId,
       userId: feedback.userId,
-      feedbackId: feedback.id,
+      // Transitional: the v1 column FKs the local users_feedbacks table,
+      // which the source-store rows can never satisfy since the split. The
+      // report's provenance survives in chat/message/user; the v2 core-store
+      // schema keeps the plain id with no FK.
+      feedbackId: null,
     });
     await trace.event({
       type: "db",

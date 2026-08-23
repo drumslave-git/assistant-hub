@@ -121,6 +121,11 @@ export const operatorMessagesResponseSchema = z.object({
   messages: z.array(operatorMessageSchema),
 });
 
+/** GET /internal/chats/:id/messages/:messageId — one mirrored message. */
+export const operatorMessageResponseSchema = z.object({
+  message: operatorMessageSchema.nullable(),
+});
+
 /**
  * One connection (a bot identity serving an assistant) — desired state from
  * the source's store joined with the actual poller state. The token never

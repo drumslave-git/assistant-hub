@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  internalFeedbackPatchRequestSchema,
   internalMediaDescribeRequestSchema,
   internalReactionRequestSchema,
   internalSendFileRequestSchema,
@@ -24,6 +25,13 @@ import { Hono } from "hono";
 
 import type { TgDb } from "./db";
 import type { BotManager, ConnectionStatus } from "./bot-manager";
+import {
+  getFeedback as getFeedbackById,
+  listFeedbacks,
+  listUnincorporatedFeedbacks,
+  patchFeedback,
+  type FeedbackRecord,
+} from "./feedback/store";
 import { formatUserLabel } from "./format";
 import { ingestGeneratedImage } from "./media/ingest";
 import { getMediaByMessage, getMediaById, markDescribed } from "./media/store";
@@ -244,6 +252,69 @@ export function createApi(input: {
       rows.map((row) => row.telegramMessageId),
     );
     return c.json({ messages: rows.map((row) => toOperatorMessage(row, media)) });
+  });
+
+  internal.get("/chats/:chatId/messages/:messageId", async (c) => {
+    const chatId = c.req.param("chatId");
+    const messageId = Number(c.req.param("messageId"));
+    if (!Number.isFinite(messageId)) {
+      return c.json({ error: { message: "messageId must be a number" } }, 400);
+    }
+    const row = await getMessageByTelegramId(input.db, chatId, messageId);
+    if (!row) return c.json({ message: null });
+    const media = await getMediaForMessages(input.db, chatId, [messageId]);
+    return c.json({ message: toOperatorMessage(row, media) });
+  });
+
+  // ---- Feedback rows (slice: the swap) ------------------------------------
+  // The raw material the core's learning jobs read and stamp: the listing
+  // (dashboard + fold backlogs) and the write-backs (model, reflection,
+  // fold-version stamps). Collection happens in this app (the flows).
+
+  const toInternalFeedback = (record: FeedbackRecord) => ({
+    id: record.id,
+    chatId: record.chatId,
+    sourceMessageId: String(record.telegramMessageId),
+    userId: record.userId,
+    reaction: record.reaction,
+    feedback: record.feedback,
+    status: record.status,
+    topic: record.topic,
+    model: record.model,
+    reflection: record.reflection,
+    reflectionModel: record.reflectionModel,
+    prefsVersion: record.prefsVersion,
+    correctionsVersion: record.correctionsVersion,
+    createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt.toISOString(),
+  });
+
+  internal.get("/feedbacks", async (c) => {
+    const needs = c.req.query("needs");
+    if (needs != null && needs !== "prefs" && needs !== "corrections") {
+      return c.json({ error: { message: "needs must be prefs or corrections" } }, 400);
+    }
+    const rows = needs
+      ? await listUnincorporatedFeedbacks(input.db, needs)
+      : await listFeedbacks(input.db);
+    return c.json({ feedbacks: rows.map(toInternalFeedback) });
+  });
+
+  internal.get("/feedbacks/:id", async (c) => {
+    const record = await getFeedbackById(input.db, c.req.param("id"));
+    return c.json({ feedback: record ? toInternalFeedback(record) : null });
+  });
+
+  internal.patch("/feedbacks/:id", async (c) => {
+    const parsed = internalFeedbackPatchRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: { message: "a non-empty write-back patch is required" } }, 400);
+    }
+    const record = await patchFeedback(input.db, c.req.param("id"), parsed.data);
+    if (!record) return c.json({ error: { message: "feedback not found" } }, 404);
+    return c.json({ feedback: toInternalFeedback(record) });
   });
 
   internal.get("/connections", async (c) => {

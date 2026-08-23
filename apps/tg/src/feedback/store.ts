@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import { feedbacks, type FeedbackRow } from "../../store/schema";
 import type { TgDb } from "../db";
@@ -22,6 +22,14 @@ export interface FeedbackRecord {
   status: "pending" | "awaiting_text" | "completed";
   topic: FeedbackTopic;
   menuMessageId: number | null;
+  /** Clean model name of the reacted reply — stamped by the core (write-back). */
+  model: string | null;
+  reflection: string | null;
+  reflectionModel: string | null;
+  prefsVersion: number | null;
+  correctionsVersion: number | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 function mapFeedback(row: FeedbackRow): FeedbackRecord {
@@ -39,6 +47,13 @@ function mapFeedback(row: FeedbackRow): FeedbackRecord {
       : "pending",
     topic: row.topic === "addressing" ? "addressing" : "quality",
     menuMessageId: row.menuMessageId,
+    model: row.model,
+    reflection: row.reflection,
+    reflectionModel: row.reflectionModel,
+    prefsVersion: row.prefsVersion,
+    correctionsVersion: row.correctionsVersion,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -127,6 +142,60 @@ export async function markFeedbackAwaitingText(db: TgDb, id: string): Promise<vo
     .update(feedbacks)
     .set({ status: "awaiting_text", updatedAt: sql`now()` })
     .where(eq(feedbacks.id, id));
+}
+
+/** All feedback rows, newest first (the dashboard listing). */
+export async function listFeedbacks(db: TgDb): Promise<FeedbackRecord[]> {
+  const rows = await db.select().from(feedbacks).orderBy(desc(feedbacks.createdAt));
+  return rows.map(mapFeedback);
+}
+
+/**
+ * Completed **quality** feedbacks the given fold has not incorporated yet,
+ * oldest first (v1 `listUnincorporatedFor*`). `addressing` rows are
+ * deliberately invisible to both folds — nothing ever stamps them, and
+ * nothing is meant to.
+ */
+export async function listUnincorporatedFeedbacks(
+  db: TgDb,
+  kind: "prefs" | "corrections",
+): Promise<FeedbackRecord[]> {
+  const versionColumn = kind === "prefs" ? feedbacks.prefsVersion : feedbacks.correctionsVersion;
+  const rows = await db
+    .select()
+    .from(feedbacks)
+    .where(
+      and(
+        eq(feedbacks.status, "completed"),
+        eq(feedbacks.topic, "quality"),
+        isNull(versionColumn),
+      ),
+    )
+    .orderBy(asc(feedbacks.createdAt));
+  return rows.map(mapFeedback);
+}
+
+/**
+ * Apply a core write-back (model / reflection / fold-version stamps). Null
+ * when the row is unknown.
+ */
+export async function patchFeedback(
+  db: TgDb,
+  id: string,
+  patch: {
+    model?: string;
+    reflection?: string;
+    reflectionModel?: string;
+    prefsVersion?: number;
+    correctionsVersion?: number;
+  },
+): Promise<FeedbackRecord | null> {
+  const rows = await db
+    .update(feedbacks)
+    .set({ ...patch, updatedAt: sql`now()` })
+    .where(eq(feedbacks.id, id))
+    .returning();
+  return rows[0] ? mapFeedback(rows[0]) : null;
 }
 
 /**

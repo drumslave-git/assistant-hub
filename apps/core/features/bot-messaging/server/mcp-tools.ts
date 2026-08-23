@@ -3,11 +3,9 @@ import "server-only";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { getDb } from "@/db/drizzle";
-import { getChatMessagesByTelegramIds } from "@/features/history/server/repository";
-import { recordBotReaction } from "@/features/history/server/service";
 import { TELEGRAM_REACTION_EMOJI, toTelegramReactionEmoji } from "@/lib/telegram";
 import { getToolContext, tryGetToolContext } from "@/server/mcp/context";
+import { resolveSourceOutbound } from "@/server/turn/tg-outbound";
 
 /**
  * `reply_to_message` — how a **message-triggered task** says something back, and
@@ -212,53 +210,38 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
             "Do not claim you reacted.",
         );
 
-      // Whether the bot will *remember* reacting: the mirror renders it on the
-      // target line (`[you reacted: 👍]`); without that record the very next
-      // turn denied having set it (operator report, 2026-08-15). The reaction
-      // IS on the message either way — a failed record must not read as a
-      // Telegram refusal, only as the memory of it missing.
-      let recorded: boolean;
-
-      if (ctx.reactToMessage) {
-        // The turn's source owns the mirror (queue-consumer path): one call
-        // checks the target, reacts, and records — same order as below.
-        let outcome: Awaited<ReturnType<NonNullable<typeof ctx.reactToMessage>>>;
-        try {
-          outcome = await ctx.reactToMessage({ messageId: message_id, emoji: reaction, big });
-        } catch (err) {
-          return telegramRefusal(err);
-        }
-        if (outcome.status === "not_found") return noMessageRefusal();
-        if (outcome.status === "own_message") return ownMessageRefusal();
-        recorded = outcome.recorded;
-      } else {
-        const [found] = await getChatMessagesByTelegramIds(getDb(), chatId, [message_id]);
-        if (!found) return noMessageRefusal();
-        if (found.role === "assistant") return ownMessageRefusal();
-
-        try {
-          // Imported lazily, and this is load-bearing: the Telegram edge imports
-          // the reply pipeline, which imports the tool registry, which imports
-          // this module. At module scope that cycle leaves `BOT_MESSAGING_TOOL_NAMES`
-          // undefined while the registrar table is being built — every tool in
-          // this file silently loses its owning feature. No other tool module
-          // reaches the bot directly; this one must, since a reaction is not a
-          // message the pipeline can deliver.
-          const { reactToChatMessage } = await import("@/server/telegram/bot-manager");
-          await reactToChatMessage(chatId, message_id, reaction, { big });
-        } catch (err) {
-          return telegramRefusal(err);
-        }
-
-        recorded = true;
-        try {
-          await recordBotReaction({ chatId, telegramMessageId: message_id, emoji: reaction });
-        } catch {
-          recorded = false;
-        }
+      // The source owns the mirror and the platform call: one request checks
+      // the target (`not_found` / `own_message`), reacts, and records. A
+      // reply turn carries the binding on its tool context; a turn without
+      // one (a task fire) reaches the source's API directly.
+      const react =
+        ctx.reactToMessage ??
+        (() => {
+          const port = resolveSourceOutbound();
+          if (!port) return null;
+          return (input: { messageId: number; emoji: string | null; big?: boolean }) =>
+            port.setReaction(chatId, input.messageId, input.emoji, { big: input.big });
+        })();
+      if (!react) {
+        return reactionRefusal(
+          "Reactions are unavailable: the telegram service is not configured. Answer without " +
+            "reacting, and do not claim you reacted.",
+        );
       }
-
-      const note = recorded
+      let outcome: Awaited<ReturnType<typeof react>>;
+      try {
+        outcome = await react({ messageId: message_id, emoji: reaction, big });
+      } catch (err) {
+        return telegramRefusal(err);
+      }
+      if (outcome.status === "not_found") return noMessageRefusal();
+      if (outcome.status === "own_message") return ownMessageRefusal();
+      // Whether the bot will *remember* reacting: the source's mirror renders
+      // it on the target line (`[you reacted: 👍]`); without that record the
+      // very next turn denied having set it (operator report, 2026-08-15).
+      // The reaction IS on the message either way — a failed record must not
+      // read as a Telegram refusal, only as the memory of it missing.
+      const note = outcome.recorded
         ? ""
         : " (Warning: the reaction could not be recorded in your history — later turns may not remember it.)";
       return {
