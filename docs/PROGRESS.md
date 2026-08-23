@@ -25,9 +25,12 @@ of Phase 2, in order:
    filter); the aggregation SQL lives tg-side pinned by a new
    integration suite, the due-scan is the summarizer's split-scan
    shape, and the core insight suite runs over the in-memory fake.
-2. **Trace client over the bus** (Phase 2 criterion, likely its own
-   slice): the tg app currently console-logs; PLAN says apps record
-   through a shared trace client and the core persists all traces.
+2. **Trace client over the bus — done (`8428ea7`).** The tg app records
+   through the shared client in contracts (buffered whole-trace,
+   published as `trace.recorded` on settle; unsettled = unpublished, so
+   mirrored chatter stays silent) and the core ingests into the one
+   trace store. Instrumented: inbound processing, feedback collection,
+   reply delivery — each on the turn's correlation.
 3. **Live end-to-end topology smoke** in the operator's environment
    (tg poller → queue → core → bus → tg send with a real bot): needs a
    tg dev database (none exists yet — create it, set `DATABASE_URL` in
@@ -490,10 +493,12 @@ and stamps `senderIsOwner` on inbound events.
         publishes on inbound, delivered replies, status flips, feedback
         menus).
       - `ec2b7ad`: the task-authority rework (owner stamps, above).
-- [ ] Trace client: apps record through the shared client over the bus;
-      the core persists all traces (PLAN "Traces and debug");
-      correlation ids tie a turn's cross-app flow into one trace.
-      Still open — the tg app console-logs today.
+- [x] Trace client (`8428ea7`): apps record through the shared client
+      over the bus (contracts `createSourceTraceRecorder` →
+      `trace.recorded` → the core's events consumer ingests into the
+      single store); correlation ids tie a turn's cross-app flow into
+      one trace (tg inbound / feedback collection / delivery all stamp
+      `<chatId>:<messageId>`).
 - [x] Docker (`917131b`): `assistant-hub-tg` image (tsx-run Node service,
       ffmpeg, isolated drizzle migration runner on the tg chain) +
       compose service (own database via the initdb hook — first init
@@ -510,6 +515,12 @@ and stamps `senderIsOwner` on inbound events.
 
 ## Session log
 
+- **2026-08-24 (trace client)** — The last code criterion of Phase 2
+  (`8428ea7`): the shared source-trace recorder in contracts, the
+  core's `trace.recorded` ingest, and tg's first instrumentation
+  (inbound / feedback collection / delivery). Phase 2 now blocks only
+  on the operator-run live topology smoke — and the standing
+  MCP-outbound design confirmation.
 - **2026-08-24 (analytics re-route)** — The flip blocker cleared
   (`fe56e5f`): analytics reads the living mirror over the tg content
   API (details under the apps/core criterion and Current state item 1).
