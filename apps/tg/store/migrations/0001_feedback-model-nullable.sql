@@ -1,0 +1,1 @@
+ALTER TABLE "feedbacks" ALTER COLUMN "model" DROP NOT NULL;

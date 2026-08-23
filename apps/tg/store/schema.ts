@@ -280,8 +280,13 @@ export const feedbacks = pgTable(
     topic: text("topic").notNull().default("quality"),
     /** Telegram `message_id` of the menu we sent (for edits + reply capture). */
     menuMessageId: bigint("menu_message_id", { mode: "number" }),
-    /** Clean model name that generated the reacted reply (informational). */
-    model: text("model").notNull(),
+    /**
+     * Clean model name that generated the reacted reply (informational).
+     * Nullable since slice D: the flow runs in this app, which cannot read
+     * the core's reply traces — the core stamps it on write-back
+     * (reflection), the same trip that fills `reflection` below.
+     */
+    model: text("model"),
     /** The bot's self-reflection on the reacted reply; null until written. */
     reflection: text("reflection"),
     /** Clean model name that wrote `reflection`, or null. */

@@ -14,7 +14,13 @@ import { buildChatInfo, buildConversationContext, buildSenderInfo } from "./cont
 import { formatUserLabel } from "./format";
 import { detectMessageMedia } from "./media/detect";
 import { ingestMessageMedia, type FileDownloader } from "./media/ingest";
-import { appendMessage, isMessageMirrored, upsertChatActivity, upsertUser } from "./store";
+import {
+  appendMessage,
+  isMessageMirrored,
+  markMessageProcessed,
+  upsertChatActivity,
+  upsertUser,
+} from "./store";
 
 /**
  * Transport-agnostic inbound processing (the tg half of what v1's
@@ -52,6 +58,18 @@ export interface InboundDeps {
   botToken: string;
   /** Publish the event as one queue job. Failures surface to the caller. */
   enqueue: (event: InboundMessageEvent) => Promise<void>;
+  /**
+   * Feedback capture (slice D): claim a reply to an `awaiting_text`
+   * feedback menu as that menu's free-text answer. True stops the turn —
+   * the message is an answer to the 👍/👎 menu, not something for the bot
+   * to respond to (it stays mirrored above; v1 behavior).
+   */
+  captureFeedback?: (input: {
+    chatId: string;
+    menuMessageId: number;
+    userId: string;
+    text: string;
+  }) => Promise<boolean>;
   /** Test seam: fake the Telegram file download. */
   download?: FileDownloader;
   now?: () => Date;
@@ -114,6 +132,25 @@ export async function processIncomingMessage(
     // Idempotency: a re-delivered update was already mirrored — and already
     // enqueued. A second queue job would run the same turn twice.
     return { status: "skipped", reason: "already_mirrored" };
+  }
+
+  // Feedback capture: a reply to an `awaiting_text` feedback menu from the
+  // reactor is the free-text answer to the 👍/👎 menu — record it and stop,
+  // the message is not a turn for the core to answer (it stays mirrored
+  // above). The hold is released here since no turn will ever settle it.
+  if (deps.captureFeedback && message.reply_to_message && text.trim()) {
+    const captured = await deps
+      .captureFeedback({
+        chatId,
+        menuMessageId: message.reply_to_message.message_id,
+        userId: senderId,
+        text,
+      })
+      .catch(() => false);
+    if (captured) {
+      await markMessageProcessed(deps.db, chatId, message.message_id).catch(() => undefined);
+      return { status: "mirrored_only", reason: "feedback_captured" };
+    }
   }
 
   // Ingest media after the mirror (its FK requires the message row). A media

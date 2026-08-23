@@ -1,9 +1,20 @@
-import { openQueue } from "@assistant-hub/bus";
-import { INBOUND_MESSAGES_QUEUE, type InboundMessageEvent } from "@assistant-hub/contracts";
+import { openPublisher, openQueue, type BusPublisher } from "@assistant-hub/bus";
+import {
+  BUS_EVENTS_CHANNEL,
+  INBOUND_MESSAGES_QUEUE,
+  type InboundMessageEvent,
+} from "@assistant-hub/contracts";
 import { run, sequentialize, type RunnerHandle } from "@grammyjs/runner";
 import { Bot, HttpError, type Context } from "grammy";
 
 import type { TgDb } from "./db";
+import {
+  captureFeedbackReply,
+  processCallbackUpdate,
+  processReactionUpdate,
+  type FeedbackDeps,
+  type FeedbackTransport,
+} from "./feedback/flows";
 import { processIncomingMessage } from "./inbound";
 import { createBotOutbound, type TgOutbound } from "./outbound";
 import { applyMessageEdit, listEnabledConnections } from "./store";
@@ -23,10 +34,11 @@ import { applyMessageEdit, listEnabledConnections } from "./store";
  * desired state on operator command arrives with the operator API slice —
  * this boots what is enabled and supervises it.
  *
- * Slice A scope: `message` and `edited_message` updates. Reactions and
- * callback queries (the feedback flows, tg-local now) are the next slice —
- * they are not yet in `allowed_updates`, so Telegram holds them back
- * rather than dropping them silently.
+ * Updates handled: `message` / `edited_message` (slice A) plus
+ * `message_reaction` / `callback_query` (slice D — the feedback flows,
+ * tg-local now that feedbacks live in this store; completions go out as
+ * `feedback.recorded` bus events for the core's learning jobs). In groups
+ * Telegram only delivers `message_reaction` when the bot is an admin.
  */
 
 export type ConnectionState = "running" | "error" | "stopped";
@@ -88,9 +100,42 @@ async function initWithDeadline(bot: Bot): Promise<void> {
   }
 }
 
+/** A running bot's API as the feedback-menu sink (reaction menus + presses). */
+function grammyFeedbackTransport(bot: Bot): FeedbackTransport {
+  const toInlineKeyboard = (keyboard: { text: string; callbackData: string }[][]) => ({
+    inline_keyboard: keyboard.map((row) =>
+      row.map((button) => ({ text: button.text, callback_data: button.callbackData })),
+    ),
+  });
+  return {
+    async sendMenu(input) {
+      const sent = await bot.api.sendMessage(input.chatId, input.text, {
+        reply_parameters: { message_id: input.replyToMessageId },
+        reply_markup: toInlineKeyboard(input.keyboard),
+      });
+      return { messageId: sent.message_id };
+    },
+    async editMenu(input) {
+      await bot.api.editMessageText(input.chatId, input.messageId, input.text, {
+        // Editing without `reply_markup` drops the inline keyboard.
+        ...(input.keyboard ? { reply_markup: toInlineKeyboard(input.keyboard) } : {}),
+      });
+    },
+    async deleteMenu(input) {
+      await bot.api.deleteMessage(input.chatId, input.messageId);
+    },
+    async answerCallback(input) {
+      await bot.api.answerCallbackQuery(input.callbackQueryId, {
+        ...(input.text ? { text: input.text } : {}),
+      });
+    },
+  };
+}
+
 export class BotManager {
   private pollers = new Map<string, Poller>();
   private queue: ReturnType<typeof openQueue<InboundMessageEvent>>;
+  private publisher: BusPublisher;
 
   constructor(
     private readonly deps: {
@@ -100,6 +145,16 @@ export class BotManager {
     },
   ) {
     this.queue = openQueue<InboundMessageEvent>(INBOUND_MESSAGES_QUEUE, deps.redisUrl);
+    this.publisher = openPublisher(deps.redisUrl);
+  }
+
+  /** The feedback flows' collaborators over one running bot. */
+  private feedbackDeps(bot: Bot): FeedbackDeps {
+    return {
+      db: this.deps.db,
+      transport: grammyFeedbackTransport(bot),
+      publish: (event) => this.publisher.publish(BUS_EVENTS_CHANNEL, event),
+    };
   }
 
   /** Start a poller for every enabled connection. Boot entry. */
@@ -224,6 +279,9 @@ export class BotManager {
     bot.use(sequentialize((ctx) => ctx.chat?.id.toString()));
     bot.on("message", (ctx) => this.onMessage(poller, input.botToken, ctx));
     bot.on("edited_message", (ctx) => this.onEditedMessage(ctx));
+    // Feedback collection: 👍/👎 reactions open a menu, presses answer it.
+    bot.on("message_reaction", (ctx) => this.onReaction(bot, ctx));
+    bot.on("callback_query:data", (ctx) => this.onCallbackQuery(bot, ctx));
     bot.catch((err) => {
       console.error(`Telegram bot error (${input.connectionId}):`, err.error);
     });
@@ -251,7 +309,11 @@ export class BotManager {
 
     const runner = run(bot, {
       runner: {
-        fetch: { allowed_updates: ["message", "edited_message"] },
+        // `message_reaction` is opt-in: it must be listed here or Telegram
+        // never delivers it (and in groups the bot must also be an admin).
+        fetch: {
+          allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
+        },
         maxRetryTime: FETCH_RETRY_WINDOW_MS,
       },
     });
@@ -269,6 +331,7 @@ export class BotManager {
     const message = ctx.message;
     if (!message || !ctx.chat) return;
     try {
+      const bot = poller.bot;
       await processIncomingMessage(message, {
         db: this.deps.db,
         assistantId: poller.assistantId,
@@ -282,12 +345,40 @@ export class BotManager {
         enqueue: async (event) => {
           await this.queue.add("message.inbound", event);
         },
+        // A reply to an awaiting feedback menu is that menu's answer, not a
+        // turn; the capture deletes the menu and publishes the completion.
+        captureFeedback: bot
+          ? async (input) => (await captureFeedbackReply(input, this.feedbackDeps(bot))) != null
+          : undefined,
       });
     } catch (err) {
       console.error(
         `Inbound processing failed for ${ctx.chat.id}:${message.message_id}:`,
         errorMessage(err),
       );
+    }
+  }
+
+  private async onReaction(bot: Bot, ctx: Context): Promise<void> {
+    const reaction = ctx.messageReaction;
+    if (!reaction) return;
+    try {
+      await processReactionUpdate(reaction, this.feedbackDeps(bot));
+    } catch (err) {
+      console.error(
+        `Reaction processing failed for ${reaction.chat.id}:${reaction.message_id}:`,
+        errorMessage(err),
+      );
+    }
+  }
+
+  private async onCallbackQuery(bot: Bot, ctx: Context): Promise<void> {
+    const query = ctx.callbackQuery;
+    if (!query) return;
+    try {
+      await processCallbackUpdate(query, this.feedbackDeps(bot));
+    } catch (err) {
+      console.error(`Callback processing failed for query ${query.id}:`, errorMessage(err));
     }
   }
 
@@ -322,12 +413,13 @@ export class BotManager {
     this.setStatus(poller, { state: "stopped", username: null, since: null, error: null });
   }
 
-  /** Stop every poller and the queue producer. Shutdown entry. */
+  /** Stop every poller, the queue producer, and the bus publisher. Shutdown entry. */
   async close(): Promise<void> {
     for (const poller of this.pollers.values()) {
       poller.desired = false;
       await this.stopPoller(poller);
     }
     await this.queue.close();
+    await this.publisher.close();
   }
 }
