@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { recordIncomingMessage } from "@/features/history/server/service";
 import { listTraces } from "@/server/trace";
@@ -12,6 +12,14 @@ import {
   updateAliases,
   updateLanguage,
 } from "./service";
+
+// Curated directory edits land at the source first (the tg service owns
+// the directory since the split); mocked so these tests assert the local
+// shadow behavior without a live service.
+vi.mock("@/server/source/tg-operator", () => ({
+  writeSourceUser: vi.fn(),
+  writeSourceChat: vi.fn(),
+}));
 
 let ctx: TestDb;
 

@@ -2,11 +2,15 @@ import "server-only";
 
 import {
   DEFAULT_ASSISTANT_ID,
+  operatorChatResponseSchema,
   operatorConnectionResponseSchema,
   operatorConnectionsResponseSchema,
   operatorSourceSettingsResponseSchema,
+  operatorUserResponseSchema,
+  type OperatorChat,
   type OperatorConnection,
   type OperatorSourceSettings,
+  type OperatorUser,
 } from "@assistant-hub/contracts";
 
 import { ApiError } from "@/lib/api-error";
@@ -54,6 +58,16 @@ export interface TgOperatorClient {
     ownerUsername: string | null;
     ownerUserId?: string | null;
   }): Promise<OperatorSourceSettings>;
+  /** Curated user fields — the source is the authority for its directory. */
+  updateUser(
+    id: string,
+    input: { aliases: string[] } | { language: string | null },
+  ): Promise<OperatorUser>;
+  /** Curated chat fields (group notes / reply language). */
+  updateChat(
+    id: string,
+    input: { notes: string | null } | { language: string | null },
+  ): Promise<OperatorChat>;
 }
 
 /** The client, or null when the source API is not configured. */
@@ -117,7 +131,80 @@ export function tgOperatorClient(): TgOperatorClient | null {
       );
       return body.settings;
     },
+    async updateUser(id, input) {
+      const body = operatorUserResponseSchema.parse(
+        await request(`/internal/users/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify(input),
+        }),
+      );
+      if (!body.user) throw new Error("tg operator API returned no user");
+      return body.user;
+    },
+    async updateChat(id, input) {
+      const body = operatorChatResponseSchema.parse(
+        await request(`/internal/chats/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify(input),
+        }),
+      );
+      if (!body.chat) throw new Error("tg operator API returned no chat");
+      return body.chat;
+    },
   };
+}
+
+/**
+ * The source write behind a curated directory edit (aliases, languages,
+ * group notes). The source owns the directory since the split, so the edit
+ * lands there FIRST and a failure surfaces to the caller — an edit that did
+ * not reach the authority must not pretend by updating only the local
+ * shadow (the next inbound event would overwrite it with the source's old
+ * value).
+ */
+export async function writeSourceUser(
+  id: string,
+  input: { aliases: string[] } | { language: string | null },
+): Promise<void> {
+  const client = tgOperatorClient();
+  if (!client) {
+    throw ApiError.serviceUnavailable(
+      "telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN) — the edit cannot be saved",
+    );
+  }
+  await client.updateUser(id, input);
+}
+
+/**
+ * Owner sibling of {@link writeSourceUser}: the source resolves `isOwner`
+ * per inbound event, so the identity must land there or the change never
+ * takes effect.
+ */
+export async function saveSourceOwner(input: {
+  ownerUsername: string | null;
+  ownerUserId: string | null;
+}): Promise<void> {
+  const client = tgOperatorClient();
+  if (!client) {
+    throw ApiError.serviceUnavailable(
+      "telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN) — the owner cannot be saved",
+    );
+  }
+  await client.putSettings(input);
+}
+
+/** Chat sibling of {@link writeSourceUser}. */
+export async function writeSourceChat(
+  id: string,
+  input: { notes: string | null } | { language: string | null },
+): Promise<void> {
+  const client = tgOperatorClient();
+  if (!client) {
+    throw ApiError.serviceUnavailable(
+      "telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN) — the edit cannot be saved",
+    );
+  }
+  await client.updateChat(id, input);
 }
 
 /** Map one connection (or its absence) onto the dashboard's bot status. */

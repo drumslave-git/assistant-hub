@@ -239,6 +239,22 @@ describe("inbound turn consumer", () => {
     // The send marked the turn as acted, and the terminal settle cleared it.
     const markers = await storePool.query(`SELECT * FROM turn_actions`);
     expect(markers.rows).toEqual([]);
+
+    // The transitional shadow directory mirrored the event's identity into
+    // the v1 tables the brain still FKs and reads (labels, rosters).
+    const { knownGroups, groupMembers } = await import("@/db/schema");
+    const users = await getDb().select().from(knownUsers);
+    const alice = users.find((u) => u.userId === "5001");
+    expect(alice).toMatchObject({ username: "alice_example", aliases: ["Al"] });
+    // Participants join the roster without clobbering profile names.
+    expect(users.some((u) => u.userId === "5002")).toBe(true);
+    const groups = await getDb().select().from(knownGroups);
+    expect(groups.find((g) => g.chatId === "-300")).toMatchObject({
+      title: "Fixture Group",
+      notes: "seeded for the consumer test",
+    });
+    const members = await getDb().select().from(groupMembers);
+    expect(members.filter((m) => m.chatId === "-300")).toHaveLength(2);
   });
 
   it("ignores an unaddressed turn but still settles it (the source releases its hold)", async () => {

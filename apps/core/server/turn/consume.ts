@@ -57,6 +57,7 @@ import { getEnv } from "@/server/env";
 import type { TraceRecorder } from "@/server/trace";
 
 import { createTurnActionMarkers, closeTurnActionStore, type TurnActionMarkers } from "./actions";
+import { shadowDirectory } from "./shadow-directory";
 import { botTranscriptLabel, renderChatContext, renderCurrentTurn, renderHistoryWindow } from "./render";
 import { tgApiMediaStore } from "./tg-media";
 import { resolveSourceOutbound, type SourceOutboundPort } from "./tg-outbound";
@@ -461,6 +462,12 @@ export async function processInboundEvent(
   const isVoice = media?.kind === "voice";
   const store = resolveMediaStore(ctx);
   const outbound = resolveOutbound(ctx);
+
+  // Transitional shadow of the source's directory into the v1 tables the
+  // brain still FKs and reads (see shadow-directory.ts). Awaited so the
+  // turn's own preference/memory writes find their FK targets; failures are
+  // swallowed inside — never a lost turn.
+  await shadowDirectory(event);
 
   let effectiveText = event.message.content;
   let addressing = toAddressResult(event);

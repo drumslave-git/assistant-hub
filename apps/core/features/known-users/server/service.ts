@@ -7,6 +7,7 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
+import { writeSourceUser } from "@/server/source/tg-operator";
 import { startTrace, withTrace } from "@/server/trace";
 import { formatKnownUserLabel, formatUserContext } from "../format";
 import { matchUsersByReference } from "../match";
@@ -261,9 +262,11 @@ export async function addAliasByReference(
         return { status: "invalid", reason };
       }
 
+      // Source first, shadow second — see updateLanguage.
+      await writeSourceUser(user.userId, { aliases: parsed.data.aliases });
       const record = await setKnownUserAliases(db, user.userId, parsed.data.aliases);
       if (!record) throw ApiError.notFound("Unknown user");
-      await trace.event({ type: "db", message: "aliases updated", data: { aliases: parsed.data.aliases } });
+      await trace.event({ type: "db", message: "aliases updated (source + shadow)", data: { aliases: parsed.data.aliases } });
       publishEvent(FEATURE.realtimeTopic);
       await trace.succeed({
         outputSummary: `+${toAdd.length} alias(es) for ${user.userId}`,
@@ -289,9 +292,12 @@ export async function updateLanguage(
         message: "language update",
         data: { userId, language: input.language },
       });
+      // The source owns the directory: the edit lands there first, then in
+      // the local shadow the readers (and the next event refresh) agree with.
+      await writeSourceUser(userId, { language: input.language });
       const record = await setKnownUserLanguage(db, userId, input.language);
       if (!record) throw ApiError.notFound("Unknown user");
-      await trace.event({ type: "db", message: "language updated" });
+      await trace.event({ type: "db", message: "language updated (source + shadow)" });
       publishEvent(FEATURE.realtimeTopic);
       await trace.succeed({
         outputSummary: input.language ? `language set to ${input.language}` : "language cleared",
@@ -326,6 +332,8 @@ export async function updateAliases(
     { feature: FEATURE.id, action: "update-aliases", trigger, inputSummary: `user ${userId}` },
     async (trace) => {
       await trace.event({ type: "input", message: "aliases update", data: { userId, aliases: input.aliases } });
+      // Source first, shadow second — see updateLanguage.
+      await writeSourceUser(userId, { aliases: input.aliases });
       const record = await setKnownUserAliases(db, userId, input.aliases);
       if (!record) throw ApiError.notFound("Unknown user");
       await trace.event({ type: "db", message: "aliases updated" });

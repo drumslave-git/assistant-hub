@@ -1,4 +1,4 @@
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 
 import {
   expectToolCalled,
@@ -7,6 +7,14 @@ import {
   TOOL_SELECTION_TIMEOUT,
   useLiveLlm,
 } from "@/test/tool-selection";
+
+// Curated directory edits land at the source first (the tg service owns
+// the directory since the split); mocked so these tests assert the local
+// shadow behavior without a live service.
+vi.mock("@/server/source/tg-operator", () => ({
+  writeSourceUser: vi.fn(),
+  writeSourceChat: vi.fn(),
+}));
 
 /**
  * Opt-in live tool-selection coverage for the known-users MCP tool. Skipped unless

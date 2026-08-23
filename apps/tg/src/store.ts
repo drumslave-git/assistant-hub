@@ -454,20 +454,27 @@ export async function deleteConnection(db: TgDb, id: string): Promise<Connection
 }
 
 /**
- * Set (or clear) the owner's @username. Changing it resets the resolved
- * numeric id — the new owner is re-resolved on their first message (v1
- * semantics, owned by this app since the split).
+ * Set (or clear) the owner identity. A caller that already knows the
+ * numeric id (the dashboard picks the owner from the user listing) passes
+ * it; otherwise changing the @username resets the resolved id — the new
+ * owner is re-resolved on their first message (v1 semantics, owned by this
+ * app since the split).
  */
-export async function setOwnerUsername(db: TgDb, ownerUsername: string | null): Promise<void> {
+export async function setOwner(
+  db: TgDb,
+  input: { ownerUsername: string | null; ownerUserId?: string | null },
+): Promise<void> {
   const current = await getTgSettings(db);
-  const normalized = ownerUsername?.trim().replace(/^@/, "").toLowerCase() || null;
+  const normalized = input.ownerUsername?.trim().replace(/^@/, "").toLowerCase() || null;
+  const ownerUserId =
+    input.ownerUserId !== undefined
+      ? input.ownerUserId
+      : normalized !== current.ownerUsername
+        ? null
+        : current.ownerUserId;
   await db
     .update(settings)
-    .set({
-      ownerUsername: normalized,
-      ...(normalized !== current.ownerUsername ? { ownerUserId: null } : {}),
-      updatedAt: new Date(),
-    })
+    .set({ ownerUsername: normalized, ownerUserId, updatedAt: new Date() })
     .where(eq(settings.id, "singleton"));
 }
 

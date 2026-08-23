@@ -92,6 +92,8 @@ export const chatInfoSchema = z.object({
   /** `direct` (one human) or `group` (roster + addressing rules apply). */
   kind: z.enum(["direct", "group"]),
   title: z.string().nullable().optional(),
+  /** Source-specific chat subtype (`group` / `supergroup`), or null. */
+  type: z.string().nullable().optional(),
   /** Operator-curated notes about the chat, or null. */
   notes: z.string().nullable().optional(),
   /** Operator-configured reply language for this chat, or null (default). */
@@ -110,6 +112,9 @@ export const senderInfoSchema = z.object({
   /** Display label (names + username), resolved by the source. */
   label: z.string().min(1),
   username: z.string().nullable().optional(),
+  /** Raw profile name parts (the label is composed from these). */
+  firstName: z.string().nullable().optional(),
+  lastName: z.string().nullable().optional(),
   aliases: z.array(z.string()).default([]),
   /** Operator-configured reply language for this person's direct chat. */
   language: z.string().nullable().optional(),

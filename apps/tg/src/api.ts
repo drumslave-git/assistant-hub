@@ -53,7 +53,7 @@ import {
   getMediaForMessages,
   markMessageDeleted,
   recordBotReaction,
-  setOwnerUsername,
+  setOwner,
   updateChatLanguage,
   updateChatNotes,
   updateConnection,
@@ -372,7 +372,7 @@ export function createApi(input: {
     if (!parsed.success) {
       return c.json({ error: { message: "ownerUsername is required (or null)" } }, 400);
     }
-    await setOwnerUsername(input.db, parsed.data.ownerUsername);
+    await setOwner(input.db, parsed.data);
     return c.json({ settings: await getTgSettings(input.db) });
   });
 

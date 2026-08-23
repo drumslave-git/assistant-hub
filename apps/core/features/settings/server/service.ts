@@ -37,7 +37,11 @@ import { probeSpeech, type SpeechRuntime } from "@/server/llm/speech";
 import { probeTranscription, type TranscriptionRuntime } from "@/server/llm/transcription";
 import { tinySilenceWav } from "@/server/media/audio";
 import { tinyProbePng } from "@/server/media/image";
-import { getSourceBotStatus, saveSourceBotToken } from "@/server/source/tg-operator";
+import {
+  getSourceBotStatus,
+  saveSourceBotToken,
+  saveSourceOwner,
+} from "@/server/source/tg-operator";
 import { withTrace, type TraceRecorder } from "@/server/trace";
 import {
   getSettingsRecord,
@@ -788,7 +792,19 @@ export async function updateSettings(
       const patch = toPatch(input);
       await validateBackendIds(db, patch);
       if (input.ownerUserId !== undefined) {
-        Object.assign(patch, await ownerPatch(db, input.ownerUserId));
+        const owner = await ownerPatch(db, input.ownerUserId);
+        // Owner identity lives with the source since the split — it resolves
+        // `isOwner` per inbound event. Routed there first; the v1 columns
+        // stay as the shadow the transitional policy reads.
+        await saveSourceOwner({
+          ownerUsername: owner.ownerUsername ?? null,
+          ownerUserId: owner.ownerUserId ?? null,
+        });
+        await trace.event({
+          type: "step",
+          message: "owner routed to the telegram service settings",
+        });
+        Object.assign(patch, owner);
       }
       const cleared = await clearStaleModelSelections(
         db,

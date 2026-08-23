@@ -190,4 +190,10 @@ export const operatorSourceSettingsResponseSchema = z.object({
 
 export const operatorSourceSettingsUpdateRequestSchema = z.object({
   ownerUsername: z.string().max(100).nullable(),
+  /**
+   * The owner's source-local user id, when the caller already knows it (the
+   * dashboard picks the owner from the user listing). Omitted → the id is
+   * resolved lazily on the owner's first message.
+   */
+  ownerUserId: z.string().max(100).nullable().optional(),
 });

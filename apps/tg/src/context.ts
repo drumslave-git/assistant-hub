@@ -110,13 +110,21 @@ export async function buildChatInfo(
     // A private chat's id equals the peer's user id; its reply language is
     // the user's setting (v1 semantics).
     const user = await getUserById(db, input.chatId);
-    return { ref, kind: "direct", title: input.title, notes: null, language: user?.language ?? null };
+    return {
+      ref,
+      kind: "direct",
+      title: input.title,
+      type: null,
+      notes: null,
+      language: user?.language ?? null,
+    };
   }
   const chat = await getChatById(db, input.chatId);
   return {
     ref,
     kind: "group",
     title: chat?.title ?? input.title,
+    type: chat?.type ?? null,
     notes: chat?.notes ?? null,
     language: chat?.language ?? null,
   };
@@ -157,6 +165,8 @@ export async function buildSenderInfo(
       lastName: input.lastName,
     }),
     username: input.username,
+    firstName: input.firstName,
+    lastName: input.lastName,
     aliases: stored?.aliases ?? [],
     language: stored?.language ?? null,
   };

@@ -7,6 +7,7 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
+import { writeSourceChat } from "@/server/source/tg-operator";
 import { startTrace, withTrace } from "@/server/trace";
 import { formatGroupContext } from "../format";
 import {
@@ -195,9 +196,12 @@ export async function updateNotes(
     { feature: FEATURE.id, action: "update-notes", trigger, inputSummary: `group ${chatId}` },
     async (trace) => {
       await trace.event({ type: "input", message: "notes update", data: { chatId, notes: input.notes } });
+      // The source owns the directory: the edit lands there first, then in
+      // the local shadow (the next event refresh would otherwise revert it).
+      await writeSourceChat(chatId, { notes: input.notes });
       const record = await setKnownGroupNotes(db, chatId, input.notes);
       if (!record) throw ApiError.notFound("Unknown group");
-      await trace.event({ type: "db", message: "notes updated" });
+      await trace.event({ type: "db", message: "notes updated (source + shadow)" });
       publishEvent(FEATURE.realtimeTopic);
       await trace.succeed({
         outputSummary: input.notes ? "notes set" : "notes cleared",
@@ -223,9 +227,11 @@ export async function updateLanguage(
         message: "language update",
         data: { chatId, language: input.language },
       });
+      // Source first, shadow second — see updateNotes.
+      await writeSourceChat(chatId, { language: input.language });
       const record = await setKnownGroupLanguage(db, chatId, input.language);
       if (!record) throw ApiError.notFound("Unknown group");
-      await trace.event({ type: "db", message: "language updated" });
+      await trace.event({ type: "db", message: "language updated (source + shadow)" });
       publishEvent(FEATURE.realtimeTopic);
       await trace.succeed({
         outputSummary: input.language ? `language set to ${input.language}` : "language cleared",

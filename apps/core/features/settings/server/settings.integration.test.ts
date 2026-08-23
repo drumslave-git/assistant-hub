@@ -51,6 +51,7 @@ vi.mock("@/server/llm/client", async (importOriginal) => {
 // the operator client is mocked so the save is asserted, not performed.
 vi.mock("@/server/source/tg-operator", () => ({
   saveSourceBotToken: vi.fn(),
+  saveSourceOwner: vi.fn(),
   getSourceBotStatus: vi.fn(async () => ({
     status: { state: "stopped", username: null, since: null, error: null },
     configured: false,
