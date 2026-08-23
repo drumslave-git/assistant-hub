@@ -37,6 +37,7 @@ import { probeSpeech, type SpeechRuntime } from "@/server/llm/speech";
 import { probeTranscription, type TranscriptionRuntime } from "@/server/llm/transcription";
 import { tinySilenceWav } from "@/server/media/audio";
 import { tinyProbePng } from "@/server/media/image";
+import { getSourceBotStatus, saveSourceBotToken } from "@/server/source/tg-operator";
 import { withTrace, type TraceRecorder } from "@/server/trace";
 import {
   getSettingsRecord,
@@ -106,7 +107,15 @@ function toClientSettings(record: SettingsRecord | null): Settings {
 
 /** Current settings (no secret values), or empty defaults when never configured. */
 export async function getSettings(db: DrizzleDb = getDb()): Promise<Settings> {
-  return toClientSettings(await getSettingsRecord(db));
+  // The bot token lives with the tg source app since the split, so "is one
+  // saved" is answered by the connection's existence there — real state, not
+  // a leftover column. An unreachable service reads as unconfigured; the Bot
+  // status card carries the reachability error itself.
+  const [record, source] = await Promise.all([
+    getSettingsRecord(db),
+    getSourceBotStatus().catch(() => ({ configured: false })),
+  ]);
+  return { ...toClientSettings(record), telegramBotTokenConfigured: source.configured };
 }
 
 /**
@@ -527,9 +536,6 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   if (input.speechVoice !== undefined) {
     patch.speechVoice = input.speechVoice === "" ? null : input.speechVoice;
   }
-  if (input.telegramBotToken !== undefined) {
-    patch.telegramBotToken = input.telegramBotToken === "" ? null : input.telegramBotToken;
-  }
   if (input.tavilyApiKey !== undefined) {
     patch.tavilyApiKey = input.tavilyApiKey === "" ? null : input.tavilyApiKey;
   }
@@ -775,6 +781,18 @@ export async function updateSettings(
     { feature: FEATURE.id, action: "update", trigger, inputSummary: fields.join(", ") },
     async (trace) => {
       await trace.event({ type: "input", message: "settings update", data: redact(input) });
+      // The bot token lives in the tg source app's connection since the
+      // source split — routed there (create / retoken / delete, reconciled
+      // into the poller), never stored in this database. A failure surfaces
+      // to the Save button; the rest of the patch is not applied half-way
+      // around a token that did not land.
+      if (input.telegramBotToken !== undefined) {
+        await saveSourceBotToken(input.telegramBotToken === "" ? null : input.telegramBotToken);
+        await trace.event({
+          type: "step",
+          message: "bot token routed to the telegram connection",
+        });
+      }
       const patch = toPatch(input);
       await validateBackendIds(db, patch);
       if (input.ownerUserId !== undefined) {

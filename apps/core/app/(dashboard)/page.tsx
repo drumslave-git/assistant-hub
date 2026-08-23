@@ -35,12 +35,11 @@ import {
 import { BotControl } from "@/features/bot-messaging/ui/BotControl";
 import { getAllJobs } from "@/features/jobs/server/registry";
 import { JobHealthList } from "@/features/jobs/ui/JobHealthList";
-import { getSettings } from "@/features/settings/server/service";
 import { buildInfo } from "@/lib/build-info";
 import type { RealtimeTopic } from "@/lib/realtime";
 import { getOverviewActivity, OVERVIEW_WINDOW_HOURS } from "@/server/overview";
 import { getSystemStatus, type EndpointStatus } from "@/server/status";
-import { getBotStatus } from "@/server/telegram/bot-manager";
+import { getSourceBotStatus } from "@/server/source/tg-operator";
 
 // Probe real state at request time (DB query + LLM endpoint call + trace reads),
 // so the overview reflects what actually works, not build-time or env-presence
@@ -241,9 +240,10 @@ async function ActivityStatsSection() {
 
 /** The live-probe status card — the slow section, streamed on its own. */
 async function SystemStatusSection() {
-  const botStatus = getBotStatus();
-  const [status, settings] = await Promise.all([getSystemStatus(), getSettings()]);
-  const telegramConfigured = settings.telegramBotTokenConfigured;
+  const [{ status: botStatus, configured: telegramConfigured }, status] = await Promise.all([
+    getSourceBotStatus(),
+    getSystemStatus(),
+  ]);
 
   const botItem: StatusItem =
     botStatus.state === "running"

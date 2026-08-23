@@ -6,12 +6,13 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
-import type { BotStatus } from "@/server/telegram/bot-manager";
+import type { BotStatus } from "@/server/source/tg-operator";
 
 /**
- * Start/Stop control for the in-process Telegram poller. Client Component: posts
- * to the bot control API and refreshes the server-rendered status. The bot reads
- * its token from settings, so starting needs no input here.
+ * Start/Stop control for the Telegram poller, which lives in the tg source
+ * app since the source split. Client Component: posts to the bot control API
+ * (a thin proxy onto tg's operator API) and refreshes the server-rendered
+ * status. The token is managed in Settings, so starting needs no input here.
  */
 export function BotControl({
   initial,
