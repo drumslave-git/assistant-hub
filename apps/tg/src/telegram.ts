@@ -40,3 +40,26 @@ export function messageLinkBase(chatId: string): string | null {
   if (!internal || !/^\d+$/.test(internal)) return null;
   return `https://t.me/c/${internal}`;
 }
+
+/** How a file should be sent so Telegram renders it best — see {@link telegramFileKind}. */
+export type TelegramFileKind = "video" | "audio" | "document";
+
+/** Containers Telegram clients actually stream inline as a video bubble. */
+const VIDEO_MIMES = new Set(["video/mp4", "video/quicktime"]);
+
+/** Formats Telegram shows in the music player (.mp3 / .m4a per the Bot API docs). */
+const AUDIO_MIMES = new Set(["audio/mpeg", "audio/mp4"]);
+
+/**
+ * The send method that makes a file playable straight in the chat: `sendVideo`
+ * for a streamable video, `sendAudio` for a music-player format, `sendDocument`
+ * for everything else. Deliberately conservative — a container outside the
+ * supported lists (mkv, webm, opus …) is rendered as a generic file by Telegram
+ * anyway, and sending it as a document at least names it honestly.
+ */
+export function telegramFileKind(mime: string | null | undefined): TelegramFileKind {
+  const normalized = (mime ?? "").split(";")[0].trim().toLowerCase();
+  if (VIDEO_MIMES.has(normalized)) return "video";
+  if (AUDIO_MIMES.has(normalized)) return "audio";
+  return "document";
+}

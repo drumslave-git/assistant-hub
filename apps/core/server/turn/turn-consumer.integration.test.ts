@@ -399,6 +399,7 @@ describe("inbound turn consumer", () => {
         return { messageId: 602, asVoice: true };
       },
       sendPhotos: async () => ({ delivered: [] }),
+      sendFile: async () => ({ messageId: 0 }),
       deleteMessage: async () => ({ deleted: true }),
       setReaction: async () => ({ status: "ok" as const, recorded: true }),
     };
@@ -446,6 +447,7 @@ describe("inbound turn consumer", () => {
         return { messageId: 604, asVoice: true };
       },
       sendPhotos: async () => ({ delivered: [] }),
+      sendFile: async () => ({ messageId: 0 }),
       deleteMessage: async () => ({ deleted: true }),
       setReaction: async () => ({ status: "ok" as const, recorded: true }),
     };

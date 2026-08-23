@@ -59,7 +59,7 @@ import type { TraceRecorder } from "@/server/trace";
 import { createTurnActionMarkers, closeTurnActionStore, type TurnActionMarkers } from "./actions";
 import { botTranscriptLabel, renderChatContext, renderCurrentTurn, renderHistoryWindow } from "./render";
 import { tgApiMediaStore } from "./tg-media";
-import { tgApiOutbound, type SourceOutboundPort } from "./tg-outbound";
+import { resolveSourceOutbound, type SourceOutboundPort } from "./tg-outbound";
 
 /**
  * The queue side of the source split (redesign Phase 2): consume normalized
@@ -131,10 +131,7 @@ function resolveMediaStore(ctx: TurnConsumerContext): MediaStorePort | null {
 }
 
 function resolveOutbound(ctx: TurnConsumerContext): SourceOutboundPort | null {
-  if (ctx.outbound) return ctx.outbound;
-  const env = getEnv();
-  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
-  return tgApiOutbound();
+  return ctx.outbound ?? resolveSourceOutbound();
 }
 
 /** What this turn's media resolves to — the v1 `visionAttachment` shape. */

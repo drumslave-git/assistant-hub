@@ -3,12 +3,13 @@ import "server-only";
 import {
   internalDeleteMessageResponseSchema,
   internalReactionResponseSchema,
+  internalSentFileResponseSchema,
   internalSentMessageResponseSchema,
   internalSentPhotosResponseSchema,
   internalSentVoiceResponseSchema,
 } from "@assistant-hub/contracts";
 
-import { requireEnv } from "@/server/env";
+import { getEnv, requireEnv } from "@/server/env";
 
 /**
  * Outbound sends to the owning source over its internal API (slice D) —
@@ -48,6 +49,20 @@ export interface SourceOutboundPort {
     chatId: string,
     opts: { images: string[]; threadId?: number | null },
   ): Promise<{ delivered: { messageId: number; stored: boolean }[] }>;
+  /**
+   * A file (a browser-run download), sent as playable media where the
+   * container allows; the caption is mirrored as the message's content.
+   */
+  sendFile(
+    chatId: string,
+    opts: {
+      buffer: Buffer;
+      filename: string;
+      mime?: string | null;
+      caption?: string | null;
+      threadId?: number | null;
+    },
+  ): Promise<{ messageId: number }>;
   /** `deleted: false` means the platform refused — cosmetic for every caller. */
   deleteMessage(chatId: string, messageId: number): Promise<{ deleted: boolean }>;
   /**
@@ -64,13 +79,33 @@ export interface SourceOutboundPort {
   ): Promise<{ status: SourceReactionStatus; recorded: boolean }>;
 }
 
+/**
+ * The tg outbound port from env, or null when the source API is not
+ * configured. Callers treat null exactly like v1 treated a stopped poller:
+ * the send fails audibly and is recorded on the run/fire — never dropped.
+ */
+export function resolveSourceOutbound(): SourceOutboundPort | null {
+  const env = getEnv();
+  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
+  return tgApiOutbound();
+}
+
 const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * File sends carry up to Telegram's 50MB cap and wait on Telegram's own
+ * upload — grammy's client allows 500s, so the port does too.
+ */
+const FILE_REQUEST_TIMEOUT_MS = 500_000;
 
 export function tgApiOutbound(config?: { baseUrl?: string; token?: string }): SourceOutboundPort {
   const baseUrl = (config?.baseUrl ?? requireEnv("TG_API_URL")).replace(/\/$/, "");
   const token = config?.token ?? requireEnv("INTERNAL_API_TOKEN");
 
-  const request = async (path: string, init?: RequestInit): Promise<unknown> => {
+  const request = async (
+    path: string,
+    init?: RequestInit & { timeoutMs?: number },
+  ): Promise<unknown> => {
     const res = await fetch(`${baseUrl}${path}`, {
       ...init,
       headers: {
@@ -78,7 +113,7 @@ export function tgApiOutbound(config?: { baseUrl?: string; token?: string }): So
         ...(init?.body ? { "content-type": "application/json" } : {}),
         ...init?.headers,
       },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(init?.timeoutMs ?? REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
       // The source relays platform refusals as a 502 with the platform's
@@ -141,6 +176,22 @@ export function tgApiOutbound(config?: { baseUrl?: string; token?: string }): So
           stored: item.stored,
         })),
       };
+    },
+    async sendFile(chatId, opts) {
+      const body = internalSentFileResponseSchema.parse(
+        await request(chatPath(chatId, "/files"), {
+          method: "POST",
+          timeoutMs: FILE_REQUEST_TIMEOUT_MS,
+          body: JSON.stringify({
+            dataBase64: opts.buffer.toString("base64"),
+            filename: opts.filename,
+            mime: opts.mime ?? null,
+            caption: opts.caption ?? null,
+            threadId: opts.threadId != null ? String(opts.threadId) : null,
+          }),
+        }),
+      );
+      return { messageId: Number(body.sourceMessageId) };
     },
     async deleteMessage(chatId, messageId) {
       const body = internalDeleteMessageResponseSchema.parse(

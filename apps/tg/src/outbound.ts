@@ -1,7 +1,7 @@
 import type { ReactionTypeEmoji } from "@grammyjs/types";
 import { GrammyError, InputFile, type Bot } from "grammy";
 
-import { messageLinkBase } from "./telegram";
+import { messageLinkBase, telegramFileKind, type TelegramFileKind } from "./telegram";
 import { renderTelegramHtml } from "./telegram-html";
 
 /**
@@ -51,6 +51,19 @@ export interface TgOutbound {
     image: { base64: string; filename: string },
     opts?: { replyToMessageId?: number | null; threadId?: number | null },
   ): Promise<{ messageId: number; fileId: string; fileUniqueId: string | null }>;
+  /**
+   * Deliver a file (a browser-run download), picking the send method by
+   * content type so a video or track plays straight in Telegram instead of
+   * arriving as a bare attachment. The caption is rendered like any bot
+   * message (HTML with a plain-text fallback), and a container Telegram
+   * refuses as its playable kind is retried as a document — the message was
+   * not delivered, so the retry cannot double-send.
+   */
+  sendFile(
+    chatId: string,
+    file: { base64: string; filename: string; mime?: string | null },
+    opts?: { threadId?: number | null; caption?: string | null },
+  ): Promise<{ messageId: number }>;
   /** Delete one of the bot's own messages. Telegram refuses deletes older than 48h. */
   deleteMessage(chatId: string, messageId: number): Promise<void>;
   /**
@@ -154,6 +167,44 @@ export function createBotOutbound(requireBot: () => Bot): TgOutbound {
         fileId: largest?.file_id ?? "",
         fileUniqueId: largest?.file_unique_id ?? null,
       };
+    },
+    async sendFile(chatId, file, opts) {
+      const bot = requireBot();
+      const base = opts?.threadId != null ? { message_thread_id: opts.threadId } : {};
+      // A fresh InputFile per attempt — grammy consumes the wrapper on send.
+      const media = () => new InputFile(Buffer.from(file.base64, "base64"), file.filename);
+      const sendAs: Record<
+        TelegramFileKind,
+        (extra: { caption?: string; parse_mode?: "HTML" }) => Promise<{ message_id: number }>
+      > = {
+        video: (extra) =>
+          bot.api.sendVideo(chatId, media(), { ...base, supports_streaming: true, ...extra }),
+        audio: (extra) => bot.api.sendAudio(chatId, media(), { ...base, ...extra }),
+        document: (extra) => bot.api.sendDocument(chatId, media(), { ...base, ...extra }),
+      };
+      const caption = opts?.caption ?? undefined;
+      const sendWithCaption = async (kind: TelegramFileKind) => {
+        if (!caption) return sendAs[kind]({});
+        try {
+          return await sendAs[kind]({ caption: renderTelegramHtml(caption), parse_mode: "HTML" });
+        } catch (err) {
+          if (!isEntityParseError(err)) throw err;
+          return sendAs[kind]({ caption });
+        }
+      };
+      const kind = telegramFileKind(file.mime);
+      try {
+        const sent = await sendWithCaption(kind);
+        return { messageId: sent.message_id };
+      } catch (err) {
+        // Telegram refused the media *as this kind* (a container its player
+        // cannot take) — the message was not delivered, so a document retry
+        // cannot double-send. Anything non-Grammy (network, chat gone) must
+        // surface.
+        if (kind === "document" || !(err instanceof GrammyError)) throw err;
+        const sent = await sendWithCaption("document");
+        return { messageId: sent.message_id };
+      }
     },
     async deleteMessage(chatId, messageId) {
       await requireBot().api.deleteMessage(chatId, messageId);

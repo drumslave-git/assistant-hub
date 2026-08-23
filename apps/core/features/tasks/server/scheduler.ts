@@ -4,7 +4,6 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { ApiError } from "@/lib/api-error";
 import type { TraceTrigger } from "@/lib/trace";
-import { recordAssistantMessage } from "@/features/history/server/service";
 import { getGroupContext, getGroupLanguage } from "@/features/known-groups/server/service";
 import { getUserContext, getUserLanguage } from "@/features/known-users/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
@@ -29,7 +28,7 @@ import {
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
-import { sendChatMessage } from "@/server/telegram/bot-manager";
+import { resolveSourceOutbound } from "@/server/turn/tg-outbound";
 
 import { buildStandingTasksBlock } from "../format";
 import { computeNextTriggerRun } from "../schedule";
@@ -86,13 +85,16 @@ export interface DueRunDeps {
    * itself on the fire trace via the shared LLM tracing layer (`trace`).
    */
   complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
-  /** Raw delivery (real: the bot's `sendChatMessage`); resolves the message id. */
+  /**
+   * Raw delivery (real: the source's internal send API, which mirrors what
+   * it delivers); resolves the message id.
+   */
   send: (
     chatId: string,
     text: string,
     opts: { threadId?: number | null; replyToMessageId?: number },
   ) => Promise<{ messageId: number }>;
-  /** Mirror a delivered message into history (real: `recordAssistantMessage`). */
+  /** Mirror a delivered message into history (tests only — the source mirrors). */
   recordReply?: (input: {
     chatId: string;
     telegramMessageId: number;
@@ -240,14 +242,19 @@ async function buildLiveFireCollaborators(): Promise<Pick<
             messages,
             ...(trace ? { trace } : {}),
           }),
-    send: (chatId, text, opts) => sendChatMessage(chatId, text, opts),
-    recordReply: (input) =>
-      recordAssistantMessage({
-        chatId: input.chatId,
-        telegramMessageId: input.telegramMessageId,
-        content: input.content,
-        replyToMessageId: null,
-      }).then(() => undefined),
+    // The owning source mirrors what it delivers — no recordReply here. An
+    // unconfigured source API fails the send audibly, like v1's stopped bot.
+    send: (chatId, text, opts) => {
+      const outbound = resolveSourceOutbound();
+      if (!outbound) {
+        throw new Error("telegram source API is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
+      }
+      return outbound.sendMessage(chatId, {
+        text,
+        threadId: opts.threadId ?? null,
+        replyToMessageId: opts.replyToMessageId ?? null,
+      });
+    },
   };
 }
 

@@ -4,7 +4,7 @@ import { rm } from "node:fs/promises";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
-import { markMessageDeleted, recordAssistantMessage } from "@/features/history/server/service";
+import { resolveSourceOutbound } from "@/server/turn/tg-outbound";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import {
   getBrowserDownloadLimitBytes,
@@ -19,7 +19,6 @@ import { isGroupChatId, TELEGRAM_MAX_UPLOAD_MB } from "@/lib/telegram";
 import { chatCompletion, type LlmConnection } from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { publishEvent } from "@/server/realtime/hub";
-import { deleteChatMessage, sendChatFile, sendChatMessage } from "@/server/telegram/bot-manager";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 
 import type { BrowserAgentRun, BrowserDownloadRecord } from "../types";
@@ -66,16 +65,31 @@ let started = false;
 let pumping = false;
 let active = false;
 
-/** Deliver text to the run's chat, split into Telegram-sized messages. */
+/**
+ * The source's outbound port, or an audible failure — post-split the runner
+ * delivers through the owning source's internal API, which mirrors what it
+ * sends; an unconfigured API fails a delivery exactly like v1's stopped
+ * poller did.
+ */
+function requireOutbound() {
+  const port = resolveSourceOutbound();
+  if (!port) {
+    throw new Error("telegram source API is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
+  }
+  return port;
+}
+
+/** Deliver text to the run's chat (the source mirrors the sent message). */
 async function deliverText(
   run: BrowserAgentRun,
   text: string,
   opts: { silent?: boolean } = {},
 ): Promise<number | null> {
   if (!run.chatId || !text.trim()) return null;
-  // sendChatMessage handles the length via the caller; keep it whole here — the
-  // report is already concise, and a run recap rarely exceeds one message.
-  const { messageId } = await sendChatMessage(run.chatId, text, {
+  // Sent whole — the report is already concise, and a run recap rarely
+  // exceeds one message.
+  const { messageId } = await requireOutbound().sendMessage(run.chatId, {
+    text,
     threadId: run.threadId,
     ...(opts.silent ? { silent: true } : {}),
   });
@@ -105,11 +119,13 @@ async function sendStagedFile(
 ): Promise<number | null> {
   if (!run.chatId) return null;
   try {
-    const { messageId } = await sendChatFile(
-      run.chatId,
-      { buffer: staged.file.buffer, filename: staged.file.filename, mime: staged.file.mime },
-      { threadId: run.threadId, caption },
-    );
+    const { messageId } = await requireOutbound().sendFile(run.chatId, {
+      buffer: staged.file.buffer,
+      filename: staged.file.filename,
+      mime: staged.file.mime,
+      caption,
+      threadId: run.threadId,
+    });
     staged.record.deliveredToChat = true;
     // A failed unlink leaves a stray file, not a wrong answer — the chat still
     // has it, so the record stays truthful and only the disk hygiene is off.
@@ -191,10 +207,9 @@ async function removeRunAck(runId: string): Promise<void> {
   if (!ack) return;
   for (const messageId of ack.messageIds) {
     try {
-      await deleteChatMessage(ack.chatId, messageId);
-      // Mirror follows the chat: the row is soft-deleted only once Telegram
-      // actually dropped the message.
-      await markMessageDeleted(ack.chatId, messageId);
+      // The source deletes and soft-deletes its mirror row together;
+      // `deleted: false` (older than 48h) just leaves the ack standing.
+      await requireOutbound().deleteMessage(ack.chatId, messageId);
     } catch (err) {
       console.error(
         `browser-agent: could not remove the acknowledgement message ${messageId} for run ${runId}:`,
@@ -354,10 +369,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
         } else if (run.chatId) {
           // Owner's run, too large to attach — announce it by name as it lands
           // (silent); the recap points at the downloads folder.
-          await sendChatMessage(run.chatId, formatDownloadLine(record), {
-            threadId: run.threadId,
-            silent: true,
-          }).catch((err: unknown) => {
+          await deliverText(run, formatDownloadLine(record), { silent: true }).catch((err: unknown) => {
             console.error(
               `browser-agent: failed to announce a download for run ${run.id}:`,
               err instanceof Error ? err.message : String(err),
@@ -410,18 +422,13 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
     // unbacked verdict settles `done`, exactly as before the check existed.
     const verdict = await judgeRunOutcome(conn, runtime.model, run.goal, report, trace);
 
-    // Deliver the outcome — file(s) + report, combined where possible — and
-    // mirror the report-bearing message into history (best-effort). A failed
-    // goal delivers the same way: the report IS the honest failure message.
+    // Deliver the outcome — file(s) + report, combined where possible. The
+    // owning source mirrors what it delivers (caption or text), so there is
+    // nothing to record here beyond the trace. A failed goal delivers the
+    // same way: the report IS the honest failure message.
     if (run.chatId) {
       const delivered = await deliverRunOutcome(run, report, staged, downloads);
       if (delivered != null) {
-        await recordAssistantMessage({
-          chatId: run.chatId,
-          telegramMessageId: delivered.messageId,
-          content: delivered.content,
-          hasMedia: delivered.hasMedia,
-        }).catch(() => undefined);
         await trace.event({
           type: "output",
           level: "success",

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   internalMediaDescribeRequestSchema,
   internalReactionRequestSchema,
+  internalSendFileRequestSchema,
   internalSendMessageRequestSchema,
   internalSendPhotosRequestSchema,
   internalSendVoiceRequestSchema,
@@ -484,6 +485,41 @@ export function createApi(input: {
       delivered.push({ sourceMessageId: String(sent.messageId), stored: stored != null });
     }
     return c.json({ delivered });
+  });
+
+  internal.post("/chats/:chatId/files", async (c) => {
+    const parsed = internalSendFileRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: { message: "dataBase64 and filename are required" } }, 400);
+    }
+    const chatId = c.req.param("chatId");
+    const body = parsed.data;
+    let sent: { messageId: number };
+    try {
+      sent = await senderOf(c).sendFile(
+        chatId,
+        { base64: body.dataBase64, filename: body.filename, mime: body.mime ?? null },
+        {
+          threadId: body.threadId != null ? Number(body.threadId) : null,
+          caption: body.caption ?? null,
+        },
+      );
+    } catch (err) {
+      return c.json({ error: { message: errorText(err) } }, 502);
+    }
+    // The caption is the delivered message's readable content (a browser-run
+    // report riding its file) — that is what the mirror records.
+    await appendMessage(input.db, {
+      chatId,
+      telegramMessageId: sent.messageId,
+      role: "assistant",
+      userId: null,
+      content: body.caption ?? "",
+      replyToMessageId: null,
+      sentAt: new Date(),
+      processed: true,
+    }).catch(() => null);
+    return c.json({ sourceMessageId: String(sent.messageId) });
   });
 
   internal.delete("/chats/:chatId/messages/:messageId", async (c) => {

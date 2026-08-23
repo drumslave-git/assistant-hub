@@ -132,6 +132,27 @@ export const internalSentPhotosResponseSchema = z.object({
 export type InternalSentPhotosResponse = z.infer<typeof internalSentPhotosResponseSchema>;
 
 /**
+ * POST /internal/chats/:chatId/files — deliver a file (a browser-run
+ * download), sent as playable media where the container allows (the source
+ * picks sendVideo/sendAudio/sendDocument by mime, with a document retry).
+ * The caption, when given, is what the source mirrors as the delivered
+ * message's content — for a report-bearing send the report IS the message.
+ */
+export const internalSendFileRequestSchema = z.object({
+  dataBase64: z.string().min(1),
+  filename: z.string().min(1),
+  mime: z.string().nullable().optional(),
+  caption: z.string().nullable().optional(),
+  threadId: z.string().nullable().optional(),
+});
+
+export const internalSentFileResponseSchema = z.object({
+  sourceMessageId: z.string().min(1),
+});
+
+export type InternalSentFileResponse = z.infer<typeof internalSentFileResponseSchema>;
+
+/**
  * DELETE /internal/chats/:chatId/messages/:messageId — remove one of the
  * assistant's own messages (a browsing acknowledgement whose run reported,
  * a stale feedback menu). `deleted: false` means the platform refused
