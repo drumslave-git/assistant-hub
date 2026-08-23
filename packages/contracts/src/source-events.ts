@@ -120,10 +120,24 @@ export const replyTargetSchema = z.object({
   sourceMessageId: z.string().min(1),
   /** Sender label of the quoted message, resolved by the source. */
   senderLabel: z.string().nullable(),
+  /** True when the quoted message is the assistant's own (label is then the core's call). */
+  fromAssistant: z.boolean().default(false),
   /** The quoted message's text/caption, or null when it had none. */
   text: z.string().nullable(),
   /** Partial-quote fragment, when the user quoted a specific part. */
   quote: z.string().nullable().optional(),
+});
+
+/**
+ * The receiving connection's identity — what people call the assistant in this
+ * source. The core's addressing check (own-name detection) and its bot label
+ * in transcripts need it; the source knows it (it owns the connection).
+ */
+export const connectionIdentitySchema = z.object({
+  /** The bot's @username in the source (no leading `@`). */
+  botUsername: z.string().min(1),
+  /** The bot's display name — what people call it in a group. */
+  botDisplayName: z.string().min(1),
 });
 
 /**
@@ -136,6 +150,7 @@ export const inboundMessageEventSchema = eventEnvelopeSchema.extend({
   source: sourceIdSchema,
   /** The assistant implied by the receiving connection (bot) or thread. */
   assistantId: z.string().min(1),
+  connection: connectionIdentitySchema,
   chat: chatInfoSchema,
   sender: senderInfoSchema,
   message: z.object({
@@ -183,12 +198,15 @@ export const turnLifecycleEventSchema = eventEnvelopeSchema.extend({
   chatRef: scopedRefSchema,
   /** Source-local id of the inbound message the turn belongs to. */
   sourceMessageId: z.string().min(1),
+  /** Source-local sub-thread the turn lives in (typing renders there), or null. */
+  threadId: z.string().nullable().optional(),
   phase: z.enum(["accepted", "progress", "settled"]),
   /** Short human label of current activity (tool name), for `progress`. */
   activity: z.string().nullable().optional(),
 });
 
 export type EventEnvelope = z.infer<typeof eventEnvelopeSchema>;
+export type ConnectionIdentity = z.infer<typeof connectionIdentitySchema>;
 export type MessageMedia = z.infer<typeof messageMediaSchema>;
 export type HistoryMessage = z.infer<typeof historyMessageSchema>;
 export type Participant = z.infer<typeof participantSchema>;

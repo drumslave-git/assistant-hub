@@ -1,5 +1,3 @@
-import "server-only";
-
 import { Pool } from "pg";
 
 /**

@@ -31,6 +31,18 @@ order:
    `server/telegram` and re-route its consumers (list in the boundary
    study).
 
+Phase 2 mechanics decided (user, 2026-08-23): **Hono** for the tg
+service's HTTP surface (operator API + MCP endpoint); the **two-step
+extraction** (build apps/tg additively while core runs v1, then one swap
+commit deletes `server/telegram` and re-routes its consumers); internal
+core↔tg auth via a shared-secret header (`INTERNAL_API_TOKEN` on both
+sides). For apps/chat the user asked whether it must be Next.js —
+standing recommendation (final call at Phase 4): no; its UI renders
+inside the core dashboard's Next build via `apps/chat/ui` (PLAN's
+micro-frontend decision), so the chat backend is a pure service and Hono
+keeps it tg's twin. A standalone chat frontend outside the dashboard
+would reopen that.
+
 The open questions were answered by the user (2026-08-22) and applied:
 
 1. **Queue retry semantics**: confirmed — BullMQ `attempts: 1`; the turn

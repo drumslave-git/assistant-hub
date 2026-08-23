@@ -20,6 +20,7 @@ describe("source-app events", () => {
       type: "message.inbound",
       source: "tg",
       assistantId: "assistant-1",
+      connection: { botUsername: "fixture_bot", botDisplayName: "Fixture" },
       chat: { ref: "tg:chat:-2001", kind: "group", title: "Fixture Group" },
       sender: { ref: "tg:user:1001", isOwner: true, label: "Alice (@alice_example)" },
       message: {
@@ -53,6 +54,7 @@ describe("source-app events", () => {
       type: "message.inbound",
       source: "tg",
       assistantId: "assistant-1",
+      connection: { botUsername: "fixture_bot", botDisplayName: "Fixture" },
       chat: { ref: "-2001", kind: "group" },
       sender: { ref: "tg:user:1001", isOwner: false, label: "Alice" },
       message: { sourceMessageId: "11", content: "hi", sentAt: envelope.occurredAt },
