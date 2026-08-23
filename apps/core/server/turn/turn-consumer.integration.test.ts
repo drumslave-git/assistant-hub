@@ -383,6 +383,99 @@ describe("inbound turn consumer", () => {
     expect(replyDeliveryEventSchema.parse(delivery).text).toBe("it is late");
   });
 
+  it("delivers a voice turn's reply as a voice bubble through the source's API", async () => {
+    const voiceSends: Array<{ chatId: string; text: string; audioBytes: number }> = [];
+    const outbound = {
+      sendMessage: async () => ({ messageId: 601 }),
+      sendVoice: async (
+        chatId: string,
+        opts: { audioBase64: string; text: string },
+      ) => {
+        voiceSends.push({
+          chatId,
+          text: opts.text,
+          audioBytes: Buffer.from(opts.audioBase64, "base64").length,
+        });
+        return { messageId: 602, asVoice: true };
+      },
+      sendPhotos: async () => ({ delivered: [] }),
+      deleteMessage: async () => ({ deleted: true }),
+      setReaction: async () => ({ status: "ok" as const, recorded: true }),
+    };
+    const event = inboundMessageEventSchema.parse({
+      ...inboundEvent({ eventId: "evt-voice-tts", addressed: true }),
+      message: {
+        ...inboundEvent().message,
+        sourceMessageId: "14",
+        content: "",
+        replyTo: null,
+        media: [
+          { id: "media-v2", kind: "voice", description: "what time is it?", status: "described" },
+        ],
+      },
+    });
+
+    const result = await handleInboundJob(event, 1, {
+      ...ctx({
+        generateReply: async () => ({ content: "it is late", model: "fixture-model", latencyMs: 1 }),
+        synthesizeVoice: async () => ({
+          base64: Buffer.from("fake-opus").toString("base64"),
+          filename: "voice.ogg",
+        }),
+      }),
+      outbound,
+    });
+
+    expect(result.status === "handled" && result.outcome.status).toBe("replied");
+    // The audio crossed the API with the spoken text; no reply-delivery
+    // event doubled the answer, and the turn still settled.
+    expect(voiceSends).toEqual([
+      { chatId: "-300", text: "it is late", audioBytes: Buffer.from("fake-opus").length },
+    ]);
+    const types = published.map((p) => (p as { type: string; phase?: string }));
+    expect(types.some((p) => p.type === "reply.delivery")).toBe(false);
+    expect(types.map((p) => p.phase).filter(Boolean)).toContain("settled");
+  });
+
+  it("degrades a voice reply to the text event when synthesis is unavailable", async () => {
+    const voiceSends: string[] = [];
+    const outbound = {
+      sendMessage: async () => ({ messageId: 603 }),
+      sendVoice: async (_chatId: string, opts: { text: string }) => {
+        voiceSends.push(opts.text);
+        return { messageId: 604, asVoice: true };
+      },
+      sendPhotos: async () => ({ delivered: [] }),
+      deleteMessage: async () => ({ deleted: true }),
+      setReaction: async () => ({ status: "ok" as const, recorded: true }),
+    };
+    const event = inboundMessageEventSchema.parse({
+      ...inboundEvent({ eventId: "evt-voice-text", addressed: true }),
+      message: {
+        ...inboundEvent().message,
+        sourceMessageId: "15",
+        content: "",
+        replyTo: null,
+        media: [
+          { id: "media-v3", kind: "voice", description: "and now?", status: "described" },
+        ],
+      },
+    });
+
+    const result = await handleInboundJob(event, 1, {
+      ...ctx({
+        generateReply: async () => ({ content: "still late", model: "fixture-model", latencyMs: 1 }),
+        synthesizeVoice: async () => null,
+      }),
+      outbound,
+    });
+
+    expect(result.status === "handled" && result.outcome.status).toBe("replied");
+    expect(voiceSends).toEqual([]);
+    const delivery = published.find((p) => (p as { type: string }).type === "reply.delivery");
+    expect(replyDeliveryEventSchema.parse(delivery).text).toBe("still late");
+  });
+
   it("fails for good when tries run out, even without actions", async () => {
     await expect(
       handleInboundJob(inboundEvent({ eventId: "evt-5" }), 5, ctx(), failingRunTurn),

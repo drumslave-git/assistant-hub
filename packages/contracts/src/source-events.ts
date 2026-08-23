@@ -211,10 +211,15 @@ export const replyDeliveryEventSchema = eventEnvelopeSchema.extend({
   replyToSourceMessageId: z.string().nullable().optional(),
   text: z.string().min(1),
   /**
-   * Deliver as a voice bubble when the source can (voice turn + configured
-   * TTS); the source falls back to text and reports what it actually sent.
+   * Deliver without a notification ping — a reply that is only a transient
+   * acknowledgement of background work (a browsing run) that will report
+   * for itself. The source renders it however "silent" looks there.
+   *
+   * Voice replies do NOT travel this event: their audio bytes are produced
+   * by the core (TTS is a core feature) and cross the owning source's
+   * internal API, which can answer with the delivered id (slice D).
    */
-  preferVoice: z.boolean().default(false),
+  silent: z.boolean().default(false),
 });
 
 /**
@@ -235,7 +240,35 @@ export const turnLifecycleEventSchema = eventEnvelopeSchema.extend({
   activity: z.string().nullable().optional(),
 });
 
+/**
+ * One piece of user feedback on an assistant reply, completed through the
+ * owning source's collection flow (tg: 👍/👎 reaction → options menu →
+ * answer). The raw rows live in the source's store (user decision,
+ * 2026-08-22 — conversation-derived content); this event is how the core's
+ * learning jobs (reflection, preference/correction folding, addressing
+ * exclusions) hear about a completed one without polling the source.
+ */
+export const feedbackRecordedEventSchema = eventEnvelopeSchema.extend({
+  type: z.literal("feedback.recorded"),
+  source: sourceIdSchema,
+  feedback: z.object({
+    /** The source-store feedback row id (write-backs address it). */
+    id: z.string().min(1),
+    chatRef: scopedRefSchema,
+    /** Source-local id of the reacted assistant reply. */
+    sourceMessageId: z.string().min(1),
+    /** Scoped ref of the person who gave the feedback. */
+    userRef: scopedRefSchema,
+    reaction: z.enum(["up", "down"]),
+    /** The chosen option text or the user's own words. */
+    text: z.string().min(1),
+    /** `quality` feeds reflection/folding; `addressing` files an exclusion. */
+    topic: z.enum(["quality", "addressing"]),
+  }),
+});
+
 export type EventEnvelope = z.infer<typeof eventEnvelopeSchema>;
+export type FeedbackRecordedEvent = z.infer<typeof feedbackRecordedEventSchema>;
 export type ConnectionIdentity = z.infer<typeof connectionIdentitySchema>;
 export type Addressing = z.infer<typeof addressingSchema>;
 export type MessageMedia = z.infer<typeof messageMediaSchema>;

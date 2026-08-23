@@ -7,7 +7,9 @@ import {
 import { openSubscriber, type BusSubscription } from "@assistant-hub/bus";
 
 import type { TgDb } from "./db";
-import { appendMessage, markMessageProcessed } from "./store";
+import type { TgOutbound } from "./outbound";
+import { appendMessage, filterMirroredMessageIds, markMessageProcessed } from "./store";
+import { findMessageRefs } from "./telegram";
 
 /**
  * The outbound half of the source contract: consume the core's
@@ -19,14 +21,7 @@ import { appendMessage, markMessageProcessed } from "./store";
  */
 
 /** What delivery needs from the running bot; the bot manager provides it. */
-export interface TgSender {
-  sendReply(
-    chatId: string,
-    text: string,
-    opts: { replyToMessageId?: number | null; threadId?: number | null },
-  ): Promise<{ messageId: number }>;
-  sendTyping(chatId: string, threadId?: number | null): void;
-}
+export type TgSender = Pick<TgOutbound, "sendMessage" | "sendTyping">;
 
 /** Telegram expires a chat action after ~5s; refresh just under that. */
 const TYPING_REFRESH_MS = 4_500;
@@ -97,11 +92,21 @@ export async function startDeliveryConsumer(input: {
       const chatId = parseScopedRef(event.chatRef).id;
       const replyToMessageId =
         event.replyToSourceMessageId != null ? Number(event.replyToSourceMessageId) : null;
+      // Which `#<id>` citations really exist here decides what links (the
+      // whitelist keeps invented ids as plain text); a failed check drops
+      // the links, never the reply.
+      const linkableMessageIds = await filterMirroredMessageIds(
+        input.db,
+        chatId,
+        findMessageRefs(event.text),
+      ).catch(() => []);
       // Send first, then mirror what was actually delivered — the mirror
       // records reality (v1 order: deliver, then record best-effort).
-      const sent = await input.senderFor(event.assistantId).sendReply(chatId, event.text, {
+      const sent = await input.senderFor(event.assistantId).sendMessage(chatId, event.text, {
         replyToMessageId,
         threadId: event.threadId != null ? Number(event.threadId) : null,
+        silent: event.silent,
+        linkableMessageIds,
       });
       await appendMessage(input.db, {
         chatId,

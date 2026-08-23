@@ -320,3 +320,93 @@ describe("set_message_reaction", () => {
     expect(mockedRecord).not.toHaveBeenCalled();
   });
 });
+
+describe("set_message_reaction over the source port", () => {
+  beforeEach(() => {
+    mockedReact.mockReset();
+    mockedLookup.mockReset();
+    mockedRecord.mockReset();
+  });
+
+  /** A consumer-path turn: the source owns the mirror and the platform call. */
+  function portTurn(port: {
+    calls: Array<{ messageId: number; emoji: string | null; big?: boolean }>;
+    outcome?: { status: "ok" | "not_found" | "own_message"; recorded: boolean };
+    error?: Error;
+  }) {
+    return {
+      chatId: "-100",
+      reactToMessage: async (input: { messageId: number; emoji: string | null; big?: boolean }) => {
+        port.calls.push(input);
+        if (port.error) throw port.error;
+        return port.outcome ?? { status: "ok" as const, recorded: true };
+      },
+    };
+  }
+
+  it("reacts through the port and never touches the local mirror or bot", async () => {
+    const port = { calls: [] as Array<{ messageId: number; emoji: string | null }> };
+
+    const result = await runWithToolContext(portTurn(port), () =>
+      reactionHandler()({ message_id: 21, emoji: "❤️", big: false }),
+    );
+
+    // Normalized to Telegram's canonical form before crossing the port.
+    expect(port.calls).toEqual([{ messageId: 21, emoji: "❤", big: false }]);
+    expect(mockedLookup).not.toHaveBeenCalled();
+    expect(mockedReact).not.toHaveBeenCalled();
+    expect(mockedRecord).not.toHaveBeenCalled();
+    expect(result.structuredContent).toEqual({ ok: true, message_id: 21, emoji: "❤" });
+  });
+
+  it("words the source's not_found as the no-guessing refusal", async () => {
+    const port = {
+      calls: [],
+      outcome: { status: "not_found" as const, recorded: false },
+    };
+
+    const result = await runWithToolContext(portTurn(port), () =>
+      reactionHandler()({ message_id: 999, emoji: "\u{1F44D}", big: false }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("No message #999 in this chat");
+  });
+
+  it("words the source's own_message as the self-reaction refusal", async () => {
+    const port = {
+      calls: [],
+      outcome: { status: "own_message" as const, recorded: false },
+    };
+
+    const result = await runWithToolContext(portTurn(port), () =>
+      reactionHandler()({ message_id: 22, emoji: "\u{1F44D}", big: false }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("is your own");
+  });
+
+  it("relays a platform refusal the port throws", async () => {
+    const port = { calls: [], error: new Error("Bad Request: REACTION_INVALID") };
+
+    const result = await runWithToolContext(portTurn(port), () =>
+      reactionHandler()({ message_id: 21, emoji: "\u{1F44D}", big: false }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("REACTION_INVALID");
+    expect(result.content[0].text).toContain("Do not claim you reacted");
+  });
+
+  it("reports success with the memory warning when the source could not record", async () => {
+    const port = { calls: [], outcome: { status: "ok" as const, recorded: false } };
+
+    const result = await runWithToolContext(portTurn(port), () =>
+      reactionHandler()({ message_id: 21, emoji: "\u{1F44D}", big: false }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("could not be recorded");
+  });
+});

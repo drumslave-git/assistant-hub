@@ -67,7 +67,7 @@ describe("source-app events", () => {
     expect(result.success).toBe(false);
   });
 
-  it("round-trips a reply delivery and defaults preferVoice off", () => {
+  it("round-trips a reply delivery and defaults silent off", () => {
     const parsed = replyDeliveryEventSchema.parse({
       ...envelope,
       type: "reply.delivery",
@@ -77,7 +77,7 @@ describe("source-app events", () => {
       replyToSourceMessageId: "11",
       text: "the answer",
     });
-    expect(parsed.preferVoice).toBe(false);
+    expect(parsed.silent).toBe(false);
   });
 
   it("accepts lifecycle phases and rejects unknown ones", () => {

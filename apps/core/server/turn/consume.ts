@@ -46,6 +46,8 @@ import {
   type MediaStorePort,
 } from "@/features/vision/server/service";
 import { VOICE_TURN_NOTE, VOICE_UNAVAILABLE_NOTE } from "@/features/voice/format";
+import { synthesizeVoiceReply } from "@/features/voice/server/speak";
+import { registerRunAck } from "@/features/browser-agent/server/ack";
 import { resolveRequiredLanguage } from "@/lib/language";
 import {
   HONESTY_GATE_MAX_TOKENS,
@@ -57,6 +59,7 @@ import type { TraceRecorder } from "@/server/trace";
 import { createTurnActionMarkers, closeTurnActionStore, type TurnActionMarkers } from "./actions";
 import { botTranscriptLabel, renderChatContext, renderCurrentTurn, renderHistoryWindow } from "./render";
 import { tgApiMediaStore } from "./tg-media";
+import { tgApiOutbound, type SourceOutboundPort } from "./tg-outbound";
 
 /**
  * The queue side of the source split (redesign Phase 2): consume normalized
@@ -74,11 +77,17 @@ import { tgApiMediaStore } from "./tg-media";
  *
  * Media and voice (slice B) run through the owning source's internal media
  * API: bytes are read from the source, the describe/transcribe models run
- * here, and the text is written back (describe-then-drop). Interim gaps
- * until slice D (consumer-path only, which no live traffic takes yet):
- * generated images are not delivered, browser runs get no self-deleting
- * acknowledgement, voice replies deliver as text (no TTS delivery path),
- * and `#id` citations are not resolved into links.
+ * here, and the text is written back (describe-then-drop).
+ *
+ * Outbound beyond plain text (slice D) goes through the source's internal
+ * send API ({@link SourceOutboundPort}) — the calls that need a delivered id
+ * back or carry bytes: voice replies (TTS synthesized here, audio crosses
+ * the API, the source falls back to text), generated images (the source
+ * mirrors + stores them as pending media), browsing acknowledgements (sent
+ * silent through the API so their id can be registered for deletion), and
+ * the reaction tool. `#id` citation links resolve source-side at delivery
+ * (the source owns the mirror). With the API unconfigured everything
+ * degrades to the plain-text bus event, the v1 no-capability behavior.
  */
 
 /** Re-enqueue delay for a turn that failed before performing any action. */
@@ -97,10 +106,19 @@ export interface TurnConsumerContext {
    * the v1 no-token behavior.
    */
   mediaStore?: MediaStorePort;
+  /**
+   * The owning source's outbound sends over its internal API (voice,
+   * photos, silent acks, deletes, reactions). Resolved from env when
+   * absent; null-resolution degrades every such send to the plain-text bus
+   * event (or drops it, for images) — dev-only, no live traffic runs so.
+   */
+  outbound?: SourceOutboundPort;
   overrides?: {
     generateReply?: BotMessagingDeps["generateReply"];
     analyzeAddressing?: BotMessagingDeps["analyzeAddressing"];
     describeDeps?: DescribeDeps;
+    /** Test seam: TTS without a configured speech endpoint. */
+    synthesizeVoice?: (text: string) => Promise<{ base64: string; filename: string } | null>;
   };
   now?: () => Date;
 }
@@ -110,6 +128,13 @@ function resolveMediaStore(ctx: TurnConsumerContext): MediaStorePort | null {
   const env = getEnv();
   if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
   return tgApiMediaStore();
+}
+
+function resolveOutbound(ctx: TurnConsumerContext): SourceOutboundPort | null {
+  if (ctx.outbound) return ctx.outbound;
+  const env = getEnv();
+  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
+  return tgApiOutbound();
 }
 
 /** What this turn's media resolves to — the v1 `visionAttachment` shape. */
@@ -148,6 +173,13 @@ interface TurnPlan {
   /** Pre-opened reply trace (voice turns record transcription into it). */
   replyTrace?: TraceRecorder;
   store: MediaStorePort | null;
+  outbound: SourceOutboundPort | null;
+  /** Voice turn — the reply prefers the TTS voice-bubble delivery. */
+  isVoice: boolean;
+  /** Sink `image_generate` fills; delivered after the turn (v1 order). */
+  generatedImages: string[];
+  /** Runs `browse_web` enqueued this turn — replies become silent acks. */
+  enqueuedBrowserRuns: string[];
 }
 
 /** Build the service collaborators from the event + the (v1) brain services. */
@@ -172,7 +204,7 @@ async function buildEventDeps(
 
   const markActed = () => ctx.markers.mark(event.correlationId);
 
-  const deliveryEvent = (text: string): ReplyDeliveryEvent => ({
+  const deliveryEvent = (text: string, silent: boolean): ReplyDeliveryEvent => ({
     v: 1,
     eventId: randomUUID(),
     occurredAt: new Date().toISOString(),
@@ -184,8 +216,47 @@ async function buildEventDeps(
     threadId: event.message.threadId ?? null,
     replyToSourceMessageId: event.message.sourceMessageId,
     text,
-    preferVoice: false,
+    silent,
   });
+
+  /**
+   * Register a delivered reply as the acknowledgement of this turn's
+   * browsing run(s), for the runner to delete once the run reports (v1
+   * `registerBrowserRunAck`, delete via the source's API). When the run beat
+   * the reply, the ack is stale on arrival: delete it now, best-effort —
+   * the source soft-deletes its mirror row with the message.
+   */
+  const registerBrowserRunAck = async (messageId: number) => {
+    const runId = turn.enqueuedBrowserRuns[turn.enqueuedBrowserRuns.length - 1];
+    if (!runId) return;
+    if (registerRunAck(runId, chatId, messageId) !== "settled") return;
+    await turn.outbound?.deleteMessage(chatId, messageId).catch(() => undefined);
+  };
+
+  /**
+   * Deliver one reply chunk. The ordinary path publishes the reply-delivery
+   * event (the source sends + mirrors; the id stays unknown here). A turn
+   * that enqueued a browsing run needs the delivered id — its reply is a
+   * transient acknowledgement registered for deletion — so it sends through
+   * the source's API instead, silent, when the API is configured.
+   */
+  const sendTextReply = async (text: string): Promise<{ messageId: number | null }> => {
+    // The send is an action the moment it leaves this process — mark first.
+    await markActed();
+    const silent = turn.enqueuedBrowserRuns.length > 0;
+    if (silent && turn.outbound) {
+      const sent = await turn.outbound.sendMessage(chatId, {
+        text,
+        replyToMessageId: Number(event.message.sourceMessageId),
+        threadId,
+        silent: true,
+      });
+      await registerBrowserRunAck(sent.messageId);
+      return { messageId: sent.messageId };
+    }
+    await ctx.publish(deliveryEvent(text, silent));
+    return { messageId: null };
+  };
 
   const bindings = createTurnBindings({
     chatId,
@@ -196,13 +267,15 @@ async function buildEventDeps(
     chatType: isGroup ? "supergroup" : "private",
     policy,
     tasks: taskSets,
-    // Interim gap (slice D): images generated mid-turn have no delivery
-    // path on this route yet — the sink exists so the tool does not crash.
-    collectImage: () => {},
-    onBrowserRunEnqueued: () => {},
+    collectImage: (base64) => turn.generatedImages.push(base64),
+    onBrowserRunEnqueued: (runId) => turn.enqueuedBrowserRuns.push(runId),
+    reactToMessage: turn.outbound
+      ? async ({ messageId, emoji, big }) =>
+          turn.outbound!.setReaction(chatId, messageId, emoji, { big })
+      : undefined,
     deliverTaskReply: async (text: string) => {
       await markActed();
-      await ctx.publish(deliveryEvent(text));
+      await ctx.publish(deliveryEvent(text, false));
       return { messageId: null };
     },
     onBeforeToolCall: markActed,
@@ -329,14 +402,43 @@ async function buildEventDeps(
         { maxTokens: HONESTY_GATE_MAX_TOKENS, timeoutMs: HONESTY_GATE_TIMEOUT_MS },
         callTrace,
       ),
-    async sendReply(text: string) {
-      // The send is an action the moment it is on the bus — mark first.
-      await markActed();
-      await ctx.publish(deliveryEvent(text));
-      // The owning source performs the send and mirrors the delivered id;
-      // this path cannot know it (see SentMessage.messageId).
-      return { messageId: null };
-    },
+    // The owning source performs the send and mirrors what was delivered;
+    // the id comes back only on the API path (see sendTextReply).
+    sendReply: sendTextReply,
+    // Voice-to-voice (v1 decision): a voice turn is answered with a voice
+    // bubble when the speech endpoint is configured. Synthesis happens here
+    // (TTS is a core feature); the audio crosses the source's API, which
+    // itself falls back to a text send and reports what it delivered.
+    // Synthesis or the call failing degrades to the plain text reply — the
+    // answer always arrives.
+    sendVoiceReply:
+      turn.isVoice && turn.outbound
+        ? async (text: string) => {
+            const audio = ctx.overrides?.synthesizeVoice
+              ? await ctx.overrides.synthesizeVoice(text)
+              : await synthesizeVoiceReply({
+                  chatId,
+                  correlationId: event.correlationId,
+                  text,
+                });
+            if (audio) {
+              await markActed();
+              try {
+                const sent = await turn.outbound!.sendVoice(chatId, {
+                  audioBase64: audio.base64,
+                  text,
+                  replyToMessageId: Number(event.message.sourceMessageId),
+                  threadId,
+                });
+                return { messageId: sent.messageId, asVoice: sent.asVoice };
+              } catch {
+                // fall through to the text delivery below
+              }
+            }
+            const sent = await sendTextReply(text);
+            return { ...sent, asVoice: false };
+          }
+        : undefined,
     // The owning source mirrors what it delivers — nothing to record here.
     recordReply: async () => {},
   };
@@ -361,6 +463,7 @@ export async function processInboundEvent(
   const media = event.message.media[0] ?? null;
   const isVoice = media?.kind === "voice";
   const store = resolveMediaStore(ctx);
+  const outbound = resolveOutbound(ctx);
 
   let effectiveText = event.message.content;
   let addressing = toAddressResult(event);
@@ -422,13 +525,18 @@ export async function processInboundEvent(
     attachment = { replyTargetMessageId: Number(event.message.replyTo.sourceMessageId) };
   }
 
-  const deps = await buildEventDeps(event, ctx, {
+  const turn: TurnPlan = {
     effectiveText,
     attachment,
     replyTrace,
     store,
-  });
-  return handleIncomingMessage(
+    outbound,
+    isVoice,
+    generatedImages: [],
+    enqueuedBrowserRuns: [],
+  };
+  const deps = await buildEventDeps(event, ctx, turn);
+  const outcome = await handleIncomingMessage(
     {
       addressing,
       chatId: Number(chatId),
@@ -443,6 +551,26 @@ export async function processInboundEvent(
     },
     deps,
   );
+
+  // Images the model drew mid-turn are delivered after the reply, so the
+  // acknowledgement arrives before the picture it acknowledges (v1 order).
+  // The source mirrors + stores each as pending media; best-effort like v1
+  // — a delivery failure must not turn a finished turn into a failed job.
+  if (turn.generatedImages.length > 0 && outbound) {
+    await outbound
+      .sendPhotos(chatId, {
+        images: turn.generatedImages,
+        threadId: event.message.threadId != null ? Number(event.message.threadId) : null,
+      })
+      .catch((err) =>
+        console.error(
+          "Failed to deliver generated images:",
+          err instanceof Error ? err.message : String(err),
+        ),
+      );
+  }
+
+  return outcome;
 }
 
 export type InboundJobResult =

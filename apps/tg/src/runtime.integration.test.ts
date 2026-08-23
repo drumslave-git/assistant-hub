@@ -235,12 +235,25 @@ describe("tg runtime", () => {
   });
 
   it("delivers replies from the bus, mirrors them, and runs typing across the turn", async () => {
-    const sends: Array<{ chatId: string; text: string; replyTo: number | null }> = [];
+    const sends: Array<{
+      chatId: string;
+      text: string;
+      replyTo: number | null;
+      silent: boolean;
+      linkable: number[];
+    }> = [];
     let typingCalls = 0;
+    let nextMessageId = 500;
     const sender: TgSender = {
-      sendReply: async (chatId, text, opts) => {
-        sends.push({ chatId, text, replyTo: opts.replyToMessageId ?? null });
-        return { messageId: 501 };
+      sendMessage: async (chatId, text, opts) => {
+        sends.push({
+          chatId,
+          text,
+          replyTo: opts?.replyToMessageId ?? null,
+          silent: opts?.silent ?? false,
+          linkable: [...(opts?.linkableMessageIds ?? [])],
+        });
+        return { messageId: ++nextMessageId };
       },
       sendTyping: () => {
         typingCalls += 1;
@@ -282,7 +295,13 @@ describe("tg runtime", () => {
         text: "the answer",
       });
       await expect.poll(() => sends.length, { timeout: 10_000 }).toBe(1);
-      expect(sends[0]).toEqual({ chatId: "-300", text: "the answer", replyTo: 11 });
+      expect(sends[0]).toEqual({
+        chatId: "-300",
+        text: "the answer",
+        replyTo: 11,
+        silent: false,
+        linkable: [],
+      });
 
       await publisher.publish(BUS_EVENTS_CHANNEL, {
         ...envelope,
@@ -310,6 +329,24 @@ describe("tg runtime", () => {
         { role: "assistant", content: "the answer", reply_to_message_id: "11" },
       ]);
 
+      // A silent delivery citing mirrored and invented ids: the silent flag
+      // passes through and only the mirrored citation is whitelisted.
+      await publisher.publish(BUS_EVENTS_CHANNEL, {
+        v: 1,
+        eventId: "evt-d1b",
+        occurredAt: new Date().toISOString(),
+        correlationId: "-300:12",
+        type: "reply.delivery",
+        source: "tg",
+        assistantId: "assistant-1",
+        chatRef: "tg:chat:-300",
+        replyToSourceMessageId: "11",
+        text: "on it — context in #11 and #9999",
+        silent: true,
+      });
+      await expect.poll(() => sends.length, { timeout: 10_000 }).toBe(2);
+      expect(sends[1]).toMatchObject({ silent: true, linkable: [11] });
+
       // Events for another source are not ours and change nothing.
       await publisher.publish(BUS_EVENTS_CHANNEL, {
         v: 1,
@@ -323,7 +360,7 @@ describe("tg runtime", () => {
         text: "not for telegram",
       });
       await new Promise((r) => setTimeout(r, 300));
-      expect(sends).toHaveLength(1);
+      expect(sends).toHaveLength(2);
     } finally {
       await publisher.close();
       await consumer.close();

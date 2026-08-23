@@ -5,8 +5,8 @@ import { Bot, HttpError, type Context } from "grammy";
 
 import type { TgDb } from "./db";
 import { processIncomingMessage } from "./inbound";
+import { createBotOutbound, type TgOutbound } from "./outbound";
 import { applyMessageEdit, listEnabledConnections } from "./store";
-import type { TgSender } from "./delivery";
 
 /**
  * Poller lifecycle for this app's telegram connections — the v1 bot-manager
@@ -120,11 +120,13 @@ export class BotManager {
   }
 
   /**
-   * The outbound sender for the delivery consumer. Sends through the poller
-   * serving the assistant's connection; a null assistant means "whichever
-   * connection runs" — with Phase 2's single connection, simply the bot.
+   * The outbound ops for one assistant's connection (the delivery consumer
+   * and the internal API both send through this). A null assistant means
+   * "whichever connection runs" — with Phase 2's single connection, simply
+   * the bot. Resolution is per call, so a poller restart never leaves a
+   * stale handle behind.
    */
-  senderFor(assistantId: string | null): TgSender {
+  senderFor(assistantId: string | null): TgOutbound {
     const requireBot = (): Bot => {
       const poller = [...this.pollers.values()].find(
         (p) => (assistantId == null || p.assistantId === assistantId) && p.bot,
@@ -136,32 +138,7 @@ export class BotManager {
       }
       return poller.bot;
     };
-    return {
-      sendReply: async (chatId, text, opts) => {
-        const bot = requireBot();
-        const params = {
-          ...(opts.replyToMessageId != null
-            ? {
-                reply_parameters: {
-                  message_id: opts.replyToMessageId,
-                  // Losing the answer to save the pointer is the wrong trade —
-                  // a stale target must not cost the user their reply (v1).
-                  allow_sending_without_reply: true,
-                },
-              }
-            : {}),
-          ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
-        };
-        const sent = await bot.api.sendMessage(chatId, text, params);
-        return { messageId: sent.message_id };
-      },
-      sendTyping: (chatId, threadId) => {
-        const bot = requireBot();
-        void bot.api
-          .sendChatAction(chatId, "typing", threadId != null ? { message_thread_id: threadId } : {})
-          .catch(() => undefined);
-      },
-    };
+    return createBotOutbound(requireBot);
   }
 
   private setStatus(poller: Poller, status: Omit<ConnectionStatus, "connectionId" | "assistantId">): void {

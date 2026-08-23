@@ -92,6 +92,20 @@ export interface McpToolContext {
    * `send` — a timed fire, speaking into the chat unprompted.
    */
   deliveryKind?: "reply" | "send";
+  /**
+   * How this turn sets the assistant's reaction badge on a message, when the
+   * turn's source owns the mirror (the queue-consumer path, redesign Phase 2):
+   * the source checks its mirror (`not_found` / `own_message`), performs the
+   * platform call (a platform refusal throws with its message), and records
+   * the reaction so the next turn remembers it (`recorded`). Absent on the
+   * v1 in-process path, where the tool reads the local mirror and bot
+   * manager directly — that fallback dies with the swap.
+   */
+  reactToMessage?: (input: {
+    messageId: number;
+    emoji: string | null;
+    big?: boolean;
+  }) => Promise<{ status: "ok" | "not_found" | "own_message"; recorded: boolean }>;
 }
 
 const STORE_KEY = Symbol.for("llm-tg-bot.mcp.tool-context");

@@ -102,6 +102,78 @@ export async function appendMessage(
   return rows[0] ?? null;
 }
 
+/** One mirrored message by its Telegram id, or null. */
+export async function getMessageByTelegramId(
+  db: TgDb,
+  chatId: string,
+  telegramMessageId: number,
+): Promise<MessageRow | null> {
+  const rows = await db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.chatId, chatId), eq(messages.telegramMessageId, telegramMessageId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Which of the given Telegram message ids exist in this chat's mirror — the
+ * whitelist behind `#<id>` citation links (v1 `getChatMessagesByTelegramIds`
+ * narrowed to what link resolution needs): a model that misreads an id, or
+ * invents one, gets plain text rather than a link to a message nobody can
+ * open.
+ */
+export async function filterMirroredMessageIds(
+  db: TgDb,
+  chatId: string,
+  telegramMessageIds: number[],
+): Promise<number[]> {
+  if (telegramMessageIds.length === 0) return [];
+  const rows = await db
+    .select({ telegramMessageId: messages.telegramMessageId })
+    .from(messages)
+    .where(
+      and(eq(messages.chatId, chatId), inArray(messages.telegramMessageId, telegramMessageIds)),
+    );
+  return rows.map((row) => row.telegramMessageId);
+}
+
+/**
+ * Record the bot's own reaction badge on a mirrored message (current state —
+ * a new emoji replaces the old, null clears it), so the transcript renders
+ * it and the next turn remembers reacting (v1 `recordBotReaction`).
+ */
+export async function recordBotReaction(
+  db: TgDb,
+  input: { chatId: string; telegramMessageId: number; emoji: string | null },
+): Promise<void> {
+  await db
+    .update(messages)
+    .set({ botReaction: input.emoji, botReactedAt: new Date() })
+    .where(
+      and(
+        eq(messages.chatId, input.chatId),
+        eq(messages.telegramMessageId, input.telegramMessageId),
+      ),
+    );
+}
+
+/**
+ * Soft-delete a mirrored message (the bot's own deletions only — a removed
+ * browsing acknowledgement, a retired feedback menu). The row stays for
+ * insertion-order integrity; reads exclude it via `deleted_at`.
+ */
+export async function markMessageDeleted(
+  db: TgDb,
+  chatId: string,
+  telegramMessageId: number,
+): Promise<void> {
+  await db
+    .update(messages)
+    .set({ deletedAt: new Date() })
+    .where(and(eq(messages.chatId, chatId), eq(messages.telegramMessageId, telegramMessageId)));
+}
+
 /** Whether a message is in the mirror (reply targets render as anchors then). */
 export async function isMessageMirrored(
   db: TgDb,

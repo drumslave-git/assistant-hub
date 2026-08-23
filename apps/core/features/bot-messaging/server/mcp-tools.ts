@@ -176,7 +176,8 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
       },
     },
     async ({ message_id, emoji, big }) => {
-      const { chatId } = getToolContext();
+      const ctx = getToolContext();
+      const { chatId } = ctx;
 
       const requested = emoji.trim();
       const reaction = requested ? toTelegramReactionEmoji(requested) : null;
@@ -187,56 +188,74 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
         );
       }
 
-      const [found] = await getChatMessagesByTelegramIds(getDb(), chatId, [message_id]);
-      if (!found) {
-        return reactionRefusal(
+      const noMessageRefusal = () =>
+        reactionRefusal(
           `No message #${message_id} in this chat. Do not guess ids — look the message up again ` +
             "and use an id from the result, or answer without reacting.",
         );
-      }
       // Reacting to itself is the one target that is never right: a badge the bot
       // put on its own message says nothing to anyone, and Telegram would happily
       // allow it. `assistant` is exactly the bot's own output in the mirror —
       // another bot's message arrives as an ordinary `user` row and stays fair game.
-      if (found.role === "assistant") {
-        return reactionRefusal(
+      const ownMessageRefusal = () =>
+        reactionRefusal(
           `Message #${message_id} is your own — do not react to what you said yourself. ` +
             "React to someone else's message, or say what you mean in your answer.",
         );
-      }
-
-      try {
-        // Imported lazily, and this is load-bearing: the Telegram edge imports
-        // the reply pipeline, which imports the tool registry, which imports
-        // this module. At module scope that cycle leaves `BOT_MESSAGING_TOOL_NAMES`
-        // undefined while the registrar table is being built — every tool in
-        // this file silently loses its owning feature. No other tool module
-        // reaches the bot directly; this one must, since a reaction is not a
-        // message the pipeline can deliver.
-        const { reactToChatMessage } = await import("@/server/telegram/bot-manager");
-        await reactToChatMessage(chatId, message_id, reaction, { big });
-      } catch (err) {
-        // Telegram refuses reactions for reasons this side cannot know in
-        // advance — a chat that allows only some emoji, a message too old, the
-        // poller not running. Relayed verbatim rather than swallowed: a silent
-        // failure would leave the model telling the chat it reacted.
-        return reactionRefusal(
+      // Telegram refuses reactions for reasons this side cannot know in
+      // advance — a chat that allows only some emoji, a message too old, the
+      // poller not running. Relayed verbatim rather than swallowed: a silent
+      // failure would leave the model telling the chat it reacted.
+      const telegramRefusal = (err: unknown) =>
+        reactionRefusal(
           `Telegram did not accept the reaction: ${err instanceof Error ? err.message : String(err)}. ` +
             "Do not claim you reacted.",
         );
-      }
 
-      // Mirror into history so the bot *remembers* reacting: the transcript
-      // renders it on the target line (`[you reacted: 👍]`). Without this the
-      // reaction lived only on Telegram's side, and the very next turn denied
-      // having set it (operator report, 2026-08-15). Its own catch: the
-      // reaction IS on the message — a failed mirror write must not make the
-      // tool claim Telegram refused, only say the memory of it is missing.
-      let recorded = true;
-      try {
-        await recordBotReaction({ chatId, telegramMessageId: message_id, emoji: reaction });
-      } catch {
-        recorded = false;
+      // Whether the bot will *remember* reacting: the mirror renders it on the
+      // target line (`[you reacted: 👍]`); without that record the very next
+      // turn denied having set it (operator report, 2026-08-15). The reaction
+      // IS on the message either way — a failed record must not read as a
+      // Telegram refusal, only as the memory of it missing.
+      let recorded: boolean;
+
+      if (ctx.reactToMessage) {
+        // The turn's source owns the mirror (queue-consumer path): one call
+        // checks the target, reacts, and records — same order as below.
+        let outcome: Awaited<ReturnType<NonNullable<typeof ctx.reactToMessage>>>;
+        try {
+          outcome = await ctx.reactToMessage({ messageId: message_id, emoji: reaction, big });
+        } catch (err) {
+          return telegramRefusal(err);
+        }
+        if (outcome.status === "not_found") return noMessageRefusal();
+        if (outcome.status === "own_message") return ownMessageRefusal();
+        recorded = outcome.recorded;
+      } else {
+        const [found] = await getChatMessagesByTelegramIds(getDb(), chatId, [message_id]);
+        if (!found) return noMessageRefusal();
+        if (found.role === "assistant") return ownMessageRefusal();
+
+        try {
+          // Imported lazily, and this is load-bearing: the Telegram edge imports
+          // the reply pipeline, which imports the tool registry, which imports
+          // this module. At module scope that cycle leaves `BOT_MESSAGING_TOOL_NAMES`
+          // undefined while the registrar table is being built — every tool in
+          // this file silently loses its owning feature. No other tool module
+          // reaches the bot directly; this one must, since a reaction is not a
+          // message the pipeline can deliver.
+          const { reactToChatMessage } = await import("@/server/telegram/bot-manager");
+          await reactToChatMessage(chatId, message_id, reaction, { big });
+        } catch (err) {
+          return telegramRefusal(err);
+        }
+
+        recorded = true;
+        try {
+          await recordBotReaction({ chatId, telegramMessageId: message_id, emoji: reaction });
+        } catch {
+          recorded = false;
+        }
       }
 
       const note = recorded

@@ -25,7 +25,7 @@ import {
   type LlmCallTrace,
 } from "@/server/llm/client";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
-import { runWithToolContext } from "@/server/mcp/context";
+import { runWithToolContext, type McpToolContext } from "@/server/mcp/context";
 
 import type { BotMessagingDeps } from "./service";
 
@@ -87,6 +87,12 @@ export interface TurnBindingsInput {
   collectImage: (base64: string) => void;
   /** Runs `browse_web` enqueued this turn (ack handling is the caller's). */
   onBrowserRunEnqueued: (runId: string) => void;
+  /**
+   * The reaction port for a turn whose source owns the mirror (the queue
+   * consumer supplies its source's internal API; the v1 path leaves it
+   * absent and the tool reads the local mirror + bot manager directly).
+   */
+  reactToMessage?: McpToolContext["reactToMessage"];
   /**
    * Deliver a task-opened turn's message (the `reply_to_message` tool): the
    * telegram runtime sends + mirrors; the queue consumer publishes a
@@ -190,6 +196,7 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
           messageUrls: extractMessageUrls(messageText),
           threadId: threadId ?? undefined,
           collectImage: input.collectImage,
+          ...(input.reactToMessage ? { reactToMessage: input.reactToMessage } : {}),
           // A task-opened turn sends nothing of its own; this binding is the
           // only way it reaches the chat, under the triggering message.
           ...(taskOpenedTurn

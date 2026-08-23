@@ -10,12 +10,26 @@
 export { DEFAULT_ASSISTANT_ID } from "./assistants";
 export { EMBEDDING_DIMENSIONS } from "./embeddings";
 export {
+  internalDeleteMessageResponseSchema,
   internalMediaDescribeRequestSchema,
   internalMediaDescribeResponseSchema,
   internalMediaResponseSchema,
   internalMediaSchema,
+  internalReactionRequestSchema,
+  internalReactionResponseSchema,
+  internalSendMessageRequestSchema,
+  internalSendPhotosRequestSchema,
+  internalSendVoiceRequestSchema,
+  internalSentMessageResponseSchema,
+  internalSentPhotosResponseSchema,
+  internalSentVoiceResponseSchema,
+  type InternalDeleteMessageResponse,
   type InternalMedia,
   type InternalMediaDescribeResponse,
+  type InternalReactionResponse,
+  type InternalSentMessageResponse,
+  type InternalSentPhotosResponse,
+  type InternalSentVoiceResponse,
 } from "./internal-api";
 export {
   BUS_EVENTS_CHANNEL,
@@ -25,6 +39,7 @@ export {
   connectionIdentitySchema,
   conversationContextSchema,
   eventEnvelopeSchema,
+  feedbackRecordedEventSchema,
   historyMessageSchema,
   inboundMessageEventSchema,
   messageMediaSchema,
@@ -39,6 +54,7 @@ export {
   type ConnectionIdentity,
   type ConversationContext,
   type EventEnvelope,
+  type FeedbackRecordedEvent,
   type HistoryMessage,
   type InboundMessageEvent,
   type MessageMedia,

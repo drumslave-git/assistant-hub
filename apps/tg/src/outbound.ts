@@ -1,0 +1,177 @@
+import type { ReactionTypeEmoji } from "@grammyjs/types";
+import { GrammyError, InputFile, type Bot } from "grammy";
+
+import { messageLinkBase } from "./telegram";
+import { renderTelegramHtml } from "./telegram-html";
+
+/**
+ * Outbound Telegram operations on a running bot — the v1 grammy transport
+ * (`server/telegram/bot-manager.ts` + `transport.ts`) ported to the source
+ * split. This is the ONE place model text meets Telegram: Markdown is
+ * rendered to Telegram HTML, whitelisted `#<id>` citations become tappable
+ * message links, and a rejected render falls back to the plain text — the
+ * raw model text is always deliverable, formatting is best-effort.
+ */
+
+/** Everything the delivery consumer and the internal API send through. */
+export interface TgOutbound {
+  /**
+   * Send a text message, optionally attached as a reply.
+   * `linkableMessageIds` is the mirror-checked whitelist for `#<id>` links;
+   * `silent` sends without a notification ping (transient acknowledgements).
+   */
+  sendMessage(
+    chatId: string,
+    text: string,
+    opts?: {
+      replyToMessageId?: number | null;
+      threadId?: number | null;
+      silent?: boolean;
+      linkableMessageIds?: readonly number[];
+    },
+  ): Promise<{ messageId: number }>;
+  /**
+   * Deliver a reply as a Telegram voice bubble. `base64` is OGG/Opus audio —
+   * the one encoding Telegram renders as a voice message (anything else
+   * shows as a music file).
+   */
+  sendVoice(
+    chatId: string,
+    voice: { base64: string; filename: string },
+    opts?: { replyToMessageId?: number | null; threadId?: number | null },
+  ): Promise<{ messageId: number }>;
+  /**
+   * Deliver an image as a photo. Returns the Telegram `file_id` of the
+   * stored photo alongside the message id: a generated image is stored as
+   * ordinary media so the describer recognizes it, and that row is keyed by
+   * the file Telegram just minted — it can only come from here.
+   */
+  sendPhoto(
+    chatId: string,
+    image: { base64: string; filename: string },
+    opts?: { replyToMessageId?: number | null; threadId?: number | null },
+  ): Promise<{ messageId: number; fileId: string; fileUniqueId: string | null }>;
+  /** Delete one of the bot's own messages. Telegram refuses deletes older than 48h. */
+  deleteMessage(chatId: string, messageId: number): Promise<void>;
+  /**
+   * Set (or, with null, clear) the bot's one reaction badge on a message.
+   * Throws on refusal (an emoji this chat does not allow, a message too old)
+   * so the caller can report it — a swallowed failure would leave the model
+   * telling the chat it reacted.
+   */
+  setReaction(
+    chatId: string,
+    messageId: number,
+    emoji: string | null,
+    opts?: { big?: boolean },
+  ): Promise<void>;
+  /** Show the "typing…" chat action once (the caller owns the refresh loop). */
+  sendTyping(chatId: string, threadId?: number | null): void;
+}
+
+/**
+ * Telegram rejected the rendered HTML entities (a converter blind spot, e.g.
+ * a nesting Telegram forbids). Only this failure falls back to a plain-text
+ * send — anything else (network, chat gone) must surface to the caller, and
+ * a blind retry could double-deliver.
+ */
+function isEntityParseError(err: unknown): boolean {
+  return (
+    err instanceof GrammyError && err.description.toLowerCase().includes("can't parse entities")
+  );
+}
+
+/** Reply/thread params shared by the send methods. */
+function sendParams(opts?: {
+  replyToMessageId?: number | null;
+  threadId?: number | null;
+  silent?: boolean;
+}) {
+  return {
+    ...(opts?.replyToMessageId != null
+      ? {
+          reply_parameters: {
+            message_id: opts.replyToMessageId,
+            // Losing the answer to save the pointer is the wrong trade — a
+            // stale reply target must not cost the user their message (v1).
+            allow_sending_without_reply: true,
+          },
+        }
+      : {}),
+    ...(opts?.threadId != null ? { message_thread_id: opts.threadId } : {}),
+    ...(opts?.silent ? { disable_notification: true } : {}),
+  };
+}
+
+/**
+ * The outbound ops over a lazily-resolved bot. `requireBot` throws when no
+ * matching connection runs — the caller (delivery consumer, internal API)
+ * surfaces that as its own failure.
+ */
+export function createBotOutbound(requireBot: () => Bot): TgOutbound {
+  return {
+    async sendMessage(chatId, text, opts) {
+      const bot = requireBot();
+      const params = sendParams(opts);
+      const messageLinks = {
+        baseUrl: messageLinkBase(chatId),
+        ids: opts?.linkableMessageIds ?? [],
+      };
+      try {
+        const sent = await bot.api.sendMessage(chatId, renderTelegramHtml(text, messageLinks), {
+          ...params,
+          parse_mode: "HTML",
+        });
+        return { messageId: sent.message_id };
+      } catch (err) {
+        if (!isEntityParseError(err)) throw err;
+        const sent = await bot.api.sendMessage(chatId, text, params);
+        return { messageId: sent.message_id };
+      }
+    },
+    async sendVoice(chatId, voice, opts) {
+      const bot = requireBot();
+      const sent = await bot.api.sendVoice(
+        chatId,
+        new InputFile(Buffer.from(voice.base64, "base64"), voice.filename),
+        sendParams(opts),
+      );
+      return { messageId: sent.message_id };
+    },
+    async sendPhoto(chatId, image, opts) {
+      const bot = requireBot();
+      const sent = await bot.api.sendPhoto(
+        chatId,
+        new InputFile(Buffer.from(image.base64, "base64"), image.filename),
+        sendParams(opts),
+      );
+      // Telegram returns the photo in several rendered sizes, largest last.
+      // The largest is the one worth describing and re-reading later,
+      // matching how incoming photos are picked up (`detectMessageMedia`).
+      const largest = sent.photo?.[sent.photo.length - 1];
+      return {
+        messageId: sent.message_id,
+        fileId: largest?.file_id ?? "",
+        fileUniqueId: largest?.file_unique_id ?? null,
+      };
+    },
+    async deleteMessage(chatId, messageId) {
+      await requireBot().api.deleteMessage(chatId, messageId);
+    },
+    async setReaction(chatId, messageId, emoji, opts) {
+      // The canonical-emoji check is the core tool's job (it words the
+      // refusal for the model); Telegram enforces the set regardless, and a
+      // refusal throws here for the caller to relay.
+      const reaction = emoji ? [{ type: "emoji", emoji } as ReactionTypeEmoji] : [];
+      await requireBot().api.setMessageReaction(chatId, messageId, reaction, {
+        is_big: opts?.big ?? false,
+      });
+    },
+    sendTyping(chatId, threadId) {
+      const bot = requireBot();
+      void bot.api
+        .sendChatAction(chatId, "typing", threadId != null ? { message_thread_id: threadId } : {})
+        .catch(() => undefined);
+    },
+  };
+}

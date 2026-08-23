@@ -1,0 +1,42 @@
+/**
+ * Pure facts about Telegram identifiers this app needs at its transport
+ * boundary — ported verbatim from the v1 `lib/telegram.ts` (which the core
+ * keeps until the swap deletes its telegram runtime). Single-sourced here on
+ * the tg side so the renderer and the mirror lookups cannot drift on what a
+ * message citation is.
+ */
+
+/**
+ * How a reply cites a message it is talking about: `#13488`, or the numero
+ * sign (`№`, written as an escape to keep this source ASCII) that a model
+ * reaches for in some languages. Anchored to a boundary so a URL fragment
+ * (`example.com/a#12`) and a word-shaped hashtag (`#weekend`) are both left
+ * alone — only a delimiter followed by digits counts.
+ */
+export const MESSAGE_REF_PATTERN = /(^|[\s(\[«"'—-])([#№])(\d{1,12})\b/gu;
+
+/** Every message id a text cites, de-duplicated, in first-appearance order. */
+export function findMessageRefs(text: string): number[] {
+  const ids: number[] = [];
+  for (const match of text.matchAll(MESSAGE_REF_PATTERN)) {
+    const id = Number(match[3]);
+    if (Number.isSafeInteger(id) && id > 0 && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * The `t.me` prefix a message link is built on for this chat, or null when
+ * the chat has no linkable form.
+ *
+ * Only supergroups and channels do. Telegram gives their ids a `-100` prefix
+ * over the internal id used in links, so `-1001234567890` links as
+ * `t.me/c/1234567890/<message id>`. A basic group and a private chat have no
+ * per-message URL at all — returning null there is what keeps the bot from
+ * writing links that go nowhere.
+ */
+export function messageLinkBase(chatId: string): string | null {
+  const internal = chatId.startsWith("-100") ? chatId.slice(4) : null;
+  if (!internal || !/^\d+$/.test(internal)) return null;
+  return `https://t.me/c/${internal}`;
+}

@@ -155,7 +155,12 @@ describe("tg media", () => {
   it("serves and describes media over the internal API (describe-then-drop)", async () => {
     const api = createApi({
       db,
-      manager: { statuses: () => [] },
+      manager: {
+        statuses: () => [],
+        senderFor: () => {
+          throw new Error("no connection in this test");
+        },
+      },
       internalToken: "secret-token",
     });
     const headers = { "x-internal-token": "secret-token" };
