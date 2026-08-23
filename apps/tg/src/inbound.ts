@@ -9,6 +9,7 @@ import {
 import type { Message } from "@grammyjs/types";
 
 import type { TgDb } from "./db";
+import { checkAddressed } from "./addressing";
 import { buildChatInfo, buildConversationContext, buildSenderInfo } from "./context";
 import { formatUserLabel } from "./format";
 import { appendMessage, isMessageMirrored, upsertChatActivity, upsertUser } from "./store";
@@ -140,6 +141,13 @@ export async function processIncomingMessage(
     connection: deps.identity,
     chat: chatInfo,
     sender,
+    // The deterministic verdict travels with the event; only the ambiguous
+    // case reaches the core's LLM analyzer.
+    addressing: checkAddressed(message, chat.type, {
+      id: deps.botId,
+      username: deps.identity.botUsername,
+      displayName: deps.identity.botDisplayName,
+    }),
     message: {
       sourceMessageId: String(message.message_id),
       content: text,

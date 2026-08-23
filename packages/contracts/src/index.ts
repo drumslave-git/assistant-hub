@@ -12,6 +12,7 @@ export { EMBEDDING_DIMENSIONS } from "./embeddings";
 export {
   BUS_EVENTS_CHANNEL,
   INBOUND_MESSAGES_QUEUE,
+  addressingSchema,
   chatInfoSchema,
   connectionIdentitySchema,
   conversationContextSchema,
@@ -25,6 +26,7 @@ export {
   senderInfoSchema,
   sourceIdSchema,
   turnLifecycleEventSchema,
+  type Addressing,
   type ChatInfo,
   type ConnectionIdentity,
   type ConversationContext,

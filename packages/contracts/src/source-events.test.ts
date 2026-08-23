@@ -23,6 +23,7 @@ describe("source-app events", () => {
       connection: { botUsername: "fixture_bot", botDisplayName: "Fixture" },
       chat: { ref: "tg:chat:-2001", kind: "group", title: "Fixture Group" },
       sender: { ref: "tg:user:1001", isOwner: true, label: "Alice (@alice_example)" },
+      addressing: { addressed: true, source: "mention" },
       message: {
         sourceMessageId: "11",
         content: "hello",
@@ -46,6 +47,8 @@ describe("source-app events", () => {
     expect(parsed.message.media).toEqual([]);
     expect(parsed.sender.aliases).toEqual([]);
     expect(parsed.context.participants[0].aliases).toEqual([]);
+    expect(parsed.addressing.needsAnalyzer).toBe(false);
+    expect(parsed.message.replyTo?.stored).toBe(false);
   });
 
   it("rejects an inbound event with an unscoped chat ref", () => {
@@ -57,6 +60,7 @@ describe("source-app events", () => {
       connection: { botUsername: "fixture_bot", botDisplayName: "Fixture" },
       chat: { ref: "-2001", kind: "group" },
       sender: { ref: "tg:user:1001", isOwner: false, label: "Alice" },
+      addressing: { addressed: false, needsAnalyzer: true },
       message: { sourceMessageId: "11", content: "hi", sentAt: envelope.occurredAt },
       context: { history: [], participants: [] },
     });

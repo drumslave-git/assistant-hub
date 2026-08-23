@@ -135,14 +135,32 @@ export const replyTargetSchema = z.object({
 
 /**
  * The receiving connection's identity — what people call the assistant in this
- * source. The core's addressing check (own-name detection) and its bot label
- * in transcripts need it; the source knows it (it owns the connection).
+ * source. The core's addressing analyzer and its bot label in transcripts
+ * need it; the source knows it (it owns the connection).
  */
 export const connectionIdentitySchema = z.object({
   /** The bot's @username in the source (no leading `@`). */
   botUsername: z.string().min(1),
   /** The bot's display name — what people call it in a group. */
   botDisplayName: z.string().min(1),
+});
+
+/**
+ * The DETERMINISTIC addressing verdict, computed by the source — it reads
+ * the source's wire format (Telegram entities, mentions, commands, reply
+ * targets), which never crosses the contract. `needsAnalyzer` hands the
+ * genuinely ambiguous case (the name in another alphabet or an inflected
+ * form) to the core's LLM analyzer; the core never re-runs the
+ * deterministic half.
+ */
+export const addressingSchema = z.object({
+  addressed: z.boolean(),
+  /** What decided it, when something did. */
+  source: z.enum(["private", "mention", "reply", "command", "name"]).nullable().optional(),
+  /** True when only the core's LLM analyzer can settle it. */
+  needsAnalyzer: z.boolean().default(false),
+  /** Human explanation of the verdict, when there is one to give. */
+  reason: z.string().nullable().optional(),
 });
 
 /**
@@ -158,6 +176,7 @@ export const inboundMessageEventSchema = eventEnvelopeSchema.extend({
   connection: connectionIdentitySchema,
   chat: chatInfoSchema,
   sender: senderInfoSchema,
+  addressing: addressingSchema,
   message: z.object({
     sourceMessageId: z.string().min(1),
     content: z.string(),
@@ -212,6 +231,7 @@ export const turnLifecycleEventSchema = eventEnvelopeSchema.extend({
 
 export type EventEnvelope = z.infer<typeof eventEnvelopeSchema>;
 export type ConnectionIdentity = z.infer<typeof connectionIdentitySchema>;
+export type Addressing = z.infer<typeof addressingSchema>;
 export type MessageMedia = z.infer<typeof messageMediaSchema>;
 export type HistoryMessage = z.infer<typeof historyMessageSchema>;
 export type Participant = z.infer<typeof participantSchema>;
