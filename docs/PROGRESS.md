@@ -296,14 +296,40 @@ and stamps `senderIsOwner` on inbound events.
       real Postgres + Redis. Contract grew what the port surfaced:
       connection identity (bot username/display name), reply-target
       `stored`/`fromAssistant`, lifecycle `threadId`.
+      **Also landed (67710d7)**: deterministic addressing is source-side
+      — ported verbatim to apps/tg (unit-tested) and carried on the
+      event (`addressing`); the core keeps only the LLM analyzer.
       **Remaining slices**: (B) media/voice ingestion + internal media
       API; (C) core queue consumer wiring `handleIncomingMessage` from
       the event (additive, v1-backed services); (D) feedback flows +
-      MCP outbound tools + operator API; then the swap. Known slice-C
-      surgery point: post-split the core never learns the delivered
-      message id (delivery is an event) — `recordReply` becomes tg's
-      mirror-on-delivery, and id-dependent core paths (browser ack,
-      reaction targets) move source-side with the outbound tools.
+      MCP outbound tools + operator API; then the swap.
+      **Slice C implementation notes (worked out 2026-08-23)**:
+      - `IncomingMessage` gets `message?` + `addressing?` — the consumer
+        passes the event's verdict; the v1 path keeps calling
+        `checkAddressed`. Only line ~524 of the service touches
+        `incoming.message`.
+      - The additive consumer uses v1 `getBotPolicy()` wholesale (v1
+        settings still hold owner columns), so parity is exact;
+        `event.sender.isOwner` becomes authoritative at the swap.
+        **Swap blocker to design then (Phase 3 adjacent): task-authority
+        rights** — v1 resolves "author is owner" against settings at
+        match time; post-split the core must not hold owner identity, so
+        tasks likely need `created_by_owner` stamped at creation.
+      - Extract the `generateReply` + `applyStandingTasks` bindings from
+        `process-update.ts` into a shared factory (mutable task state as
+        a small state object) so the consumer and the v1 path share one
+        implementation — no copy.
+      - Actions-started marker: core-store `turn_actions` table
+        (migration 0001), first live use of STORE_DATABASE_URL; mark
+        BEFORE sendReply-publish and BEFORE each tool execution (wrap
+        `callTool`); on terminal settle delete the row. Pre-action
+        failure re-enqueues with attempt+1 (delay ~15s, cap 5).
+      - Consumer gaps until slices B/D (documented, dev-only since the
+        consumer only runs when tg feeds the queue): generated-image
+        delivery, browser-run acks, linkable `#id` resolution (drops to
+        plain text), vision/voice.
+      - Core consumer starts from instrumentation only when REDIS_URL +
+        STORE_DATABASE_URL are set.
 - [ ] `apps/core`: telegram code removed; the pipeline consumes the
       queue; deterministic replies published as reply-delivery events;
       turn-lifecycle events published; the actions-started marker gates
