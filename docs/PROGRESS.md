@@ -397,9 +397,18 @@ assistant converted from the active personality, all counts reconciled).
       lookups read DM chats unscoped, mixing both streams; scoping them
       needs URL-level controls and job redesign — slice F / Phase 6
       territory, recorded here so it is not mistaken for done.
-- [ ] Shared-chat behavior: each assistant's deterministic addressing
-      checks its own name only (per-connection identity — verify, the
-      split largely built this); the tg app cross-feeds one assistant's
+- [ ] Shared-chat behavior: ~~each assistant's deterministic addressing
+      checks its own name only~~ — landed early (`eeb3724`, user
+      decision 2026-08-24): the spoken-summons identity is the
+      ASSISTANT's name, and the name check moved CORE-side (the name
+      lives in the core store and renames take effect instantly; tg
+      keeps only the structural verdicts — reply/@mention//command/DM —
+      and hands undecided group text over as `needsAnalyzer`; the core
+      runs the same v1 name regex against the event assistant's name,
+      then the LLM analyzer, whose prompt and the filed addressing
+      exclusions now also carry the assistant name). The bot account's
+      profile name never drives addressing or the prompt. Remaining
+      for this criterion: the tg app cross-feeds one assistant's
       delivered reply as an inbound event to OTHER enabled assistants
       present in the same chat (Telegram never delivers bot messages to
       bots), gated by the loop guard: after N consecutive
@@ -701,6 +710,18 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-24 (live test, round 3)** — Addressing re-homed
+  (`eeb3724`, user decision): summoning by name matches the
+  ASSISTANT's name, never the bot account's profile name. First take
+  denormalized the name into the tg store (column + bus event); the
+  user rejected it — the name check is pure text, so it moved core-side
+  instead: tg's `checkAddressed` is structural-only (reply/@mention/
+  command/DM; group text → `needsAnalyzer`), and the core resolves the
+  assistant identity once per turn (`getAssistantPromptIdentity`) for
+  the name regex, the analyzer, exclusions, and the persona. No schema,
+  no denormalization, renames effective immediately. Restart both dev
+  services.
 
 - **2026-08-24 (live test, round 2)** — Three more fixes (`b8ebf18`):
   the honesty gate now judges with the reply's own conversation window
