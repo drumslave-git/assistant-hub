@@ -324,11 +324,20 @@ assistant converted from the active personality, all counts reconciled).
       registry/tests deleted — the frozen v1 table and settings column
       wait for Phase 6). Affected suites green (turn consumer,
       self-improvement, task scheduler; full core integration 322).
-- [ ] Tasks flip: the tasks feature moves to the v2 store's
-      per-assistant `tasks` table (scoped refs, `assistant_id`,
-      `created_by_owner` semantics carried over); chat turns act on the
-      event's assistant; the dashboard scopes task views by assistant;
-      timed fires carry their assistant onto delivery.
+- [x] Tasks flip (`1323326`): the tasks feature moved to the v2
+      store's per-assistant `tasks` table — `assistant_id` FK with
+      cascade, scoped refs translated at the repository boundary,
+      `created_by_owner` added by store migration 0002. Chat turns act
+      on the event's assistant (bound onto the tool context; a turn
+      with no assistant bound is refused, never guessed), the prompt
+      cap and duplicate guard scope per assistant, timed fires run as
+      their task's assistant (persona per task, `?assistantId=` on the
+      send — the tg API already took it), and the dashboard create
+      dialog picks the assistant (hidden while only one exists).
+      Directory rosters and the timezone stay v1 shadow reads through
+      the app pool until Phase 6. The tasks + scheduler integration
+      suites now run the live two-database topology. Dev store's tasks
+      table was empty at import (no live v1 tasks), so no data moved.
 - [ ] Per-assistant connections: the assistant editor gains a
       connection section injected from `apps/tg/ui` (the first real
       extension-registry consumer) over the existing operator
