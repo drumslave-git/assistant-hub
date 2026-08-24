@@ -340,6 +340,28 @@ assistant converted from the active personality, all counts reconciled).
 - [ ] Tests at each seam; lint/typecheck/test/build green from the
       root; proof and risks recorded.
 
+**Boundary study (2026-08-24).** v1-personality readers to flip:
+`server/turn/consume.ts` (the reply turn — flips to the v2 assistant
+named by `event.assistantId`), `features/tasks/server/scheduler.ts`
+(timed fires — flips with the tasks flip, persona from the task's
+assistant), `features/self-improvement/server/reflect.ts` + scheduler
+(reflection context — reads the feedback reply's assistant post-flip;
+single-assistant deployments unchanged), and a DEAD read in
+`features/browser-agent/server/runner.ts` (`void personalityPrompt`) to
+drop. v1-tasks surface to flip: `features/tasks/server/repository.ts`
+(343 lines on the v1 table) plus service/matcher/fire/scheduler/
+mcp-tools/UI — the v2 store's `tasks` differs by `assistant_id` (FK,
+cascade), scoped refs (`chat_ref`, `created_by_user_ref`,
+`target_user_refs`) and **lacks `created_by_owner`** (predates the
+authority rework — store migration needed). Store access generalizes
+the `server/turn/actions.ts` pool pattern into a shared v2-store db
+module. `assistant.deleted` does not exist in contracts yet; tg's
+consumer reacts by stopping the poller and dropping the connection.
+Slicing: (A) assistants feature + `assistant.deleted`; (B) persona
+flip + personalities feature retired; (C) tasks flip; (D) connections
+UI extension + concurrent pollers; (E) cross-feed + loop guard; (F)
+aggregated directory + person links.
+
 ## Phase 2 — Source split (acceptance criteria)
 
 Scope from PLAN.md: the Telegram runtime moves out of the core into
