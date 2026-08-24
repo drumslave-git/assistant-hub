@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
+import { getSingleAssistantPersona } from "@/features/assistants/server/service";
 import { getBackgroundRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import {
@@ -188,7 +188,9 @@ export async function resolveReflectionDeps(): Promise<ReflectionDeps | null> {
   const runtime = await getBackgroundRuntime().catch(() => null);
   if (!runtime) return null;
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
-  const personalityPrompt = await getActivePersonalityPrompt().catch(() => null);
+  // Transitional (see the assistants service): no event names an assistant
+  // here, so only a single-assistant deployment composes one as context.
+  const personalityPrompt = await getSingleAssistantPersona().catch(() => null);
   return {
     complete: (messages, trace) =>
       chatCompletion(conn, {

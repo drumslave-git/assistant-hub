@@ -34,7 +34,7 @@ import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/ex
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import { getMemoryContext } from "@/features/memory/server/service";
 import { getPreferencesContext, getLatestSelfCorrectionPrompt } from "@/features/self-improvement/server/service";
-import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
+import { getAssistant } from "@/features/assistants/server/service";
 import { buildStandingTasksBlock } from "@/features/tasks/format";
 import { getActiveTasksForChat } from "@/features/tasks/server/service";
 import { getBotPolicy, getTimezone } from "@/features/settings/server/service";
@@ -194,9 +194,24 @@ async function buildEventDeps(
   const isGroup = event.chat.kind === "group";
   const botLabel = botTranscriptLabel(event.connection.botUsername);
 
+  // The persona is the EVENT's assistant's (Phase 3): the assistant in a
+  // chat is implied by which bot received the message. An id the store does
+  // not know composes no persona but says so loudly — a deleted assistant
+  // whose connection outlived the bus event must not silently blend in.
+  const loadPersona = async (): Promise<string | null> => {
+    const assistant = await getAssistant(event.assistantId);
+    if (!assistant) {
+      console.error(
+        `Unknown assistant '${event.assistantId}' on inbound event — replying with the base prompt only`,
+      );
+      return null;
+    }
+    return assistant.persona.trim() ? assistant.persona : null;
+  };
+
   const [policy, personalityPrompt, selfCorrection, taskSets, timezone] = await Promise.all([
     getBotPolicy(),
-    getActivePersonalityPrompt(),
+    loadPersona(),
     getLatestSelfCorrectionPrompt().catch(() => null),
     getActiveTasksForChat(chatId, senderId).catch(() => ({ prompt: [], message: [] })),
     getTimezone().catch(() => "UTC"),

@@ -52,7 +52,6 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
     label: "Bot",
     items: [
       { href: "/assistants", label: "Assistants", icon: Bot },
-      { href: "/personalities", label: "Personalities", icon: VenetianMask },
       { href: "/memory", label: "Memory", icon: Brain },
       { href: "/tools", label: "Tools", icon: Wrench },
       { href: "/self-improvement", label: "Self-improvement", icon: Sparkles },

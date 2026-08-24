@@ -7,7 +7,7 @@ import type { TraceTrigger } from "@/lib/trace";
 import { getGroupContext, getGroupLanguage } from "@/features/known-groups/server/service";
 import { getUserContext, getUserLanguage } from "@/features/known-users/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
-import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
+import { getSingleAssistantPersona } from "@/features/assistants/server/service";
 import { getBotPolicy, getLlmRuntime, getTimezone } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
@@ -220,7 +220,10 @@ async function buildLiveFireCollaborators(): Promise<Pick<
   if (!runtime) return null;
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
   const [personalityPrompt, toolset] = await Promise.all([
-    getActivePersonalityPrompt().catch(() => null),
+    // Transitional until the tasks flip stamps an assistant per task: a fire
+    // has no event naming one, so a single-assistant deployment composes its
+    // persona and a multi-assistant one composes none rather than guessing.
+    getSingleAssistantPersona().catch(() => null),
     // A fire delivers only through `send_message`: nothing triggered it, so
     // there is no message to reply to. No tools registered → plain completion
     // (the fire then simply cannot send, and records a quiet fire).

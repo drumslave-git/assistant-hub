@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
+import { getSingleAssistantPersona } from "@/features/assistants/server/service";
 import { getBackgroundRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { chatCompletion } from "@/server/llm/client";
@@ -34,7 +34,10 @@ async function runIncorporation(ctx?: IntervalRunContext): Promise<string> {
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
 
   const outcome = await withAdvisoryLock("self-improvement", async () => {
-    const personalityPrompt = await getActivePersonalityPrompt().catch(() => null);
+    // Transitional (see the assistants service): reflection has no event
+    // naming an assistant, so only a single-assistant deployment composes
+    // one as context.
+    const personalityPrompt = await getSingleAssistantPersona().catch(() => null);
     return runSelfImprovement({
       complete: (messages, trace) =>
         chatCompletion(conn, {

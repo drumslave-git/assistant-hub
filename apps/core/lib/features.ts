@@ -131,13 +131,6 @@ export const FEATURES = {
     relatedIdsKey: "known_groups",
     path: "/groups",
   },
-  personalities: {
-    id: "personalities",
-    label: "Personalities",
-    group: "conversation",
-    relatedIdsKey: "personalities",
-    path: "/personalities",
-  },
   // First-class successor of personalities (redesign Phase 3): many
   // assistants, each with its own persona and per-source connection; the
   // assistant in a chat is implied by which bot is in it — no "active" one.

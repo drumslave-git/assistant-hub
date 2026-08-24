@@ -75,6 +75,22 @@ export async function getAssistantPersona(
   return record.persona.trim() ? record.persona : null;
 }
 
+/**
+ * Server-only, transitional: the persona when exactly ONE assistant exists,
+ * else null. Assistant-less flows (timed task fires, the self-improvement
+ * reflection context) have no event to name an assistant until the tasks
+ * flip stamps one per task — a single-assistant deployment (every current
+ * one) behaves exactly as before, and a multi-assistant one composes no
+ * persona there rather than guessing whose.
+ */
+export async function getSingleAssistantPersona(
+  db: StoreDb = getStoreDb(),
+): Promise<string | null> {
+  const records = await listAssistants(db);
+  if (records.length !== 1) return null;
+  return records[0].persona.trim() ? records[0].persona : null;
+}
+
 /** Create an assistant, recorded as a trace. */
 export async function createAssistant(
   input: CreateAssistant,

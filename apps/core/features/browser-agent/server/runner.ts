@@ -5,7 +5,6 @@ import { rm } from "node:fs/promises";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { resolveSourceOutbound } from "@/server/turn/tg-outbound";
-import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import {
   getBrowserDownloadLimitBytes,
   getBotPolicy,
@@ -296,18 +295,16 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
       return;
     }
 
-    const [downloadLimitBytes, personalityPrompt, storedLanguage] = await Promise.all([
+    const [downloadLimitBytes, storedLanguage] = await Promise.all([
       getBrowserDownloadLimitBytes(),
-      getActivePersonalityPrompt().catch(() => null),
       run.chatId
         ? (isGroupChatId(run.chatId) ? getGroupLanguage(run.chatId) : getUserLanguage(run.chatId)).catch(
             () => null,
           )
         : Promise.resolve(null),
     ]);
-    // Persona is not composed into the agent prompt (the agent reports facts, it
-    // does not converse in character), but the chat's language still applies.
-    void personalityPrompt;
+    // Persona is deliberately not composed into the agent prompt: the agent
+    // reports facts, it does not converse in character.
 
     const toolContext: AgentToolContext = {
       session,
