@@ -119,6 +119,7 @@ describe("tg feedback flows", () => {
     // The conversation: a human message (#31) and two bot replies (#32, #34).
     await appendMessage(db, {
       chatId: CHAT_ID,
+      assistantId: null,
       telegramMessageId: 31,
       role: "user",
       userId: REACTOR_ID,
@@ -130,6 +131,7 @@ describe("tg feedback flows", () => {
     for (const id of [32, 34]) {
       await appendMessage(db, {
         chatId: CHAT_ID,
+        assistantId: null,
         telegramMessageId: id,
         role: "assistant",
         userId: null,
@@ -149,6 +151,7 @@ describe("tg feedback flows", () => {
   function deps(transport: RecordedTransport, published: unknown[]): FeedbackDeps {
     return {
       db,
+      assistantId: "assistant-1",
       transport,
       publish: async (event) => {
         published.push(event);
@@ -357,7 +360,7 @@ describe("tg feedback flows", () => {
 
     // The answer stays mirrored, and its live-processing hold is released —
     // no turn will ever settle a captured message.
-    const mirrored = await getMessageByTelegramId(db, CHAT_ID, 51);
+    const mirrored = await getMessageByTelegramId(db, CHAT_ID, 51, null);
     expect(mirrored).toMatchObject({ content: "too formal for this chat", processed: true });
   });
 

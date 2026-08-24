@@ -63,8 +63,20 @@ export async function getAssistant(
 }
 
 /**
- * Server-only: the persona of one assistant, or null when the id is unknown.
- * The reply pipeline resolves the persona of the assistant the event names.
+ * The prompt persona block for one assistant: a structural identity line
+ * ("You are <name>.") followed by the persona text. The name is asserted by
+ * the system — an assistant whose persona is written in the third person
+ * (or is empty) still knows who it is (user decision, 2026-08-24).
+ */
+function personaBlock(record: AssistantRecord): string {
+  const persona = record.persona.trim();
+  const identity = `You are ${record.name}.`;
+  return persona ? `${identity}\n\n${record.persona}` : identity;
+}
+
+/**
+ * Server-only: the persona block of one assistant, or null when the id is
+ * unknown. The reply pipeline resolves the assistant the event names.
  */
 export async function getAssistantPersona(
   id: string,
@@ -72,7 +84,7 @@ export async function getAssistantPersona(
 ): Promise<string | null> {
   const record = await getAssistantById(db, id);
   if (!record) return null;
-  return record.persona.trim() ? record.persona : null;
+  return personaBlock(record);
 }
 
 /**
@@ -88,7 +100,7 @@ export async function getSingleAssistantPersona(
 ): Promise<string | null> {
   const records = await listAssistants(db);
   if (records.length !== 1) return null;
-  return records[0].persona.trim() ? records[0].persona : null;
+  return personaBlock(records[0]);
 }
 
 /** Create an assistant, recorded as a trace. */

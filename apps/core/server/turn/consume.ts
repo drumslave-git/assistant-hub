@@ -34,7 +34,7 @@ import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/ex
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import { getMemoryContext } from "@/features/memory/server/service";
 import { getPreferencesContext, getLatestSelfCorrectionPrompt } from "@/features/self-improvement/server/service";
-import { getAssistant } from "@/features/assistants/server/service";
+import { getAssistantPersona } from "@/features/assistants/server/service";
 import { buildStandingTasksBlock } from "@/features/tasks/format";
 import { getActiveTasksForChat } from "@/features/tasks/server/service";
 import { getBotPolicy, getTimezone } from "@/features/settings/server/service";
@@ -157,6 +157,7 @@ function lifecycleEvent(
     correlationId: event.correlationId,
     type: "turn.lifecycle",
     source: event.source,
+    assistantId: event.assistantId,
     chatRef: event.chat.ref,
     sourceMessageId: event.message.sourceMessageId,
     threadId: event.message.threadId ?? null,
@@ -199,14 +200,15 @@ async function buildEventDeps(
   // not know composes no persona but says so loudly — a deleted assistant
   // whose connection outlived the bus event must not silently blend in.
   const loadPersona = async (): Promise<string | null> => {
-    const assistant = await getAssistant(event.assistantId);
-    if (!assistant) {
+    // The shared persona block includes the structural identity line
+    // ("You are <name>.") — a third-person persona still knows its name.
+    const block = await getAssistantPersona(event.assistantId);
+    if (block == null) {
       console.error(
         `Unknown assistant '${event.assistantId}' on inbound event — replying with the base prompt only`,
       );
-      return null;
     }
-    return assistant.persona.trim() ? assistant.persona : null;
+    return block;
   };
 
   const [policy, personalityPrompt, selfCorrection, taskSets, timezone] = await Promise.all([

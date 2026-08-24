@@ -77,6 +77,8 @@ export interface FeedbackTransport {
 
 export interface FeedbackDeps {
   db: TgDb;
+  /** The assistant of the receiving connection — scopes DM mirror lookups. */
+  assistantId: string;
   transport: FeedbackTransport;
   /** Publish one bus event; failures surface to the caller's error handling. */
   publish: (event: FeedbackRecordedEvent | DashboardRefreshEvent) => Promise<void>;
@@ -162,9 +164,10 @@ export async function processReactionUpdate(
   if (!reaction) return { status: "ignored", reason: "not_thumb" };
 
   const chatId = String(update.chat.id);
-  // Only the bot's own replies collect feedback — a thumbs-up on a human
-  // message (or a message we never mirrored) is silently ignored.
-  const target = await getMessageByTelegramId(deps.db, chatId, update.message_id);
+  // Only THIS bot's own replies collect feedback — a thumbs-up on a human
+  // message, another assistant's reply, or a message we never mirrored is
+  // silently ignored (the DM lookup is scoped to this connection's stream).
+  const target = await getMessageByTelegramId(deps.db, chatId, update.message_id, deps.assistantId);
   if (!target) return { status: "ignored", reason: "unknown_message" };
   if (target.role !== "assistant") return { status: "ignored", reason: "not_bot_message" };
 

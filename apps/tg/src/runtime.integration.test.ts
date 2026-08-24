@@ -199,6 +199,63 @@ describe("tg runtime", () => {
     expect(enqueued).toHaveLength(2);
   });
 
+  it("keeps two assistants' DM streams with the same person separate", async () => {
+    // A DM's chat id is the PEER's user id — identical for every bot they
+    // talk to — and Telegram numbers DM messages per (bot, peer) pair, so
+    // both bots receive a "#1". Without the assistant dimension the second
+    // mirror collides and its turn is silently dropped.
+    const peerId = 7100;
+    const enqueued: InboundMessageEvent[] = [];
+    const depsFor = (assistantId: string, botUsername: string, botId: number) => ({
+      db,
+      assistantId,
+      identity: { botUsername, botDisplayName: botUsername },
+      botId,
+      botToken: `${botId}:fixture-token`,
+      enqueue: async (event: InboundMessageEvent) => {
+        enqueued.push(event);
+      },
+    });
+    const dm = (messageId: number, text: string) =>
+      tgMessage({
+        messageId,
+        chatId: peerId,
+        text,
+        from: { id: peerId, username: "peer_example", firstName: "Peer" },
+      });
+
+    const first = await processIncomingMessage(dm(1, "hello bot a"), depsFor("assistant-a", "bot_a", 111));
+    expect(first.status).toBe("enqueued");
+    // The same person's first message to the OTHER bot carries the same id.
+    const second = await processIncomingMessage(dm(1, "hello bot b"), depsFor("assistant-b", "bot_b", 222));
+    expect(second.status).toBe("enqueued");
+
+    // A follow-up to bot B composes ITS conversation only — bot A's stream
+    // never leaks into the window.
+    const followUp = await processIncomingMessage(
+      dm(2, "just you, bot b"),
+      depsFor("assistant-b", "bot_b", 222),
+    );
+    expect(followUp.status).toBe("enqueued");
+    const event = inboundMessageEventSchema.parse(enqueued[2]);
+    expect(event.context.history.map((h) => h.content)).toEqual(["hello bot b"]);
+
+    // Idempotence still holds within one stream.
+    const redelivered = await processIncomingMessage(
+      dm(1, "hello bot b"),
+      depsFor("assistant-b", "bot_b", 222),
+    );
+    expect(redelivered.status).toBe("skipped");
+    const rows = await pool.query(
+      `SELECT assistant_id, telegram_message_id FROM messages WHERE chat_id = '7100' ORDER BY id`,
+    );
+    expect(rows.rows).toEqual([
+      { assistant_id: "assistant-a", telegram_message_id: "1" },
+      { assistant_id: "assistant-b", telegram_message_id: "1" },
+      { assistant_id: "assistant-b", telegram_message_id: "2" },
+    ]);
+  });
+
   it("enqueued events reach a queue worker intact", async () => {
     const queue = openQueue<InboundMessageEvent>(INBOUND_MESSAGES_QUEUE, redisUrl);
     const consumed: InboundMessageEvent[] = [];

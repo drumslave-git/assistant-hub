@@ -299,7 +299,9 @@ export function createApi(input: {
     if (!Number.isFinite(messageId)) {
       return c.json({ error: { message: "messageId must be a number" } }, 400);
     }
-    const row = await getMessageByTelegramId(input.db, chatId, messageId);
+    // Operator read — not assistant-aware yet (a DM lookup spans both
+    // streams; the content-plane scoping is a recorded follow-up).
+    const row = await getMessageByTelegramId(input.db, chatId, messageId, null);
     if (!row) return c.json({ message: null });
     const media = await getMediaForMessages(input.db, chatId, [messageId]);
     return c.json({ message: toOperatorMessage(row, media) });
@@ -773,8 +775,13 @@ export function createApi(input: {
   // through every caller. A send with no running connection is a 502 the
   // core relays — never a silent drop.
 
+  // The sending assistant also scopes DM mirror rows/lookups: a DM's chat id
+  // is the peer's user id, shared by every bot that talks to them.
+  const assistantIdOf = (c: { req: { query: (k: string) => string | undefined } }): string | null =>
+    c.req.query("assistantId") ?? null;
+
   const senderOf = (c: { req: { query: (k: string) => string | undefined } }): TgOutbound =>
-    input.manager.senderFor(c.req.query("assistantId") ?? null);
+    input.manager.senderFor(assistantIdOf(c));
 
   const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -791,6 +798,7 @@ export function createApi(input: {
       input.db,
       chatId,
       findMessageRefs(body.text),
+      assistantIdOf(c),
     ).catch(() => []);
     let sent: { messageId: number };
     try {
@@ -805,6 +813,7 @@ export function createApi(input: {
     }
     await appendMessage(input.db, {
       chatId,
+      assistantId: assistantIdOf(c),
       telegramMessageId: sent.messageId,
       role: "assistant",
       userId: null,
@@ -849,6 +858,7 @@ export function createApi(input: {
     // next turn's window read (v1: the text form is what is mirrored).
     await appendMessage(input.db, {
       chatId,
+      assistantId: assistantIdOf(c),
       telegramMessageId: sent.messageId,
       role: "assistant",
       userId: null,
@@ -889,6 +899,7 @@ export function createApi(input: {
       // pending media row keyed by the file id Telegram just minted.
       const mirrored = await appendMessage(input.db, {
         chatId,
+        assistantId: assistantIdOf(c),
         telegramMessageId: sent.messageId,
         role: "assistant",
         userId: null,
@@ -937,6 +948,7 @@ export function createApi(input: {
     // report riding its file) — that is what the mirror records.
     await appendMessage(input.db, {
       chatId,
+      assistantId: assistantIdOf(c),
       telegramMessageId: sent.messageId,
       role: "assistant",
       userId: null,
@@ -961,7 +973,7 @@ export function createApi(input: {
     } catch {
       return c.json({ deleted: false });
     }
-    await markMessageDeleted(input.db, chatId, messageId).catch(() => undefined);
+    await markMessageDeleted(input.db, chatId, messageId, assistantIdOf(c)).catch(() => undefined);
     return c.json({ deleted: true });
   });
 
@@ -978,7 +990,7 @@ export function createApi(input: {
     // The mirror gates the platform call (v1 tool order): an id the model
     // guessed, or the bot's own message, is refused without touching
     // Telegram — the core's tool words these refusals for the model.
-    const target = await getMessageByTelegramId(input.db, chatId, messageId);
+    const target = await getMessageByTelegramId(input.db, chatId, messageId, assistantIdOf(c));
     if (!target) {
       return c.json({ status: "not_found", recorded: false } satisfies InternalReactionResponse);
     }
@@ -999,7 +1011,12 @@ export function createApi(input: {
     // the message, so a failed write degrades to `recorded: false` (v1).
     let recorded = true;
     try {
-      await recordBotReaction(input.db, { chatId, telegramMessageId: messageId, emoji: parsed.data.emoji });
+      await recordBotReaction(input.db, {
+        chatId,
+        telegramMessageId: messageId,
+        emoji: parsed.data.emoji,
+        assistantId: assistantIdOf(c),
+      });
     } catch {
       recorded = false;
     }

@@ -37,11 +37,18 @@ const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** The composed history window for one inbound message. */
 export async function buildHistoryWindow(
   db: TgDb,
-  input: { chatId: string; excludeTelegramMessageId: number; now?: Date },
+  input: {
+    chatId: string;
+    /** Scopes a DM to this assistant's own conversation with the peer. */
+    assistantId: string | null;
+    excludeTelegramMessageId: number;
+    now?: Date;
+  },
 ): Promise<HistoryMessage[]> {
   const since = new Date((input.now ?? new Date()).getTime() - HISTORY_WINDOW_MS);
   const rows = await getMessagesSince(db, input.chatId, since, {
     excludeTelegramMessageId: input.excludeTelegramMessageId,
+    assistantId: input.assistantId,
   });
   const senders = await getUsersByIds(
     db,
@@ -179,6 +186,7 @@ export async function buildConversationContext(
     chatId: string;
     isGroup: boolean;
     senderId: string | null;
+    assistantId: string | null;
     excludeTelegramMessageId: number;
     now?: Date;
   },
@@ -186,6 +194,7 @@ export async function buildConversationContext(
   const [history, participants] = await Promise.all([
     buildHistoryWindow(db, {
       chatId: input.chatId,
+      assistantId: input.assistantId,
       excludeTelegramMessageId: input.excludeTelegramMessageId,
       now: input.now,
     }),

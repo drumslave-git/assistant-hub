@@ -108,8 +108,8 @@ export type ChatMemberInsert = typeof chatMembers.$inferInsert;
 /**
  * The 1:1 mirror of the Telegram conversation (v1 `chat_messages`): every
  * human message and every bot reply, keyed by chat. Append-only log —
- * identity id preserves insertion order; uniqueness on
- * `(chat_id, telegram_message_id)` lets edits rewrite the exact row.
+ * identity id preserves insertion order; per-conversation uniqueness (see the
+ * index pair below) lets edits rewrite the exact row.
  */
 export const messages = pgTable(
   "messages",
@@ -118,7 +118,16 @@ export const messages = pgTable(
     id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
     /** Telegram chat/group id, as a string. */
     chatId: text("chat_id").notNull(),
-    /** Telegram `message_id` within the chat (unique per chat). */
+    /**
+     * The assistant whose conversation the row belongs to. A DM's chat id is
+     * the PEER's user id — the same for every bot that talks to them — so
+     * per-assistant DM streams separate on this column (message ids are
+     * per-bot there and would otherwise collide). Group USER rows stay null:
+     * the group is one shared stream every poller mirrors idempotently.
+     * Assistant-authored rows always stamp their author.
+     */
+    assistantId: text("assistant_id"),
+    /** Telegram `message_id` within the chat (unique per chat **per bot** in DMs). */
     telegramMessageId: bigint("telegram_message_id", { mode: "number" }).notNull(),
     /** `user` (a human) or `assistant` (the bot's reply). */
     role: text("role").notNull(),
@@ -144,7 +153,15 @@ export const messages = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("messages_chat_msg_idx").on(t.chatId, t.telegramMessageId),
+    // Group ids are negative; a group is one shared stream (cross-poller
+    // idempotence). A DM's message ids are per (bot, peer) pair, so its
+    // uniqueness carries the assistant dimension.
+    uniqueIndex("messages_group_msg_idx")
+      .on(t.chatId, t.telegramMessageId)
+      .where(sql`${t.chatId} like '-%'`),
+    uniqueIndex("messages_dm_msg_idx")
+      .on(t.chatId, t.assistantId, t.telegramMessageId)
+      .where(sql`${t.chatId} not like '-%'`),
     index("messages_chat_sent_idx").on(t.chatId, t.sentAt),
     // Serves history_search's arbitrary-substring ILIKE (pg_trgm; the GIN
     // expression index is added by hand in the migration).
@@ -175,11 +192,12 @@ export const messageSearch = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.chatId, t.telegramMessageId] }),
-    foreignKey({
-      columns: [t.chatId, t.telegramMessageId],
-      foreignColumns: [messages.chatId, messages.telegramMessageId],
-      name: "message_search_message_fk",
-    }).onDelete("cascade"),
+    // No FK onto messages since migration 0002: `(chat_id,
+    // telegram_message_id)` stopped being unique there (per-assistant DM
+    // streams), and Postgres FKs need a full unique target. Mirror rows are
+    // never hard-deleted, so the cascade was theoretical; write order in
+    // code keeps the relationship. The pair-keyed projection itself is part
+    // of the recorded content-plane follow-up.
     // FTS + trgm GIN expression indexes are added by hand in the migration.
     index("message_search_embedding_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
   ],
@@ -221,11 +239,7 @@ export const media = pgTable(
   },
   (t) => [
     uniqueIndex("media_chat_msg_idx").on(t.chatId, t.telegramMessageId),
-    foreignKey({
-      columns: [t.chatId, t.telegramMessageId],
-      foreignColumns: [messages.chatId, messages.telegramMessageId],
-      name: "media_message_fk",
-    }).onDelete("cascade"),
+    // FK onto messages dropped in migration 0002 — see message_search above.
     index("media_status_idx").on(t.status, t.createdAt),
     check("media_status_check", sql`${t.status} in ('pending', 'described', 'unavailable')`),
   ],

@@ -347,6 +347,14 @@ export async function runTgImport(input: {
     );
     const token: string | null = v1Settings.rows[0]?.telegram_bot_token ?? null;
     const assistantId: string = v1Settings.rows[0]?.active_personality_id ?? DEFAULT_ASSISTANT_ID;
+    // DM streams are per assistant since Phase 3 (a DM's chat id is the
+    // peer's user id, shared by every bot) — v1 was single-bot, so its whole
+    // DM history belongs to the one derived assistant.
+    const stamped = await target.query(
+      `UPDATE messages SET assistant_id = $1 WHERE chat_id NOT LIKE '-%'`,
+      [assistantId],
+    );
+    report.note(`stamped ${stamped.rowCount ?? 0} DM message(s) with assistant '${assistantId}'`);
     if (token) {
       await insertBatch(target, {
         table: "connections",

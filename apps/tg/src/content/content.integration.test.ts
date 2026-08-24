@@ -73,6 +73,7 @@ describe("tg content store", () => {
   }) {
     return appendMessage(db, {
       chatId: input.chatId ?? "-500",
+      assistantId: null,
       telegramMessageId: input.id,
       role: input.role ?? "user",
       userId: input.userId !== undefined ? input.userId : "100",
@@ -217,7 +218,7 @@ describe("tg content store", () => {
       await mirror({ chatId: "-500", id: 1, content: "the shared word" });
       await mirror({ chatId: "-501", id: 2, content: "the shared word too" });
       await mirror({ chatId: "-501", id: 3, content: "the shared word, deleted" });
-      await markMessageDeleted(db, "-501", 3);
+      await markMessageDeleted(db, "-501", 3, null);
 
       const matches = await searchMessagesHybrid(db, {
         chatId: null,
@@ -282,7 +283,7 @@ describe("tg content store", () => {
 
     it("never owes work on deleted rows, upserts replace, clear counts, embedded counts", async () => {
       await mirror({ id: 1, content: "gone" });
-      await markMessageDeleted(db, "-500", 1);
+      await markMessageDeleted(db, "-500", 1, null);
       expect(await countMessagesNeedingIndex(db)).toBe(0);
 
       await mirror({ id: 2, content: "kept" });
@@ -362,7 +363,7 @@ describe("tg content store", () => {
       await mirror({ id: 2, sentAt: new Date("2026-08-01T10:00:00Z") });
       await mirror({ id: 3, sentAt: new Date("2026-08-02T10:00:00Z") });
       await mirror({ id: 4, sentAt: new Date("2026-08-02T11:00:00Z") });
-      await markMessageDeleted(db, "-500", 4);
+      await markMessageDeleted(db, "-500", 4, null);
 
       const days = await listChatDayCounts(db, { timeZone: "Europe/Kyiv", before: "2026-08-03" });
       expect(days).toEqual([

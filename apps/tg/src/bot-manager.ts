@@ -158,9 +158,10 @@ export class BotManager {
   }
 
   /** The feedback flows' collaborators over one running bot. */
-  private feedbackDeps(bot: Bot): FeedbackDeps {
+  private feedbackDeps(bot: Bot, assistantId: string): FeedbackDeps {
     return {
       db: this.deps.db,
+      assistantId,
       transport: grammyFeedbackTransport(bot),
       publish: (event) => this.publisher.publish(BUS_EVENTS_CHANNEL, event),
     };
@@ -292,10 +293,10 @@ export class BotManager {
     // Per-chat sequential, cross-chat concurrent (v1 decision, 2026-07-20).
     bot.use(sequentialize((ctx) => ctx.chat?.id.toString()));
     bot.on("message", (ctx) => this.onMessage(poller, input.botToken, ctx));
-    bot.on("edited_message", (ctx) => this.onEditedMessage(ctx));
+    bot.on("edited_message", (ctx) => this.onEditedMessage(poller, ctx));
     // Feedback collection: 👍/👎 reactions open a menu, presses answer it.
-    bot.on("message_reaction", (ctx) => this.onReaction(bot, ctx));
-    bot.on("callback_query:data", (ctx) => this.onCallbackQuery(bot, ctx));
+    bot.on("message_reaction", (ctx) => this.onReaction(poller, bot, ctx));
+    bot.on("callback_query:data", (ctx) => this.onCallbackQuery(poller, bot, ctx));
     bot.catch((err) => {
       console.error(`Telegram bot error (${input.connectionId}):`, err.error);
     });
@@ -377,7 +378,9 @@ export class BotManager {
         // A reply to an awaiting feedback menu is that menu's answer, not a
         // turn; the capture deletes the menu and publishes the completion.
         captureFeedback: bot
-          ? async (input) => (await captureFeedbackReply(input, this.feedbackDeps(bot))) != null
+          ? async (input) =>
+              (await captureFeedbackReply(input, this.feedbackDeps(bot, poller.assistantId))) !=
+              null
           : undefined,
       });
       // The mirror and the directory just changed — ping the pages that
@@ -403,7 +406,7 @@ export class BotManager {
     }
   }
 
-  private async onReaction(bot: Bot, ctx: Context): Promise<void> {
+  private async onReaction(poller: Poller, bot: Bot, ctx: Context): Promise<void> {
     const reaction = ctx.messageReaction;
     if (!reaction) return;
     // Correlated to the reacted reply's turn, like the completion event —
@@ -421,7 +424,10 @@ export class BotManager {
       inputSummary: "reaction on a bot reply",
     });
     try {
-      const outcome = await processReactionUpdate(reaction, this.feedbackDeps(bot));
+      const outcome = await processReactionUpdate(
+        reaction,
+        this.feedbackDeps(bot, poller.assistantId),
+      );
       if (outcome.status === "menu_sent") {
         trace.event({
           message: "feedback menu sent",
@@ -440,7 +446,7 @@ export class BotManager {
     }
   }
 
-  private async onCallbackQuery(bot: Bot, ctx: Context): Promise<void> {
+  private async onCallbackQuery(poller: Poller, bot: Bot, ctx: Context): Promise<void> {
     const query = ctx.callbackQuery;
     if (!query) return;
     const chatId = query.message ? String(query.message.chat.id) : null;
@@ -459,7 +465,10 @@ export class BotManager {
       inputSummary: "feedback menu press",
     });
     try {
-      const outcome = await processCallbackUpdate(query, this.feedbackDeps(bot));
+      const outcome = await processCallbackUpdate(
+        query,
+        this.feedbackDeps(bot, poller.assistantId),
+      );
       if (outcome.status === "recorded") {
         trace.event({
           message: "feedback recorded",
@@ -486,7 +495,7 @@ export class BotManager {
     }
   }
 
-  private async onEditedMessage(ctx: Context): Promise<void> {
+  private async onEditedMessage(poller: Poller, ctx: Context): Promise<void> {
     const edited = ctx.editedMessage;
     if (!edited || !ctx.chat) return;
     const content = edited.text ?? edited.caption ?? "";
@@ -496,6 +505,7 @@ export class BotManager {
       telegramMessageId: edited.message_id,
       content,
       editedAt: new Date((edited.edit_date ?? edited.date) * 1000),
+      assistantId: poller.assistantId,
     }).catch((err) => {
       console.error("Failed to mirror edited message:", errorMessage(err));
     });

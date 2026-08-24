@@ -118,6 +118,7 @@ export async function startDeliveryConsumer(input: {
           input.db,
           chatId,
           findMessageRefs(event.text),
+          event.assistantId,
         ).catch(() => []);
         // Send first, then mirror what was actually delivered — the mirror
         // records reality (v1 order: deliver, then record best-effort).
@@ -135,6 +136,7 @@ export async function startDeliveryConsumer(input: {
         });
         await appendMessage(input.db, {
           chatId,
+          assistantId: event.assistantId,
           telegramMessageId: sent.messageId,
           role: "assistant",
           userId: null,
@@ -179,9 +181,12 @@ export async function startDeliveryConsumer(input: {
         typing.stop(key);
         // Release the live-processing hold the mirror took on this message —
         // on every settle, replied or ignored (v1's `finally`).
-        await markMessageProcessed(input.db, chatId, Number(event.sourceMessageId)).catch(
-          (error) => onError(`processed release ${key}`, error),
-        );
+        await markMessageProcessed(
+          input.db,
+          chatId,
+          Number(event.sourceMessageId),
+          event.assistantId ?? null,
+        ).catch((error) => onError(`processed release ${key}`, error));
       } else {
         typing.start(key, chatId, event.threadId != null ? Number(event.threadId) : null);
       }

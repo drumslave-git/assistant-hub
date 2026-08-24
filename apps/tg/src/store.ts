@@ -76,14 +76,40 @@ export async function upsertChatActivity(
     });
 }
 
+/** Whether a chat id is a DM (group ids are negative). */
+export function isDirectChat(chatId: string): boolean {
+  return !chatId.startsWith("-");
+}
+
 /**
- * Append a message to the mirror. Idempotent on `(chat_id, telegram_message_id)`
- * — a re-delivered update changes nothing. Returns null when the row existed.
+ * Predicate selecting ONE conversation's rows. A group is one shared stream
+ * (chat-wide); a DM's chat id is the peer's user id — shared by every bot
+ * that talks to them — so the stream is per assistant there. A null
+ * assistant reads a DM unscoped (the content/operator plane, which is not
+ * assistant-aware yet — recorded follow-up).
+ */
+function conversationFilter(chatId: string, assistantId: string | null) {
+  const base = eq(messages.chatId, chatId);
+  if (!isDirectChat(chatId) || assistantId == null) return base;
+  return and(base, eq(messages.assistantId, assistantId))!;
+}
+
+/**
+ * Append a message to the mirror. Idempotent per conversation — groups on
+ * `(chat_id, telegram_message_id)`, DMs with the assistant dimension (the
+ * partial unique index pair) — so a re-delivered update changes nothing.
+ * Returns null when the row existed.
  */
 export async function appendMessage(
   db: TgDb,
   input: {
     chatId: string;
+    /**
+     * The assistant whose conversation this is: required for DM rows and for
+     * assistant-authored rows (the author); null for group USER rows — the
+     * shared stream every poller mirrors idempotently.
+     */
+    assistantId: string | null;
     telegramMessageId: number;
     role: "user" | "assistant";
     userId: string | null;
@@ -97,21 +123,24 @@ export async function appendMessage(
   const rows = await db
     .insert(messages)
     .values(input)
-    .onConflictDoNothing({ target: [messages.chatId, messages.telegramMessageId] })
+    // No explicit target: whichever partial unique index (group or DM shape)
+    // the row falls under decides the conflict.
+    .onConflictDoNothing()
     .returning();
   return rows[0] ?? null;
 }
 
-/** One mirrored message by its Telegram id, or null. */
+/** One mirrored message of a conversation by its Telegram id, or null. */
 export async function getMessageByTelegramId(
   db: TgDb,
   chatId: string,
   telegramMessageId: number,
+  assistantId: string | null,
 ): Promise<MessageRow | null> {
   const rows = await db
     .select()
     .from(messages)
-    .where(and(eq(messages.chatId, chatId), eq(messages.telegramMessageId, telegramMessageId)))
+    .where(and(conversationFilter(chatId, assistantId), eq(messages.telegramMessageId, telegramMessageId)))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -127,13 +156,17 @@ export async function filterMirroredMessageIds(
   db: TgDb,
   chatId: string,
   telegramMessageIds: number[],
+  assistantId: string | null,
 ): Promise<number[]> {
   if (telegramMessageIds.length === 0) return [];
   const rows = await db
     .select({ telegramMessageId: messages.telegramMessageId })
     .from(messages)
     .where(
-      and(eq(messages.chatId, chatId), inArray(messages.telegramMessageId, telegramMessageIds)),
+      and(
+        conversationFilter(chatId, assistantId),
+        inArray(messages.telegramMessageId, telegramMessageIds),
+      ),
     );
   return rows.map((row) => row.telegramMessageId);
 }
@@ -145,14 +178,19 @@ export async function filterMirroredMessageIds(
  */
 export async function recordBotReaction(
   db: TgDb,
-  input: { chatId: string; telegramMessageId: number; emoji: string | null },
+  input: {
+    chatId: string;
+    telegramMessageId: number;
+    emoji: string | null;
+    assistantId: string | null;
+  },
 ): Promise<void> {
   await db
     .update(messages)
     .set({ botReaction: input.emoji, botReactedAt: new Date() })
     .where(
       and(
-        eq(messages.chatId, input.chatId),
+        conversationFilter(input.chatId, input.assistantId),
         eq(messages.telegramMessageId, input.telegramMessageId),
       ),
     );
@@ -167,23 +205,35 @@ export async function markMessageDeleted(
   db: TgDb,
   chatId: string,
   telegramMessageId: number,
+  assistantId: string | null,
 ): Promise<void> {
   await db
     .update(messages)
     .set({ deletedAt: new Date() })
-    .where(and(eq(messages.chatId, chatId), eq(messages.telegramMessageId, telegramMessageId)));
+    .where(
+      and(
+        conversationFilter(chatId, assistantId),
+        eq(messages.telegramMessageId, telegramMessageId),
+      ),
+    );
 }
 
-/** Whether a message is in the mirror (reply targets render as anchors then). */
+/** Whether a message is in the conversation's mirror (reply targets render as anchors then). */
 export async function isMessageMirrored(
   db: TgDb,
   chatId: string,
   telegramMessageId: number,
+  assistantId: string | null,
 ): Promise<boolean> {
   const rows = await db
     .select({ id: messages.id })
     .from(messages)
-    .where(and(eq(messages.chatId, chatId), eq(messages.telegramMessageId, telegramMessageId)))
+    .where(
+      and(
+        conversationFilter(chatId, assistantId),
+        eq(messages.telegramMessageId, telegramMessageId),
+      ),
+    )
     .limit(1);
   return rows.length > 0;
 }
@@ -193,24 +243,36 @@ export async function markMessageProcessed(
   db: TgDb,
   chatId: string,
   telegramMessageId: number,
+  assistantId: string | null,
 ): Promise<void> {
   await db
     .update(messages)
     .set({ processed: true })
-    .where(and(eq(messages.chatId, chatId), eq(messages.telegramMessageId, telegramMessageId)));
+    .where(
+      and(
+        conversationFilter(chatId, assistantId),
+        eq(messages.telegramMessageId, telegramMessageId),
+      ),
+    );
 }
 
 /** Apply a Telegram `edited_message` to the mirror. No-op when never mirrored. */
 export async function applyMessageEdit(
   db: TgDb,
-  input: { chatId: string; telegramMessageId: number; content: string; editedAt: Date },
+  input: {
+    chatId: string;
+    telegramMessageId: number;
+    content: string;
+    editedAt: Date;
+    assistantId: string | null;
+  },
 ): Promise<void> {
   await db
     .update(messages)
     .set({ content: input.content, editedAt: input.editedAt })
     .where(
       and(
-        eq(messages.chatId, input.chatId),
+        conversationFilter(input.chatId, input.assistantId),
         eq(messages.telegramMessageId, input.telegramMessageId),
       ),
     );
@@ -225,10 +287,10 @@ export async function getMessagesSince(
   db: TgDb,
   chatId: string,
   since: Date,
-  options?: { excludeTelegramMessageId?: number },
+  options?: { excludeTelegramMessageId?: number; assistantId?: string | null },
 ): Promise<MessageRow[]> {
   const filters = [
-    eq(messages.chatId, chatId),
+    conversationFilter(chatId, options?.assistantId ?? null),
     gte(messages.sentAt, since),
     isNull(messages.deletedAt),
   ];

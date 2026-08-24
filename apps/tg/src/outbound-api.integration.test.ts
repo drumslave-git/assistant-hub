@@ -92,6 +92,7 @@ describe("tg outbound API", () => {
     // bot's own replies (#22) — the reaction and link checks read these.
     await appendMessage(db, {
       chatId: CHAT_ID,
+      assistantId: null,
       telegramMessageId: 21,
       role: "user",
       userId: "5001",
@@ -102,6 +103,7 @@ describe("tg outbound API", () => {
     });
     await appendMessage(db, {
       chatId: CHAT_ID,
+      assistantId: null,
       telegramMessageId: 22,
       role: "assistant",
       userId: null,
@@ -160,7 +162,7 @@ describe("tg outbound API", () => {
       text: "see #21 and #99",
       opts: { replyToMessageId: 21, silent: true, linkableMessageIds: [21] },
     });
-    const mirrored = await getMessageByTelegramId(db, CHAT_ID, Number(body.sourceMessageId));
+    const mirrored = await getMessageByTelegramId(db, CHAT_ID, Number(body.sourceMessageId), null);
     expect(mirrored).toMatchObject({
       role: "assistant",
       content: "see #21 and #99",
@@ -199,7 +201,7 @@ describe("tg outbound API", () => {
     const body = internalSentVoiceResponseSchema.parse(await res.json());
     expect(body.asVoice).toBe(true);
     expect(calls.sendVoice).toHaveLength(1);
-    const mirrored = await getMessageByTelegramId(db, CHAT_ID, Number(body.sourceMessageId));
+    const mirrored = await getMessageByTelegramId(db, CHAT_ID, Number(body.sourceMessageId), null);
     expect(mirrored).toMatchObject({ role: "assistant", content: "the spoken answer" });
   });
 
@@ -220,7 +222,7 @@ describe("tg outbound API", () => {
     const body = internalSentVoiceResponseSchema.parse(await res.json());
     expect(body.asVoice).toBe(false);
     expect(calls.sendMessage).toHaveLength(1);
-    const mirrored = await getMessageByTelegramId(db, CHAT_ID, Number(body.sourceMessageId));
+    const mirrored = await getMessageByTelegramId(db, CHAT_ID, Number(body.sourceMessageId), null);
     expect(mirrored).toMatchObject({ role: "assistant", content: "the spoken answer, in writing" });
   });
 
@@ -243,7 +245,7 @@ describe("tg outbound API", () => {
 
     const messageId = Number(body.delivered[0].sourceMessageId);
     // The picture IS the message: a media-only assistant row…
-    const mirrored = await getMessageByTelegramId(db, CHAT_ID, messageId);
+    const mirrored = await getMessageByTelegramId(db, CHAT_ID, messageId, null);
     expect(mirrored).toMatchObject({ role: "assistant", content: "" });
     // …and a pending media row keyed by the file id Telegram minted,
     // normalized like any user-sent picture, hinted as the bot's own work.
@@ -275,13 +277,14 @@ describe("tg outbound API", () => {
       mime: "video/mp4",
       opts: { caption: "the run report" },
     });
-    const mirrored = await getMessageByTelegramId(db, CHAT_ID, Number(body.sourceMessageId));
+    const mirrored = await getMessageByTelegramId(db, CHAT_ID, Number(body.sourceMessageId), null);
     expect(mirrored).toMatchObject({ role: "assistant", content: "the run report" });
   });
 
   it("deletes a message and soft-deletes its mirror row; a refusal is cosmetic", async () => {
     await appendMessage(db, {
       chatId: CHAT_ID,
+      assistantId: null,
       telegramMessageId: 40,
       role: "assistant",
       userId: null,
@@ -297,7 +300,7 @@ describe("tg outbound API", () => {
     });
     expect(internalDeleteMessageResponseSchema.parse(await ok.json())).toEqual({ deleted: true });
     expect(calls.deleteMessage[0]).toEqual({ chatId: CHAT_ID, messageId: 40 });
-    const row = await getMessageByTelegramId(db, CHAT_ID, 40);
+    const row = await getMessageByTelegramId(db, CHAT_ID, 40, null);
     expect(row!.deletedAt).not.toBeNull();
 
     const { sender: refusing } = fakeSender({
@@ -312,7 +315,7 @@ describe("tg outbound API", () => {
     expect(internalDeleteMessageResponseSchema.parse(await refused.json())).toEqual({
       deleted: false,
     });
-    const kept = await getMessageByTelegramId(db, CHAT_ID, 21);
+    const kept = await getMessageByTelegramId(db, CHAT_ID, 21, null);
     expect(kept!.deletedAt).toBeNull();
   });
 
@@ -348,7 +351,7 @@ describe("tg outbound API", () => {
       recorded: true,
     });
     expect(calls.setReaction[0]).toMatchObject({ messageId: 21, emoji: "👍", opts: { big: true } });
-    const row = await getMessageByTelegramId(db, CHAT_ID, 21);
+    const row = await getMessageByTelegramId(db, CHAT_ID, 21, null);
     expect(row!.botReaction).toBe("👍");
 
     // A platform refusal is relayed verbatim for the tool to word.

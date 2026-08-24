@@ -120,6 +120,9 @@ export async function processIncomingMessage(
   // expiry covers a core that never does).
   const mirrored = await appendMessage(deps.db, {
     chatId,
+    // A DM row belongs to THIS bot's conversation with the peer; a group row
+    // is the shared stream (null keeps the cross-poller idempotence).
+    assistantId: isGroup ? null : deps.assistantId,
     telegramMessageId: message.message_id,
     role: "user",
     userId: senderId,
@@ -148,7 +151,9 @@ export async function processIncomingMessage(
       })
       .catch(() => false);
     if (captured) {
-      await markMessageProcessed(deps.db, chatId, message.message_id).catch(() => undefined);
+      await markMessageProcessed(deps.db, chatId, message.message_id, deps.assistantId).catch(
+        () => undefined,
+      );
       return { status: "mirrored_only", reason: "feedback_captured" };
     }
   }
@@ -179,6 +184,7 @@ export async function processIncomingMessage(
       chatId,
       isGroup,
       senderId,
+      assistantId: deps.assistantId,
       excludeTelegramMessageId: message.message_id,
       now,
     }),
@@ -215,7 +221,7 @@ export async function processIncomingMessage(
             sourceMessageId: String(replyTo.message_id),
             // Mirrored targets render as dereferenceable anchors in the
             // core's transcript; unmirrored ones get sender + text inlined.
-            stored: await isMessageMirrored(deps.db, chatId, replyTo.message_id),
+            stored: await isMessageMirrored(deps.db, chatId, replyTo.message_id, deps.assistantId),
             // The core resolves replied-to media to text over the media API.
             hasMedia: detectMessageMedia(replyTo as Message) !== null,
             senderLabel: replyTo.from

@@ -235,6 +235,12 @@ export const replyDeliveryEventSchema = eventEnvelopeSchema.extend({
 export const turnLifecycleEventSchema = eventEnvelopeSchema.extend({
   type: z.literal("turn.lifecycle"),
   source: sourceIdSchema,
+  /**
+   * The assistant running the turn — sources that keep per-assistant DM
+   * streams scope the settle's hold release with it. Optional: older
+   * publishers omitted it.
+   */
+  assistantId: z.string().min(1).optional(),
   chatRef: scopedRefSchema,
   /** Source-local id of the inbound message the turn belongs to. */
   sourceMessageId: z.string().min(1),

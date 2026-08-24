@@ -64,6 +64,7 @@ describe("tg analytics aggregates", () => {
   }) {
     return appendMessage(db, {
       chatId: input.chatId ?? "-500",
+      assistantId: null,
       telegramMessageId: input.id,
       role: input.role ?? "user",
       userId:
@@ -127,7 +128,7 @@ describe("tg analytics aggregates", () => {
       await mirror({ id: 1, sentAt: new Date("2026-07-15T00:00:00Z") });
       await mirror({ id: 2, sentAt: new Date("2026-07-16T00:00:00Z") });
       await mirror({ id: 3, sentAt: new Date("2026-07-15T10:00:00Z") });
-      await markMessageDeleted(db, "-500", 3);
+      await markMessageDeleted(db, "-500", 3, null);
 
       const rows = await getMessageSeries(db, { ...JULY_RANGE, unit: "all", timeZone: "UTC" });
       expect(rows).toEqual([{ bucket: "all", human: 1, bot: 0, activeUsers: 1 }]);
@@ -175,7 +176,7 @@ describe("tg analytics aggregates", () => {
       await mirror({ id: 2, sentAt: new Date("2026-07-15T09:50:00Z") });
       await mirror({ chatId: "-600", id: 3, sentAt: new Date("2026-07-14T20:00:00Z") });
       await mirror({ id: 4, sentAt: new Date("2026-07-15T09:55:00Z") });
-      await markMessageDeleted(db, "-500", 4);
+      await markMessageDeleted(db, "-500", 4, null);
 
       const hours = await listChatHourCounts(db, { timeZone: "UTC" });
       expect(hours).toEqual([

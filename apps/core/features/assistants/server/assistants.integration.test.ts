@@ -62,12 +62,16 @@ describe("assistants service", () => {
 
     const edited = await editAssistant(created.id, { persona: "Be kind." }, trigger, db);
     expect(edited.persona).toBe("Be kind.");
-    expect(await getAssistantPersona(created.id, db)).toBe("Be kind.");
+    // The identity line is structural: a third-person persona still knows
+    // its own name (user decision, 2026-08-24).
+    expect(await getAssistantPersona(created.id, db)).toBe(
+      "You are Sarcastic Bot.\n\nBe kind.",
+    );
   });
 
-  it("treats an empty persona as none", async () => {
+  it("asserts the identity even with an empty persona; unknown ids stay null", async () => {
     const created = await createAssistant({ name: "Plain", persona: "  " }, trigger, db);
-    expect(await getAssistantPersona(created.id, db)).toBeNull();
+    expect(await getAssistantPersona(created.id, db)).toBe("You are Plain.");
     expect(await getAssistantPersona("nope", db)).toBeNull();
   });
 

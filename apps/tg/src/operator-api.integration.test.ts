@@ -63,6 +63,7 @@ describe("tg operator API", () => {
     // one human message.
     await appendMessage(db, {
       chatId: GROUP_ID,
+      assistantId: null,
       telegramMessageId: 11,
       role: "user",
       userId: DM_ID,
@@ -84,6 +85,7 @@ describe("tg operator API", () => {
     });
     await appendMessage(db, {
       chatId: GROUP_ID,
+      assistantId: null,
       telegramMessageId: 12,
       role: "assistant",
       userId: null,
@@ -92,9 +94,15 @@ describe("tg operator API", () => {
       sentAt: new Date("2026-08-20T10:01:00Z"),
       processed: true,
     });
-    await recordBotReaction(db, { chatId: GROUP_ID, telegramMessageId: 11, emoji: "👍" });
+    await recordBotReaction(db, {
+      chatId: GROUP_ID,
+      telegramMessageId: 11,
+      emoji: "👍",
+      assistantId: null,
+    });
     await appendMessage(db, {
       chatId: DM_ID,
+      assistantId: null,
       telegramMessageId: 21,
       role: "user",
       userId: DM_ID,
