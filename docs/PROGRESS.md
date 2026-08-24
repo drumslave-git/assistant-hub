@@ -21,32 +21,23 @@ item carried forward: the slice-D **MCP-outbound design call** still
 awaits user confirmation (REST send API + core-side tool bindings vs an
 MCP endpoint on tg — Phase 5 can wrap the same handlers either way).
 
-**Next: Phase 3 (Assistants).** Scope from PLAN: assistants CRUD UI +
-personality conversion, per-assistant tg connections with concurrent
-pollers (connection settings as an `apps/tg/ui` extension of the
-assistant editor), per-assistant tasks, own-name addressing per
-assistant + the bot-to-bot loop guard, aggregated users/chats pages +
-person links. Acceptance criteria to be written at phase start, after
-the sequencing decisions below are answered (they shape everything):
+**Phase 3 (Assistants) is in progress.** The sequencing decisions were
+answered by the user (2026-08-24): (1) the assistant-scoped brain reads
+(persona by `event.assistantId`, per-assistant tasks) flip to the v2
+core store in this phase — memory/settings/self-improvement stay v1
+until Phase 6; (2) the bot-to-bot loop guard defaults to **N=3**;
+(3) the dev core store is populated (core import run — one assistant
+converted from the active personality, backends/settings/memories/
+markers reconciled; the import's CJS entry needed a `main()` wrapper,
+same top-level-await gotcha as the tg boot fix). The slice-D
+**MCP-outbound design call is confirmed** as the REST send API +
+core-side tool bindings — flag closed; Phase 5 may wrap the same
+handlers in an MCP endpoint if still wanted. Acceptance criteria are
+under "Phase 3 — Assistants" below; next best task: the boundary study
+for the persona/tasks flip (what reads v1 personalities/tasks today),
+then slicing.
 
-1. **Store flip scope** — the brain still reads the v1 database for
-   persona (active personality), tasks, memory, settings. Per-assistant
-   behavior cannot be expressed in v1's single-personality shape, so
-   Phase 3 likely re-points the ASSISTANT-SCOPED reads (persona by
-   `event.assistantId`, per-assistant tasks) at the v2 core store —
-   which Phase 1 already built (`assistants`, per-assistant `tasks`) —
-   while memory/settings/self-improvement stay v1 until Phase 6.
-   Recommendation: yes, flip assistant-scoped entities now; keeping
-   them v1 would make Phase 3 UI-only and force a second rework later.
-2. **Loop-guard default N** — consecutive assistant-authored turns per
-   chat before assistants go silent until a human speaks
-   (operator-configurable, DB-backed). A default is needed.
-3. **Dev-store population** — the core-store import script converts v1
-   personalities → assistants; decide whether to run it into the dev
-   `core` database now (so Phase 3 CRUD has real rows) the way the tg
-   import just ran.
-
-The old numbered list below records how the last Phase 2 items closed:
+The numbered list below records how the last Phase 2 items closed:
 
 1. **Analytics re-route — done (`fe56e5f`).** The former flip blocker:
    every message-volume read (charts, top users, availability, the
@@ -154,7 +145,7 @@ Known pitfalls for whoever starts:
 | 0 | Monorepo scaffold, apps/core + packages carve-out, extension registry, CI, docker | done |
 | 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | done |
 | 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | done |
-| 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | todo |
+| 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | in-progress |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
 | 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
@@ -300,6 +291,58 @@ non-Next workspaces is a small standalone task). The tg import test
 applies the frozen v1 migration chain via a cross-app path — test-only,
 deleted with `apps/core/db` at cutover. Person links have schema +
 foundations only; no UI/service until the aggregation phases.
+
+## Phase 3 — Assistants (acceptance criteria)
+
+Scope from PLAN.md: assistants CRUD + personality conversion,
+per-assistant telegram connections with concurrent pollers, per-assistant
+tasks, own-name addressing + bot-to-bot rules, aggregated users/chats
+pages + person links. Decisions applied (user, 2026-08-24): the
+assistant-scoped brain reads (persona by `event.assistantId`,
+per-assistant tasks) flip to the v2 core store in THIS phase, while
+memory/settings/self-improvement stay on v1 until Phase 6; the
+bot-to-bot loop guard defaults to N=3; the MCP-outbound shape is
+confirmed as tg's REST send API + core-side tool bindings (flag closed);
+the dev core store is populated (core import run 2026-08-24, one
+assistant converted from the active personality, all counts reconciled).
+
+- [ ] Assistants CRUD: feature-contract service over the v2 store's
+      `assistants` table (create/rename/edit persona/delete; name unique
+      case-insensitively), Route Handlers on shared wrappers, dashboard
+      page replacing the personalities page, traces for every mutation,
+      live updates, `/debug` scoping. Deleting an assistant publishes
+      `assistant.deleted` on the bus.
+- [ ] Persona flip: the turn consumer resolves the persona from the v2
+      `assistants` row named by `event.assistantId` (falling back
+      audibly, not silently, when the id is unknown); the v1
+      personalities feature stops feeding replies.
+- [ ] Tasks flip: the tasks feature moves to the v2 store's
+      per-assistant `tasks` table (scoped refs, `assistant_id`,
+      `created_by_owner` semantics carried over); chat turns act on the
+      event's assistant; the dashboard scopes task views by assistant;
+      timed fires carry their assistant onto delivery.
+- [ ] Per-assistant connections: the assistant editor gains a
+      connection section injected from `apps/tg/ui` (the first real
+      extension-registry consumer) over the existing operator
+      connections API; concurrent pollers proven with two live bots;
+      `assistant.deleted` → tg stops the poller and removes the row.
+- [ ] Shared-chat behavior: each assistant's deterministic addressing
+      checks its own name only (per-connection identity — verify, the
+      split largely built this); the tg app cross-feeds one assistant's
+      delivered reply as an inbound event to OTHER enabled assistants
+      present in the same chat (Telegram never delivers bot messages to
+      bots), gated by the loop guard: after N consecutive
+      assistant-authored turns in a chat with no human message,
+      assistants stay silent there until a human speaks. N lives in the
+      v2 core settings row, operator-editable, default 3; the guard is
+      deterministic (no LLM).
+- [ ] Aggregated directory: users/chats dashboard pages read every
+      source's operator API through the shared listing contract (tg
+      today; chat joins in Phase 4), person links CRUD over the v2
+      store's `person_links`/`person_link_members` with memory reading
+      through links preserved.
+- [ ] Tests at each seam; lint/typecheck/test/build green from the
+      root; proof and risks recorded.
 
 ## Phase 2 — Source split (acceptance criteria)
 
@@ -565,6 +608,15 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-24 (Phase 3 start)** — Phase 2 closed and Phase 3 opened in
+  one session. User decisions: assistant-scoped store flip now (persona
+  + tasks → v2 core store; memory/settings stay v1 until Phase 6);
+  loop-guard default N=3; dev core store populated via the core import
+  (verification passed); MCP-outbound shape confirmed (REST + core-side
+  bindings — the slice-D flag closes). Phase 3 acceptance criteria
+  written. Fix along the way: the core import entry wrapped in main()
+  (CJS package, top-level await).
 
 - **2026-08-24 (trace client)** — The last code criterion of Phase 2
   (`8428ea7`): the shared source-trace recorder in contracts, the

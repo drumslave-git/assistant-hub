@@ -16,15 +16,21 @@ if (!v1Url || !targetUrl) {
   process.exit(2);
 }
 
-try {
-  const report = await runCoreImport({
-    v1Url,
-    targetUrl,
-    log: (line) => console.log(`[import:core] ${line}`),
-  });
-  console.log(report.render());
-  process.exit(report.ok ? 0 : 1);
-} catch (error) {
-  console.error("[import:core] failed:", error);
-  process.exit(1);
+// No top-level await: this package is CJS (the Next app), so tsx compiles
+// this entry to CJS — the tg app's ESM entry got "type": "module" instead.
+async function main(): Promise<void> {
+  try {
+    const report = await runCoreImport({
+      v1Url: v1Url!,
+      targetUrl: targetUrl!,
+      log: (line) => console.log(`[import:core] ${line}`),
+    });
+    console.log(report.render());
+    process.exit(report.ok ? 0 : 1);
+  } catch (error) {
+    console.error("[import:core] failed:", error);
+    process.exit(1);
+  }
 }
+
+void main();
