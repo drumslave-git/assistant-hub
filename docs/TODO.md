@@ -38,6 +38,39 @@ decisions and target architecture in `docs/PLAN.md`, tracking in
 sanctioned exception to commit-on-main); main stays hotfixable and the branch
 is rebased onto main (rebases, not merges).
 
+## The served model leaks its deliberation (`todo` — guarded, model unchanged, 2026-08-24)
+
+The chat model in the operator's dev setup
+(`Huihui-gemma-4-26B-A4B-it-abliterated` UD-Q4_K_M on llama.cpp b10588) stops
+using its thought channel at production prompt scale and writes its working-out
+as the answer. Probed directly against the endpoint, replaying the exact request
+behind trace `3491c387`, 8–10 samples per condition:
+
+| condition | leaked |
+| --- | --- |
+| what the app sends (no reasoning param) | 6/8 … 10/10 |
+| `temperature: 0.2` | 8/8 |
+| `chat_template_kwargs: {enable_thinking: true}` | 7/8 |
+| `chat_template_kwargs: {enable_thinking: false}` | 0/8 |
+
+`reasoning_content` was empty in every one of those calls — the channel is never
+opened, so llama.cpp has nothing to strip. Ruled out by measurement: the server's
+parser (a *short* prompt to the same model/server channels correctly), truncation
+(a cut-off thought returns the reasoning field set and content empty, never raw
+CoT), the 17 tool definitions (reproduces without them), and sampling temperature
+(lower is worse). Tool calling is unaffected either way (4/4 `tasks_create`).
+
+**Guarded, not fixed** (`d5e548b`, reply integrity, see
+[bot-messaging.md](features/bot-messaging.md#reply-integrity--deliberation-is-not-an-answer)):
+the turn detects the leak mechanically and retries, which recovered 10/10 live.
+The cost is a wasted generation — up to ~40s when the leak runs to the token cap.
+
+**Open, needs the operator**: this is a model/template defect, and the honest fix
+is serving a model whose thought channel llama.cpp can parse at this prompt size.
+Turning thinking off for replies is **rejected** (user decision, 2026-08-24) — it
+is the one thing measured to stop the leak outright, and it is not on the table.
+Re-run the probe against any replacement model before trusting it.
+
 ## Collections feature (`deferred` — possible future feature, spec agreed 2026-08-19)
 
 Not scheduled: the user parked this after the brainstorm ("maybe will work on
@@ -546,11 +579,17 @@ Not entirely a false positive: the claim (*"marked it as complete"*) was itself
 confabulated about the previous turn, which only wrote `👍 Done.` to a `hello`.
 That earlier turn is the deeper bug and is in a different trace.
 
-**Proposed fix, not implemented — user decision 2026-08-15: observe first.**
-Split the exemption bullet so recounting one's own earlier messages is explicitly
-`none` and only claims about *this* turn count, and pass the assistant's previous
-message into `ActionClaimInput` so the judge can see what the past tense refers
-to.
+**Half shipped 2026-08-24 (`b8ebf18`)**, after the same shape recurred live
+(trace `10e34de6…`: the bot said *"I've already told you"* — true, and visible in
+the window — and the gate suppressed it as a performed action). Point 1 is
+closed: `ActionClaimInput` carries the turn's own conversation window and the
+rules name speech about one's earlier messages (*told, said, answered,
+explained*) as never an action.
+
+**Still open — point 2.** `ACTION_CLAIM_ENFORCEMENT_DIRECTIVE` still offers two
+options that both fail on a retrospective turn: there is no tool to call, and
+"say plainly you did not do it" contradicts what the bot did write. If the gate
+misfires on such a turn again, the second strike is still guaranteed.
 
 ## Two identical reminders from one turn (`done` pending live verification, 2026-08-14)
 

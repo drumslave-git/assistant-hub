@@ -711,6 +711,24 @@ and stamps `senderIsOwner` on inbound events.
 
 ## Session log
 
+- **2026-08-24 (live test, round 4 — the reasoning leak)** — The operator's
+  bot answered with raw chain-of-thought again. Probed the endpoint
+  directly (see the TODO entry "The served model leaks its deliberation"
+  for the tables): the served model stops using its thought channel at
+  production prompt scale and writes its working-out as the answer —
+  10/10 on the exact failing request, `reasoning_content` empty every
+  time; server parsing, truncation, tools and temperature all ruled out
+  by measurement. Thinking-off is the only thing that stops it outright
+  and the user rejected that outright. Shipped instead, at the user's
+  direction: a mechanical **reply-integrity gate** (truncated at the cap
+  / input-only transcript anchor / raw channel markers) that retries once
+  with a correction and suppresses a second failure — verified live with
+  the shipped code, 6/6 caught and 6/6 recovered, 0 false positives over
+  8 ordinary turns. Also, scoped to llama.cpp per the user: stop sending
+  `reasoning_format: "none"`, which had been disabling the server's parse
+  and putting `<|channel>thought<channel|>` markers into classifier
+  replies (8/8).
+
 - **2026-08-24 (live test, round 3)** — Addressing re-homed
   (`eeb3724`, user decision): summoning by name matches the
   ASSISTANT's name, never the bot account's profile name. First take
