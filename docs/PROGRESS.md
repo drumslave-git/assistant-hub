@@ -31,11 +31,25 @@ of Phase 2, in order:
    mirrored chatter stays silent) and the core ingests into the one
    trace store. Instrumented: inbound processing, feedback collection,
    reply delivery — each on the turn's correlation.
-3. **Live end-to-end topology smoke** in the operator's environment
-   (tg poller → queue → core → bus → tg send with a real bot): needs a
-   tg dev database (none exists yet — create it, set `DATABASE_URL` in
-   `apps/tg/.env`, run its `db:migrate`), Redis, and
-   `TG_API_URL`/`INTERNAL_API_TOKEN` on both sides.
+3. **Live end-to-end topology smoke — done (2026-08-24).** Dev topology
+   stood up (databases `tg` + `core` created and migrated, `apps/tg/.env`
+   written, compose Redis, shared `INTERNAL_API_TOKEN` in both `.env`
+   files; tg store seeded from v1 settings — connection with the bot
+   token under the active-personality assistant id, owner row) and the
+   operator messaged the live bot: poller → mirror + hold → queue →
+   core turn (full v1 prompt pipeline, LLM, honesty gate) → reply over
+   the bus → tg send + assistant mirror row → hold released — and all
+   three traces (tg `inbound`, core `reply`, tg `deliver`) landed in
+   the one store under the single correlation `chat:message`, the
+   cross-app trace client working live. One boot bug found only by the
+   real boot (`666d133`): apps/tg needed `"type": "module"` — tsx
+   inferred CJS and died on the entrypoint's top-level await, a failure
+   every vitest suite masked by running the same files as ESM (the
+   Docker CMD would have died identically).
+   Observed and out of scope for the split: the model (`gemma4-26b`)
+   delivered its own reasoning as the reply text on the smoke turn — a
+   prompt/model/serving concern (no code fixes for LLM output), not a
+   pipeline one; the composed-prompt events show full v1 parity.
 
 One design call from slice D still awaits user confirmation
 (MCP-outbound shape — see the slice D notes). The slice-C task-authority
