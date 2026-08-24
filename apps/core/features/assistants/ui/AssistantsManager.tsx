@@ -2,7 +2,9 @@
 
 import { Bot, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useState } from "react";
+
+import { composeAssistantSections } from "@assistant-hub/ui";
 
 import {
   Button,
@@ -20,6 +22,8 @@ import {
   Textarea,
   useConfirm,
 } from "@/components/ui";
+import { APP_EXTENSIONS } from "@/components/layout/extensions";
+import { useLiveEvent } from "@/components/realtime/useLiveEvent";
 import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
 import type { ApiErrorBody } from "@/lib/api-error";
 import { MAX_ASSISTANTS } from "../server/schema";
@@ -29,11 +33,15 @@ import type { Assistant } from "../server/schema";
  * Assistants manager. Client Component: create, edit, and delete assistants
  * (name + persona). No "active" selection — the assistant in a chat is
  * implied by which bot is in it; each assistant's transport connection is
- * managed in its editor by the owning source app's extension (lands with the
- * connections slice). Mutations call the assistants API and rely on the
- * shared live-refresh layer; the persona form lives in a modal (the same
- * one-form-for-both decision as personalities, 2026-08-14).
+ * managed in its editor by the owning source app's extension section (the
+ * registry's `assistantSections`, mounted below for existing assistants).
+ * Mutations call the assistants API and rely on the shared live-refresh
+ * layer; the persona form lives in a modal (the same one-form-for-both
+ * decision as personalities, 2026-08-14).
  */
+
+/** Every source app's assistant-editor sections, fixed at build time. */
+const ASSISTANT_SECTIONS = composeAssistantSections(APP_EXTENSIONS);
 
 async function readError(res: Response): Promise<string> {
   try {
@@ -64,6 +72,13 @@ function AssistantDialog({
   const [persona, setPersona] = useState(assistant?.persona ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Source-app sections re-read their data when the sources' state changes
+  // (the tg app publishes `status` on every poller flip).
+  const [refreshSignal, setRefreshSignal] = useState(0);
+  useLiveEvent(
+    "status",
+    useCallback(() => setRefreshSignal((n) => n + 1), []),
+  );
 
   const editing = assistant !== null;
 
@@ -134,6 +149,18 @@ function AssistantDialog({
             />
           )}
         </Field>
+
+        {/* Source-app sections (the registry's assistantSections): each app's
+            piece of this assistant — tg's bot connection first. They act on
+            the stored assistant, so they mount only when editing one. */}
+        {editing
+          ? ASSISTANT_SECTIONS.map(({ id, title, Section }) => (
+              <div key={id} className="space-y-3 border-t border-border pt-4">
+                <h3 className="text-sm font-semibold tracking-tight">{title}</h3>
+                <Section assistantId={assistant.id} refreshSignal={refreshSignal} />
+              </div>
+            ))
+          : null}
       </div>
     </Modal>
   );

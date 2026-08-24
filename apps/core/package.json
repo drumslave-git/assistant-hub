@@ -24,6 +24,7 @@
     "@ai-sdk/openai-compatible": "^3.0.25",
     "@assistant-hub/contracts": "*",
     "@assistant-hub/db": "*",
+    "@assistant-hub/tg-ui": "*",
     "@assistant-hub/ui": "*",
     "@ghostery/adblocker-playwright": "^2.18.1",
     "@grammyjs/runner": "^2.0.3",

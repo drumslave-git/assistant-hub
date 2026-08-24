@@ -32,6 +32,9 @@ import {
   type StatusTone,
   type TabItem,
 } from "@/components/ui";
+import type { OperatorConnection } from "@assistant-hub/contracts";
+
+import { getAssistants } from "@/features/assistants/server/service";
 import { BotControl } from "@/features/bot-messaging/ui/BotControl";
 import { getAllJobs } from "@/features/jobs/server/registry";
 import { JobHealthList } from "@/features/jobs/ui/JobHealthList";
@@ -39,7 +42,7 @@ import { buildInfo } from "@/lib/build-info";
 import type { RealtimeTopic } from "@/lib/realtime";
 import { getOverviewActivity, OVERVIEW_WINDOW_HOURS } from "@/server/overview";
 import { getSystemStatus, type EndpointStatus } from "@/server/status";
-import { getSourceBotStatus } from "@/server/source/tg-operator";
+import { listSourceConnections, summarizeConnections } from "@/server/source/tg-operator";
 
 // Probe real state at request time (DB query + LLM endpoint call + trace reads),
 // so the overview reflects what actually works, not build-time or env-presence
@@ -240,28 +243,48 @@ async function ActivityStatsSection() {
 
 /** The live-probe status card — the slow section, streamed on its own. */
 async function SystemStatusSection() {
-  const [{ status: botStatus, configured: telegramConfigured }, status] = await Promise.all([
-    getSourceBotStatus(),
+  const [connectionsResult, assistants, status] = await Promise.all([
+    // Connections are per assistant since Phase 3; every status surface here
+    // summarizes across all of them.
+    listSourceConnections().then(
+      (connections) => ({ connections, error: null as string | null }),
+      (err: unknown) => ({
+        connections: [] as OperatorConnection[],
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    ),
+    getAssistants().catch(() => []),
     getSystemStatus(),
   ]);
+  const { status: botStatus, configured: telegramConfigured } = connectionsResult.error
+    ? {
+        status: {
+          state: "error" as const,
+          username: null,
+          since: null,
+          error: connectionsResult.error,
+        },
+        configured: false,
+      }
+    : summarizeConnections(connectionsResult.connections);
 
   const botItem: StatusItem =
     botStatus.state === "running"
       ? {
-          label: "Telegram bot",
+          label: "Telegram bots",
           tone: "ok",
           value: "Running",
           hint: botStatus.username ? `@${botStatus.username} — long polling` : "long polling",
         }
       : botStatus.state === "error"
-        ? { label: "Telegram bot", tone: "error", value: "Error", hint: botStatus.error ?? "unknown error" }
+        ? { label: "Telegram bots", tone: "error", value: "Error", hint: botStatus.error ?? "unknown error" }
         : telegramConfigured
-          ? { label: "Telegram bot", tone: "warn", value: "Stopped", hint: "Ready — click Start" }
+          ? { label: "Telegram bots", tone: "warn", value: "Stopped", hint: "Ready — start below" }
           : {
-              label: "Telegram bot",
+              label: "Telegram bots",
               tone: "warn",
               value: "Not configured",
-              hint: "Set a bot token in Settings",
+              hint: "Connect a bot to an assistant",
             };
 
   const llmItem: StatusItem =
@@ -396,8 +419,12 @@ async function SystemStatusSection() {
         })}
 
         <div className="flex flex-col gap-2 border-t border-border pt-5">
-          <span className="text-sm font-medium text-foreground">Telegram bot</span>
-          <BotControl initial={botStatus} configured={telegramConfigured} />
+          <span className="text-sm font-medium text-foreground">Telegram bots</span>
+          <BotControl
+            initial={connectionsResult.connections}
+            serviceError={connectionsResult.error}
+            assistantNames={Object.fromEntries(assistants.map((a) => [a.id, a.name]))}
+          />
         </div>
       </CardContent>
     </Card>

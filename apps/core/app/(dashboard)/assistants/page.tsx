@@ -13,8 +13,8 @@ export const dynamic = "force-dynamic";
 /**
  * Assistants dashboard page. Server Component: lists the assistants and
  * delegates create/edit/delete to a Client Component. Each assistant's
- * transport connection is edited here too once the source apps' extension
- * sections land (Phase 3, connections slice).
+ * transport connection is edited in its editor too, through the source apps'
+ * extension sections (tg's bot connection first).
  */
 export default async function AssistantsPage() {
   let assistants: Assistant[] | null = null;

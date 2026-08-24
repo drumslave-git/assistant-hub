@@ -10,9 +10,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "lucide-react": "^1.24.0"
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.24.0",
+    "tailwind-merge": "^3.6.0"
+  },
+  "peerDependencies": {
+    "react": "^19"
   },
   "devDependencies": {
+    "@types/react": "^19",
     "typescript": "^5"
   }
 }

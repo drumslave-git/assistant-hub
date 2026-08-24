@@ -11,14 +11,15 @@ import { z } from "zod";
  * "use the chat backend" —
  * and a model. Endpoint URLs and API keys live on the backend rows.
  *
- * The bot token and integration keys are secrets: accepted on input but never
- * returned. The client-facing {@link settingsSchema} exposes only
- * `…Configured` booleans for them.
+ * Integration keys are secrets: accepted on input but never returned. The
+ * client-facing {@link settingsSchema} exposes only `…Configured` booleans
+ * for them. The Telegram bot token is NOT here — connections are per
+ * assistant since Phase 3 and managed from the assistant editor's tg
+ * section, stored by the tg source app.
  */
 
 const model = z.string().trim().min(1).max(200);
 const apiKey = z.string().trim().max(500);
-const botToken = z.string().trim().max(200);
 
 /**
  * How the audio role transcribes: the OpenAI-style `/v1/audio/transcriptions`
@@ -82,8 +83,6 @@ export const settingsSchema = z.object({
   browserBackendId: backendId.nullable(),
   /** Selected browser-agent model id, or null → browsing runs on the chat model. */
   browserModel: model.nullable(),
-  /** Whether a Telegram bot token is stored (the value itself is never exposed). */
-  telegramBotTokenConfigured: z.boolean(),
   /** Whether a Tavily API key is stored, enabling the browsing agent's search fallback (value never exposed). */
   webSearchConfigured: z.boolean(),
   /** Owner's numeric user id (chosen from known users), or null when unset. */
@@ -132,7 +131,6 @@ export const updateSettingsSchema = z
     backgroundModel: model.nullable(),
     browserBackendId: backendId.nullable(),
     browserModel: model.nullable(),
-    telegramBotToken: botToken.nullable(),
     tavilyApiKey: apiKey.nullable(),
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),

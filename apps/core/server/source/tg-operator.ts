@@ -1,7 +1,6 @@
 import "server-only";
 
 import {
-  DEFAULT_ASSISTANT_ID,
   operatorChatResponseSchema,
   operatorChatsResponseSchema,
   operatorConnectionResponseSchema,
@@ -14,7 +13,7 @@ import {
   type OperatorUser,
 } from "@assistant-hub/contracts";
 
-import { ApiError } from "@/lib/api-error";
+import { ApiError, isApiError } from "@/lib/api-error";
 import { getEnv } from "@/server/env";
 
 /**
@@ -24,9 +23,9 @@ import { getEnv } from "@/server/env";
  * the shared `INTERNAL_API_TOKEN` header; the operator session was already
  * checked by whichever dashboard surface called this.
  *
- * Phase 2 keeps the dashboard's single-bot shape: one connection, owned by
- * the default assistant. Phase 3's assistants CRUD replaces the
- * single-connection helpers below with per-assistant management.
+ * Connections are per assistant since Phase 3: the assistant editor's tg
+ * section manages them through the proxy routes below, and the dashboard's
+ * status surfaces summarize across all of them.
  */
 
 /** Dashboard-facing poller status — the v1 `BotStatus` shape, kept. */
@@ -94,7 +93,13 @@ export function tgOperatorClient(): TgOperatorClient | null {
       const body = (await res.json().catch(() => null)) as {
         error?: { message?: string };
       } | null;
-      throw new Error(body?.error?.message ?? `tg operator API ${path} answered ${res.status}`);
+      const message = body?.error?.message ?? `tg operator API ${path} answered ${res.status}`;
+      // Preserve the source's verdict for callers that relay it to the
+      // dashboard (a 409 "already has a connection" must not become a 500).
+      if (res.status === 400) throw ApiError.badRequest(message);
+      if (res.status === 404) throw ApiError.notFound(message);
+      if (res.status === 409) throw ApiError.conflict(message);
+      throw ApiError.serviceUnavailable(message);
     }
     return res.json();
   };
@@ -214,35 +219,135 @@ export async function writeSourceChat(
   await client.updateChat(id, input);
 }
 
-/** Map one connection (or its absence) onto the dashboard's bot status. */
-function toBotStatus(connection: OperatorConnection | undefined): BotStatus {
-  if (!connection) return { state: "stopped", username: null, since: null, error: null };
-  if (!connection.enabled && !connection.status) {
-    return { state: "stopped", username: null, since: null, error: null };
-  }
-  const status = connection.status;
-  if (!status) {
-    // Desired running but the runtime has no poller for it yet — the tg app
-    // has not reconciled (or was restarted); honest state is an error the
-    // operator can read, not a green light.
+/**
+ * Summarize every connection into the shell's one Bot status card. Errors win
+ * (an enabled connection with no tracked poller counts as one — the tg app
+ * has not reconciled, or was restarted), then running, then stopped;
+ * `configured` is simply "at least one connection exists". With several
+ * connections the error message is prefixed with the failing bot's identity.
+ * Pure, exported for its unit tests.
+ */
+export function summarizeConnections(connections: OperatorConnection[]): {
+  status: BotStatus;
+  configured: boolean;
+} {
+  const failed = connections.find(
+    (c) => c.status?.state === "error" || (c.enabled && !c.status),
+  );
+  if (failed) {
+    const message =
+      failed.status?.error ??
+      "connection is enabled but no poller is tracked — is the telegram service running?";
+    const label = failed.status?.username
+      ? `@${failed.status.username}`
+      : `token …${failed.botTokenHint}`;
     return {
-      state: "error",
-      username: null,
-      since: null,
-      error: "connection is enabled but no poller is tracked — is the telegram service running?",
+      status: {
+        state: "error",
+        username: failed.status?.username ?? null,
+        since: null,
+        error: connections.length > 1 ? `${label}: ${message}` : message,
+      },
+      configured: true,
+    };
+  }
+  const running = connections.filter((c) => c.status?.state === "running");
+  if (running.length > 0) {
+    // With several bots up there is no single identity to show — consumers
+    // render a null username as a plural.
+    return {
+      status: {
+        state: "running",
+        username: running.length === 1 ? (running[0].status?.username ?? null) : null,
+        since: running.length === 1 ? (running[0].status?.since ?? null) : null,
+        error: null,
+      },
+      configured: true,
     };
   }
   return {
-    state: status.state,
-    username: status.username,
-    since: status.since,
-    error: status.error,
+    status: { state: "stopped", username: null, since: null, error: null },
+    configured: connections.length > 0,
   };
 }
 
+/** Non-ApiError failures (a refused fetch, a timeout) become a legible 503. */
+function toUnreachable(err: unknown): ApiError {
+  if (isApiError(err)) return err;
+  return ApiError.serviceUnavailable(
+    `telegram service unreachable: ${err instanceof Error ? err.message : String(err)}`,
+  );
+}
+
+function requireClient(action: string): TgOperatorClient {
+  const client = tgOperatorClient();
+  if (!client) {
+    throw ApiError.serviceUnavailable(
+      `telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN) — ${action}`,
+    );
+  }
+  return client;
+}
+
+/** Every connection (optionally one assistant's), joined with poller state. */
+export async function listSourceConnections(
+  assistantId?: string,
+): Promise<OperatorConnection[]> {
+  const client = requireClient("connections cannot be read");
+  try {
+    const connections = await client.listConnections();
+    return assistantId
+      ? connections.filter((c) => c.assistantId === assistantId)
+      : connections;
+  } catch (err) {
+    throw toUnreachable(err);
+  }
+}
+
 /**
- * The dashboard's bot status + whether a token is saved, probed from the tg
- * service (real state, not env presence). An unreachable or unconfigured
+ * Connect a bot to an assistant. Enabled on creation: a saved token means
+ * "run this bot" (v1 autostart semantics); Stop is the explicit way to keep
+ * it parked. One bot per assistant — the source answers a 409 otherwise,
+ * relayed as a conflict.
+ */
+export async function createSourceConnection(input: {
+  assistantId: string;
+  botToken: string;
+}): Promise<OperatorConnection> {
+  const client = requireClient("the connection cannot be created");
+  try {
+    return await client.createConnection({ ...input, enabled: true });
+  } catch (err) {
+    throw toUnreachable(err);
+  }
+}
+
+/** Desired-state change (retoken, start/stop); the tg app reconciles its poller. */
+export async function updateSourceConnection(
+  id: string,
+  input: { botToken?: string; enabled?: boolean },
+): Promise<OperatorConnection> {
+  const client = requireClient("the connection cannot be updated");
+  try {
+    return await client.updateConnection(id, input);
+  } catch (err) {
+    throw toUnreachable(err);
+  }
+}
+
+/** Remove a connection: the row, its stored token, and its poller. */
+export async function deleteSourceConnection(id: string): Promise<void> {
+  const client = requireClient("the connection cannot be removed");
+  try {
+    await client.deleteConnection(id);
+  } catch (err) {
+    throw toUnreachable(err);
+  }
+}
+
+/**
+ * The dashboard's bot status + whether any connection exists, probed from the
+ * tg service (real state, not env presence). An unreachable or unconfigured
  * service reads as an error state — after the source split a dashboard
  * without its telegram service is a misconfiguration worth surfacing, never
  * a silent "stopped".
@@ -264,8 +369,7 @@ export async function getSourceBotStatus(): Promise<{
     };
   }
   try {
-    const connections = await client.listConnections();
-    return { status: toBotStatus(connections[0]), configured: connections.length > 0 };
+    return summarizeConnections(await client.listConnections());
   } catch (err) {
     return {
       status: {
@@ -277,51 +381,4 @@ export async function getSourceBotStatus(): Promise<{
       configured: false,
     };
   }
-}
-
-/**
- * Start/stop the (single) telegram connection: desired state written through
- * the operator API; the tg app reconciles its poller and the answer carries
- * the resulting actual state.
- */
-export async function setSourceBotEnabled(enabled: boolean): Promise<BotStatus> {
-  const client = tgOperatorClient();
-  if (!client) {
-    throw ApiError.serviceUnavailable(
-      "telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN)",
-    );
-  }
-  const [connection] = await client.listConnections();
-  if (!connection) {
-    throw ApiError.badRequest("No telegram connection — save a bot token in Settings first");
-  }
-  const updated = await client.updateConnection(connection.id, { enabled });
-  return toBotStatus(updated);
-}
-
-/**
- * Save (or clear) the bot token from Settings: routed to the tg connection
- * (create for the default assistant, retoken in place, delete on clear) —
- * the token lives in the source's store since the split; the core keeps no
- * copy.
- */
-export async function saveSourceBotToken(token: string | null): Promise<void> {
-  const client = tgOperatorClient();
-  if (!client) {
-    throw ApiError.serviceUnavailable(
-      "telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN) — the bot token cannot be saved",
-    );
-  }
-  const [connection] = await client.listConnections();
-  if (!token) {
-    if (connection) await client.deleteConnection(connection.id);
-    return;
-  }
-  if (connection) {
-    await client.updateConnection(connection.id, { botToken: token });
-    return;
-  }
-  // Enabled on creation: a saved token means "run this bot" (v1 autostart
-  // semantics); Stop is the explicit way to keep it parked.
-  await client.createConnection({ assistantId: DEFAULT_ASSISTANT_ID, botToken: token, enabled: true });
 }

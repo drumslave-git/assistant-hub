@@ -144,7 +144,8 @@ export function Sidebar({
           <p className="mt-1 text-xs text-muted">
             {botStatus.bot.state === "running" ? (
               <>
-                @{botStatus.bot.username ?? "bot"} — polling
+                {/* A null username while running means several bots are up. */}
+                {botStatus.bot.username ? `@${botStatus.bot.username}` : "Bots"} — polling
                 {botStatus.bot.since ? (
                   <>
                     {" "}

@@ -309,6 +309,77 @@ describe("tg operator API", () => {
     expect(after.connections).toEqual([]);
   });
 
+  it("carries two assistants' connections independently, each with its own poller state", async () => {
+    const app = api();
+    const create = async (assistantId: string, botToken: string) =>
+      operatorConnectionResponseSchema.parse(
+        await (
+          await app.request("/internal/connections", {
+            method: "POST",
+            headers: HEADERS,
+            body: JSON.stringify({ assistantId, botToken }),
+          })
+        ).json(),
+      ).connection!;
+    const first = await create("assistant-a", "111:token-aaaa");
+    const second = await create("assistant-b", "222:token-bbbb");
+    // Both pollers were asked to start — one per connection.
+    expect(reconciled).toEqual([
+      { id: first.id, enabled: true },
+      { id: second.id, enabled: true },
+    ]);
+
+    // Each row joins ITS poller's live state: one bot up, the other down.
+    statuses = [
+      {
+        connectionId: first.id,
+        assistantId: "assistant-a",
+        state: "running",
+        username: "bot_a",
+        since: new Date().toISOString(),
+        error: null,
+      },
+      {
+        connectionId: second.id,
+        assistantId: "assistant-b",
+        state: "error",
+        username: null,
+        since: null,
+        error: "401 unauthorized",
+      },
+    ];
+    const list = operatorConnectionsResponseSchema.parse(
+      await (await app.request("/internal/connections", { headers: HEADERS })).json(),
+    );
+    const byAssistant = new Map(list.connections.map((c) => [c.assistantId, c]));
+    expect(byAssistant.get("assistant-a")!.status).toMatchObject({
+      state: "running",
+      username: "bot_a",
+    });
+    expect(byAssistant.get("assistant-b")!.status).toMatchObject({
+      state: "error",
+      error: "401 unauthorized",
+    });
+    statuses = [];
+
+    // Stopping one leaves the other's desired state untouched.
+    await app.request(`/internal/connections/${first.id}`, {
+      method: "PATCH",
+      headers: HEADERS,
+      body: JSON.stringify({ enabled: false }),
+    });
+    const after = operatorConnectionsResponseSchema.parse(
+      await (await app.request("/internal/connections", { headers: HEADERS })).json(),
+    );
+    expect(
+      new Map(after.connections.map((c) => [c.assistantId, c.enabled])),
+    ).toEqual(new Map([["assistant-a", false], ["assistant-b", true]]));
+
+    for (const id of [first.id, second.id]) {
+      await app.request(`/internal/connections/${id}`, { method: "DELETE", headers: HEADERS });
+    }
+  });
+
   it("serves the owner settings; a new owner resets the resolved id", async () => {
     const app = api();
     const current = operatorSourceSettingsResponseSchema.parse(

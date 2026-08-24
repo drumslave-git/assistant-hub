@@ -1,6 +1,7 @@
 "use client";
 
 import { Save } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
@@ -201,7 +202,6 @@ export function SettingsForm({
   );
 
   // Core operational settings.
-  const botToken = useSecretField(initial.telegramBotTokenConfigured);
   const tavilyKey = useSecretField(initial.webSearchConfigured);
   const [ownerUserId, setOwnerUserId] = useState(initial.ownerUserId ?? "");
   const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
@@ -342,7 +342,6 @@ export function SettingsForm({
     if (audioTranscriptionMode !== initial.audioTranscriptionMode) {
       patch.audioTranscriptionMode = audioTranscriptionMode;
     }
-    if (botToken.dirty) patch.telegramBotToken = botToken.patchValue;
     if (tavilyKey.dirty) patch.tavilyApiKey = tavilyKey.patchValue;
     if (speechVoice.trim() !== (initial.speechVoice ?? "")) {
       patch.speechVoice = speechVoice.trim() === "" ? null : speechVoice.trim();
@@ -398,7 +397,6 @@ export function SettingsForm({
         }
       }
       setClearedOnSave(cleared);
-      botToken.clear();
       tavilyKey.clear();
       chat.applySaved({ backendId: data.chatBackendId, model: data.model });
       emb.applySaved({ backendId: data.embeddingBackendId, model: data.embeddingModel });
@@ -724,27 +722,13 @@ export function SettingsForm({
   const telegramTab = (
     <div className="space-y-5">
       <p className="text-sm text-muted">
-        How the bot connects to Telegram and who operates it. Save the token, then start the bot
-        from the Overview.
+        Who operates the bots. Bot tokens are per assistant since the redesign — connect and
+        manage them from each assistant&apos;s editor on the{" "}
+        <Link href="/assistants" className="text-primary underline-offset-2 hover:underline">
+          Assistants page
+        </Link>
+        .
       </p>
-
-      <Field
-        id="telegramBotToken"
-        label="Telegram bot token"
-        hint="From @BotFather. Stored securely; never shown again. Save, then start the bot from the Overview."
-      >
-        {({ id, describedBy }) => (
-          <Input
-            id={id}
-            aria-describedby={describedBy}
-            type="password"
-            autoComplete="off"
-            value={botToken.value}
-            onChange={(e) => botToken.set(e.target.value)}
-            placeholder={botToken.placeholderFor("123456:ABC-DEF…")}
-          />
-        )}
-      </Field>
 
       <Field
         id="ownerUserId"

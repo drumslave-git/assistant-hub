@@ -15,6 +15,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { closePool } from "@/db/pool";
+import { closeStorePool } from "@/server/store/db";
 import type { MediaRecord } from "@/features/vision/server/repository";
 import type { DescribeDeps, MediaStorePort } from "@/features/vision/server/service";
 import type { ChatMessage } from "@/server/llm/client";
@@ -119,6 +120,10 @@ describe("inbound turn consumer", () => {
 
   afterAll(async () => {
     await storePool?.end();
+    // The persona/tasks reads open the process-global store pool through
+    // production code — close it before the container stops, or its dying
+    // clients surface as unhandled errors and fail an all-green run.
+    await closeStorePool();
     await closePool();
     await pg?.stop();
   });

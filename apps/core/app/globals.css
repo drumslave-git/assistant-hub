@@ -1,6 +1,14 @@
 @import "tailwindcss";
 
 /*
+ * Workspace UI packages ship Tailwind classes the automatic scan (rooted in
+ * this app) cannot see — list their sources explicitly so their utilities
+ * land in the build.
+ */
+@source "../../../packages/ui/src";
+@source "../../../apps/tg/ui/src";
+
+/*
  * Class-based dark mode. The app is dark-first (`<html class="dark">`), but the
  * light palette below keeps a future theme toggle a one-class flip. Components
  * should consume the *semantic* tokens (bg-surface, text-muted, border-border,

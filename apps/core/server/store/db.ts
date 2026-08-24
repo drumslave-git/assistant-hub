@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getProcessPool } from "@assistant-hub/db";
+import { closeProcessPool, getProcessPool } from "@assistant-hub/db";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 
@@ -34,4 +34,15 @@ export function getStoreDb(): StoreDb {
   const g = globalThis as typeof globalThis & { [DB_KEY]?: StoreDb };
   if (!g[DB_KEY]) g[DB_KEY] = drizzle(getStorePool(), { schema: storeSchema });
   return g[DB_KEY];
+}
+
+/**
+ * Close the shared store pool and drop the cached handle (graceful shutdown /
+ * test teardown — a suite that let production code open this pool must close
+ * it before its Testcontainer stops, or the dying clients fail the run).
+ */
+export async function closeStorePool(): Promise<void> {
+  const g = globalThis as typeof globalThis & { [DB_KEY]?: StoreDb };
+  delete g[DB_KEY];
+  await closeProcessPool(POOL_KEY);
 }

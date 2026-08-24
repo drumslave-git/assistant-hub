@@ -17,6 +17,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 FROM base AS deps
 COPY package.json package-lock.json ./
 COPY apps/core/package.json apps/core/
+# The shell composes source-app ui subpackages at build time (the extension
+# registry), so their manifests join the workspace install.
+COPY apps/tg/ui/package.json apps/tg/ui/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/db/package.json packages/db/
 COPY packages/ui/package.json packages/ui/
