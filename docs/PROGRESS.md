@@ -30,9 +30,12 @@ same top-level-await gotcha as the tg boot fix). The slice-D
 **MCP-outbound design call is confirmed** as the REST send API +
 core-side tool bindings — flag closed; Phase 5 may wrap the same
 handlers in an MCP endpoint if still wanted. Acceptance criteria are
-under "Phase 3 — Assistants" below; next best task: the boundary study
-for the persona/tasks flip (what reads v1 personalities/tasks today),
-then slicing.
+under "Phase 3 — Assistants" below. Slices A–D are done (assistants
+feature, persona flip, tasks flip, per-assistant connections + the tg
+UI extension). Next best task: slice E (the cross-feed + loop guard).
+Waiting on the operator: the two-live-bots check — create a second
+assistant, connect a second real bot token in its editor, and confirm
+both bots poll and reply concurrently (each with its own persona).
 
 The numbered list below records how the last Phase 2 items closed:
 
@@ -338,11 +341,30 @@ assistant converted from the active personality, all counts reconciled).
       the app pool until Phase 6. The tasks + scheduler integration
       suites now run the live two-database topology. Dev store's tasks
       table was empty at import (no live v1 tasks), so no data moved.
-- [ ] Per-assistant connections: the assistant editor gains a
-      connection section injected from `apps/tg/ui` (the first real
-      extension-registry consumer) over the existing operator
-      connections API; concurrent pollers proven with two live bots;
-      `assistant.deleted` → tg stops the poller and removes the row.
+- [x] Per-assistant connections (`e78cede`): the assistant
+      editor mounts source-app sections through the extension registry's
+      new `assistantSections` point — `apps/tg/ui`
+      (`@assistant-hub/tg-ui`, the first real registry consumer)
+      contributes the Telegram connection section (connect/retoken/
+      start/stop/disconnect over the operator connections API, live on
+      `status` events via a shell-supplied `refreshSignal`). The shared
+      form primitives (cn/Slot/Label/Button/Input/Field/Badge) moved to
+      `@assistant-hub/ui` (its documented purpose; core re-exports keep
+      every import path), with `@source` directives so core's Tailwind
+      scans both packages. Core serves thin `/api/telegram/connections`
+      proxy routes; the operator client now relays the source's
+      verdicts as typed ApiErrors (409 one-bot-per-assistant included).
+      The single-bot surfaces retired with the flip: Settings' bot-token
+      field is gone (the tab points at Assistants), the Overview control
+      lists every connection with per-row start/stop, and the sidebar
+      card summarizes across connections (`summarizeConnections`,
+      unit-tested; errors win, then running, then stopped).
+      `assistant.deleted` → poller stopped + row dropped was proven in
+      slice A (runtime suite). Concurrent pollers are proven at the API
+      seam (two assistants' connections listed/reconciled independently,
+      each with its own poller state) — the **two-live-bots check is
+      operator-run** (needs a second real bot token) and gets recorded
+      here when done.
 - [ ] Shared-chat behavior: each assistant's deterministic addressing
       checks its own name only (per-connection identity — verify, the
       split largely built this); the tg app cross-feeds one assistant's
@@ -647,6 +669,29 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-24 (slice D)** — Per-assistant connections
+  (`e78cede`): the extension registry gains `assistantSections`
+  and its first real consumer — the new `@assistant-hub/tg-ui`
+  workspace (`apps/tg/ui`) injects the Telegram connection section into
+  the assistant editor; shared form primitives moved to
+  `@assistant-hub/ui`; core proxies `/api/telegram/connections`; the
+  Settings bot-token field retired (per-assistant tokens live in the
+  editor — flagged for the user since it removes a Settings control),
+  the Overview control went per-connection, and the sidebar summarizes
+  across connections. New workspace wiring: root `apps/*/ui` glob,
+  transpilePackages, Tailwind `@source`, and the core Dockerfile's deps
+  stage copies the tg-ui manifest. Fix along the way (pre-existing,
+  reproduced on clean HEAD): the turn-consumer integration suite let
+  production code open the process-global store pool and never closed
+  it, so the stopping Testcontainer killed its clients and 2 unhandled
+  57P01 errors failed an all-tests-passing run — `closeStorePool()`
+  added to `server/store/db` and called in the suite's teardown.
+  Proof: root turbo typecheck/lint/test green (core unit 1121 incl.
+  the new summarize suite); core integration 322/30-skipped green with
+  a real exit code, tg 54 (incl. the new two-connection case), chat
+  green; build green. Remaining: the operator-run two-live-bots check
+  (Current state).
 
 - **2026-08-24 (Phase 3 start)** — Phase 2 closed and Phase 3 opened in
   one session. User decisions: assistant-scoped store flip now (persona
