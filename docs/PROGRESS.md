@@ -702,6 +702,17 @@ and stamps `senderIsOwner` on inbound events.
 
 ## Session log
 
+- **2026-08-24 (live test, round 2)** — Three more fixes (`b8ebf18`):
+  the honesty gate now judges with the reply's own conversation window
+  (it had suppressed a true "I've already told you" as a fabricated
+  action — trace 10e34de6…) and its rules state that speech about the
+  chat is never an action; the typing indicator resolves its sender per
+  turn from the lifecycle event's assistant (was senderFor(null) — only
+  the first running bot ever typed); and transcripts label the
+  assistant's own lines plain "You" instead of "You (@username)" — the
+  account handle confused a model that already knows its assistant name
+  (all three user decisions). Both dev services need a restart.
+
 - **2026-08-24 (slice D live test → DM streams)** — The operator's
   two-bot test surfaced an identity mix-up: the second assistant ran on
   the original bot account and answered from the merged DM history as the
