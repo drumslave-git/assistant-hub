@@ -11,12 +11,42 @@ Phases 0 (scaffold) and 1 (schemas + migration) are done on the long-lived
 `redesign` branch (created 2026-08-21 from main at the tracing-unification
 commit).
 
-Phase 2 is in progress: the extraction slices A–D landed, and **the swap
-slice is essentially done** — `apps/core/server/telegram` is deleted, the
-tg app owns everything Telegram-shaped, and the core reads/writes
-conversation content only through tg's internal API (see the swap notes
-under the Phase 2 criteria for the commit-by-commit list). What remains
-of Phase 2, in order:
+**Phase 2 is DONE** (2026-08-24): `apps/core/server/telegram` is deleted,
+the tg app owns everything Telegram-shaped, the core reads/writes
+conversation content only through tg's internal API, and the live
+end-to-end smoke passed on the operator's real bot (see the swap notes
+under the Phase 2 criteria for the commit-by-commit list, and the smoke
+item below for the dev-environment setup that now exists). One standing
+item carried forward: the slice-D **MCP-outbound design call** still
+awaits user confirmation (REST send API + core-side tool bindings vs an
+MCP endpoint on tg — Phase 5 can wrap the same handlers either way).
+
+**Next: Phase 3 (Assistants).** Scope from PLAN: assistants CRUD UI +
+personality conversion, per-assistant tg connections with concurrent
+pollers (connection settings as an `apps/tg/ui` extension of the
+assistant editor), per-assistant tasks, own-name addressing per
+assistant + the bot-to-bot loop guard, aggregated users/chats pages +
+person links. Acceptance criteria to be written at phase start, after
+the sequencing decisions below are answered (they shape everything):
+
+1. **Store flip scope** — the brain still reads the v1 database for
+   persona (active personality), tasks, memory, settings. Per-assistant
+   behavior cannot be expressed in v1's single-personality shape, so
+   Phase 3 likely re-points the ASSISTANT-SCOPED reads (persona by
+   `event.assistantId`, per-assistant tasks) at the v2 core store —
+   which Phase 1 already built (`assistants`, per-assistant `tasks`) —
+   while memory/settings/self-improvement stay v1 until Phase 6.
+   Recommendation: yes, flip assistant-scoped entities now; keeping
+   them v1 would make Phase 3 UI-only and force a second rework later.
+2. **Loop-guard default N** — consecutive assistant-authored turns per
+   chat before assistants go silent until a human speaks
+   (operator-configurable, DB-backed). A default is needed.
+3. **Dev-store population** — the core-store import script converts v1
+   personalities → assistants; decide whether to run it into the dev
+   `core` database now (so Phase 3 CRUD has real rows) the way the tg
+   import just ran.
+
+The old numbered list below records how the last Phase 2 items closed:
 
 1. **Analytics re-route — done (`fe56e5f`).** The former flip blocker:
    every message-volume read (charts, top users, availability, the
@@ -46,10 +76,17 @@ of Phase 2, in order:
    inferred CJS and died on the entrypoint's top-level await, a failure
    every vitest suite masked by running the same files as ESM (the
    Docker CMD would have died identically).
-   Observed and out of scope for the split: the model (`gemma4-26b`)
-   delivered its own reasoning as the reply text on the smoke turn — a
-   prompt/model/serving concern (no code fixes for LLM output), not a
-   pipeline one; the composed-prompt events show full v1 parity.
+   First smoke turn came back as the model's own reasoning; root cause
+   found by diffing the request against a pre-swap trace: the prompt was
+   byte-identical EXCEPT the history window — the fresh tg store had no
+   mirror, so the turn ran with zero conversation history and gemma4-26b
+   deliberated instead of replying. Resolved by running the designed v1
+   import into the tg store (`import:v1`, source read-only: 1384
+   messages, search index, media, summaries, feedbacks, users/chats,
+   connection + owner; row counts reconciled, spot checks verbatim).
+   Second live turn confirmed normal behavior by the operator. Dev note:
+   the store was reset before the import (one-shot semantics), dropping
+   only the two smoke rows.
 
 One design call from slice D still awaits user confirmation
 (MCP-outbound shape — see the slice D notes). The slice-C task-authority
@@ -116,7 +153,7 @@ Known pitfalls for whoever starts:
 | --- | --- | --- |
 | 0 | Monorepo scaffold, apps/core + packages carve-out, extension registry, CI, docker | done |
 | 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | done |
-| 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | in-progress |
+| 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | done |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | todo |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
