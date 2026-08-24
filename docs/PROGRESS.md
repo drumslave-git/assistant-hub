@@ -365,6 +365,35 @@ assistant converted from the active personality, all counts reconciled).
       each with its own poller state) — the **two-live-bots check is
       operator-run** (needs a second real bot token) and gets recorded
       here when done.
+- [x] Per-assistant DM streams (`b34c247`, user decisions 2026-08-24
+      after the two-bot live test): a DM's chat id is the PEER's user id —
+      identical for every bot that talks to them — and Telegram numbers DM
+      messages per (bot, peer) pair, so the shared mirror merged two
+      assistants' DM histories and could silently drop colliding message
+      ids as "already mirrored". The mirror gains `assistant_id` (tg store
+      migration 0002; the old pair-unique index became two partial ones —
+      groups keep the shared chat-wide stream, DMs are unique per
+      assistant; the composite FKs from media/message_search had to drop
+      with it — mirror rows never hard-delete, so the cascades were
+      theoretical). Turn-critical paths are conversation-scoped (inbound
+      mirror + dedupe + reply-target check, context window, delivery
+      mirror + settle release via a new optional `assistantId` on
+      `turn.lifecycle`, feedback own-reply gate, `#id` whitelists, send
+      API mirrors/delete/reaction via `?assistantId`); the v1 import
+      stamps all DM rows with the derived assistant; the dev store was
+      backfilled (63 historical DM rows → the original assistant, the
+      test rows → the new one). Also per user decision: the persona block
+      now leads with a structural identity line ("You are <name>.") so a
+      third-person persona still knows its own name — shared
+      `personaBlock` behind `getAssistantPersona` /
+      `getSingleAssistantPersona`, used by the turn consumer and timed
+      fires alike.
+      **Deliberate follow-up (content plane, not assistant-aware yet)**:
+      operator/history listings, summaries, search index (PK is still the
+      chat+mid pair — DM collisions overwrite), analytics and media
+      lookups read DM chats unscoped, mixing both streams; scoping them
+      needs URL-level controls and job redesign — slice F / Phase 6
+      territory, recorded here so it is not mistaken for done.
 - [ ] Shared-chat behavior: each assistant's deterministic addressing
       checks its own name only (per-connection identity — verify, the
       split largely built this); the tg app cross-feeds one assistant's
@@ -669,6 +698,19 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-24 (slice D live test → DM streams)** — The operator's
+  two-bot test surfaced an identity mix-up: the second assistant ran on
+  the original bot account and answered from the merged DM history as the
+  old persona (trace-verified: the persona DID compose; the transcript
+  and the shared v1 memory/self-corrections pulled the other way). Two
+  user decisions, both applied (`b34c247`): per-assistant DM streams in
+  the tg mirror (details under the new Phase 3 criterion), and the
+  structural "You are <name>." identity line in the persona block. Known
+  leak that stays until Phase 6 BY DESIGN: memory and self-improvement
+  are global, so one assistant's learned corrections and memories phrase
+  themselves into the other's prompt. Both services need an operator
+  restart to pick the changes up.
 
 - **2026-08-24 (slice D)** — Per-assistant connections
   (`e78cede`): the extension registry gains `assistantSections`
