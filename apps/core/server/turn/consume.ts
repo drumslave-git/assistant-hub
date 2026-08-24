@@ -193,7 +193,7 @@ async function buildEventDeps(
   const senderId = parseScopedRef(event.sender.ref).id;
   const threadId = event.message.threadId != null ? Number(event.message.threadId) : null;
   const isGroup = event.chat.kind === "group";
-  const botLabel = botTranscriptLabel(event.connection.botUsername);
+  const botLabel = botTranscriptLabel();
 
   // The persona is the EVENT's assistant's (Phase 3): the assistant in a
   // chat is implied by which bot received the message. An id the store does

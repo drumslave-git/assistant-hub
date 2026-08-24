@@ -1030,8 +1030,14 @@ export async function handleIncomingMessage(
       // Task turns never reach here: theirs is the stricter mechanical check
       // above, which has already retried and returned by now.
       if (toolCallCount === 0) {
+        // The gate judges with the reply's own context: the same (possibly
+        // trimmed) window, so "I already told you" reads as the speech it is.
+        const gateTranscript =
+          typeof historyWindow.messages[0]?.content === "string"
+            ? historyWindow.messages[0].content
+            : null;
         let claim = await runActionClaimGate(
-          { request: userText, reply: reply.content },
+          { request: userText, reply: reply.content, transcript: gateTranscript },
           deps,
           trace,
         );
@@ -1054,7 +1060,7 @@ export async function handleIncomingMessage(
           // offering that exit in the directive.
           if (toolCallCount === 0) {
             claim = await runActionClaimGate(
-              { request: userText, reply: reply.content },
+              { request: userText, reply: reply.content, transcript: gateTranscript },
               deps,
               trace,
             );

@@ -219,7 +219,7 @@ describe("inbound turn consumer", () => {
     expect(transcript?.content).toContain(
       "[#10] Bob (@bob_example): earlier chatter [you reacted: 👍]",
     );
-    expect(transcript?.content).toContain("[#9] You (@fixture_bot): an earlier reply");
+    expect(transcript?.content).toContain("[#9] You: an earlier reply");
     const roster = messages.find(
       (m) => typeof m.content === "string" && m.content.includes("Known participants"),
     );

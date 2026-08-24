@@ -38,12 +38,23 @@ const TYPING_REFRESH_MS = 4_500;
 class TypingLoops {
   private loops = new Map<string, ReturnType<typeof setInterval>>();
 
-  constructor(private readonly sender: TgSender) {}
+  constructor(private readonly senderFor: (assistantId: string | null) => TgSender) {}
 
-  start(key: string, chatId: string, threadId: number | null): void {
+  start(key: string, chatId: string, threadId: number | null, assistantId: string | null): void {
     if (this.loops.has(key)) return;
-    this.sender.sendTyping(chatId, threadId);
-    const interval = setInterval(() => this.sender.sendTyping(chatId, threadId), TYPING_REFRESH_MS);
+    // Resolve per tick: the RIGHT assistant's bot types (a null id — an old
+    // publisher — falls back to whichever connection runs), and a poller
+    // restart mid-turn never leaves a stale handle. A tick with no running
+    // bot is skipped, not thrown — typing is cosmetic.
+    const tick = () => {
+      try {
+        this.senderFor(assistantId).sendTyping(chatId, threadId);
+      } catch {
+        // No running connection for this assistant right now.
+      }
+    };
+    tick();
+    const interval = setInterval(tick, TYPING_REFRESH_MS);
     interval.unref?.();
     this.loops.set(key, interval);
   }
@@ -85,10 +96,7 @@ export async function startDeliveryConsumer(input: {
   const onError =
     input.onError ??
     ((context: string, error: unknown) => console.error(`[tg delivery] ${context}:`, error));
-  // Lifecycle events carry no assistant id — with Phase 2's single
-  // connection the null resolution is "the bot"; Phase 3 threads the
-  // assistant through when concurrent connections arrive.
-  const typing = new TypingLoops(input.senderFor(null));
+  const typing = new TypingLoops(input.senderFor);
   const publisher: BusPublisher = openPublisher(input.redisUrl);
   const traces = busTraceClient(publisher);
 
@@ -188,7 +196,12 @@ export async function startDeliveryConsumer(input: {
           event.assistantId ?? null,
         ).catch((error) => onError(`processed release ${key}`, error));
       } else {
-        typing.start(key, chatId, event.threadId != null ? Number(event.threadId) : null);
+        typing.start(
+          key,
+          chatId,
+          event.threadId != null ? Number(event.threadId) : null,
+          event.assistantId ?? null,
+        );
       }
     }
   };

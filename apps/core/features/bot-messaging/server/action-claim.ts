@@ -66,6 +66,8 @@ export const ACTION_CLAIM_SYSTEM_PROMPT = `You check one chat reply for a single
 
 The assistant can only affect anything by calling a tool. On the turn you are checking it called no tool at all, so any such statement in the reply is false. You are not judging whether the reply is good, polite, in character, or helpful — only whether it makes such a statement.
 
+The conversation before this turn may be provided. It shows what was actually said in the chat; lines from "You" are the assistant's own earlier messages. Use it to tell speech about the conversation apart from action claims.
+
 Classify the reply:
 - "performed" — it states or implies the action already happened: something was deleted, cancelled, saved, created, scheduled, sent, downloaded, looked up, checked, read, or remembered.
 - "promised" — it states the action will happen later, or that the assistant is doing it now: a reminder that will fire, a task that will run, a thing it is "about to" do.
@@ -76,6 +78,7 @@ Answer "none" when the reply:
 - says the assistant cannot do something, does not know, or could not find something
 - offers to do something, or asks whether it should ("I can cancel it if you want" is an offer, not a claim)
 - describes what someone ELSE did, or what happened earlier in the conversation
+- speaks about its own earlier messages — that it already told, said, answered, explained, mentioned, or repeated something. Talking is never an action ("I've already told you" claims nothing), and the conversation shows what was really said
 - describes a capability in general terms without asserting it was used
 - only says how it will talk or behave in later messages — that it will stop bringing something up, drop a topic, be shorter, change its tone. Writing and not writing are both just writing, so agreeing to say less claims nothing. This holds however the reply phrases it, including as something being struck off, dropped, closed, or put aside.
 
@@ -90,15 +93,25 @@ export interface ActionClaimInput {
   request: string;
   /** The drafted reply, exactly as it would be sent. */
   reply: string;
+  /**
+   * The same conversation window the reply model saw (the rendered
+   * transcript message), or null when the turn had none. Without it the
+   * gate read "I've already told you" — plain speech about the chat — as a
+   * fabricated action and suppressed an honest answer (user decision,
+   * 2026-08-24: the gate judges with the reply's own context).
+   */
+  transcript: string | null;
 }
 
 /** The messages for one honesty-gate call: the fixed rules, then this turn. */
 export function buildActionClaimMessages(input: ActionClaimInput): ChatMessage[] {
+  const transcript = input.transcript?.trim();
   return [
     { role: "system", content: ACTION_CLAIM_SYSTEM_PROMPT },
     {
       role: "user",
       content:
+        (transcript ? `Conversation before this turn:\n${transcript}\n\n` : "") +
         `Request:\n${input.request.trim()}\n\n` +
         `Reply to check:\n${input.reply.trim()}\n\n` +
         `Reply with only the JSON object.`,

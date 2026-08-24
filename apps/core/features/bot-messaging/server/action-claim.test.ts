@@ -22,6 +22,7 @@ describe("buildActionClaimMessages", () => {
     const messages = buildActionClaimMessages({
       request: "  cancel the reminder  ",
       reply: "  Done, it's gone.  ",
+      transcript: null,
     });
 
     expect(messages).toHaveLength(2);
@@ -31,10 +32,30 @@ describe("buildActionClaimMessages", () => {
     expect(user).toContain("cancel the reminder");
     expect(user).toContain("Done, it's gone.");
     expect(user).toMatch(/only the JSON object/i);
+    // No transcript on this turn — no empty context block either.
+    expect(user).not.toContain("Conversation before this turn");
+  });
+
+  it("shows the reply's own conversation window when the turn had one", () => {
+    // The case found live (trace 10e34de6…, 2026-08-24): "I've already told
+    // you" is speech about the chat, but without the transcript the gate
+    // read it as a fabricated action and suppressed an honest answer.
+    const messages = buildActionClaimMessages({
+      request: "[#614] someone: tell me about yourself",
+      reply: "I've already told you: I'm a dry conversational partner.",
+      transcript: "Recent messages…\n\n[#612] someone: tell me about yourself\n[#613] You: I'm a dry conversational partner.",
+    });
+    const user = messages[1].content as string;
+    expect(user).toContain("Conversation before this turn:");
+    expect(user).toContain("[#613] You: I'm a dry conversational partner.");
+    const system = messages[0].content as string;
+    expect(system).toMatch(/already told, said, answered/i);
+    expect(system).toMatch(/[Tt]alking is never an action/);
   });
 
   it("tells the model an offer and an inability are not claims", () => {
-    const system = buildActionClaimMessages({ request: "r", reply: "a" })[0].content as string;
+    const system = buildActionClaimMessages({ request: "r", reply: "a", transcript: null })[0]
+      .content as string;
     expect(system).toMatch(/offers to do something/i);
     expect(system).toMatch(/cannot do something/i);
     // The one hard case found live: agreeing to stop bringing a topic up is a

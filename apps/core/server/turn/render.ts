@@ -27,9 +27,15 @@ import type { ChatMessage } from "@/server/llm/client";
  * data comes from changed (the source supplies it, per the contract).
  */
 
-/** The bot's own label in transcripts, matching the v1 shape. */
-export function botTranscriptLabel(botUsername: string): string {
-  return `You (@${botUsername})`;
+/**
+ * The bot's own label in transcripts. Plain "You" — the assistant's identity
+ * is the ASSISTANT's name, asserted by the persona block; the bot account's
+ * @username/display name confused the model into answering as its Telegram
+ * handle (user decision, 2026-08-24 — departs from the v1 `You (@name)`
+ * shape). The account names still drive addressing, never the reply context.
+ */
+export function botTranscriptLabel(): string {
+  return "You";
 }
 
 function toLine(entry: HistoryMessage, botLabel: string): string {
@@ -87,7 +93,7 @@ export function renderCurrentTurn(
   },
 ): { content: string; senderLabel: string | null; data: Record<string, unknown> } {
   const replyTo = event.message.replyTo ?? null;
-  const botLabel = botTranscriptLabel(event.connection.botUsername);
+  const botLabel = botTranscriptLabel();
   let replyRef: ReplyRef | null = null;
   if (replyTo) {
     replyRef = replyTo.stored
