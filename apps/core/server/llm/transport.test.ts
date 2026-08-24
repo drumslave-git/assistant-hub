@@ -61,7 +61,8 @@ describe("providerOptions carries vendor fields into the request body", () => {
       providerOptions: { llm: chatBodyExtrasFor("llamacpp", { reasoning: "off" }) },
     });
     expect(captured.body?.chat_template_kwargs).toEqual({ enable_thinking: false });
-    expect(captured.body?.reasoning_format).toBe("none");
+    // The server's reasoning parse is left on — see the llama.cpp adapter.
+    expect(captured.body).not.toHaveProperty("reasoning_format");
   });
 
   it("adds nothing to the body when the intent expresses no preference", async () => {

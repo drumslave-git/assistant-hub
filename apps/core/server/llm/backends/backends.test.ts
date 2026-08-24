@@ -46,8 +46,23 @@ describe("thinking control differs per backend", () => {
   it("llama.cpp turns thinking off through the chat template, not a sampler field", () => {
     expect(chatBodyExtrasFor("llamacpp", { reasoning: "off" })).toEqual({
       chat_template_kwargs: { enable_thinking: false },
-      reasoning_format: "none",
     });
+  });
+
+  it("llama.cpp never disables the server's reasoning parse", () => {
+    // `reasoning_format: "none"` leaves the thought block inline, and this
+    // template's thinking-off prefill then arrives as literal
+    // `<|channel>thought<channel|>` in the answer (measured 8/8, 2026-08-24).
+    // Trace honesty is kept by `readReasoning`, not by refusing the parse.
+    for (const reasoning of ["off", "low", "default"] as const) {
+      expect(chatBodyExtrasFor("llamacpp", { reasoning })).not.toHaveProperty("reasoning_format");
+    }
+  });
+
+  it("llama.cpp has no effort dial, so `low` asks for nothing", () => {
+    // `chat_template_caps.supports_reasoning_effort` is false on this server;
+    // thinking on with the parse off would be the leak by construction.
+    expect(chatBodyExtrasFor("llamacpp", { reasoning: "low" })).toEqual({});
   });
 
   it("vLLM combines the template argument with the spec field", () => {
@@ -119,7 +134,7 @@ describe("thinking control differs per backend", () => {
     for (const id of LLM_BACKEND_IDS) {
       const body = chatBodyExtrasFor(id, { reasoning: "off" });
       expect(body).not.toHaveProperty("think");
-      if (id !== "llamacpp") expect(body).not.toHaveProperty("reasoning_format");
+      expect(body).not.toHaveProperty("reasoning_format");
     }
   });
 });

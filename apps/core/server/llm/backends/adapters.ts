@@ -102,8 +102,19 @@ const ollama: LlmBackendAdapter = {
  *
  * Thinking is a property of the chat template, not of the sampler, so it is
  * turned off by passing template arguments through — `chat_template_kwargs`.
- * `reasoning_format: "none"` additionally stops the server parsing a reasoning
- * block out into its own field, which keeps the raw body honest for the trace.
+ *
+ * This deliberately does NOT send `reasoning_format: "none"`, which it used to
+ * (to keep the raw body honest for the trace). That setting stops the server
+ * parsing the thought block out, and the parse is what keeps the markers out
+ * of the answer: measured 2026-08-24 against llama.cpp b10588, the `off` mode
+ * with it came back as `<|channel>thought\n<channel|>I'm Anna.` 8 times out of
+ * 8, because this template disables thinking by PREFILLING an empty thought
+ * block whose markers then had nothing to strip them. Trace honesty is
+ * unaffected — the parsed thinking is still recorded, via {@link readReasoning}
+ * reading `reasoning_content`; it simply arrives in its own field instead of
+ * glued to the reply. `low` sends nothing at all for the same reason: thinking
+ * on with parsing off is a leak by construction, and this server exposes no
+ * effort dial anyway (`chat_template_caps.supports_reasoning_effort: false`).
  *
  * Overflow raises, and words itself differently per path: an oversized prompt is
  * rejected up front with a 400, while running out mid-generation surfaces as a
@@ -116,9 +127,8 @@ const llamacpp: LlmBackendAdapter = {
   chatBodyExtras(intent: ChatRequestIntent): Record<string, JsonValue> {
     switch (intent.reasoning) {
       case "off":
-        return { chat_template_kwargs: { enable_thinking: false }, reasoning_format: "none" };
+        return { chat_template_kwargs: { enable_thinking: false } };
       case "low":
-        return { reasoning_format: "none" };
       default:
         return {};
     }

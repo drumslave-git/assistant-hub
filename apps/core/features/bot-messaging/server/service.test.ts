@@ -25,6 +25,7 @@ import {
 import { startTrace } from "@/server/trace";
 import { TASK_ENFORCEMENT_DIRECTIVE } from "@/features/tasks/format";
 import { ACTION_CLAIM_ENFORCEMENT_DIRECTIVE, ACTION_NOT_TAKEN_REPLY } from "./action-claim";
+import { REPLY_INTEGRITY_DIRECTIVE, REPLY_NOT_PRODUCED_REPLY } from "./reply-integrity";
 import { BASE_SYSTEM_PROMPT } from "./prompt";
 import { handleIncomingMessage, type BotMessagingDeps, type IncomingMessage } from "./service";
 
@@ -1859,5 +1860,95 @@ describe("handleIncomingMessage — the honesty gate", () => {
     expect(checkActionClaim).not.toHaveBeenCalled();
     const sent = (d.sendReply as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
     expect(sent[0]).toContain("not carried out");
+  });
+});
+
+/**
+ * Reply integrity: a thinking model that stops using its thought channel sends
+ * its working-out as the answer. Measured 10/10 on the live endpoint against
+ * the request behind trace `3491c387` — and 10/10 recovered by exactly this
+ * retry (2026-08-24). The turn must not deliver the notes, and must not go
+ * silent either when the second attempt fails as well.
+ */
+describe("handleIncomingMessage — reply integrity", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** A generator whose answers are scripted per attempt. */
+  const scripted = (answers: string[], finishReasons: (string | undefined)[] = []) =>
+    vi.fn().mockImplementation(async (messages: unknown, trace: LlmCallTrace | undefined) => {
+      const attempt = (scriptedCalls.count += 1) - 1;
+      const responseBody = finishReasons[attempt]
+        ? { choices: [{ finish_reason: finishReasons[attempt] }] }
+        : undefined;
+      const result = { content: answers[attempt], model: "m", latencyMs: 5, responseBody };
+      await recordExchange(trace, messages, result);
+      return result;
+    });
+  const scriptedCalls = { count: 0 };
+  beforeEach(() => {
+    scriptedCalls.count = 0;
+  });
+
+  it("retries deliberation written in the transcript format, then delivers the real answer", async () => {
+    const leaked =
+      '[#616] drumslave (@drumslave): як тебе звуть?\nThe user is asking again. I should say';
+    const d = deps({ generateReply: scripted([leaked, "I'm Anna."]) });
+
+    const out = await handleIncomingMessage(incoming({ text: "як тебе звуть?" }), d);
+    expect(out).toEqual({ status: "replied", text: "I'm Anna." });
+
+    // The correction turn is the one the module defines, and it is shown the
+    // rejected answer — same shape as the other two enforcement retries.
+    const second = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[1];
+    expect(JSON.stringify(second)).toContain(REPLY_INTEGRITY_DIRECTIVE.slice(0, 40));
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    const warn = events.find((e) => e.message === "reply is deliberation, not an answer — retrying");
+    expect(warn).toMatchObject({ level: "warn", data: { violation: "transcript_format" } });
+    // Only the real answer reaches the chat.
+    expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual([
+      "I'm Anna.",
+    ]);
+  });
+
+  it("retries an answer cut off at the token cap", async () => {
+    const d = deps({
+      generateReply: scripted(["a long answer that never finished because it hit the", "Short."], [
+        "length",
+      ]),
+    });
+    const out = await handleIncomingMessage(incoming({ text: "tell me" }), d);
+    expect(out).toEqual({ status: "replied", text: "Short." });
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    expect(
+      events.find((e) => e.message === "reply is deliberation, not an answer — retrying"),
+    ).toMatchObject({ data: { violation: "truncated" } });
+  });
+
+  it("suppresses a second deliberation, says so in the chat, and fails the trace", async () => {
+    const leaked = "[#1] someone: hi\nI should answer by saying";
+    const d = deps({ generateReply: scripted([leaked, `${leaked} something else`]) });
+
+    const out = await handleIncomingMessage(incoming({ text: "hi" }), d);
+    expect(out.status).toBe("error");
+    // The chat is told, in the labeled system voice — never left in silence.
+    expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual([
+      REPLY_NOT_PRODUCED_REPLY,
+    ]);
+    expect(recorder.fail).toHaveBeenCalledOnce();
+    // Failed, not succeeded: this is a turn an operator has to find on /debug.
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    expect(
+      events.find((e) => e.message === "second attempt was deliberation as well — answer suppressed"),
+    ).toMatchObject({ level: "error" });
+    expect(stopTyping).toHaveBeenCalledOnce();
+  });
+
+  it("leaves an ordinary reply alone, including one citing a message id", async () => {
+    const d = deps({ generateReply: scripted(["You asked me that in #611 — still Anna."]) });
+    const out = await handleIncomingMessage(incoming({ text: "again?" }), d);
+    expect(out).toEqual({ status: "replied", text: "You asked me that in #611 — still Anna." });
+    expect(d.generateReply).toHaveBeenCalledOnce();
   });
 });

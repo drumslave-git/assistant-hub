@@ -10,7 +10,7 @@ import type {
   ChatUsage,
   LlmCallTrace,
 } from "@/server/llm/client";
-import { isContextOverflowError } from "@/server/llm/client";
+import { finishReasonOf, isContextOverflowError } from "@/server/llm/client";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 import { TASK_ENFORCEMENT_DIRECTIVE } from "@/features/tasks/format";
 import { ADDRESSING_CHECK_EVENT } from "../addressing-trace";
@@ -28,6 +28,11 @@ import {
   parseAnalyzerVerdict,
   parseVerifierVerdict,
 } from "./address-analyzer";
+import {
+  REPLY_INTEGRITY_DIRECTIVE,
+  REPLY_NOT_PRODUCED_REPLY,
+  checkReplyIntegrity,
+} from "./reply-integrity";
 import { checkAddressed, type AddressResult, type AddressSource, type BotIdentity } from "./addressing";
 import { checkMaintenance, type BotPolicy } from "./policy";
 import { buildAddressingHint, buildSystemPrompt, hasPersonality } from "./prompt";
@@ -955,6 +960,69 @@ export async function handleIncomingMessage(
             windowCap > 0
               ? await deps.loadHistory({ maxMessages: windowCap })
               : { messages: [], count: 0 };
+        }
+      }
+
+      // 4c'. Reply integrity. Everything below judges what the answer SAYS;
+      // this judges whether it is an answer at all. A thinking model that stops
+      // using its thought channel emits its working-out as the reply — fluent,
+      // on topic, and indistinguishable downstream (the honesty gate passes it,
+      // splitReply cheerfully cuts it into three messages). The checks are
+      // mechanical and the evidence is measured; see `reply-integrity.ts`.
+      let integrity = checkReplyIntegrity({
+        content: reply.content,
+        finishReason: finishReasonOf(reply.responseBody),
+      });
+      if (!integrity.ok) {
+        await trace.event({
+          type: "step",
+          level: "warn",
+          message: "reply is deliberation, not an answer — retrying",
+          data: {
+            violation: integrity.violation,
+            evidence: integrity.evidence,
+            reason: integrity.reason,
+            answer: reply.content,
+          },
+        });
+        reply = await generate(historyWindow.messages, {
+          previousAnswer: reply.content,
+          directive: REPLY_INTEGRITY_DIRECTIVE,
+        });
+        integrity = checkReplyIntegrity({
+          content: reply.content,
+          finishReason: finishReasonOf(reply.responseBody),
+        });
+        // Twice is not a fluke the chat should pay for. Same call as the other
+        // two enforcement paths: say so plainly rather than send the notes.
+        if (!integrity.ok) {
+          await trace.event({
+            type: "step",
+            level: "error",
+            message: "second attempt was deliberation as well — answer suppressed",
+            data: {
+              violation: integrity.violation,
+              evidence: integrity.evidence,
+              suppressedAnswer: reply.content,
+            },
+          });
+          const sent = await deps.sendReply(REPLY_NOT_PRODUCED_REPLY);
+          await trace.event({
+            type: "output",
+            level: "warn",
+            message: "send message",
+            data: {
+              content: REPLY_NOT_PRODUCED_REPLY,
+              messageId: sent.messageId,
+              asVoice: false,
+            },
+          });
+          const failure = new Error(
+            "The model produced its own deliberation instead of a reply in two attempts — " +
+              "the answer was suppressed and nothing was sent",
+          );
+          await trace.fail(failure);
+          return { status: "error", message: failure.message };
         }
       }
 

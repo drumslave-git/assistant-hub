@@ -22,6 +22,8 @@ feature's own modules, configuration and failure modes.
 | `policy.ts` | Pure | Owner and maintenance-mode decisions |
 | `server/prompt.ts` | Pure | System-prompt composition, time context, group addressing hint |
 | `server/reply.ts` | Pure | Telegram's 4096-char split at natural boundaries |
+| `server/reply-integrity.ts` | Pure | Is the answer a reply at all — the mechanical checks and the correction |
+| `server/action-claim.ts` | Prompt/parse pure, caller owns the call | The honesty gate over a drafted reply |
 | `telegram-html.ts` | Pure | Model Markdown → Telegram HTML |
 | `addressing-trace.ts` | Pure | The addressing event's name and payload, shared by writer and reader |
 | `server/service.ts` | The boundary | Addressing, policy, generation, delivery, tracing |
@@ -82,6 +84,32 @@ Design constraints worth preserving:
 | `maintenanceModeEnabled` | Above |
 | `timezone` | The time context injected into every reply |
 | Active personality | Appended as "Additional instructions" |
+
+## Reply integrity — deliberation is not an answer
+
+A thinking model is supposed to keep its working-out in its own channel and send
+only the answer. Models stop doing that: measured on the operator's llama.cpp
+endpoint (`gemma-4-26B-A4B-it-abliterated`, 2026-08-24), **10 of 10** replies to
+one real turn were the model's raw deliberation — the transcript echoed back,
+options weighed, "I'll say X" repeated to the token cap — with the thought
+channel never opened, so there was nothing for the server to strip. One went out
+as three Telegram messages.
+
+Nothing downstream can tell such an answer from a real one, so the turn checks
+the **shape** of what came back, before anything else judges what it says:
+
+- `finish_reason: "length"` — truncated mid-sentence, whatever else it is.
+- The transcript anchor `[#<id>]` — the input-only line format the system prompt
+  forbids in a reply. The plain `#<id>` citation form stays legal; only the
+  bracketed anchor is input-only.
+- Raw chat-template channel markers, which are never legitimate reply text.
+
+No lexical rules, and nothing is stripped or rewritten: a reply either stands as
+the model wrote it or is regenerated. A violation is retried once, with a
+correction that shows the model its own working-out and names it as the part
+nobody may see (10/10 recovered in the same measurement). A second violation is
+suppressed — the chat is told plainly, as with the other two enforcement paths,
+rather than being sent the notes or left in silence.
 
 ## Delivery
 
@@ -155,11 +183,14 @@ see [Configuration](../configuration.md)).
 `ignored` (`from_bot`, `no_content`, `not_addressed`, `maintenance_mode`),
 `replied`, or `error`.
 
-`error` covers a failed reply — and one deliberate refusal to send: a turn a
-standing chat rule opened, where the model produced no tool call in two
-attempts. Its answer claims an action that provably did not happen, so it is
-withheld and the chat is told the rule did not run. See
-[Tasks](tasks.md#message-triggers--the-matcher).
+`error` covers a failed reply — and the deliberate refusals to send: a turn a
+standing chat rule opened where the model produced no tool call in two attempts
+(its answer claims an action that provably did not happen, so it is withheld and
+the chat is told the rule did not run — see
+[Tasks](tasks.md#message-triggers--the-matcher)); a reply that claimed an action
+no tool performed, twice (the honesty gate); and a reply that was the model's own
+deliberation, twice (reply integrity, above). Each tells the chat what happened
+instead of sending something untrue or nothing at all.
 
 ## Tests
 
@@ -171,6 +202,7 @@ withheld and the chat is told the rule did not run. See
 | `server/policy.test.ts` | Owner and maintenance decisions |
 | `server/prompt.test.ts` | Prompt composition, time context, addressing hint |
 | `server/reply.test.ts` | Splitting |
+| `server/reply-integrity.test.ts` | The shape checks, over real leaked answers as fixtures |
 | `server/service.test.ts` | The whole policy with injected collaborators |
 | `telegram-html.test.ts` | Conversion, including that output cannot contain an unbalanced tag |
 | `addressing-trace.test.ts` | The shared event shape |
