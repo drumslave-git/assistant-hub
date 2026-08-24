@@ -2,7 +2,8 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { getDb, type DrizzleDb } from "@/db/drizzle";
+import { getDb } from "@/db/drizzle";
+import { getAssistantById } from "@/features/assistants/server/repository";
 import { getGroupMembers } from "@/features/known-groups/server/repository";
 import { getTimezone } from "@/features/settings/server/service";
 import { ApiError } from "@/lib/api-error";
@@ -10,6 +11,7 @@ import { FEATURES } from "@/lib/features";
 import { isGroupChatId } from "@/lib/telegram";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { withTrace } from "@/server/trace";
 
 import { messageTasks, promptTasks, sameTargets, tasksForSender } from "../format";
@@ -87,7 +89,7 @@ export function summarizeTask(task: Task): string {
 /* --------------------------------- reads ---------------------------------- */
 
 /** Every task in every scope, oldest first (the dashboard view). */
-export async function getTasksView(db: DrizzleDb = getDb()): Promise<Task[]> {
+export async function getTasksView(db: StoreDb = getStoreDb()): Promise<Task[]> {
   return listTasks(db);
 }
 
@@ -97,10 +99,11 @@ export async function getTasksView(db: DrizzleDb = getDb()): Promise<Task[]> {
  * is exactly what it can act on (see {@link isVisibleFromChat}).
  */
 export async function getChatVisibleTasks(
+  assistantId: string,
   chatId: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Task[]> {
-  return (await listTasksForChat(db, chatId)).filter(isVisibleFromChat);
+  return (await listTasksForChat(db, assistantId, chatId)).filter(isVisibleFromChat);
 }
 
 /**
@@ -111,17 +114,20 @@ export async function getChatVisibleTasks(
  */
 export async function getChatVisibleTask(
   id: string,
+  assistantId: string,
   chatId: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Task | null> {
   const task = await getTaskById(db, id);
   if (!task || !isVisibleFromChat(task)) return null;
+  // Another assistant's task is as unknown from this turn as another chat's.
+  if (task.assistantId !== assistantId) return null;
   if (task.chatId !== null && task.chatId !== chatId) return null;
   return task;
 }
 
 /** One task by id, or null — the dashboard's read (a paused task included). */
-export async function getTask(id: string, db: DrizzleDb = getDb()): Promise<Task | null> {
+export async function getTask(id: string, db: StoreDb = getStoreDb()): Promise<Task | null> {
   return getTaskById(db, id);
 }
 
@@ -129,7 +135,7 @@ export async function getTask(id: string, db: DrizzleDb = getDb()): Promise<Task
 export async function findTasks(
   query: string,
   chatId?: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Task[]> {
   return searchTasks(db, query, chatId);
 }
@@ -147,11 +153,12 @@ export async function findTasks(
  * name nobody.
  */
 export async function getActiveTasksForChat(
+  assistantId: string,
   chatId: string,
   senderUserId: string | null,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<{ prompt: Task[]; message: Task[] }> {
-  const tasks = tasksForSender(await listTasksForChat(db, chatId), senderUserId);
+  const tasks = tasksForSender(await listTasksForChat(db, assistantId, chatId), senderUserId);
   return { prompt: promptTasks(tasks), message: messageTasks(tasks) };
 }
 
@@ -166,7 +173,7 @@ export async function getActiveTasksForChat(
 export async function recordTaskDeliveries(
   taskIds: readonly string[],
   text: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<void> {
   for (const id of taskIds) {
     await appendTaskDelivery(db, id, text).catch(() => undefined);
@@ -225,7 +232,7 @@ function normalizedTriggerOrNull(input: Parameters<typeof normalizeTrigger>[0]) 
  * the roster is built), so a lurker cannot be named until they say something.
  */
 async function assertTargetsAllowed(
-  db: DrizzleDb,
+  db: StoreDb,
   chatId: string | null,
   triggerKind: TriggerKind,
   targetUserIds: readonly string[],
@@ -238,7 +245,9 @@ async function assertTargetsAllowed(
   ) {
     throw ApiError.badRequest(TARGETS_SCOPE_MESSAGE);
   }
-  const members = new Set((await getGroupMembers(db, chatId)).map((member) => member.userId));
+  // Membership is a directory read — the v1 shadow tables the consumer
+  // dual-writes, not the tasks store (Phase 6 re-points it at the source).
+  const members = new Set((await getGroupMembers(getDb(), chatId)).map((member) => member.userId));
   const unknown = targetUserIds.filter((id) => !members.has(id));
   if (unknown.length > 0) {
     throw ApiError.badRequest(
@@ -284,7 +293,8 @@ function sameTrigger(a: Omit<TaskIdentity, "instruction">, b: Omit<TaskIdentity,
  * identical reminders three seconds apart (trace `796852a6…`).
  */
 async function findDuplicateTask(
-  db: DrizzleDb,
+  db: StoreDb,
+  assistantId: string,
   chatId: string | null,
   candidate: TaskIdentity,
   exceptId?: string,
@@ -292,6 +302,7 @@ async function findDuplicateTask(
   const kinds = isPromptTask(candidate) ? PROMPT_TRIGGER_KINDS : TIMED_TRIGGER_KINDS;
   const matches = await findActiveTasksByInstruction(
     db,
+    assistantId,
     chatId,
     candidate.instruction,
     kinds,
@@ -303,7 +314,8 @@ async function findDuplicateTask(
 
 /** Guard the per-scope cap (prompt kinds) and the duplicate rule (every kind). */
 async function assertWritable(
-  db: DrizzleDb,
+  db: StoreDb,
+  assistantId: string,
   chatId: string | null,
   candidate: TaskIdentity,
   exceptId?: string,
@@ -311,13 +323,13 @@ async function assertWritable(
   if (
     isPromptTask(candidate) &&
     !exceptId &&
-    (await countPromptTasksInScope(db, chatId)) >= MAX_PROMPT_TASKS_PER_SCOPE
+    (await countPromptTasksInScope(db, assistantId, chatId)) >= MAX_PROMPT_TASKS_PER_SCOPE
   ) {
     throw ApiError.conflict(
       `At most ${MAX_PROMPT_TASKS_PER_SCOPE} standing tasks are allowed for ${scopeLabel(chatId)}`,
     );
   }
-  if (await findDuplicateTask(db, chatId, candidate, exceptId)) {
+  if (await findDuplicateTask(db, assistantId, chatId, candidate, exceptId)) {
     throw ApiError.conflict("That task already exists here");
   }
 }
@@ -327,7 +339,7 @@ async function assertWritable(
  * both paths: canonical per-kind fields plus the computed `nextRunAt`.
  */
 async function resolveTrigger(
-  db: DrizzleDb,
+  db: StoreDb,
   input: Parameters<typeof normalizeTrigger>[0],
   now: Date,
 ): Promise<{
@@ -338,7 +350,7 @@ async function resolveTrigger(
   if (trigger.triggerKind === "timeout") {
     return { trigger, nextRunAt: computeTimeoutRun(trigger.delayMinutes!, now) };
   }
-  const timezone = await getTimezone(db);
+  const timezone = await getTimezone();
   const nextRunAt = computeNextTriggerRun(trigger, now, timezone);
   if (trigger.triggerKind === "schedule" && trigger.runDate && !nextRunAt) {
     throw ApiError.badRequest("that date and time is already in the past");
@@ -357,7 +369,7 @@ export async function createTaskService(
     createdByOwner?: boolean;
   },
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Task> {
   return withTrace(
     {
@@ -372,6 +384,11 @@ export async function createTaskService(
       if (input.chatId === null && !isPromptTask({ triggerKind: kind })) {
         throw ApiError.badRequest(GLOBAL_SCOPE_MESSAGE);
       }
+      // The task's assistant must exist — the FK would reject it anyway, but
+      // as a proper 400 with a name, not a constraint error.
+      if (!(await getAssistantById(db, input.assistantId))) {
+        throw ApiError.badRequest("Unknown assistant");
+      }
       const targetUserIds = input.targetUserIds ?? [];
       await assertTargetsAllowed(db, input.chatId, kind, targetUserIds);
       // Context rides only on timed kinds: a fire has no transcript to lean on,
@@ -383,7 +400,7 @@ export async function createTaskService(
         { ...input, triggerKind: kind },
         now,
       );
-      await assertWritable(db, input.chatId, { instruction, ...normalized });
+      await assertWritable(db, input.assistantId, input.chatId, { instruction, ...normalized });
       await trace.event({
         type: "input",
         message: "create task",
@@ -391,6 +408,7 @@ export async function createTaskService(
       });
 
       const values: InsertTask = {
+        assistantId: input.assistantId,
         chatId: input.chatId,
         threadId: input.threadId ?? null,
         createdByUserId: input.createdByUserId ?? null,
@@ -425,7 +443,7 @@ export async function editTaskService(
   id: string,
   patch: UpdateTaskInput,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Task> {
   return withTrace(
     { feature: FEATURE.id, action: "update", trigger, inputSummary: `task ${id}` },
@@ -480,7 +498,7 @@ export async function editTaskService(
       // enabled: a task being paused duplicates nothing, and refusing there would
       // block the operator's way of resolving a pair that already exists.
       if (enabled) {
-        await assertWritable(db, current.chatId, { instruction, ...normalized }, id);
+        await assertWritable(db, current.assistantId, current.chatId, { instruction, ...normalized }, id);
       }
 
       const record = await updateTask(db, id, {
@@ -515,7 +533,7 @@ export async function editTaskService(
 export async function removeTaskService(
   id: string,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<void> {
   return withTrace(
     { feature: FEATURE.id, action: "delete", trigger, inputSummary: `task ${id}` },
@@ -593,8 +611,9 @@ function createDenyReason(
  * drove the turn (`authorityIsOwner`).
  */
 async function resolveMutationTarget(
-  db: DrizzleDb,
+  db: StoreDb,
   input: {
+    assistantId: string;
     chatId: string;
     userId: string | null;
     senderIsOwner?: boolean;
@@ -602,7 +621,7 @@ async function resolveMutationTarget(
     id: string;
   },
 ): Promise<{ ok: true; task: Task } | { ok: false; result: TaskWriteResult }> {
-  const task = await getChatVisibleTask(input.id, input.chatId, db);
+  const task = await getChatVisibleTask(input.id, input.assistantId, input.chatId, db);
   if (!task) {
     return { ok: false, result: { status: "not_found" } };
   }
@@ -644,6 +663,8 @@ async function resolveMutationTarget(
 /** Create a task for the current chat from a chat turn, gated and traced. */
 export async function createTaskFromChat(
   input: {
+    /** The turn's assistant (from the inbound event); the task is its. */
+    assistantId: string;
     chatId: string;
     userId: string | null;
     /** The sender's owner stamp from the inbound event; recorded on the task. */
@@ -660,7 +681,7 @@ export async function createTaskFromChat(
     runDate?: string | null;
   },
   traceTrigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<TaskWriteResult> {
   const denied = createDenyReason(
     input.chatId,
@@ -684,7 +705,7 @@ export async function createTaskFromChat(
   // by the create below.
   const trigger = normalizedTriggerOrNull({ ...input, triggerKind: input.triggerKind });
   const existing = trigger
-    ? await findDuplicateTask(db, input.chatId, { instruction, ...trigger })
+    ? await findDuplicateTask(db, input.assistantId, input.chatId, { instruction, ...trigger })
     : null;
   if (existing) {
     // …unless a standing task is asked for with a different set of people. That
@@ -699,6 +720,7 @@ export async function createTaskFromChat(
   try {
     const task = await createTaskService(
       {
+        assistantId: input.assistantId,
         chatId: input.chatId,
         threadId: input.threadId ?? null,
         instruction,
@@ -739,6 +761,7 @@ export async function createTaskFromChat(
  */
 export async function updateTaskFromChat(
   input: {
+    assistantId: string;
     chatId: string;
     userId: string | null;
     senderIsOwner?: boolean;
@@ -747,7 +770,7 @@ export async function updateTaskFromChat(
     patch: Omit<UpdateTaskInput, "enabled">;
   },
   traceTrigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<TaskWriteResult> {
   if ("enabled" in input.patch) {
     return {
@@ -771,6 +794,7 @@ export async function updateTaskFromChat(
 /** Delete one of the current chat's tasks from a chat turn, gated and traced. */
 export async function deleteTaskFromChat(
   input: {
+    assistantId: string;
     chatId: string;
     userId: string | null;
     senderIsOwner?: boolean;
@@ -778,7 +802,7 @@ export async function deleteTaskFromChat(
     id: string;
   },
   traceTrigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<TaskWriteResult> {
   const target = await resolveMutationTarget(db, input);
   if (!target.ok) return target.result;

@@ -7,7 +7,7 @@ import type { TraceTrigger } from "@/lib/trace";
 import { getGroupContext, getGroupLanguage } from "@/features/known-groups/server/service";
 import { getUserContext, getUserLanguage } from "@/features/known-users/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
-import { getSingleAssistantPersona } from "@/features/assistants/server/service";
+import { getAssistantPersona } from "@/features/assistants/server/service";
 import { getBotPolicy, getLlmRuntime, getTimezone } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
@@ -28,6 +28,7 @@ import {
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { resolveSourceOutbound } from "@/server/turn/tg-outbound";
 
 import { buildStandingTasksBlock } from "../format";
@@ -77,8 +78,11 @@ const STORE_KEY = Symbol.for("llm-tg-bot.tasks.scheduler");
 export interface DueRunDeps {
   /** IANA timezone the schedules are interpreted in when advancing. */
   timezone: string;
-  /** Active persona prompt for the fire's system prompt, or null. */
-  personalityPrompt: string | null;
+  /**
+   * Resolve the persona for one task's assistant (real: the v2 assistants
+   * store). Per task, because every fire runs as ITS assistant.
+   */
+  personaFor: (assistantId: string) => Promise<string | null>;
   /**
    * Run the completion (real: `chatCompletionWithTools` with the outbound
    * toolset). Called inside the task chat's tool context; the exchange records
@@ -90,6 +94,7 @@ export interface DueRunDeps {
    * it delivers); resolves the message id.
    */
   send: (
+    assistantId: string,
     chatId: string,
     text: string,
     opts: { threadId?: number | null; replyToMessageId?: number },
@@ -104,7 +109,7 @@ export interface DueRunDeps {
   now?: Date;
   /** Publish live per-task progress to the scheduler (drives the Jobs dashboard). */
   onProgress?: (progress: JobProgress | null) => void;
-  db?: DrizzleDb;
+  db?: StoreDb;
 }
 
 /**
@@ -118,14 +123,16 @@ export interface DueRunDeps {
  * blocking the fire. Shared by the due-run loop and the dashboard's manual
  * fire.
  */
-async function loadChatScopedFireDeps(chatId: string, db: DrizzleDb) {
+async function loadChatScopedFireDeps(assistantId: string, chatId: string, db: StoreDb) {
   const [storedLanguage, chatContext, standingTasks] = await Promise.all([
     (isGroupChatId(chatId) ? getGroupLanguage(chatId) : getUserLanguage(chatId)).catch(() => null),
+    // Directory context is a v1 shadow read (its own default db) until
+    // Phase 6 re-points it at the source.
     (isGroupChatId(chatId)
-      ? getGroupContext(chatId, db).then((c) => c?.content ?? null)
-      : getUserContext(chatId, db).then((c) => c?.content ?? null)
+      ? getGroupContext(chatId).then((c) => c?.content ?? null)
+      : getUserContext(chatId).then((c) => c?.content ?? null)
     ).catch(() => null),
-    getActiveTasksForChat(chatId, null, db)
+    getActiveTasksForChat(assistantId, chatId, null, db)
       .then(({ prompt }) => buildStandingTasksBlock(prompt))
       .catch(() => null),
   ]);
@@ -145,7 +152,7 @@ async function loadChatScopedFireDeps(chatId: string, db: DrizzleDb) {
  * task — a failing fire still settles so it doesn't busy-loop.
  */
 export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; failed: number }> {
-  const db = deps.db ?? getDb();
+  const db = deps.db ?? getStoreDb();
   const now = deps.now ?? new Date();
   const due = await listDueTasks(db, now);
   if (due.length === 0) return { fired: 0, failed: 0 };
@@ -161,12 +168,15 @@ export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; fa
     // A due row always has a chat (the DB check pins global scope to prompt
     // kinds, which never carry a next_run_at) — narrow it once here.
     const chatId = task.chatId!;
-    const scoped = await loadChatScopedFireDeps(chatId, db);
+    const [scoped, personalityPrompt] = await Promise.all([
+      loadChatScopedFireDeps(task.assistantId, chatId, db),
+      deps.personaFor(task.assistantId).catch(() => null),
+    ]);
     const result = await fireTask(task, {
-      personalityPrompt: deps.personalityPrompt,
+      personalityPrompt,
       ...scoped,
       complete: deps.complete,
-      send: (text, opts) => deps.send(chatId, text, opts),
+      send: (text, opts) => deps.send(task.assistantId, chatId, text, opts),
       recordReply: deps.recordReply,
       db,
     }).catch(() => ({ ok: false as const, sent: [] as string[] }));
@@ -214,23 +224,18 @@ export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; fa
  */
 async function buildLiveFireCollaborators(): Promise<Pick<
   DueRunDeps,
-  "personalityPrompt" | "complete" | "send" | "recordReply"
+  "personaFor" | "complete" | "send" | "recordReply"
 > | null> {
   const runtime = await getLlmRuntime().catch(() => null);
   if (!runtime) return null;
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
-  const [personalityPrompt, toolset] = await Promise.all([
-    // Transitional until the tasks flip stamps an assistant per task: a fire
-    // has no event naming one, so a single-assistant deployment composes its
-    // persona and a multi-assistant one composes none rather than guessing.
-    getSingleAssistantPersona().catch(() => null),
-    // A fire delivers only through `send_message`: nothing triggered it, so
-    // there is no message to reply to. No tools registered → plain completion
-    // (the fire then simply cannot send, and records a quiet fire).
-    getToolset({ delivery: "send" }).catch(() => null),
-  ]);
+  // A fire delivers only through `send_message`: nothing triggered it, so
+  // there is no message to reply to. No tools registered on the toolset means
+  // a plain completion (the fire then simply cannot send — a quiet fire).
+  const toolset = await getToolset({ delivery: "send" }).catch(() => null);
   return {
-    personalityPrompt,
+    // Every fire runs as ITS task's assistant (Phase 3).
+    personaFor: (assistantId) => getAssistantPersona(assistantId),
     complete: (messages, trace) =>
       toolset
         ? chatCompletionWithTools(conn, {
@@ -247,13 +252,14 @@ async function buildLiveFireCollaborators(): Promise<Pick<
           }),
     // The owning source mirrors what it delivers — no recordReply here. An
     // unconfigured source API fails the send audibly, like v1's stopped bot.
-    send: (chatId, text, opts) => {
+    send: (assistantId, chatId, text, opts) => {
       const outbound = resolveSourceOutbound();
       if (!outbound) {
         throw new Error("telegram source API is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
       }
       return outbound.sendMessage(chatId, {
         text,
+        assistantId,
         threadId: opts.threadId ?? null,
         replyToMessageId: opts.replyToMessageId ?? null,
       });
@@ -298,9 +304,9 @@ async function runTick(ctx?: IntervalRunContext): Promise<{ summary: string }> {
 export async function manualFireTask(
   id: string,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
   // Injectable like DueRunDeps, so tests drive a capturing sink + fake LLM.
-  liveOverride?: Pick<DueRunDeps, "personalityPrompt" | "complete" | "send" | "recordReply">,
+  liveOverride?: Pick<DueRunDeps, "personaFor" | "complete" | "send" | "recordReply">,
 ): Promise<FireResult> {
   const task = await getTaskById(db, id);
   if (!task) throw ApiError.notFound("Unknown task");
@@ -317,14 +323,17 @@ export async function manualFireTask(
   }
   // A timed task always has a chat (the DB scope check); narrow once.
   const chatId = task.chatId!;
-  const scoped = await loadChatScopedFireDeps(chatId, db);
+  const [scoped, personalityPrompt] = await Promise.all([
+    loadChatScopedFireDeps(task.assistantId, chatId, db),
+    live.personaFor(task.assistantId).catch(() => null),
+  ]);
   return fireTask(
     task,
     {
-      personalityPrompt: live.personalityPrompt,
+      personalityPrompt,
       ...scoped,
       complete: live.complete,
-      send: (text, opts) => live.send(chatId, text, opts),
+      send: (text, opts) => live.send(task.assistantId, chatId, text, opts),
       recordReply: live.recordReply,
       db,
     },
@@ -374,10 +383,10 @@ export interface TaskSchedulerJobInfo {
 }
 
 /** Current job info — the ticker's status plus the policy/backlog around it. */
-export async function getTaskSchedulerInfo(db: DrizzleDb = getDb()): Promise<TaskSchedulerJobInfo> {
+export async function getTaskSchedulerInfo(db: StoreDb = getStoreDb()): Promise<TaskSchedulerJobInfo> {
   const now = new Date();
   const [policy, due, next] = await Promise.all([
-    getBotPolicy(db).catch(() => null),
+    getBotPolicy().catch(() => null),
     listDueTasks(db, now).catch(() => []),
     nextUpcomingRunAt(db, now).catch(() => null),
   ]);

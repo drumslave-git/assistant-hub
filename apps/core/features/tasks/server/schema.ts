@@ -129,6 +129,8 @@ const triggerParams = {
 /** Create input. `chatId: null` is the global scope (dashboard only). */
 export const createTaskSchema = z
   .object({
+    /** The assistant this task belongs to (Phase 3: tasks are per-assistant). */
+    assistantId: z.string().min(1, "An assistant is required"),
     chatId: chatId.optional().default(null),
     threadId: z.number().int().nullable().optional(),
     instruction,

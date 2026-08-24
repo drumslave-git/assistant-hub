@@ -407,17 +407,25 @@ type DialogState = { kind: "closed" } | { kind: "create" } | { kind: "edit"; tas
 function TaskDialog({
   task,
   chats,
+  assistants,
   onClose,
 }: {
   /** The task being edited, or null to create one. */
   task: Task | null;
   chats: TaskChat[];
+  assistants: { id: string; name: string }[];
   onClose: () => void;
 }) {
   const router = useRouter();
   const editing = task !== null;
   const [scope, setScope] = useState<string>(
     editing ? (task.chatId ?? GLOBAL) : (chats[0]?.chatId ?? GLOBAL),
+  );
+  // The assistant is chosen at creation and fixed afterwards, like the chat:
+  // a task is one assistant's standing order. Single-assistant deployments
+  // never see the field - it is preselected.
+  const [assistantId, setAssistantId] = useState<string>(
+    editing ? task.assistantId : (assistants[0]?.id ?? ""),
   );
   const [instruction, setInstruction] = useState(task?.instruction ?? "");
   const [context, setContext] = useState(task?.context ?? "");
@@ -453,6 +461,7 @@ function TaskDialog({
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
+              assistantId,
               chatId: scope === GLOBAL ? null : scope,
               instruction: instruction.trim(),
               context: !promptKind && context.trim() ? context.trim() : null,
@@ -494,7 +503,10 @@ function TaskDialog({
           <Button
             onClick={save}
             disabled={
-              busy || instruction.trim().length < 2 || (!promptKind && scope === GLOBAL)
+              busy ||
+              instruction.trim().length < 2 ||
+              (!promptKind && scope === GLOBAL) ||
+              (!editing && !assistantId)
             }
           >
             {busy ? "Saving…" : editing ? "Save changes" : "Create task"}
@@ -503,6 +515,28 @@ function TaskDialog({
       }
     >
       <div className="space-y-4">
+        {editing || assistants.length <= 1 ? null : (
+          <Field
+            id="task-assistant"
+            label="Assistant"
+            hint="Whose standing order this is - the task runs as this assistant."
+          >
+            {({ id, describedBy }) => (
+              <Select
+                id={id}
+                aria-describedby={describedBy}
+                value={assistantId}
+                onChange={(e) => setAssistantId(e.target.value)}
+              >
+                {assistants.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        )}
         {editing ? null : (
           <Field
             id="task-chat"
@@ -787,12 +821,15 @@ export function TasksManager({
   tasks,
   chats,
   authors,
+  assistants,
   job,
 }: {
   tasks: Task[];
   chats: TaskChat[];
   /** Map of creator user id → display label, for showing each task's author. */
   authors: Record<string, string>;
+  /** The assistants tasks can belong to (Phase 3: tasks are per-assistant). */
+  assistants: { id: string; name: string }[];
   /** Poller status — including whether firing is currently paused. */
   job: TaskSchedulerJobInfo;
 }) {
@@ -919,6 +956,7 @@ export function TasksManager({
           key={dialog.kind === "edit" ? dialog.task.id : "new"}
           task={dialog.kind === "edit" ? dialog.task : null}
           chats={chats}
+          assistants={assistants}
           onClose={() => setDialog({ kind: "closed" })}
         />
       ) : null}

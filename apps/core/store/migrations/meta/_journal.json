@@ -15,6 +15,13 @@
       "when": 1787488065590,
       "tag": "0001_fast_sugar_man",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787583568332,
+      "tag": "0002_youthful_korvac",
+      "breakpoints": true
     }
   ]
 }

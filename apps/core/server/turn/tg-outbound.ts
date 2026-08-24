@@ -32,6 +32,12 @@ export interface SourceOutboundPort {
       replyToMessageId?: number | null;
       threadId?: number | null;
       silent?: boolean;
+      /**
+       * The assistant whose bot sends (Phase 3: one connection per
+       * assistant). Absent → whichever connection runs, the transitional
+       * single-bot convention.
+       */
+      assistantId?: string | null;
     },
   ): Promise<{ messageId: number }>;
   /** Voice bubble with the source's own text fallback; reports what was sent. */
@@ -131,8 +137,11 @@ export function tgApiOutbound(config?: { baseUrl?: string; token?: string }): So
 
   return {
     async sendMessage(chatId, opts) {
+      const query = opts.assistantId
+        ? `?assistantId=${encodeURIComponent(opts.assistantId)}`
+        : "";
       const body = internalSentMessageResponseSchema.parse(
-        await request(chatPath(chatId, "/messages"), {
+        await request(chatPath(chatId, `/messages${query}`), {
           method: "POST",
           body: JSON.stringify({
             text: opts.text,

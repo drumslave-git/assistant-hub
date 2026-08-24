@@ -29,6 +29,7 @@ function task(over: Partial<Task> = {}): Task {
     createdByUserId: null,
     source: "dashboard",
     createdByOwner: false,
+    assistantId: "assistant-1",
     instruction: "Answer briefly.",
     context: null,
     triggerKind: "on-reply",

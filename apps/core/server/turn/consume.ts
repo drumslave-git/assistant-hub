@@ -213,7 +213,10 @@ async function buildEventDeps(
     getBotPolicy(),
     loadPersona(),
     getLatestSelfCorrectionPrompt().catch(() => null),
-    getActiveTasksForChat(chatId, senderId).catch(() => ({ prompt: [], message: [] })),
+    getActiveTasksForChat(event.assistantId, chatId, senderId).catch(() => ({
+      prompt: [],
+      message: [],
+    })),
     getTimezone().catch(() => "UTC"),
   ]);
 
@@ -275,6 +278,7 @@ async function buildEventDeps(
 
   const bindings = createTurnBindings({
     chatId,
+    assistantId: event.assistantId,
     senderId,
     threadId,
     correlationId: event.correlationId,

@@ -209,18 +209,29 @@ export function unknownTaskText(id: string, knownIds: string[]): string {
 /** Relay a chat-side write outcome, or null when it succeeded. */
 async function relayFailure(
   result: TaskWriteResult,
+  assistantId: string,
   chatId: string,
   id?: string,
 ): Promise<ReturnType<typeof errorResult> | null> {
   if (result.status === "denied") return errorResult(result.reason);
   if (result.status === "not_found") {
-    const known = (await getChatVisibleTasks(chatId).catch(() => []))
+    const known = (await getChatVisibleTasks(assistantId, chatId).catch(() => []))
       .filter((task) => task.chatId !== null)
       .map((task) => task.id);
     return errorResult(unknownTaskText(id ?? "?", known));
   }
   return null;
 }
+
+/**
+ * The bound turn's assistant, or null — tools refuse rather than guess whose
+ * standing orders to touch when no assistant is bound (a stale binding).
+ */
+function boundAssistant(ctx: { assistantId?: string }): string | null {
+  return ctx.assistantId ?? null;
+}
+const NO_ASSISTANT_TEXT =
+  "No assistant is bound to this turn, so its tasks cannot be read or changed right now.";
 
 /** Register the tasks MCP tools on the shared server. */
 export function registerTasksMcpTools(server: McpServer): void {
@@ -244,7 +255,9 @@ export function registerTasksMcpTools(server: McpServer): void {
     },
     async () => {
       const ctx = getToolContext();
-      const tasks = await getChatVisibleTasks(ctx.chatId);
+      const assistantId = boundAssistant(ctx);
+      if (!assistantId) return errorResult(NO_ASSISTANT_TEXT);
+      const tasks = await getChatVisibleTasks(assistantId, ctx.chatId);
       const text =
         tasks.length === 0 ? "(no tasks are set for this chat)" : tasks.map(taskLine).join("\n");
       return textResult(text, { ok: true, count: tasks.length, tasks: tasks.map(taskView) });
@@ -268,9 +281,11 @@ export function registerTasksMcpTools(server: McpServer): void {
     },
     async ({ id }) => {
       const ctx = getToolContext();
-      const task = await getChatVisibleTask(id, ctx.chatId);
+      const assistantId = boundAssistant(ctx);
+      if (!assistantId) return errorResult(NO_ASSISTANT_TEXT);
+      const task = await getChatVisibleTask(id, assistantId, ctx.chatId);
       if (!task) {
-        const known = (await getChatVisibleTasks(ctx.chatId))
+        const known = (await getChatVisibleTasks(assistantId, ctx.chatId))
           .filter((t) => t.chatId !== null)
           .map((t) => t.id);
         return errorResult(unknownTaskText(id, known));
@@ -354,9 +369,12 @@ export function registerTasksMcpTools(server: McpServer): void {
     },
     async ({ instruction, trigger, context, user_ids, every_minutes, delay_minutes, time, weekdays, date }) => {
       const ctx = getToolContext();
+      const assistantId = boundAssistant(ctx);
+      if (!assistantId) return errorResult(NO_ASSISTANT_TEXT);
       try {
         const result = await createTaskFromChat(
           {
+            assistantId,
             chatId: ctx.chatId,
             userId: ctx.userId ?? null,
             senderIsOwner: ctx.senderIsOwner ?? false,
@@ -373,7 +391,7 @@ export function registerTasksMcpTools(server: McpServer): void {
           },
           toolContextTrigger(ctx),
         );
-        const failure = await relayFailure(result, ctx.chatId);
+        const failure = await relayFailure(result, assistantId, ctx.chatId);
         if (failure) return failure;
         // A repeat is a success, not a conflict — the asked-for state is in force.
         if (result.status === "exists") {
@@ -532,9 +550,12 @@ export function registerTasksMcpTools(server: McpServer): void {
             "to. To cancel the task instead, delete it.",
         );
       }
+      const assistantId = boundAssistant(ctx);
+      if (!assistantId) return errorResult(NO_ASSISTANT_TEXT);
       try {
         const result = await updateTaskFromChat(
           {
+            assistantId,
             chatId: ctx.chatId,
             userId: ctx.userId ?? null,
             senderIsOwner: ctx.senderIsOwner ?? false,
@@ -544,7 +565,7 @@ export function registerTasksMcpTools(server: McpServer): void {
           },
           toolContextTrigger(ctx),
         );
-        const failure = await relayFailure(result, ctx.chatId, id);
+        const failure = await relayFailure(result, assistantId, ctx.chatId, id);
         if (failure) return failure;
         if (result.status !== "updated") return errorResult("The task could not be changed.");
         const audience = isPromptTask(result.task)
@@ -585,9 +606,12 @@ export function registerTasksMcpTools(server: McpServer): void {
     },
     async ({ id }) => {
       const ctx = getToolContext();
+      const assistantId = boundAssistant(ctx);
+      if (!assistantId) return errorResult(NO_ASSISTANT_TEXT);
       try {
         const result = await deleteTaskFromChat(
           {
+            assistantId,
             chatId: ctx.chatId,
             userId: ctx.userId ?? null,
             senderIsOwner: ctx.senderIsOwner ?? false,
@@ -596,7 +620,7 @@ export function registerTasksMcpTools(server: McpServer): void {
           },
           toolContextTrigger(ctx),
         );
-        const failure = await relayFailure(result, ctx.chatId, id);
+        const failure = await relayFailure(result, assistantId, ctx.chatId, id);
         if (failure) return failure;
         return textResult(`Task ${id} deleted — it no longer applies here.`, { ok: true, id });
       } catch (err) {

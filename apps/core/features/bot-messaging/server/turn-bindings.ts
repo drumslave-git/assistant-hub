@@ -70,6 +70,8 @@ export async function runTurnClassifier(
 
 export interface TurnBindingsInput {
   chatId: string;
+  /** The turn's assistant (from the inbound event) — bound onto tool calls. */
+  assistantId: string;
   /** Numeric sender id as a string, or null (no sender identity). */
   senderId: string | null;
   /** Source-local sub-thread (forum topic), or null. */
@@ -121,6 +123,7 @@ export interface TurnBindings {
 export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
   const {
     chatId,
+    assistantId,
     senderId,
     threadId,
     correlationId,
@@ -186,6 +189,7 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
       return runWithToolContext(
         {
           chatId,
+          assistantId,
           userId: senderId,
           correlationId,
           // The sender's own owner status, as the source stamped it.

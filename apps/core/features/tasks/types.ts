@@ -64,6 +64,12 @@ export interface TaskSchedule {
 export interface Task {
   id: string;
   /**
+   * The assistant this task belongs to (Phase 3: tasks are per-assistant —
+   * a standing order is one assistant's, and two assistants in a chat each
+   * follow only their own). Dies with the assistant (store cascade).
+   */
+  assistantId: string;
+  /**
    * The chat the task belongs to, or null for a global task (applies in every
    * chat). Only `message`/`on-reply` tasks may be global — a timed task acts in
    * a chat, so it needs one.

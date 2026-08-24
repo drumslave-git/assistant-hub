@@ -20,6 +20,7 @@ function task(over: Partial<Task> = {}): Task {
     threadId: null,
     createdByUserId: "77",
     createdByOwner: false,
+    assistantId: "assistant-1",
     source: "chat",
     instruction: "Check the feed and report anything new.",
     context: null,

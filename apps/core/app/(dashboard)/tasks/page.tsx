@@ -10,6 +10,7 @@ import {
   getTaskSchedulerInfo,
   type TaskSchedulerJobInfo,
 } from "@/features/tasks/server/scheduler";
+import { getAssistants } from "@/features/assistants/server/service";
 import { getTasksView } from "@/features/tasks/server/service";
 import type { Task } from "@/features/tasks/types";
 import {
@@ -32,18 +33,21 @@ export default async function TasksPage() {
   let tasks: Task[] | null = null;
   let job: TaskSchedulerJobInfo | null = null;
   let chats: TaskChat[] = [];
+  let assistants: { id: string; name: string }[] = [];
   let authors: Record<string, string> = {};
   let dbError: string | null = null;
   try {
-    const [view, groups, users, memberships, jobInfo] = await Promise.all([
+    const [view, groups, users, memberships, jobInfo, assistantRows] = await Promise.all([
       getTasksView(),
       listGroups(),
       listUsers(),
       listMemberships(),
       getTaskSchedulerInfo(),
+      getAssistants(),
     ]);
     tasks = view;
     job = jobInfo;
+    assistants = assistantRows.map((a) => ({ id: a.id, name: a.name }));
     // The people a group rule can be limited to: whoever has spoken there, in
     // the roster's order (most recently active first), labelled like everywhere.
     const labels = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
@@ -92,7 +96,7 @@ export default async function TasksPage() {
       />
 
       {tasks && job ? (
-        <TasksManager tasks={tasks} chats={chats} authors={authors} job={job} />
+        <TasksManager tasks={tasks} chats={chats} authors={authors} assistants={assistants} job={job} />
       ) : (
         <EmptyState
           icon={Database}

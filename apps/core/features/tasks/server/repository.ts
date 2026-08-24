@@ -1,22 +1,38 @@
 import "server-only";
 
+import { parseScopedRef, scopedRef } from "@assistant-hub/contracts";
 import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { tasks, type TaskRow } from "@/db/schema";
+import { tasks, type TaskRow } from "../../../store/schema";
+import type { StoreDb } from "@/server/store/db";
 
 import { PROMPT_TRIGGER_KINDS, type Task, type TaskSource, type TriggerKind } from "../types";
 
 /**
- * Typed persistence for tasks. Pure data access: no policy, no validation, no
- * trace recording (the service owns those). Every function takes a
- * {@link DrizzleDb} so the same code runs against the pool or a test instance.
+ * Typed persistence for tasks, over the v2 core store (the Phase 3 flip):
+ * per-assistant rows, chat/user identity stored as scoped refs. Pure data
+ * access: no policy, no validation, no trace recording (the service owns
+ * those). Every function takes a {@link StoreDb} so the same code runs
+ * against the pool or a test instance.
+ *
+ * Ref translation happens HERE, at the storage boundary: the feature keeps
+ * speaking source-local ids ("-1001", "42") because every caller does — the
+ * inbound event's parsed refs, the chat tools, the dashboard. All refs are
+ * `tg:*` until the chat source lands (Phase 4) and generalizes the service
+ * surface; the store shape is already source-neutral.
  */
 
 export const RECENT_DELIVERIES_CAP = 5;
 
+const toChatRef = (chatId: string | null): string | null =>
+  chatId === null ? null : scopedRef("tg", "chat", chatId);
+const toUserRef = (userId: string | null): string | null =>
+  userId === null ? null : scopedRef("tg", "user", userId);
+const refId = (ref: string | null): string | null => (ref === null ? null : parseScopedRef(ref).id);
+
 /** Columns a create sets (the caller has already computed `nextRunAt`). */
 export interface InsertTask {
+  assistantId: string;
   chatId: string | null;
   threadId: number | null;
   createdByUserId: string | null;
@@ -54,15 +70,16 @@ export interface UpdateTask {
 function mapRow(row: TaskRow): Task {
   return {
     id: row.id,
-    chatId: row.chatId,
+    assistantId: row.assistantId,
+    chatId: refId(row.chatRef),
     threadId: row.threadId,
-    createdByUserId: row.createdByUserId,
+    createdByUserId: refId(row.createdByUserRef),
     source: row.source as TaskSource,
     createdByOwner: row.createdByOwner,
     instruction: row.instruction,
     context: row.context,
     triggerKind: row.trigger as TriggerKind,
-    targetUserIds: row.targetUserIds,
+    targetUserIds: row.targetUserRefs.map((ref) => parseScopedRef(ref).id),
     everyMinutes: row.everyMinutes,
     delayMinutes: row.delayMinutes,
     timeOfDay: row.timeOfDay,
@@ -81,43 +98,48 @@ function mapRow(row: TaskRow): Task {
 /** Oldest first — the order tasks were agreed in is the order they read in. */
 const byAge = [asc(tasks.createdAt)];
 
-/** All tasks (optionally scoped to one chat's own rows), oldest first. */
-export async function listTasks(db: DrizzleDb, chatId?: string): Promise<Task[]> {
+/** All tasks across assistants (optionally one chat's rows), oldest first. */
+export async function listTasks(db: StoreDb, chatId?: string): Promise<Task[]> {
   const rows = await db.query.tasks.findMany({
-    where: chatId ? eq(tasks.chatId, chatId) : undefined,
+    where: chatId ? eq(tasks.chatRef, toChatRef(chatId)!) : undefined,
     orderBy: byAge,
   });
   return rows.map(mapRow);
 }
 
 /**
- * The tasks that govern one chat: its own, plus every global one. Used by the
- * reply pipeline and by the chat-side tools, so both see the same set.
+ * The tasks that govern one chat FOR ONE ASSISTANT: its own rows plus every
+ * global one. Used by the reply pipeline and by the chat-side tools, so both
+ * see the same set — two assistants in the same chat each see only their own
+ * standing orders.
  */
-export async function listTasksForChat(db: DrizzleDb, chatId: string): Promise<Task[]> {
+export async function listTasksForChat(
+  db: StoreDb,
+  assistantId: string,
+  chatId: string,
+): Promise<Task[]> {
   const rows = await db.query.tasks.findMany({
-    where: or(eq(tasks.chatId, chatId), isNull(tasks.chatId)),
+    where: and(
+      eq(tasks.assistantId, assistantId),
+      or(eq(tasks.chatRef, toChatRef(chatId)!), isNull(tasks.chatRef)),
+    ),
     orderBy: byAge,
   });
   return rows.map(mapRow);
 }
 
 /** One task by id, or null. */
-export async function getTaskById(db: DrizzleDb, id: string): Promise<Task | null> {
+export async function getTaskById(db: StoreDb, id: string): Promise<Task | null> {
   const row = await db.query.tasks.findFirst({ where: eq(tasks.id, id) });
   return row ? mapRow(row) : null;
 }
 
 /** Substring search over instructions (optionally chat-scoped), oldest first. */
-export async function searchTasks(
-  db: DrizzleDb,
-  query: string,
-  chatId?: string,
-): Promise<Task[]> {
+export async function searchTasks(db: StoreDb, query: string, chatId?: string): Promise<Task[]> {
   const rows = await db.query.tasks.findMany({
     where: and(
       ilike(tasks.instruction, `%${query}%`),
-      chatId ? eq(tasks.chatId, chatId) : undefined,
+      chatId ? eq(tasks.chatRef, toChatRef(chatId)!) : undefined,
     ),
     orderBy: byAge,
   });
@@ -126,47 +148,50 @@ export async function searchTasks(
 
 /** Scope filter: one chat's own rows, or the global set. */
 function scopeWhere(chatId: string | null) {
-  return chatId === null ? isNull(tasks.chatId) : eq(tasks.chatId, chatId);
+  return chatId === null ? isNull(tasks.chatRef) : eq(tasks.chatRef, toChatRef(chatId)!);
 }
 
 /**
- * Number of prompt-composed (`message`/`on-reply`) tasks in one scope, for the
- * per-scope cap — every one of them is in every prompt, so the cap is a prompt
- * budget, which is why timed tasks are not counted.
+ * Number of prompt-composed (`message`/`on-reply`) tasks in one assistant's
+ * scope, for the per-scope cap — every one of them is in every prompt of THAT
+ * assistant, so the cap is a per-assistant prompt budget, which is why timed
+ * tasks are not counted.
  */
 export async function countPromptTasksInScope(
-  db: DrizzleDb,
+  db: StoreDb,
+  assistantId: string,
   chatId: string | null,
 ): Promise<number> {
   const rows = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(tasks)
-    .where(and(scopeWhere(chatId), inArray(tasks.trigger, PROMPT_TRIGGER_KINDS)));
+    .where(
+      and(
+        eq(tasks.assistantId, assistantId),
+        scopeWhere(chatId),
+        inArray(tasks.trigger, PROMPT_TRIGGER_KINDS),
+      ),
+    );
   return rows[0]?.n ?? 0;
 }
 
 /**
- * The **enabled** tasks in a scope whose instruction is exactly this text
- * (case-insensitive), restricted to `kinds`, oldest first. The raw material of
- * the duplicate guard: the caller decides what *else* makes two tasks the same
- * one — for prompt kinds nothing does (the text is the rule, and the same rule
- * twice is noise in every prompt), for timed kinds the trigger and its timing
- * must match too (same words at a different time is a different job).
- *
- * Paused rows are skipped, because the guard is about what is in force and a
- * paused task is not. It is also what keeps the chat honest: "already there"
- * about a task the operator switched off would be a lie, and the alternative —
- * refusing with a reason — would tell the chat about a task it is never shown
- * (user decision, 2026-08-14).
+ * The **enabled** tasks in one assistant's scope whose instruction is exactly
+ * this text (case-insensitive), restricted to `kinds`, oldest first. The raw
+ * material of the duplicate guard — per assistant, because the same rule on
+ * two assistants is two different standing orders. See the v1 note on why
+ * paused rows are skipped (user decision, 2026-08-14).
  */
 export async function findActiveTasksByInstruction(
-  db: DrizzleDb,
+  db: StoreDb,
+  assistantId: string,
   chatId: string | null,
   instruction: string,
   kinds: TriggerKind[],
   exceptId?: string,
 ): Promise<Task[]> {
   const parts = [
+    eq(tasks.assistantId, assistantId),
     scopeWhere(chatId),
     eq(tasks.enabled, true),
     inArray(tasks.trigger, kinds),
@@ -182,21 +207,22 @@ export async function findActiveTasksByInstruction(
 }
 
 /** Insert a task with an app-generated id. Returns the stored record. */
-export async function insertTask(db: DrizzleDb, id: string, values: InsertTask): Promise<Task> {
+export async function insertTask(db: StoreDb, id: string, values: InsertTask): Promise<Task> {
   const now = new Date();
   const [row] = await db
     .insert(tasks)
     .values({
       id,
-      chatId: values.chatId,
+      assistantId: values.assistantId,
+      chatRef: toChatRef(values.chatId),
       threadId: values.threadId,
-      createdByUserId: values.createdByUserId,
+      createdByUserRef: toUserRef(values.createdByUserId),
       source: values.source,
       createdByOwner: values.createdByOwner,
       instruction: values.instruction,
       context: values.context,
       trigger: values.triggerKind,
-      targetUserIds: values.targetUserIds,
+      targetUserRefs: values.targetUserIds.map((userId) => scopedRef("tg", "user", userId)),
       everyMinutes: values.everyMinutes,
       delayMinutes: values.delayMinutes,
       timeOfDay: values.timeOfDay,
@@ -212,17 +238,16 @@ export async function insertTask(db: DrizzleDb, id: string, values: InsertTask):
 }
 
 /** Apply a patch to one task. Returns the updated record, or null if unknown. */
-export async function updateTask(
-  db: DrizzleDb,
-  id: string,
-  patch: UpdateTask,
-): Promise<Task | null> {
-  const { triggerKind, ...rest } = patch;
+export async function updateTask(db: StoreDb, id: string, patch: UpdateTask): Promise<Task | null> {
+  const { triggerKind, targetUserIds, ...rest } = patch;
   const [row] = await db
     .update(tasks)
     .set({
       ...rest,
       ...(triggerKind !== undefined ? { trigger: triggerKind } : {}),
+      ...(targetUserIds !== undefined
+        ? { targetUserRefs: targetUserIds.map((userId) => scopedRef("tg", "user", userId)) }
+        : {}),
       updatedAt: new Date(),
     })
     .where(eq(tasks.id, id))
@@ -237,7 +262,7 @@ export async function updateTask(
  * *deleted* by the scheduler instead, so `nextRunAt` here is never null.
  */
 export async function markTaskRun(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
   input: { lastRunAt: Date; nextRunAt: Date; recentDeliveries?: string[] },
 ): Promise<void> {
@@ -266,7 +291,7 @@ export function nextRecentDeliveries(recent: string[], delivered: string): strin
  * Touches nothing else: a prompt task has no schedule to advance.
  */
 export async function appendTaskDelivery(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
   delivered: string,
 ): Promise<void> {
@@ -291,7 +316,7 @@ export async function appendTaskDelivery(
  * kept, never deleted — so the dashboard can show why it stopped.
  */
 export async function markTaskFailedAttempt(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
   input: { lastRunAt: Date; attempts: number; disable: boolean },
 ): Promise<void> {
@@ -307,13 +332,13 @@ export async function markTaskFailedAttempt(
 }
 
 /** Delete one task. Returns true if a row was removed. */
-export async function deleteTask(db: DrizzleDb, id: string): Promise<boolean> {
+export async function deleteTask(db: StoreDb, id: string): Promise<boolean> {
   const rows = await db.delete(tasks).where(eq(tasks.id, id)).returning({ id: tasks.id });
   return rows.length > 0;
 }
 
-/** Enabled timed tasks whose `next_run_at` is due (<= `now`), oldest-due first. */
-export async function listDueTasks(db: DrizzleDb, now: Date): Promise<Task[]> {
+/** Enabled timed tasks whose `next_run_at` is due (<= `now`), oldest-due first — every assistant's. */
+export async function listDueTasks(db: StoreDb, now: Date): Promise<Task[]> {
   const rows = await db
     .select()
     .from(tasks)
@@ -323,7 +348,7 @@ export async function listDueTasks(db: DrizzleDb, now: Date): Promise<Task[]> {
 }
 
 /** Earliest upcoming run across enabled tasks (strictly after `now`), or null. */
-export async function nextUpcomingRunAt(db: DrizzleDb, now: Date): Promise<Date | null> {
+export async function nextUpcomingRunAt(db: StoreDb, now: Date): Promise<Date | null> {
   const rows = await db
     .select({ at: tasks.nextRunAt })
     .from(tasks)
@@ -334,9 +359,9 @@ export async function nextUpcomingRunAt(db: DrizzleDb, now: Date): Promise<Date 
 }
 
 /** All tasks newest first (the dashboard's timed listing prefers recency). */
-export async function listTasksNewestFirst(db: DrizzleDb, chatId?: string): Promise<Task[]> {
+export async function listTasksNewestFirst(db: StoreDb, chatId?: string): Promise<Task[]> {
   const rows = await db.query.tasks.findMany({
-    where: chatId ? eq(tasks.chatId, chatId) : undefined,
+    where: chatId ? eq(tasks.chatRef, toChatRef(chatId)!) : undefined,
     orderBy: [desc(tasks.createdAt)],
   });
   return rows.map(mapRow);

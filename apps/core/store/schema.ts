@@ -365,6 +365,14 @@ export const tasks = pgTable(
     createdByUserRef: text("created_by_user_ref"),
     /** `chat` | `dashboard` — where the task was authored (provenance). */
     source: text("source").notNull().default("dashboard"),
+    /**
+     * Whether the creator held owner rights at creation time, stamped from
+     * the inbound event's `sender.isOwner` (the source is authoritative for
+     * owner identity — the core compares no user ids). Half the authority
+     * rule: a task lends owner rights when it is dashboard-authored
+     * (`source`) or this flag is set.
+     */
+    createdByOwner: boolean("created_by_owner").notNull().default(false),
     /** The task itself, in the author's own words. */
     instruction: text("instruction").notNull(),
     /** Background gathered at creation for timed kinds; null otherwise. */

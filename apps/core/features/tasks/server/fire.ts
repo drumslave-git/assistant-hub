@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
+import type { StoreDb } from "@/server/store/db";
 import { buildSystemPrompt } from "@/features/bot-messaging/server/prompt";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
@@ -85,7 +85,7 @@ export interface FireDeps {
     telegramMessageId: number;
     content: string;
   }) => Promise<void>;
-  db?: DrizzleDb;
+  db?: StoreDb;
 }
 
 /** Outcome of a fire. `ok: true` with `sent: []` is a quiet fire. */
@@ -280,6 +280,8 @@ export async function fireTask(
       reply = await runWithToolContext(
         {
           chatId: task.chatId!,
+          // The fire's tool calls act as the task's assistant (Phase 3).
+          assistantId: task.assistantId,
           userId: task.createdByUserId ?? null,
           // A fire has no inbound event to stamp owner status from; the
           // task's own creation-time stamp carries the creator's rights

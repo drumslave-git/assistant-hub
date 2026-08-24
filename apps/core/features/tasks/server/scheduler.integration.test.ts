@@ -1,7 +1,18 @@
+import { fileURLToPath } from "node:url";
+
+import {
+  applyMigrations,
+  startTestPostgres,
+  type TestPostgres,
+} from "@assistant-hub/db/testing";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { startTestDb, type TestDb } from "@/test/db";
+import * as storeSchema from "../../../store/schema";
 import { tryGetToolContext } from "@/server/mcp/context";
+import { closePool } from "@/db/pool";
+import type { StoreDb } from "@/server/store/db";
 
 import { MAX_ONE_SHOT_ATTEMPTS } from "../types";
 import { getTaskById } from "./repository";
@@ -16,22 +27,42 @@ import { createTaskService, getTask } from "./service";
  * that a fire's deliveries come only from the `deliver` binding.
  */
 
-let ctx: TestDb;
+const V1_MIGRATIONS = fileURLToPath(new URL("../../../db/migrations", import.meta.url));
+const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
+
+let pg: TestPostgres;
+let pool: Pool;
+let db: StoreDb;
+const ctx = { get db() { return db; } };
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  pg = await startTestPostgres();
+  const url = await pg.createDatabase("tasks_scheduler_store");
+  // Settings (timezone) still read the v1 database through the app pool.
+  const v1Url = await pg.createDatabase("tasks_scheduler_v1");
+  await applyMigrations(url, STORE_MIGRATIONS);
+  await applyMigrations(v1Url, V1_MIGRATIONS);
+  process.env.DATABASE_URL = v1Url;
+  pool = new Pool({ connectionString: url });
+  db = drizzle(pool, { schema: storeSchema }) as StoreDb;
 });
 
 afterAll(async () => {
-  await ctx?.stop();
+  await pool?.end();
+  await closePool();
+  await pg?.stop();
 });
 
 beforeEach(async () => {
-  await ctx.truncate();
+  await pool.query(`TRUNCATE assistants RESTART IDENTITY CASCADE`);
+  await pool.query(
+    `INSERT INTO assistants (id, name, persona) VALUES ('assistant-1', 'Fixture Assistant', '')`,
+  );
 });
 
 const trigger = { kind: "dashboard" } as const;
 const CHAT = "-1001";
+const ASSISTANT = "assistant-1";
 
 /** A `complete` that sends the given texts through the fire's deliver binding. */
 function sendingComplete(texts: string[]) {
@@ -45,7 +76,7 @@ function sendingComplete(texts: string[]) {
 function deps(over: Partial<DueRunDeps> = {}): DueRunDeps {
   return {
     timezone: "UTC",
-    personalityPrompt: null,
+    personaFor: async () => null,
     complete: sendingComplete(["fired!"]),
     send: vi.fn().mockResolvedValue({ messageId: 1 }),
     db: ctx.db,
@@ -57,6 +88,7 @@ function deps(over: Partial<DueRunDeps> = {}): DueRunDeps {
 async function dueTask(over: Record<string, unknown> = {}) {
   const task = await createTaskService(
     {
+      assistantId: ASSISTANT,
       chatId: CHAT,
       instruction: "Check in.",
       triggerKind: "interval",
@@ -85,7 +117,7 @@ describe("runDueTasks", () => {
     const result = await runDueTasks(deps({ send, now }));
 
     expect(result).toEqual({ fired: 1, failed: 0 });
-    expect(send).toHaveBeenCalledWith(CHAT, "fired!", {
+    expect(send).toHaveBeenCalledWith(ASSISTANT, CHAT, "fired!", {
       threadId: null,
       replyToMessageId: undefined,
     });
@@ -155,10 +187,10 @@ describe("runDueTasks", () => {
 describe("manualFireTask", () => {
   /** The injectable collaborators, standing in for the live LLM + bot. */
   function live(
-    over: Partial<Pick<DueRunDeps, "personalityPrompt" | "complete" | "send" | "recordReply">> = {},
+    over: Partial<Pick<DueRunDeps, "personaFor" | "complete" | "send" | "recordReply">> = {},
   ) {
     return {
-      personalityPrompt: null,
+      personaFor: async () => null,
       complete: sendingComplete(["manual!"]),
       send: vi.fn().mockResolvedValue({ messageId: 5 }),
       ...over,
@@ -172,7 +204,7 @@ describe("manualFireTask", () => {
     const result = await manualFireTask(task.id, trigger, ctx.db, collaborators);
 
     expect(result).toEqual({ ok: true, sent: ["manual!"] });
-    expect(collaborators.send).toHaveBeenCalledWith(CHAT, "manual!", {
+    expect(collaborators.send).toHaveBeenCalledWith(ASSISTANT, CHAT, "manual!", {
       threadId: null,
       replyToMessageId: undefined,
     });
@@ -207,6 +239,7 @@ describe("manualFireTask", () => {
   it("refuses a prompt-kind task — there is no fire to run", async () => {
     const rule = await createTaskService(
       {
+        assistantId: ASSISTANT,
         chatId: CHAT,
         instruction: "Answer briefly.",
         triggerKind: "on-reply",

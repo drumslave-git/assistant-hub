@@ -1,14 +1,26 @@
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
+import {
+  applyMigrations,
+  startTestPostgres,
+  type TestPostgres,
+} from "@assistant-hub/db/testing";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import * as storeSchema from "../../../store/schema";
+import * as v1Schema from "@/db/schema";
+import { closePool } from "@/db/pool";
+import type { DrizzleDb } from "@/db/drizzle";
 import {
   recordGroupMembership,
   upsertKnownGroup,
 } from "@/features/known-groups/server/repository";
 import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { listTraces } from "@/server/trace";
-import { startTestDb, type TestDb } from "@/test/db";
+import type { StoreDb } from "@/server/store/db";
 
 import { insertTask } from "./repository";
 import { MAX_PROMPT_TASKS_PER_SCOPE, type UpdateTaskInput } from "./schema";
@@ -34,19 +46,55 @@ import {
  * paused-task rules (invisible from chat; pausing is dashboard-only).
  */
 
-let ctx: TestDb;
+const V1_MIGRATIONS = fileURLToPath(new URL("../../../db/migrations", import.meta.url));
+const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
+
+/**
+ * Two databases, like the live topology: tasks live in the v2 store; the
+ * directory the audience checks read (group rosters) is the v1 shadow, which
+ * the service reaches through the app's own pool (`getDb()`), so the test
+ * points DATABASE_URL at the v1 container database.
+ */
+let pg: TestPostgres;
+let storePool: Pool;
+let v1Pool: Pool;
+let storeDb: StoreDb;
+let v1Db: DrizzleDb;
+const ctx = {
+  get db() {
+    return storeDb;
+  },
+};
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  pg = await startTestPostgres();
+  const v1Url = await pg.createDatabase("tasks_v1");
+  const storeUrl = await pg.createDatabase("tasks_store");
+  await applyMigrations(v1Url, V1_MIGRATIONS);
+  await applyMigrations(storeUrl, STORE_MIGRATIONS);
+  process.env.DATABASE_URL = v1Url;
+  v1Pool = new Pool({ connectionString: v1Url });
+  storePool = new Pool({ connectionString: storeUrl });
+  v1Db = drizzle(v1Pool, { schema: v1Schema }) as DrizzleDb;
+  storeDb = drizzle(storePool, { schema: storeSchema }) as StoreDb;
 });
 
 afterAll(async () => {
-  await ctx?.stop();
+  await storePool?.end();
+  await v1Pool?.end();
+  await closePool();
+  await pg?.stop();
 });
 
 beforeEach(async () => {
-  await ctx.truncate();
+  await storePool.query(`TRUNCATE assistants RESTART IDENTITY CASCADE`);
+  await storePool.query(
+    `INSERT INTO assistants (id, name, persona) VALUES ('assistant-1', 'Fixture Assistant', '')`,
+  );
+  await v1Pool.query(`TRUNCATE known_groups, known_users, group_members RESTART IDENTITY CASCADE`);
 });
+
+const ASSISTANT = "assistant-1";
 
 const trigger = { kind: "dashboard" } as const;
 const chatTrigger = { kind: "telegram", actor: "100", correlationId: "100" } as const;
@@ -59,6 +107,7 @@ const OTHER_USER = "200";
 function create(over: Record<string, unknown> = {}) {
   return createTaskService(
     {
+      assistantId: ASSISTANT,
       chatId: GROUP,
       instruction: "Answer briefly.",
       triggerKind: "on-reply",
@@ -73,15 +122,15 @@ function create(over: Record<string, unknown> = {}) {
 
 /** Put people on a group's roster (a task can only name people seen there). */
 async function joinGroup(chatId: string, ...userIds: string[]) {
-  await upsertKnownGroup(ctx.db, { chatId, title: "Test group", type: "supergroup" });
+  await upsertKnownGroup(v1Db, { chatId, title: "Test group", type: "supergroup" });
   for (const userId of userIds) {
-    await upsertKnownUser(ctx.db, {
+    await upsertKnownUser(v1Db, {
       userId,
       username: null,
       firstName: `User ${userId}`,
       lastName: null,
     });
-    await recordGroupMembership(ctx.db, chatId, userId);
+    await recordGroupMembership(v1Db, chatId, userId);
   }
 }
 
@@ -96,7 +145,7 @@ describe("recorded deliveries (wording variation)", () => {
       await recordTaskDeliveries([rule.id, randomUUID()], `comment ${i}`, ctx.db);
     }
 
-    const { message } = await getActiveTasksForChat(GROUP, null, ctx.db);
+    const { message } = await getActiveTasksForChat(ASSISTANT, GROUP, null, ctx.db);
     const stored = message.find((t) => t.id === rule.id)!;
     expect(stored.recentDeliveries).toEqual([
       "comment 6",
@@ -116,7 +165,7 @@ describe("scopes and selection", () => {
     const global = await create({ chatId: null, instruction: "Never swear." });
     await create({ chatId: "-2002", instruction: "Somebody else's task." });
 
-    const tasks = await getChatVisibleTasks(GROUP, ctx.db);
+    const tasks = await getChatVisibleTasks(ASSISTANT, GROUP, ctx.db);
 
     expect(tasks.map((t) => t.id).sort()).toEqual([own.id, global.id].sort());
   });
@@ -131,7 +180,7 @@ describe("scopes and selection", () => {
       everyMinutes: 60,
     });
 
-    const { prompt, message } = await getActiveTasksForChat(GROUP, DM_USER, ctx.db);
+    const { prompt, message } = await getActiveTasksForChat(ASSISTANT, GROUP, DM_USER, ctx.db);
 
     expect(prompt.map((t) => t.instruction)).toEqual([
       "Answer briefly.",
@@ -145,13 +194,13 @@ describe("scopes and selection", () => {
     await create({ instruction: "Everyone's task." });
     await create({ instruction: "Alice's task.", targetUserIds: ["11"] });
 
-    expect((await getActiveTasksForChat(GROUP, "11", ctx.db)).prompt.map((t) => t.instruction)).toEqual(
+    expect((await getActiveTasksForChat(ASSISTANT, GROUP, "11", ctx.db)).prompt.map((t) => t.instruction)).toEqual(
       ["Everyone's task.", "Alice's task."],
     );
-    expect((await getActiveTasksForChat(GROUP, "22", ctx.db)).prompt.map((t) => t.instruction)).toEqual(
+    expect((await getActiveTasksForChat(ASSISTANT, GROUP, "22", ctx.db)).prompt.map((t) => t.instruction)).toEqual(
       ["Everyone's task."],
     );
-    expect((await getActiveTasksForChat(GROUP, null, ctx.db)).prompt.map((t) => t.instruction)).toEqual(
+    expect((await getActiveTasksForChat(ASSISTANT, GROUP, null, ctx.db)).prompt.map((t) => t.instruction)).toEqual(
       ["Everyone's task."],
     );
   });
@@ -170,7 +219,7 @@ describe("paused tasks", () => {
     await create({ chatId: null, instruction: "Paused everywhere.", enabled: false });
     const globalLive = await create({ chatId: null, instruction: "Never swear." });
 
-    expect((await getChatVisibleTasks(GROUP, ctx.db)).map((t) => t.id).sort()).toEqual(
+    expect((await getChatVisibleTasks(ASSISTANT, GROUP, ctx.db)).map((t) => t.id).sort()).toEqual(
       [live.id, globalLive.id].sort(),
     );
   });
@@ -178,14 +227,14 @@ describe("paused tasks", () => {
   it("reads a paused task as an unknown id, and refuses to change or delete it", async () => {
     const paused = await create({ instruction: "Paused rule.", enabled: false });
 
-    const read = await getChatVisibleTask(paused.id, GROUP, ctx.db);
+    const read = await getChatVisibleTask(paused.id, ASSISTANT, GROUP, ctx.db);
     const updated = await updateTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: paused.id, patch: { instruction: "Reworded." } },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: paused.id, patch: { instruction: "Reworded." } },
       chatTrigger,
       ctx.db,
     );
     const deleted = await deleteTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: paused.id },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: paused.id },
       chatTrigger,
       ctx.db,
     );
@@ -202,6 +251,7 @@ describe("paused tasks", () => {
 
     const result = await updateTaskFromChat(
       {
+        assistantId: ASSISTANT,
         chatId: GROUP,
         userId: DM_USER,
         senderIsOwner: true,
@@ -218,20 +268,20 @@ describe("paused tasks", () => {
       status: "denied",
       reason: expect.stringMatching(/cannot be paused/i),
     });
-    expect(await getChatVisibleTask(task.id, GROUP, ctx.db)).toMatchObject({ enabled: true });
+    expect(await getChatVisibleTask(task.id, ASSISTANT, GROUP, ctx.db)).toMatchObject({ enabled: true });
   });
 
   it("creates a fresh standing task rather than claiming a paused twin is in force", async () => {
     await create({ instruction: "Answer briefly.", enabled: false });
 
     const result = await createTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, instruction: "Answer briefly.", triggerKind: "on-reply" },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: DM_USER, senderIsOwner: true, instruction: "Answer briefly.", triggerKind: "on-reply" },
       chatTrigger,
       ctx.db,
     );
 
     expect(result.status).toBe("created");
-    expect((await getChatVisibleTasks(GROUP, ctx.db)).map((t) => t.instruction)).toEqual([
+    expect((await getChatVisibleTasks(ASSISTANT, GROUP, ctx.db)).map((t) => t.instruction)).toEqual([
       "Answer briefly.",
     ]);
   });
@@ -319,6 +369,7 @@ describe("dashboard CRUD", () => {
     // A second identical row, as one stored before duplicates were refused —
     // pausing must stay the way out of that, not be blocked by it.
     await insertTask(ctx.db, randomUUID(), {
+      assistantId: ASSISTANT,
       chatId: GROUP,
       threadId: null,
       createdByUserId: null,
@@ -419,12 +470,13 @@ describe("dashboard CRUD", () => {
 describe("chat-side gate — standing kinds (the rules gate)", () => {
   it("lets a user set a standing task in their own DM, and is idempotent on repeat", async () => {
     const first = await createTaskFromChat(
-      { chatId: DM_USER, userId: DM_USER, instruction: "Answer briefly.", triggerKind: "on-reply" },
+      { assistantId: ASSISTANT, chatId: DM_USER, userId: DM_USER, instruction: "Answer briefly.", triggerKind: "on-reply" },
       chatTrigger,
       ctx.db,
     );
     const again = await createTaskFromChat(
       {
+        assistantId: ASSISTANT,
         chatId: DM_USER,
         userId: DM_USER,
         instruction: "  answer BRIEFLY.  ",
@@ -440,13 +492,14 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
       status: "exists",
       task: { triggerKind: "on-reply", instruction: "Answer briefly." },
     });
-    expect(await getChatVisibleTasks(DM_USER, ctx.db)).toHaveLength(1);
+    expect(await getChatVisibleTasks(ASSISTANT, DM_USER, ctx.db)).toHaveLength(1);
   });
 
   it("amends the audience when the same standing task is set again for other people", async () => {
     await joinGroup(GROUP, "11", "22");
     const first = await createTaskFromChat(
       {
+        assistantId: ASSISTANT,
         chatId: GROUP,
         userId: DM_USER,
         senderIsOwner: true,
@@ -459,6 +512,7 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
     );
     const widened = await createTaskFromChat(
       {
+        assistantId: ASSISTANT,
         chatId: GROUP,
         userId: DM_USER,
         senderIsOwner: true,
@@ -472,12 +526,12 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
 
     expect(first.status).toBe("created");
     expect(widened).toMatchObject({ status: "updated", task: { targetUserIds: ["22", "11"] } });
-    expect(await getChatVisibleTasks(GROUP, ctx.db)).toHaveLength(1);
+    expect(await getChatVisibleTasks(ASSISTANT, GROUP, ctx.db)).toHaveLength(1);
   });
 
   it("refuses a non-owner writing a standing task in a group, before the duplicate check", async () => {
     await createTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, instruction: "Answer briefly.", triggerKind: "on-reply" },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: DM_USER, senderIsOwner: true, instruction: "Answer briefly.", triggerKind: "on-reply" },
       chatTrigger,
       ctx.db,
     );
@@ -485,7 +539,7 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
     // An outsider must not learn what a chat's rules are by watching "created"
     // turn into "exists".
     const denied = await createTaskFromChat(
-      { chatId: GROUP, userId: OTHER_USER, instruction: "Answer briefly.", triggerKind: "on-reply" },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: OTHER_USER, instruction: "Answer briefly.", triggerKind: "on-reply" },
       chatTrigger,
       ctx.db,
     );
@@ -496,9 +550,9 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
   it("shows a global task to the chat but refuses to change it from there", async () => {
     const global = await create({ chatId: null, instruction: "Never swear." });
 
-    expect((await getChatVisibleTasks(GROUP, ctx.db)).map((t) => t.id)).toContain(global.id);
+    expect((await getChatVisibleTasks(ASSISTANT, GROUP, ctx.db)).map((t) => t.id)).toContain(global.id);
     const result = await deleteTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: global.id },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: global.id },
       chatTrigger,
       ctx.db,
     );
@@ -512,12 +566,12 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
     const other = await create({ chatId: "-2002", instruction: "Somebody else's task." });
 
     const updated = await updateTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: other.id, patch: { instruction: "mine now" } },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: other.id, patch: { instruction: "mine now" } },
       chatTrigger,
       ctx.db,
     );
     const deleted = await deleteTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: other.id },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: DM_USER, senderIsOwner: true, id: other.id },
       chatTrigger,
       ctx.db,
     );
@@ -529,6 +583,7 @@ describe("chat-side gate — standing kinds (the rules gate)", () => {
 
 describe("chat-side gate — timed kinds (creator or owner)", () => {
   const timedInput = (userId: string) => ({
+    assistantId: ASSISTANT,
     chatId: GROUP,
     userId,
     instruction: "Remind us to stretch.",
@@ -560,7 +615,7 @@ describe("chat-side gate — timed kinds (creator or owner)", () => {
       status: "exists",
       task: { id: first.status === "created" ? first.task.id : "" },
     });
-    expect(await getChatVisibleTasks(GROUP, ctx.db)).toHaveLength(1);
+    expect(await getChatVisibleTasks(ASSISTANT, GROUP, ctx.db)).toHaveLength(1);
   });
 
   it("still lets the same reminder be scheduled for a different time", async () => {
@@ -572,7 +627,7 @@ describe("chat-side gate — timed kinds (creator or owner)", () => {
     );
 
     expect(later.status).toBe("created");
-    expect(await getChatVisibleTasks(GROUP, ctx.db)).toHaveLength(2);
+    expect(await getChatVisibleTasks(ASSISTANT, GROUP, ctx.db)).toHaveLength(2);
   });
 
   it("lets only the creator or the owner change or cancel it", async () => {
@@ -580,17 +635,17 @@ describe("chat-side gate — timed kinds (creator or owner)", () => {
     const id = created.status === "created" ? created.task.id : "";
 
     const stranger = await updateTaskFromChat(
-      { chatId: GROUP, userId: "300", id, patch: { instruction: "Remind us to nap." } },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: "300", id, patch: { instruction: "Remind us to nap." } },
       chatTrigger,
       ctx.db,
     );
     const creator = await updateTaskFromChat(
-      { chatId: GROUP, userId: OTHER_USER, id, patch: { instruction: "Remind us to nap." } },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: OTHER_USER, id, patch: { instruction: "Remind us to nap." } },
       chatTrigger,
       ctx.db,
     );
     const owner = await deleteTaskFromChat(
-      { chatId: GROUP, userId: DM_USER, senderIsOwner: true, id },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: DM_USER, senderIsOwner: true, id },
       chatTrigger,
       ctx.db,
     );
@@ -608,7 +663,7 @@ describe("chat-side gate — timed kinds (creator or owner)", () => {
     const id = created.status === "created" ? created.task.id : "";
 
     const viaAuthority = await deleteTaskFromChat(
-      { chatId: GROUP, userId: "300", authorityIsOwner: true, id },
+      { assistantId: ASSISTANT, chatId: GROUP, userId: "300", authorityIsOwner: true, id },
       chatTrigger,
       ctx.db,
     );

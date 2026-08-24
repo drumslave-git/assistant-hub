@@ -1,0 +1,1 @@
+ALTER TABLE "tasks" ADD COLUMN "created_by_owner" boolean DEFAULT false NOT NULL;

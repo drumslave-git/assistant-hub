@@ -14,6 +14,13 @@ import type { TraceTrigger } from "@/lib/trace";
 export interface McpToolContext {
   /** The current chat's id (Telegram chat/group id as a string). */
   chatId: string;
+  /**
+   * The turn's assistant (Phase 3): a reply turn binds the inbound event's,
+   * a task fire binds the task's. Assistant-scoped tools (tasks) act on this
+   * assistant's rows only, and refuse when it is absent (tests, stale
+   * bindings) rather than guessing whose standing orders to touch.
+   */
+  assistantId?: string;
   /** The sender's numeric Telegram user id, when known (absent for tests). */
   userId?: string | null;
   /**
