@@ -1,5 +1,6 @@
 import {
   BUS_EVENTS_CHANNEL,
+  assistantDeletedEventSchema,
   parseScopedRef,
   replyDeliveryEventSchema,
   turnLifecycleEventSchema,
@@ -74,6 +75,11 @@ export async function startDeliveryConsumer(input: {
   redisUrl: string;
   /** Resolve the sender for one assistant's connection, per event. */
   senderFor: (assistantId: string | null) => TgSender;
+  /**
+   * The core deleted an assistant — drop what this app keys on it (the bot
+   * manager stops the poller and deletes the connection row).
+   */
+  onAssistantDeleted?: (assistantId: string) => Promise<void>;
   onError?: (context: string, error: unknown) => void;
 }): Promise<DeliveryConsumer> {
   const onError =
@@ -155,6 +161,12 @@ export async function startDeliveryConsumer(input: {
         await trace.fail(error);
         throw error;
       }
+      return;
+    }
+    if (type === "assistant.deleted") {
+      const parsed = assistantDeletedEventSchema.safeParse(payload);
+      if (!parsed.success || !input.onAssistantDeleted) return;
+      await input.onAssistantDeleted(parsed.data.assistantId);
       return;
     }
     if (type === "turn.lifecycle") {

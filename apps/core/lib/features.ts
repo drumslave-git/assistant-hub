@@ -138,6 +138,17 @@ export const FEATURES = {
     relatedIdsKey: "personalities",
     path: "/personalities",
   },
+  // First-class successor of personalities (redesign Phase 3): many
+  // assistants, each with its own persona and per-source connection; the
+  // assistant in a chat is implied by which bot is in it — no "active" one.
+  assistants: {
+    id: "assistants",
+    label: "Assistants",
+    group: "conversation",
+    realtimeTopic: "assistants",
+    relatedIdsKey: "assistants",
+    path: "/assistants",
+  },
   // The unified feature that absorbed scheduled tasks and chat rules (user
   // decision, 2026-08-13): one instruction + one trigger (message / on-reply /
   // interval / timeout / schedule).

@@ -39,6 +39,7 @@ const delivery = await startDeliveryConsumer({
   db,
   redisUrl,
   senderFor: (assistantId) => manager.senderFor(assistantId),
+  onAssistantDeleted: (assistantId) => manager.removeAssistant(assistantId),
 });
 
 const server = serve({ fetch: createApi({ db, manager, internalToken }).fetch, port }, (info) => {

@@ -20,7 +20,11 @@ import { processIncomingMessage } from "./inbound";
 import { createBotOutbound, type TgOutbound } from "./outbound";
 import { dashboardRefresh } from "./refresh";
 import { busTraceClient } from "./trace-client";
-import { applyMessageEdit, listEnabledConnections } from "./store";
+import {
+  applyMessageEdit,
+  deleteConnectionsByAssistant,
+  listEnabledConnections,
+} from "./store";
 
 /**
  * Poller lifecycle for this app's telegram connections — the v1 bot-manager
@@ -521,6 +525,25 @@ export class BotManager {
     if (poller) {
       poller.desired = false;
       await this.stopPoller(poller);
+    }
+  }
+
+  /**
+   * The `assistant.deleted` reaction: drop every connection keyed on the
+   * assistant — rows deleted, pollers stopped — and ping the status pages.
+   */
+  async removeAssistant(assistantId: string): Promise<void> {
+    const rows = await deleteConnectionsByAssistant(this.deps.db, assistantId);
+    for (const row of rows) {
+      await this.removeConnection(row.id);
+    }
+    if (rows.length > 0) {
+      console.log(
+        `assistant ${assistantId} deleted — dropped ${rows.length} connection(s) and stopped polling`,
+      );
+      void this.publisher
+        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["status"]))
+        .catch(() => undefined);
     }
   }
 

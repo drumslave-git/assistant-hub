@@ -2,6 +2,7 @@ import { composeNavGroups, type NavGroup } from "@assistant-hub/ui";
 import {
   Activity,
   BarChart3,
+  Bot,
   Brain,
   Bug,
   CalendarClock,
@@ -50,6 +51,7 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
     // What shapes a reply: persona, durable knowledge, tools, learned corrections.
     label: "Bot",
     items: [
+      { href: "/assistants", label: "Assistants", icon: Bot },
       { href: "/personalities", label: "Personalities", icon: VenetianMask },
       { href: "/memory", label: "Memory", icon: Brain },
       { href: "/tools", label: "Tools", icon: Wrench },

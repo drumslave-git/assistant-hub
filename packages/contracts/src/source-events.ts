@@ -300,6 +300,19 @@ export type ChatInfo = z.infer<typeof chatInfoSchema>;
 export type SenderInfo = z.infer<typeof senderInfoSchema>;
 export type ReplyTarget = z.infer<typeof replyTargetSchema>;
 export type InboundMessageEvent = z.infer<typeof inboundMessageEventSchema>;
+/**
+ * `assistant.deleted` — the core removed an assistant (PLAN "Entity
+ * lifecycle across apps"): every source app drops what it keys on that
+ * assistant id (tg stops the poller and deletes the connection row).
+ * Published by the core, so it carries no source id.
+ */
+export const assistantDeletedEventSchema = eventEnvelopeSchema.extend({
+  type: z.literal("assistant.deleted"),
+  assistantId: z.string().min(1),
+});
+
+export type AssistantDeletedEvent = z.infer<typeof assistantDeletedEventSchema>;
+
 export type ReplyDeliveryEvent = z.infer<typeof replyDeliveryEventSchema>;
 export type TurnLifecycleEvent = z.infer<typeof turnLifecycleEventSchema>;
 

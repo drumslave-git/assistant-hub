@@ -366,4 +366,41 @@ describe("tg runtime", () => {
       await consumer.close();
     }
   });
+
+  it("assistant.deleted drops exactly that assistant's connections", async () => {
+    await pool.query(
+      `INSERT INTO connections (id, assistant_id, bot_token, enabled) VALUES
+         ('conn-a', 'assistant-doomed', 'token-a', true),
+         ('conn-b', 'assistant-kept', 'token-b', true)`,
+    );
+    const dropped: string[] = [];
+    const consumer = await startDeliveryConsumer({
+      db,
+      redisUrl,
+      senderFor: () => ({ sendMessage: async () => ({ messageId: 1 }), sendTyping: () => {} }),
+      // The seam the bot manager hangs off: rows deleted + pollers stopped.
+      onAssistantDeleted: async (assistantId) => {
+        const { deleteConnectionsByAssistant } = await import("./store");
+        const rows = await deleteConnectionsByAssistant(db, assistantId);
+        dropped.push(...rows.map((r) => r.id));
+      },
+    });
+    const publisher = openPublisher(redisUrl);
+    try {
+      await publisher.publish(BUS_EVENTS_CHANNEL, {
+        v: 1,
+        eventId: "evt-ad1",
+        occurredAt: new Date().toISOString(),
+        correlationId: "assistant-doomed",
+        type: "assistant.deleted",
+        assistantId: "assistant-doomed",
+      });
+      await expect.poll(() => dropped, { timeout: 10_000 }).toEqual(["conn-a"]);
+      const left = await pool.query(`SELECT id FROM connections ORDER BY id`);
+      expect(left.rows.map((r) => r.id)).toEqual(["conn-b"]);
+    } finally {
+      await publisher.close();
+      await consumer.close();
+    }
+  });
 });

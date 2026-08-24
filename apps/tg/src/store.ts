@@ -519,6 +519,18 @@ export async function deleteConnection(db: TgDb, id: string): Promise<Connection
 }
 
 /**
+ * Delete every connection keyed on one assistant (the `assistant.deleted`
+ * reaction — PLAN "Entity lifecycle across apps"). Returns the deleted rows
+ * so the caller can stop their pollers.
+ */
+export async function deleteConnectionsByAssistant(
+  db: TgDb,
+  assistantId: string,
+): Promise<ConnectionRow[]> {
+  return db.delete(connections).where(eq(connections.assistantId, assistantId)).returning();
+}
+
+/**
  * Set (or clear) the owner identity. A caller that already knows the
  * numeric id (the dashboard picks the owner from the user listing) passes
  * it; otherwise changing the @username resets the resolved id — the new
