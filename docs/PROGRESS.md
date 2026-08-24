@@ -32,10 +32,13 @@ core-side tool bindings — flag closed; Phase 5 may wrap the same
 handlers in an MCP endpoint if still wanted. Acceptance criteria are
 under "Phase 3 — Assistants" below. Slices A–D are done (assistants
 feature, persona flip, tasks flip, per-assistant connections + the tg
-UI extension). Next best task: slice E (the cross-feed + loop guard).
-Waiting on the operator: the two-live-bots check — create a second
-assistant, connect a second real bot token in its editor, and confirm
-both bots poll and reply concurrently (each with its own persona).
+UI extension), plus the live-test follow-up (per-assistant DM streams +
+the persona identity line — see the criterion and session log). Next
+best task: slice E (the cross-feed + loop guard). Waiting on the
+operator: restart both dev services (the tg service and the core dev
+server — the queue consumer and pollers are boot-bound), then re-run
+the two-bot check: DM each bot and confirm each answers as ITS
+assistant with only its own conversation history.
 
 The numbered list below records how the last Phase 2 items closed:
 
