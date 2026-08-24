@@ -16,10 +16,7 @@ the tg app owns everything Telegram-shaped, the core reads/writes
 conversation content only through tg's internal API, and the live
 end-to-end smoke passed on the operator's real bot (see the swap notes
 under the Phase 2 criteria for the commit-by-commit list, and the smoke
-item below for the dev-environment setup that now exists). One standing
-item carried forward: the slice-D **MCP-outbound design call** still
-awaits user confirmation (REST send API + core-side tool bindings vs an
-MCP endpoint on tg — Phase 5 can wrap the same handlers either way).
+item below for the dev-environment setup that now exists).
 
 **Phase 3 (Assistants) is in progress.** The sequencing decisions were
 answered by the user (2026-08-24): (1) the assistant-scoped brain reads
@@ -79,8 +76,7 @@ The numbered list below records how the last Phase 2 items closed:
    the store was reset before the import (one-shot semantics), dropping
    only the two smoke rows.
 
-One design call from slice D still awaits user confirmation
-(MCP-outbound shape — see the slice D notes). The slice-C task-authority
+The slice-C task-authority
 swap blocker is resolved and landed (`ec2b7ad`): `event.sender.isOwner`
 is authoritative, tasks stamp `created_by_owner` at creation (core
 migration 0059 backfills), `BotPolicy` is maintenance-only.
