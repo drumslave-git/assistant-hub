@@ -2,6 +2,7 @@
   "name": "@assistant-hub/tg",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "Telegram source app. Phase 1 ships its store (schema + migrations) and the v1 import; the runtime (pollers, inbound events, media ingestion, MCP server) arrives with Phase 2.",
   "scripts": {
     "typecheck": "tsc --noEmit",
