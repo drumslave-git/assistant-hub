@@ -88,6 +88,21 @@ export async function getAssistantPersona(
 }
 
 /**
+ * Server-only: one assistant's prompt identity — the display name (the
+ * spoken-summons identity addressing matches, user decision 2026-08-24)
+ * and the persona block — or null when the id is unknown. One read serving
+ * the whole turn: name check, analyzer, and persona.
+ */
+export async function getAssistantPromptIdentity(
+  id: string,
+  db: StoreDb = getStoreDb(),
+): Promise<{ name: string; personaBlock: string } | null> {
+  const record = await getAssistantById(db, id);
+  if (!record) return null;
+  return { name: record.name, personaBlock: personaBlock(record) };
+}
+
+/**
  * Server-only, transitional: the persona when exactly ONE assistant exists,
  * else null. Assistant-less flows (timed task fires, the self-improvement
  * reflection context) have no event to name an assistant until the tasks

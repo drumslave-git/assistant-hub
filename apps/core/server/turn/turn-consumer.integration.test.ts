@@ -116,6 +116,12 @@ describe("inbound turn consumer", () => {
     process.env.DATABASE_URL = v1Url;
     process.env.STORE_DATABASE_URL = storeUrl;
     storePool = new Pool({ connectionString: storeUrl });
+    // The event's assistant: its NAME is the spoken-summons identity the
+    // core-side name check and analyzer match (user decision, 2026-08-24) —
+    // the connection's botDisplayName never drives addressing.
+    await storePool.query(
+      `INSERT INTO assistants (id, name, persona) VALUES ('assistant-1', 'Aria', '')`,
+    );
   });
 
   afterAll(async () => {

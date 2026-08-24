@@ -34,7 +34,7 @@ import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/ex
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import { getMemoryContext } from "@/features/memory/server/service";
 import { getPreferencesContext, getLatestSelfCorrectionPrompt } from "@/features/self-improvement/server/service";
-import { getAssistantPersona } from "@/features/assistants/server/service";
+import { getAssistantPromptIdentity } from "@/features/assistants/server/service";
 import { buildStandingTasksBlock } from "@/features/tasks/format";
 import { getActiveTasksForChat } from "@/features/tasks/server/service";
 import { getBotPolicy, getTimezone } from "@/features/settings/server/service";
@@ -181,6 +181,30 @@ interface TurnPlan {
   generatedImages: string[];
   /** Runs `browse_web` enqueued this turn — replies become silent acks. */
   enqueuedBrowserRuns: string[];
+  /**
+   * The event's assistant, resolved once from the store that owns it: the
+   * display name (the spoken-summons identity — addressing and the analyzer
+   * match THIS, never the bot account's profile name; user decision
+   * 2026-08-24) and the persona block. Null = unknown id (deleted assistant
+   * whose connection outlived the bus event).
+   */
+  assistantIdentity: { name: string; personaBlock: string } | null;
+}
+
+/**
+ * The core half of the deterministic addressing check: does the text speak
+ * the assistant's name? Addressed on a literal match; a name too generic to
+ * match skips the analyzer entirely (the v1 rule — a bot named "Bot" must
+ * not answer every message about bots); otherwise the LLM analyzer decides.
+ */
+function resolveSpokenName(text: string, name: string | null): AddressResult {
+  if (name && messageNamesBot(text, name)) {
+    return { addressed: true, source: "name", reason: "assistant name spoken", needsAnalyzer: false };
+  }
+  if (!name || !displayNameMatchable(name)) {
+    return { addressed: false, needsAnalyzer: false };
+  }
+  return { addressed: false, needsAnalyzer: true };
 }
 
 /** Build the service collaborators from the event + the (v1) brain services. */
@@ -195,25 +219,21 @@ async function buildEventDeps(
   const isGroup = event.chat.kind === "group";
   const botLabel = botTranscriptLabel();
 
-  // The persona is the EVENT's assistant's (Phase 3): the assistant in a
-  // chat is implied by which bot received the message. An id the store does
-  // not know composes no persona but says so loudly — a deleted assistant
-  // whose connection outlived the bus event must not silently blend in.
-  const loadPersona = async (): Promise<string | null> => {
-    // The shared persona block includes the structural identity line
-    // ("You are <name>.") — a third-person persona still knows its name.
-    const block = await getAssistantPersona(event.assistantId);
-    if (block == null) {
-      console.error(
-        `Unknown assistant '${event.assistantId}' on inbound event — replying with the base prompt only`,
-      );
-    }
-    return block;
-  };
+  // The persona is the EVENT's assistant's (Phase 3), resolved once in the
+  // pre-pass (turn.assistantIdentity — the block includes the structural
+  // "You are <name>." line, so a third-person persona still knows its
+  // name). An id the store does not know composes no persona but says so
+  // loudly — a deleted assistant whose connection outlived the bus event
+  // must not silently blend in.
+  const personalityPrompt = turn.assistantIdentity?.personaBlock ?? null;
+  if (turn.assistantIdentity == null) {
+    console.error(
+      `Unknown assistant '${event.assistantId}' on inbound event — replying with the base prompt only`,
+    );
+  }
 
-  const [policy, personalityPrompt, selfCorrection, taskSets, timezone] = await Promise.all([
+  const [policy, selfCorrection, taskSets, timezone] = await Promise.all([
     getBotPolicy(),
-    loadPersona(),
     getLatestSelfCorrectionPrompt().catch(() => null),
     getActiveTasksForChat(event.assistantId, chatId, senderId).catch(() => ({
       prompt: [],
@@ -305,11 +325,14 @@ async function buildEventDeps(
 
   return {
     // The numeric bot id only feeds the deterministic addressing check,
-    // which the source already ran — 0 is deliberately inert here.
+    // which the source already ran — 0 is deliberately inert here. The
+    // display-name slot carries the ASSISTANT's name: it is what the LLM
+    // analyzer matches and what addressing exclusions are filed against
+    // (the account's profile name only backstops an unknown assistant).
     bot: {
       id: 0,
       username: event.connection.botUsername,
-      displayName: event.connection.botDisplayName,
+      displayName: turn.assistantIdentity?.name ?? event.connection.botDisplayName,
     },
     policy,
     // The source's stamp is the owner authority since the swap — the core
@@ -505,6 +528,20 @@ export async function processInboundEvent(
   let attachment: VisionAttachment | null = null;
   let replyTrace: TraceRecorder | undefined;
 
+  // The event's assistant, from the store that owns it — one read serving
+  // the name check, the analyzer, and the persona (user decision,
+  // 2026-08-24: the ASSISTANT's name is the spoken-summons identity; the
+  // source sends only structural verdicts).
+  const assistantIdentity = await getAssistantPromptIdentity(event.assistantId).catch(() => null);
+  const spokenName = assistantIdentity?.name ?? null;
+
+  // The name half of the deterministic check, on the source's undecided
+  // group turns: a literal name match is a summons; otherwise the analyzer
+  // (or, for an unmatchable name, nobody) decides.
+  if (!addressing.addressed && addressing.needsAnalyzer && effectiveText.trim()) {
+    addressing = resolveSpokenName(effectiveText, spokenName);
+  }
+
   if (isVoice && media) {
     // Voice: transcribe eagerly — before any addressing decision — because in
     // a group whether the message even summons the bot is only knowable from
@@ -537,16 +574,11 @@ export async function processInboundEvent(
     effectiveText = transcript ?? "";
     if (effectiveText) replyTrace.setInputSummary(effectiveText);
     // The source's deterministic check ran without the words; with them, the
-    // spoken name is as much a summons as typed — the same name check, then
-    // the analyzer for the ambiguous case.
-    if (
-      !addressing.addressed &&
-      effectiveText.trim() &&
-      displayNameMatchable(event.connection.botDisplayName)
-    ) {
-      addressing = messageNamesBot(effectiveText, event.connection.botDisplayName)
-        ? { addressed: true, source: "name", reason: "display name spoken" }
-        : { addressed: false, needsAnalyzer: true };
+    // spoken name is as much a summons as typed — the same name check
+    // (against the assistant's name), then the analyzer for the ambiguous
+    // case.
+    if (!addressing.addressed && effectiveText.trim()) {
+      addressing = resolveSpokenName(effectiveText, spokenName);
     }
     // With a transcript the turn is answered from the words; without one the
     // bot owns up in a DM (in a group the empty text fails addressing).
@@ -569,6 +601,7 @@ export async function processInboundEvent(
     isVoice,
     generatedImages: [],
     enqueuedBrowserRuns: [],
+    assistantIdentity,
   };
   const deps = await buildEventDeps(event, ctx, turn);
   const outcome = await handleIncomingMessage(

@@ -204,12 +204,11 @@ export async function processIncomingMessage(
     connection: deps.identity,
     chat: chatInfo,
     sender,
-    // The deterministic verdict travels with the event; only the ambiguous
-    // case reaches the core's LLM analyzer.
+    // The STRUCTURAL verdict travels with the event (reply/@mention/command/
+    // DM); the name half runs core-side against the assistant's name.
     addressing: checkAddressed(message, chat.type, {
       id: deps.botId,
       username: deps.identity.botUsername,
-      displayName: deps.identity.botDisplayName,
     }),
     message: {
       sourceMessageId: String(message.message_id),

@@ -1,9 +1,9 @@
 import type { Message } from "@grammyjs/types";
 import { describe, expect, it } from "vitest";
 
-import { checkAddressed, displayNameMatchable, messageNamesBot } from "./addressing";
+import { checkAddressed } from "./addressing";
 
-const BOT = { id: 999, username: "fixture_bot", displayName: "Aria" };
+const BOT = { id: 999, username: "fixture_bot" };
 
 function msg(input: Partial<Message> & { text?: string }): Message {
   return {
@@ -15,7 +15,7 @@ function msg(input: Partial<Message> & { text?: string }): Message {
   } as Message;
 }
 
-describe("checkAddressed (v1 port)", () => {
+describe("checkAddressed (structural half — the name check is the core's)", () => {
   it("private chats are always addressed", () => {
     expect(
       checkAddressed(msg({ chat: { id: 5, type: "private", first_name: "A" } as Message["chat"] }), "private", BOT),
@@ -50,10 +50,13 @@ describe("checkAddressed (v1 port)", () => {
     });
   });
 
-  it("speaking the display name addresses the bot; other text goes to the analyzer", () => {
+  it("any other group text is undecided — the core runs the name check + analyzer", () => {
+    // Even text that speaks a name: the assistant's name lives in the core's
+    // store (and can be renamed there), so this app never matches names
+    // (user decision, 2026-08-24).
     expect(checkAddressed(msg({ text: "Aria, help" }), "supergroup", BOT)).toMatchObject({
-      addressed: true,
-      source: "name",
+      addressed: false,
+      needsAnalyzer: true,
     });
     expect(checkAddressed(msg({ text: "unrelated chatter" }), "supergroup", BOT)).toMatchObject({
       addressed: false,
@@ -61,16 +64,8 @@ describe("checkAddressed (v1 port)", () => {
     });
   });
 
-  it("unicode word boundaries: a Cyrillic name never matches inside a word", () => {
-    expect(messageNamesBot("работа всякая", "Бот")).toBe(false);
-    expect(messageNamesBot("Бот, привет", "Бот")).toBe(true);
-  });
-
-  it("generic or too-short display names never match and never cost the analyzer", () => {
-    expect(displayNameMatchable("Bot")).toBe(false);
-    expect(displayNameMatchable("ai")).toBe(false);
-    const generic = { ...BOT, displayName: "Bot" };
-    expect(checkAddressed(msg({ text: "some chatter" }), "supergroup", generic)).toMatchObject({
+  it("a text-less group message decides nothing and asks for no analyzer", () => {
+    expect(checkAddressed(msg({}), "supergroup", BOT)).toMatchObject({
       addressed: false,
       needsAnalyzer: false,
     });

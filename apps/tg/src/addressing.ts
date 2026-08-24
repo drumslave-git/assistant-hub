@@ -2,63 +2,29 @@ import type { Addressing } from "@assistant-hub/contracts";
 import type { Message } from "@grammyjs/types";
 
 /**
- * The deterministic half of addressing — whether a message is addressed to
- * the bot, as far as a pure check can tell. Ported verbatim from v1
- * (`features/bot-messaging/server/addressing.ts`): it reads Telegram wire
- * shapes (entities, mentions, commands, reply targets), which is exactly
- * why it lives in this app — the verdict crosses the contract, the wire
- * format never does. The genuinely ambiguous case (the name in another
- * alphabet or an inflected form) goes to the core's LLM analyzer via
- * `needsAnalyzer`; deliberately NO lexical pre-filter in front of it
- * (user decision, 2026-07-20).
+ * The STRUCTURAL half of addressing — whether the Telegram wire shape alone
+ * says the message targets this bot (entities, mentions, commands, reply
+ * targets). That is exactly why it lives in this app: the verdict crosses
+ * the contract, the wire format never does.
  *
- * Rules: private chats always addressed; groups when the message @mentions
- * the bot, replies to one of its messages, is a `/command@botusername`, or
- * speaks the display name literally.
+ * The NAME half moved to the core (user decision, 2026-08-24): people
+ * summon the ASSISTANT by its name — which lives in the core's store and
+ * can be renamed there any time — never by the bot account's profile name.
+ * A group message this check cannot decide comes back `needsAnalyzer`, and
+ * the core runs its own deterministic name check before the LLM analyzer.
+ *
+ * Rules here: private chats always addressed; groups when the message
+ * @mentions the bot, replies to one of its messages, or is a
+ * `/command@botusername`.
  */
 
-/** Minimal identity the addressing check needs. */
+/** Minimal identity the structural check needs (the bot ACCOUNT's). */
 export interface BotAddressIdentity {
   id: number;
   username: string;
-  /** The bot's display name (getMe `first_name`) — the name people speak. */
-  displayName: string;
 }
 
 const NOT_ADDRESSED: Addressing = { addressed: false, needsAnalyzer: false };
-
-/**
- * Display names too generic to treat as a summons: a bot called "Bot" would
- * answer every message that mentions bots.
- */
-const GENERIC_DISPLAY_NAMES = new Set(["bot", "ai", "assistant", "the", "and", "cloud"]);
-
-/** Below this, a "name" is too short to match without constant false positives. */
-const MIN_DISPLAY_NAME_LENGTH = 3;
-
-/** Whether a display name is specific enough to be worth matching at all. */
-export function displayNameMatchable(displayName: string): boolean {
-  const trimmed = displayName.trim();
-  if (trimmed.length < MIN_DISPLAY_NAME_LENGTH) return false;
-  return !GENERIC_DISPLAY_NAMES.has(trimmed.toLowerCase());
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Whether free text speaks the bot's display name. The name must stand as
- * its own word and must not be the tail of an @handle; boundaries are
- * `\p{L}\p{N}`-based because `\b` is ASCII-only (a Cyrillic-named bot
- * matched with `\b` would answer to substrings).
- */
-export function messageNamesBot(text: string, displayName: string): boolean {
-  if (!text.trim() || !displayNameMatchable(displayName)) return false;
-  const name = escapeRegex(displayName.trim());
-  const re = new RegExp(`(?<![\\p{L}\\p{N}_@])${name}(?![\\p{L}\\p{N}_])`, "iu");
-  return re.test(text);
-}
 
 /** Telegram entity offsets are UTF-16 code units, matching JS string indexing. */
 function sliceEntity(text: string, offset: number, length: number): string {
@@ -108,9 +74,10 @@ function hasCommandForBot(message: Message, username: string): boolean {
 }
 
 /**
- * Decide as much as a pure check can; a group message that names nothing
- * recognizable but still carries text comes back `needsAnalyzer`.
- * `transcript` is the spoken text of a voice message (media slice).
+ * Decide as much as the wire shape can; a group message that carries text
+ * but targets nothing structurally comes back `needsAnalyzer` — the core
+ * runs the name check (against the assistant's name) and, behind it, the
+ * LLM analyzer. `transcript` is the spoken text of a voice message.
  */
 export function checkAddressed(
   message: Message,
@@ -137,15 +104,7 @@ export function checkAddressed(
   }
 
   const text = messageText(message) || transcript?.trim() || "";
-  if (messageNamesBot(text, bot.displayName)) {
-    return {
-      addressed: true,
-      source: "name",
-      needsAnalyzer: false,
-      reason: "display name spoken",
-    };
-  }
-  if (text.trim() && displayNameMatchable(bot.displayName)) {
+  if (text.trim()) {
     return { addressed: false, needsAnalyzer: true };
   }
   return NOT_ADDRESSED;
