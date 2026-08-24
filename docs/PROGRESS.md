@@ -302,12 +302,19 @@ confirmed as tg's REST send API + core-side tool bindings (flag closed);
 the dev core store is populated (core import run 2026-08-24, one
 assistant converted from the active personality, all counts reconciled).
 
-- [ ] Assistants CRUD: feature-contract service over the v2 store's
-      `assistants` table (create/rename/edit persona/delete; name unique
-      case-insensitively), Route Handlers on shared wrappers, dashboard
-      page replacing the personalities page, traces for every mutation,
-      live updates, `/debug` scoping. Deleting an assistant publishes
-      `assistant.deleted` on the bus.
+- [x] Assistants CRUD (`d8bb88a`): feature-contract service over the
+      v2 store's `assistants` table (create/rename/edit persona/delete;
+      name unique case-insensitively, 32-cap), Route Handlers on shared
+      wrappers, dashboard page + nav entry, traces for every mutation,
+      live updates ("assistants" topic), `/debug` scoping. Deleting an
+      assistant publishes `assistant.deleted` (new contract event); tg
+      reacts by dropping the assistant's connections and stopping their
+      pollers. New shared plumbing: `server/store/db` (the v2-store
+      drizzle handle over the turn-markers pool) and `server/bus/
+      publisher` (env-gated; a delete with no bus records a loud trace
+      warning). The personalities page is retired in slice B with the
+      reader flip. Tests: 5 store-backed service cases + a tg runtime
+      case for the deletion reaction.
 - [ ] Persona flip: the turn consumer resolves the persona from the v2
       `assistants` row named by `event.assistantId` (falling back
       audibly, not silently, when the id is unknown); the v1
