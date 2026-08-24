@@ -315,10 +315,15 @@ assistant converted from the active personality, all counts reconciled).
       warning). The personalities page is retired in slice B with the
       reader flip. Tests: 5 store-backed service cases + a tg runtime
       case for the deletion reaction.
-- [ ] Persona flip: the turn consumer resolves the persona from the v2
-      `assistants` row named by `event.assistantId` (falling back
-      audibly, not silently, when the id is unknown); the v1
-      personalities feature stops feeding replies.
+- [x] Persona flip (`14d2932`): the turn consumer resolves the persona
+      from the v2 `assistants` row named by `event.assistantId` (an
+      unknown id composes no persona and logs loudly); assistant-less
+      flows (task fires, reflection context) ride a transitional
+      single-assistant helper until the tasks flip stamps one per task;
+      the personalities feature is fully retired (service/routes/page/
+      registry/tests deleted — the frozen v1 table and settings column
+      wait for Phase 6). Affected suites green (turn consumer,
+      self-improvement, task scheduler; full core integration 322).
 - [ ] Tasks flip: the tasks feature moves to the v2 store's
       per-assistant `tasks` table (scoped refs, `assistant_id`,
       `created_by_owner` semantics carried over); chat turns act on the
