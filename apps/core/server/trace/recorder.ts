@@ -34,6 +34,12 @@ import {
 export interface StartTraceInput {
   feature: string;
   action: string;
+  /**
+   * The assistant this action belongs to, when it belongs to one (a reply
+   * turn, a task fire, an edit to the assistant itself). Recorded on the
+   * trace so Debug can show and filter by it.
+   */
+  assistantId?: string;
   trigger: TraceTrigger;
   inputSummary?: string;
 }
@@ -125,6 +131,7 @@ export async function startTrace(input: StartTraceInput): Promise<TraceRecorder>
     id,
     feature: input.feature,
     action: input.action,
+    assistantId: input.assistantId,
     // Every trace carries a correlation (operator requirement, 2026-08-15: a
     // process must be traceable start to end, and the Debug correlation filter
     // must never come up empty-handed). A flow that spans traces passes its

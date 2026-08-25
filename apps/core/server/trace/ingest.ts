@@ -26,6 +26,7 @@ export function ingestSourceTrace(trace: SourceTrace): void {
     id,
     feature: trace.feature,
     action: trace.action,
+    assistantId: trace.assistantId,
     trigger: trace.trigger,
     startedAt: trace.startedAt,
     inputSummary: trace.inputSummary,

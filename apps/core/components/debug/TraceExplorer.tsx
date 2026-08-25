@@ -10,6 +10,7 @@ import { TraceList } from "./TraceList";
 function queryString(query: TraceQuery): string {
   const params = new URLSearchParams();
   if (query.feature) params.set("feature", query.feature);
+  if (query.assistantId) params.set("assistantId", query.assistantId);
   if (query.status) params.set("status", query.status);
   if (query.correlationId) params.set("correlationId", query.correlationId);
   if (query.triggerKind) params.set("triggerKind", query.triggerKind);
@@ -35,6 +36,7 @@ export function TraceExplorer({
   basePath,
   detailBasePath = "/debug",
   showFeatureFilter = true,
+  assistants,
 }: {
   view: TraceListView;
   query: TraceQuery;
@@ -43,9 +45,18 @@ export function TraceExplorer({
   /** Where trace rows link for detail. Shared single detail route by default. */
   detailBasePath?: string;
   showFeatureFilter?: boolean;
+  /**
+   * The deployment's assistants. Supplying them turns on the Assistant column
+   * and its dropdown — one lookup serving both, so a row's name and the
+   * filter's options can never disagree.
+   */
+  assistants?: { id: string; name: string }[];
 }) {
   const { traces, total, features } = view;
   const bundleQs = queryString(query);
+  const assistantNames = assistants
+    ? Object.fromEntries(assistants.map((a) => [a.id, a.name]))
+    : undefined;
   const limit = query.limit ?? DEFAULT_TRACE_PAGE_SIZE;
   const offset = query.offset ?? 0;
 
@@ -64,6 +75,8 @@ export function TraceExplorer({
           basePath={basePath}
           features={showFeatureFilter ? features : undefined}
           feature={query.feature}
+          assistants={assistants}
+          assistantId={query.assistantId}
           status={query.status}
           correlationId={query.correlationId}
           triggerKind={query.triggerKind}
@@ -80,7 +93,7 @@ export function TraceExplorer({
         </div>
       </div>
 
-      <TraceList traces={traces} basePath={detailBasePath} />
+      <TraceList traces={traces} basePath={detailBasePath} assistantNames={assistantNames} />
 
       <Pagination total={total} limit={limit} offset={offset} hrefFor={hrefFor} noun="trace" />
 

@@ -113,6 +113,7 @@ export async function startDeliveryConsumer(input: {
       const trace = traces.startTrace({
         feature: "bot-messaging",
         action: "deliver",
+        assistantId: event.assistantId,
         trigger: { kind: "telegram", actor: chatId, correlationId: event.correlationId },
         inputSummary: event.text,
       });

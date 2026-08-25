@@ -353,6 +353,7 @@ export class BotManager {
     const trace = this.traces.startTrace({
       feature: "bot-messaging",
       action: "inbound",
+      assistantId: poller.assistantId,
       trigger: {
         kind: "telegram",
         actor: message.from ? String(message.from.id) : String(ctx.chat.id),
@@ -416,6 +417,7 @@ export class BotManager {
     const trace = this.traces.startTrace({
       feature: "self-improvement",
       action: "collect-feedback",
+      assistantId: poller.assistantId,
       trigger: {
         kind: "telegram",
         actor: reaction.user ? String(reaction.user.id) : String(reaction.chat.id),
@@ -455,6 +457,7 @@ export class BotManager {
     const trace = this.traces.startTrace({
       feature: "self-improvement",
       action: "collect-feedback",
+      assistantId: poller.assistantId,
       trigger: {
         kind: "telegram",
         actor: String(query.from.id),

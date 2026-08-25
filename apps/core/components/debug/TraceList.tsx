@@ -27,10 +27,18 @@ import { TraceStatusBadge } from "./TraceStatusBadge";
 export function TraceList({
   traces,
   basePath = "/debug",
+  assistantNames,
 }: {
   traces: Trace[];
   /** Detail links are `${basePath}/${trace.id}`. */
   basePath?: string;
+  /**
+   * Assistant id → display name. Supplying it adds the Assistant column, so
+   * compact views (the Overview's activity tabs) stay as they are and the
+   * Debug page — where filtering by assistant lives — shows whose action a
+   * row was. A trace whose assistant is gone falls back to its raw id.
+   */
+  assistantNames?: Record<string, string>;
 }) {
   if (traces.length === 0) {
     return (
@@ -43,11 +51,12 @@ export function TraceList({
   }
 
   return (
-    <Table minWidth={680}>
+    <Table minWidth={assistantNames ? 800 : 680}>
       <TableHead>
         <TableRow header>
           <TableHeaderCell>Status</TableHeaderCell>
           <TableHeaderCell>Feature</TableHeaderCell>
+          {assistantNames ? <TableHeaderCell>Assistant</TableHeaderCell> : null}
           <TableHeaderCell>Action</TableHeaderCell>
           <TableHeaderCell>Trigger</TableHeaderCell>
           <TableHeaderCell>Started</TableHeaderCell>
@@ -78,6 +87,22 @@ export function TraceList({
                   {trace.feature}
                 </Link>
               </TableCell>
+              {assistantNames ? (
+                <TableCell className="whitespace-nowrap text-muted">
+                  {trace.assistantId ? (
+                    <Link
+                      href={debugFilterHref({ assistantId: trace.assistantId })}
+                      className="relative z-10 hover:text-primary hover:underline"
+                      title="Show this assistant's traces"
+                    >
+                      {assistantNames[trace.assistantId] ?? trace.assistantId}
+                    </Link>
+                  ) : (
+                    // Nobody's in particular: a background job, a settings save.
+                    <span className="text-faint">—</span>
+                  )}
+                </TableCell>
+              ) : null}
               <TableCell>
                 {/* Stretched link: covers the whole row so any cell click opens the trace. */}
                 <Link

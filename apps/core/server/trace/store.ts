@@ -379,6 +379,8 @@ export interface CreateTraceInput {
   id: string;
   feature: string;
   action: string;
+  /** The assistant this action belongs to, when it belongs to one. */
+  assistantId?: string;
   trigger: TraceTrigger;
   startedAt: string;
   inputSummary?: string;
@@ -391,6 +393,7 @@ export function createTrace(input: CreateTraceInput): void {
     id: input.id,
     feature: input.feature,
     action: input.action,
+    assistantId: input.assistantId,
     status: "running",
     trigger: { ...input.trigger },
     startedAt: input.startedAt,
@@ -731,6 +734,8 @@ export async function scanTraces(input: ScanTracesInput = {}): Promise<Trace[]> 
 
 export interface ListTracesInput {
   feature?: string;
+  /** One assistant's actions — see `Trace.assistantId`. */
+  assistantId?: string;
   status?: TraceStatus;
   /** Every trace of one process (a turn, a job run) — exact trigger correlation. */
   correlationId?: string;
@@ -850,6 +855,7 @@ export async function listTraces(input: ListTracesInput = {}): Promise<ListTrace
     all = all.filter((t) => ids.has(t.id));
   }
   if (input.feature) all = all.filter((t) => t.feature === input.feature);
+  if (input.assistantId) all = all.filter((t) => t.assistantId === input.assistantId);
   if (input.status) all = all.filter((t) => t.status === input.status);
   if (input.correlationId) {
     all = all.filter((t) => t.trigger.correlationId === input.correlationId);

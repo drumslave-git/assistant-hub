@@ -130,6 +130,24 @@ On the Debug list and detail views the feature, status, trigger (kind · actor)
 and correlation are links to the pre-filtered list — `debugFilterHref` in
 `lib/trace.ts` is the one URL builder behind all of them.
 
+### Whose action it was
+
+A trace of work done **for one assistant** carries `assistantId`, shown as the
+Debug list's Assistant column and filterable from its dropdown or by clicking
+the cell (`/debug?assistantId=…`). It is stamped where the turn knows it:
+
+| Trace | Assistant |
+| --- | --- |
+| A reply turn (core) | The inbound event's — the assistant whose bot received the message |
+| Its source-side halves (tg `inbound`, `deliver`, feedback collection) | The receiving connection's, carried across apps on the `trace.recorded` event |
+| A timed task fire | The task's own — a fire runs *as* its assistant |
+| Creating, editing or deleting an assistant | The assistant in question |
+
+Everything nobody owns in particular — background jobs, settings, auth, the
+history and memory sweeps — leaves it unset and renders as `—`, so it appears
+in no assistant's filtered view. Traces recorded before the field existed are
+unstamped too: there is nothing in an old trace to recover it from.
+
 ### Flow — the whole story behind one click
 
 A correlation is one process, but a story spans several: "remind me tomorrow"

@@ -9,6 +9,8 @@ import { traceStatusSchema, traceTriggerSchema } from "@/lib/trace";
  */
 export const traceQuerySchema = z.object({
   feature: z.string().min(1).optional(),
+  /** One assistant's actions — see `Trace.assistantId`. */
+  assistantId: z.string().min(1).optional(),
   status: traceStatusSchema.optional(),
   /** Every trace of one process (a turn, a job run) — see `TraceTrigger.correlationId`. */
   correlationId: z.string().min(1).optional(),

@@ -25,6 +25,8 @@ const BUNDLE_MAX = 500;
 
 export interface TraceQuery {
   feature?: string;
+  /** One assistant's actions — see `Trace.assistantId`. */
+  assistantId?: string;
   status?: TraceStatus;
   /** Every trace of one process (a turn, a job run) — exact trigger correlation. */
   correlationId?: string;

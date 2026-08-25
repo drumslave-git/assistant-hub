@@ -641,3 +641,47 @@ describe("trace storage health", () => {
     rmdirSync(currentMonthFile());
   });
 });
+
+/**
+ * The assistant a traced action belonged to: recorded on the trace, survives
+ * the round trip to disk, and filters the list — so Debug can answer "what has
+ * Anna been doing" (operator request, 2026-08-25).
+ */
+describe("assistant scoping", () => {
+  it("records the assistant, keeps it through a flush, and filters by it", async () => {
+    const hers = await startTrace({ ...baseInput, assistantId: "assistant-a" });
+    await hers.succeed();
+    const his = await startTrace({ ...baseInput, assistantId: "assistant-b" });
+    await his.succeed();
+    // Nobody's in particular — a background job.
+    const nobodys = await startTrace({ ...baseInput, feature: "history-index" });
+    await nobodys.succeed();
+
+    expect((await listTraces({ assistantId: "assistant-a" })).total).toBe(1);
+    expect((await listTraces({ assistantId: "assistant-a" })).traces[0].id).toBe(hers.id);
+    // An unstamped trace belongs to no assistant, so it is in no assistant's view.
+    expect((await listTraces({ assistantId: "assistant-b" })).total).toBe(1);
+    expect((await listTraces({})).total).toBe(3);
+
+    await flushTracesNow();
+    __resetTraceStoreForTests();
+    // Survives the round trip to disk — the filter is not an in-memory trick.
+    const reloaded = await listTraces({ assistantId: "assistant-a" });
+    expect(reloaded.total).toBe(1);
+    expect(reloaded.traces[0].assistantId).toBe("assistant-a");
+    expect((await getTrace(hers.id))!.assistantId).toBe("assistant-a");
+  });
+
+  it("combines with the other filters rather than replacing them", async () => {
+    const replied = await startTrace({ ...baseInput, assistantId: "assistant-a" });
+    await replied.succeed();
+    const failed = await startTrace({ ...baseInput, assistantId: "assistant-a" });
+    await failed.fail(new Error("nope"));
+
+    expect((await listTraces({ assistantId: "assistant-a", status: "error" })).total).toBe(1);
+    expect((await listTraces({ assistantId: "assistant-a", status: "error" })).traces[0].id).toBe(
+      failed.id,
+    );
+    expect((await listTraces({ assistantId: "assistant-b", status: "error" })).total).toBe(0);
+  });
+});

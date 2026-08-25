@@ -334,6 +334,8 @@ async function buildEventDeps(
       username: event.connection.botUsername,
       displayName: turn.assistantIdentity?.name ?? event.connection.botDisplayName,
     },
+    // Whose turn this is, for the reply trace's Assistant column/filter.
+    assistantId: event.assistantId,
     policy,
     // The source's stamp is the owner authority since the swap — the core
     // holds no owner id to compare against.
@@ -551,6 +553,7 @@ export async function processInboundEvent(
       chatId: Number(chatId),
       messageId: Number(event.message.sourceMessageId),
       fromId: Number(parseScopedRef(event.sender.ref).id),
+      assistantId: event.assistantId,
       inputSummary: "",
     });
     // Typing during the (seconds-long) transcription wait, but only when the

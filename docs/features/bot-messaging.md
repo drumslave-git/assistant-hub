@@ -161,6 +161,14 @@ rather than being sent the notes or left in silence.
 
 ## Tracing
 
+Every trace of an action that belonged to an assistant carries its id, so
+`/debug` shows an **Assistant** column and filters to one of them
+(`?assistantId=`): reply turns and their source-side halves (inbound, delivery,
+feedback collection — tg stamps the receiving connection's assistant), timed
+task fires (the task's own assistant), and edits to an assistant itself.
+Anything nobody owns in particular — background jobs, settings, auth — is blank
+and stays out of every assistant's view.
+
 One trace per handled message, plus one per message the LLM was asked about and
 then not answered. Chatter rejected by the cheap checks leaves nothing behind.
 

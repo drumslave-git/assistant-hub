@@ -48,6 +48,12 @@ export const sourceTraceEventSchema = z.object({
 export const sourceTraceSchema = z.object({
   feature: z.string().min(1),
   action: z.string().min(1),
+  /**
+   * The assistant this action belonged to, when it belonged to one — a source
+   * app knows it from the connection that received the update. Carried so the
+   * debug explorer can show and filter by assistant across apps.
+   */
+  assistantId: z.string().min(1).optional(),
   status: z.enum(["success", "error", "skipped"]),
   trigger: z.object({
     kind: z.enum(["telegram", "dashboard", "cron", "system", "api", "test"]),
@@ -101,6 +107,8 @@ export interface SourceTraceRecorder {
 export interface StartSourceTraceInput {
   feature: string;
   action: string;
+  /** The assistant this action belongs to, when it belongs to one. */
+  assistantId?: string;
   trigger: SourceTrace["trigger"];
   inputSummary?: string;
 }
@@ -157,6 +165,7 @@ export function createSourceTraceRecorder(input: {
             trace: {
               feature: start.feature,
               action: start.action,
+              ...(start.assistantId ? { assistantId: start.assistantId } : {}),
               status,
               trigger: { ...start.trigger, correlationId },
               startedAt,

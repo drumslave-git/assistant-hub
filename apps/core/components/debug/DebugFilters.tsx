@@ -88,6 +88,8 @@ export function DebugFilters({
   basePath,
   features,
   feature,
+  assistants,
+  assistantId,
   status,
   correlationId,
   triggerKind,
@@ -98,6 +100,9 @@ export function DebugFilters({
   basePath: string;
   features?: string[];
   feature?: string;
+  /** The assistants to choose from; omitted hides the dropdown (none exist). */
+  assistants?: { id: string; name: string }[];
+  assistantId?: string;
   status?: TraceStatus;
   correlationId?: string;
   triggerKind?: TraceTrigger["kind"];
@@ -109,6 +114,7 @@ export function DebugFilters({
 
   const active: TraceFilterParams = {
     feature,
+    assistantId,
     status,
     correlationId,
     triggerKind,
@@ -142,6 +148,31 @@ export function DebugFilters({
                 ))}
               </optgroup>
             ))}
+          </Select>
+        </div>
+      ) : null}
+
+      {assistants?.length ? (
+        <div className="space-y-1">
+          <Label htmlFor="debug-assistant">Assistant</Label>
+          <Select
+            id="debug-assistant"
+            value={assistantId ?? ""}
+            onChange={(e) => navigate({ ...active, assistantId: e.target.value || undefined })}
+            className="min-w-44"
+          >
+            <option value="">All assistants</option>
+            {assistants.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+            {/* A filter arriving from a clicked facet may name an assistant
+                that has since been deleted — keep it selectable rather than
+                silently resetting the view to "all". */}
+            {assistantId && !assistants.some((a) => a.id === assistantId) ? (
+              <option value={assistantId}>{assistantId} (deleted)</option>
+            ) : null}
           </Select>
         </div>
       ) : null}

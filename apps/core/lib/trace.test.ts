@@ -13,6 +13,14 @@ describe("debugFilterHref", () => {
     );
   });
 
+  it("carries the assistant facet, alone and beside the others", () => {
+    // The Assistant column's cells link here; the dropdown pushes the same URL.
+    expect(debugFilterHref({ assistantId: "a-1" })).toBe("/debug?assistantId=a-1");
+    expect(debugFilterHref({ feature: "tasks", assistantId: "a-1", status: "error" })).toBe(
+      "/debug?feature=tasks&assistantId=a-1&status=error",
+    );
+  });
+
   it("URL-encodes facet values (correlations carry colons)", () => {
     expect(debugFilterHref({ correlationId: "312973896:600" })).toBe(
       "/debug?correlationId=312973896%3A600",

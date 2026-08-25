@@ -124,8 +124,11 @@ export async function createAssistant(
   trigger: TraceTrigger,
   db: StoreDb = getStoreDb(),
 ): Promise<Assistant> {
+  // Minted before the trace opens, so the creation is filterable under the
+  // assistant it creates — the row it belongs to exists from the first line.
+  const id = randomUUID();
   return withTrace(
-    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.name },
+    { feature: FEATURE.id, action: "create", assistantId: id, trigger, inputSummary: input.name },
     async (trace) => {
       await trace.event({
         type: "input",
@@ -138,7 +141,7 @@ export async function createAssistant(
       if (await isNameTaken(db, input.name)) {
         throw ApiError.conflict(`An assistant named "${input.name}" already exists`);
       }
-      const record = await insertAssistant(db, randomUUID(), {
+      const record = await insertAssistant(db, id, {
         name: input.name,
         persona: input.persona,
       });
@@ -161,7 +164,7 @@ export async function editAssistant(
   db: StoreDb = getStoreDb(),
 ): Promise<Assistant> {
   return withTrace(
-    { feature: FEATURE.id, action: "update", trigger, inputSummary: `assistant ${id}` },
+    { feature: FEATURE.id, action: "update", assistantId: id, trigger, inputSummary: `assistant ${id}` },
     async (trace) => {
       await trace.event({ type: "input", message: "update assistant", data: { id, ...input } });
       const existing = await getAssistantById(db, id);
@@ -207,7 +210,7 @@ export async function removeAssistant(
   db: StoreDb = getStoreDb(),
 ): Promise<void> {
   return withTrace(
-    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `assistant ${id}` },
+    { feature: FEATURE.id, action: "delete", assistantId: id, trigger, inputSummary: `assistant ${id}` },
     async (trace) => {
       const deleted = await deleteAssistant(db, id);
       if (!deleted) throw ApiError.notFound("Unknown assistant");

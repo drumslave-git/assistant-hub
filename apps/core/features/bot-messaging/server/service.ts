@@ -166,6 +166,12 @@ export interface ReplyToolCall {
 export interface BotMessagingDeps {
   bot: BotIdentity;
   /**
+   * Whose turn this is — the assistant the receiving bot serves. Stamped on
+   * the reply trace so Debug can show and filter by assistant; absent only on
+   * the paths that predate assistants (tests, the simulation harness).
+   */
+  assistantId?: string;
+  /**
    * Generate assistant reply text. Throws on provider/config failure. The whole
    * exchange — request bodies, rounds, tool calls, retries — is recorded on the
    * reply trace by the shared LLM tracing layer via the `trace` options the
@@ -499,12 +505,15 @@ export async function startReplyTrace(input: {
   chatId: number | string;
   messageId: number;
   fromId?: number;
+  /** Whose turn this is — the assistant the receiving bot serves. */
+  assistantId?: string;
   /** The whole incoming message, never trimmed (may be updated later — voice). */
   inputSummary: string;
 }): Promise<TraceRecorder> {
   return startTrace({
     feature: FEATURE.id,
     action: "reply",
+    assistantId: input.assistantId,
     trigger: {
       kind: "telegram",
       actor: input.fromId != null ? String(input.fromId) : String(input.chatId),
@@ -535,6 +544,7 @@ export async function handleIncomingMessage(
       chatId: incoming.chatId,
       messageId: incoming.messageId,
       fromId: incoming.fromId,
+      assistantId: deps.assistantId,
       inputSummary: text,
     }));
 

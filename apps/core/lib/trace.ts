@@ -69,6 +69,8 @@ export type TraceTrigger = z.infer<typeof traceTriggerSchema>;
  */
 export interface TraceFilterParams {
   feature?: string;
+  /** One assistant's actions — see `Trace.assistantId`. */
+  assistantId?: string;
   status?: TraceStatus;
   correlationId?: string;
   triggerKind?: TraceTrigger["kind"];
@@ -92,6 +94,7 @@ export interface TraceFilterParams {
 export function debugFilterHref(params: TraceFilterParams, basePath = "/debug"): string {
   const search = new URLSearchParams();
   if (params.feature) search.set("feature", params.feature);
+  if (params.assistantId) search.set("assistantId", params.assistantId);
   if (params.status) search.set("status", params.status);
   if (params.correlationId) search.set("correlationId", params.correlationId);
   if (params.triggerKind) search.set("triggerKind", params.triggerKind);
@@ -176,6 +179,14 @@ export const traceSchema = z.object({
   id: z.string(),
   feature: z.string(),
   action: z.string(),
+  /**
+   * The assistant this action belonged to, when it belonged to one: a reply
+   * turn, a timed task fire, an inbound message on that assistant's bot, an
+   * edit to the assistant itself. Absent on everything that is nobody's in
+   * particular (background jobs, settings, auth). Recorded so Debug can show
+   * *whose* action a row was and filter to one assistant.
+   */
+  assistantId: z.string().optional(),
   status: traceStatusSchema,
   trigger: traceTriggerSchema,
   startedAt: z.string().datetime(),

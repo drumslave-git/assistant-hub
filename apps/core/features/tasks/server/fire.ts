@@ -187,6 +187,8 @@ export async function fireTask(
   const trace = await startTrace({
     feature: FEATURE.id,
     action: opts.action ?? "fire",
+    // A timed fire runs AS its task's assistant — the trace says whose.
+    assistantId: task.assistantId,
     trigger: {
       kind: "cron",
       actor: task.chatId ?? "global",

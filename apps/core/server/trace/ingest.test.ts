@@ -83,3 +83,23 @@ describe("ingestSourceTrace", () => {
     expect(detail?.error).toEqual({ message: "403: bot was blocked" });
   });
 });
+
+describe("ingestSourceTrace — assistant scoping", () => {
+  it("carries the source's assistant onto the stored trace, so Debug can filter it", async () => {
+    // tg stamps the connection's assistant on inbound / delivery / feedback
+    // traces; the cross-app flow must stay filterable by whose bot it was.
+    ingestSourceTrace(sourceTrace({ assistantId: "assistant-a" }));
+    ingestSourceTrace(sourceTrace({ assistantId: "assistant-b", trigger: { kind: "telegram" } }));
+
+    const mine = await getTraceList({ assistantId: "assistant-a" });
+    expect(mine.total).toBe(1);
+    expect(mine.traces[0].assistantId).toBe("assistant-a");
+    expect((await getTraceList({})).total).toBe(2);
+  });
+
+  it("leaves a trace no assistant owns unstamped", async () => {
+    ingestSourceTrace(sourceTrace());
+    const [trace] = (await getTraceList({})).traces;
+    expect(trace.assistantId).toBeUndefined();
+  });
+});
