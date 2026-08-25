@@ -1905,7 +1905,8 @@ describe("handleIncomingMessage — reply integrity", () => {
     expect(JSON.stringify(second)).toContain(REPLY_INTEGRITY_DIRECTIVE.slice(0, 40));
     const events = recorder.event.mock.calls.map((c) => c[0]);
     const warn = events.find((e) => e.message === "reply is deliberation, not an answer — retrying");
-    expect(warn).toMatchObject({ level: "warn", data: { violation: "transcript_format" } });
+    expect(warn?.level).toBe("warn");
+    expect((warn?.data as { reason?: string }).reason).toMatch(/\[#616\]/);
     // Only the real answer reaches the chat.
     expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual([
       "I'm Anna.",
@@ -1923,7 +1924,7 @@ describe("handleIncomingMessage — reply integrity", () => {
     const events = recorder.event.mock.calls.map((c) => c[0]);
     expect(
       events.find((e) => e.message === "reply is deliberation, not an answer — retrying"),
-    ).toMatchObject({ data: { violation: "truncated" } });
+    ).toMatchObject({ data: { reason: expect.stringMatching(/token cap/) } });
   });
 
   it("suppresses a second deliberation, says so in the chat, and fails the trace", async () => {

@@ -35,9 +35,8 @@ describe("checkReplyIntegrity", () => {
     for (const content of [LEAK_ANCHOR_FIRST, LEAK_ANCHOR_LATER]) {
       const verdict = checkReplyIntegrity({ content, finishReason: "stop" });
       expect(verdict.ok).toBe(false);
-      expect(verdict.violation).toBe("transcript_format");
-      // The evidence is the anchor itself, quoted for the trace.
-      expect(content).toContain(verdict.evidence!);
+      // The reason quotes the offending text, for the trace.
+      expect(verdict.reason).toMatch(/\[#\d+\]/);
     }
   });
 
@@ -46,7 +45,8 @@ describe("checkReplyIntegrity", () => {
       content: "It is a long answer that never ends because it ran into the",
       finishReason: "length",
     });
-    expect(verdict).toMatchObject({ ok: false, violation: "truncated" });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toMatch(/token cap/);
   });
 
   it("catches raw chat-template channel markers", () => {
@@ -56,7 +56,8 @@ describe("checkReplyIntegrity", () => {
       content: "<|channel>thought\n<channel|><channel|>here's a joke for you",
       finishReason: "stop",
     });
-    expect(verdict).toMatchObject({ ok: false, violation: "channel_markers" });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain("<|channel>");
   });
 
   it("leaves the bot's own citation form alone — only the bracketed anchor is input-only", () => {

@@ -978,12 +978,7 @@ export async function handleIncomingMessage(
           type: "step",
           level: "warn",
           message: "reply is deliberation, not an answer — retrying",
-          data: {
-            violation: integrity.violation,
-            evidence: integrity.evidence,
-            reason: integrity.reason,
-            answer: reply.content,
-          },
+          data: { reason: integrity.reason, answer: reply.content },
         });
         reply = await generate(historyWindow.messages, {
           previousAnswer: reply.content,
@@ -1000,11 +995,7 @@ export async function handleIncomingMessage(
             type: "step",
             level: "error",
             message: "second attempt was deliberation as well — answer suppressed",
-            data: {
-              violation: integrity.violation,
-              evidence: integrity.evidence,
-              suppressedAnswer: reply.content,
-            },
+            data: { reason: integrity.reason, suppressedAnswer: reply.content },
           });
           const sent = await deps.sendReply(REPLY_NOT_PRODUCED_REPLY);
           await trace.event({

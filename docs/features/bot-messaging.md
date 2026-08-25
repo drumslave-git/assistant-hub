@@ -96,13 +96,17 @@ channel never opened, so there was nothing for the server to strip. One went out
 as three Telegram messages.
 
 Nothing downstream can tell such an answer from a real one, so the turn checks
-the **shape** of what came back, before anything else judges what it says:
+the **shape** of what came back, before anything else judges what it says. Two
+rules:
 
-- `finish_reason: "length"` — truncated mid-sentence, whatever else it is.
-- The transcript anchor `[#<id>]` — the input-only line format the system prompt
-  forbids in a reply. The plain `#<id>` citation form stays legal; only the
-  bracketed anchor is input-only.
-- Raw chat-template channel markers, which are never legitimate reply text.
+1. It ran into the token cap — cut off mid-sentence whatever else it is. That is
+   reason enough on its own, and it is what 7 of those 10 did.
+2. It contains text a reply may never contain: the `[#<id>]` transcript anchor
+   (the input-only line format the prompt forbids) or a raw chat-template
+   channel marker (a serving artifact). All 10 leaks carried the anchor —
+   including the 3 that ended inside the cap, which rule 1 alone would have
+   sent. The plain `#<id>` citation form stays legal: that is how the bot links
+   to a message.
 
 No lexical rules, and nothing is stripped or rewritten: a reply either stands as
 the model wrote it or is regenerated. A violation is retried once, with a
