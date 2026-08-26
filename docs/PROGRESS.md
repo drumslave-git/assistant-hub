@@ -30,13 +30,21 @@ same top-level-await gotcha as the tg boot fix). The slice-D
 **MCP-outbound design call is confirmed** as the REST send API +
 core-side tool bindings — flag closed; Phase 5 may wrap the same
 handlers in an MCP endpoint if still wanted. Acceptance criteria are
-under "Phase 3 — Assistants" below. Slices A–E are done (assistants
+under "Phase 3 — Assistants" below. Slices A–F are done (assistants
 feature, persona flip, tasks flip, per-assistant connections + the tg
-UI extension, cross-feed + loop guard), plus the live-test follow-up
+UI extension, cross-feed + loop guard, aggregated directory + person
+links), plus the live-test follow-up
 (per-assistant DM streams + the persona identity line — see the
-criteria and session log). Next best task: slice F (aggregated
-directory + person links), which also carries the recorded
-content-plane follow-up.
+criteria and session log). **Slice F landed (2026-08-27)**: the
+users and groups pages aggregate every source's operator listing
+instead of reading the transitional shadow, curated edits are
+routed by scoped ref, and person links have CRUD with memory
+reading through them. Every Phase 3 acceptance criterion is now
+checked; the two operator live checks below are what remains
+before the phase is called done, and Phase 4 (web chat) is the
+next best task — it is also what turns the source registry, the
+listing contract and person links from one-source machinery into
+the thing they were designed for.
 
 Waiting on the operator (both checks need the dev services restarted —
 the tg service and the core dev server, since the queue consumer and
@@ -164,7 +172,7 @@ Known pitfalls for whoever starts:
 | 0 | Monorepo scaffold, apps/core + packages carve-out, extension registry, CI, docker | done |
 | 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | done |
 | 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | done |
-| 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | in-progress |
+| 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | in-progress (all criteria met; two operator live checks open) |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
 | 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
@@ -576,20 +584,78 @@ assistant converted from the active personality, all counts reconciled).
       there (its send fails and the trace says so). And the operator control writes the v2 store while the rest
       of the settings row is still v1 — one Save touching two databases
       until the Phase 6 cutover collapses them.
-- [ ] Aggregated directory: users/chats dashboard pages read every
-      source's operator API through the shared listing contract (tg
-      today; chat joins in Phase 4), person links CRUD over the v2
-      store's `person_links`/`person_link_members` with memory reading
-      through links preserved.
-- [ ] Tests at each seam; lint/typecheck/test/build green from the
-      root; proof and risks recorded. Green as of slice E (2026-08-26,
-      all from the root): `turbo run typecheck` 8/8 workspaces;
-      `turbo run lint` clean (7 pre-existing unused-import warnings, none
-      in the changed files); `turbo run test` 1157 passed / 26 skipped;
-      `turbo run test:integration` core 329 passed / 30 skipped, tg 57
-      passed, chat 1, bus 2; `turbo run build` green. Migrations 0003
-      applied to both dev databases. Stays open until slice F lands its
-      own tests.
+- [x] Aggregated directory (`70785a3`, 2026-08-27): the users and
+      groups pages stopped reading the transitional v1 shadow and now
+      aggregate — one fan-out over a registry of source apps
+      (`server/source/directory.ts`), each serving the shared operator
+      listing contract, every row tagged with its origin and scoped ref;
+      `apps/chat` joins in Phase 4 by adding one registry entry. A
+      source that is unconfigured or unreachable is neither fatal nor
+      dropped: it comes back under `unavailable` and the shared
+      `SourceUnavailableNotice` names it above the table (a silently
+      short list reads as "nobody has messaged the bot").
+      Curated edits follow the same seam: `writeSourceUser` /
+      `writeSourceChat` moved out of the tg client into the registry and
+      take a **scoped ref**, so the ref decides which source owns the
+      edit — the dashboard PATCHes `/api/users/<ref>` and
+      `/api/groups/<ref>`, and the group detail route became
+      `/groups/[ref]`. The shadow write still follows, keyed by the
+      ref's source-local id, telegram-shaped until Phase 6 — now said in
+      one place instead of assumed everywhere.
+      The contract grew what the pages need: `memberCount` on the chat
+      listing, `GET /internal/chats/:id`, and
+      `GET /internal/chats/:id/members` (roster + membership times), so
+      the detail page shows the participants the source injects into
+      that chat's turns rather than the shadow's copy.
+      `getGroupWithMembers` and its types went with their last caller.
+- [x] Person links (`ee9abd1`, 2026-08-27): CRUD over the v2 store's
+      `person_links` / `person_link_members` (untouched since Phase 1),
+      as a second tab of the Users page — the same people seen as humans
+      rather than accounts. Two rules carry the meaning and are enforced
+      where they can be explained: an identity belongs to at most one
+      link (the picker disables a claimed one; the service answers a
+      conflict naming it rather than letting the unique index throw), and
+      a link needs at least two identities (breaking a person apart is a
+      delete).
+      Memory reads resolve through links (`resolveLinkedRefs`): both the
+      injected context and `memory_recall` collect every linked
+      identity's document, and two linked identities in one group become
+      one block named by the identity actually present. **Reads only** —
+      a fact is still stored under the identity that was named and
+      consolidation still merges per identity. Resolution is
+      best-effort: without `STORE_DATABASE_URL` (optional until the
+      Phase 6 cutover) or with the store unreadable, every identity
+      resolves to itself and memory behaves as it did before links
+      existed; writes are not forgiving that way. Memory is still keyed
+      by telegram ids until Phase 6, so a link member from another
+      source has no document to contribute and is dropped at the one
+      filter that goes away when memory moves to scoped refs.
+- [x] Tests at each seam; lint/typecheck/test/build green from the
+      root. Green as of slice F (2026-08-27, all from the root):
+      `turbo run typecheck` 8/8 workspaces; `turbo run lint` clean (the
+      same 7 pre-existing unused-import warnings, none in changed
+      files); `turbo run test` core 1170 passed / 26 skipped, tg 31,
+      contracts 15; `turbo run test:integration` core 338 passed / 30
+      skipped, tg 61 passed; `turbo run build` green. New tests: the
+      aggregation itself with sources injected (fan-out, refs, ordering,
+      an unreachable source, an unconfigured one — multi-source behavior
+      covered before the second source exists), the three new tg
+      endpoints against real Postgres, the person-links schema bounds,
+      person-links CRUD + conflict + resolution against the real store,
+      and memory-through-links across both databases on one container.
+      Verified live on the dev topology: both directory pages render
+      from the tg store, the roster reads through the API, a notes edit
+      by ref round-tripped into the source (set, then cleared), and a
+      link was created from the directory, rendered with resolved
+      labels, and unlinked again.
+      **Deliberate follow-ups, not done here.** The pickers and reports
+      that need core-local joins still read the v1 shadow: the tasks
+      page's per-group people picker, the analytics page's user/group
+      lists, and the Settings owner picker. The DM content-plane scoping
+      recorded under slice D (operator/history listings, summaries,
+      search index, analytics and media lookups reading DM chats
+      unscoped) is untouched and moves to Phase 6 with the rest of the
+      content plane.
 
 **Boundary study (2026-08-24).** v1-personality readers to flip:
 `server/turn/consume.ts` (the reply turn — flips to the v2 assistant
@@ -877,6 +943,27 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (slice F)** — The last Phase 3 slice, in two commits.
+  `70785a3`: the dashboard's people and chats pages stopped reading the
+  transitional v1 shadow and became an aggregation over a registry of
+  source apps, each serving the shared operator listing contract — rows
+  tagged with their origin and scoped ref, an unreachable source named
+  above the table instead of silently shortening it, and curated edits
+  routed to the owning source by ref (`/api/users/<ref>`,
+  `/api/groups/<ref>`, `/groups/[ref]`). The contract grew
+  `memberCount`, a single-chat GET and a roster endpoint so the detail
+  page shows the participants the source actually injects.
+  `ee9abd1`: person links got their feature — CRUD over the store tables
+  Phase 1 created, on a second Users tab — and memory reads resolve
+  through them, so knowledge follows the human rather than the account.
+  Reads only, best-effort, telegram-keyed until Phase 6; every one of
+  those three limits is a line in the code with a reason next to it.
+  Nothing needed a user decision: the criterion was specific and the
+  design questions it left (where the links UI lives, what a link of one
+  identity means, whether writes resolve too) had answers the existing
+  conventions already implied — tabs over a new nav entry, delete over
+  shrink, reads over rewrites.
 
 - **2026-08-24 (live test, round 4 — the reasoning leak)** — The operator's
   bot answered with raw chain-of-thought again. Probed the endpoint
