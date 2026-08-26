@@ -543,6 +543,25 @@ assistant converted from the active personality, all counts reconciled).
       `requestedReplyToMessageId` and `replyToMessageId`, warning when
       they differ. Whether Telegram refuses bot-to-bot reply targets is
       then a fact the next live turn reports rather than a guess.
+      **Addressing verdicts now carry their evidence (2026-08-26).**
+      Reading the live traces the operator noticed an asymmetry: a turn
+      the bot stayed OUT of shows the whole analyzer exchange (request,
+      response, verifier, verdict), while a turn it answered shows a
+      single `addressing check` line — and for the structural sources
+      (@mention, reply, /command, DM) that line's `reason` was empty and
+      its `matchedText` null. The decision was there; the grounds were
+      not. The cause is real and not going away: a message the cheap
+      checks address never reaches the analyzer, so there is no exchange
+      to read back — which is exactly why the verdict itself has to say
+      what it decided on. Every deterministic verdict now carries a
+      sentence naming its evidence (both apps: tg's structural half and
+      the core's name half, cross-fed verdicts included), and the name
+      check records the matched word AS WRITTEN in the message
+      (`matchBotName`), since the sender's spelling need not be the
+      configured one. Unchanged on purpose: `matchedText` still only
+      drives an exclusion for an `analyzer` verdict — excluding a word
+      the deterministic check matched would silence the bot's own name,
+      which `addressing-report.ts` already refuses.
       Remaining risks: with three or more assistants in one chat, a
       reply fans out to each of them at once, so a short burst can land
       before the streak reaches the limit — bounded (the guard closes

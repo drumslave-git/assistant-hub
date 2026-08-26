@@ -79,6 +79,24 @@ export interface BotIdentity {
 const NOT_ADDRESSED: AddressResult = { addressed: false };
 
 /**
+ * What each deterministic verdict says for itself. A turn the cheap checks
+ * addressed records no LLM exchange, so these sentences are the whole account
+ * of why the bot answered — they carry the evidence rather than name the
+ * branch that fired.
+ */
+export const DETERMINISTIC_REASONS = {
+  private: "a direct chat — every message in it is for the bot",
+  reply: "the sender replied to one of this assistant's messages",
+  mention: "the message @mentions this bot's username",
+  command: "a /command addressed to this bot's username",
+} as const;
+
+/** The `name` verdict's reason, quoting the word the message actually used. */
+export function spokenNameReason(matched: string): string {
+  return `the assistant's name is spoken: "${matched}"`;
+}
+
+/**
  * Display names too generic to treat as a summons: a bot called "Bot" would
  * answer every message that mentions bots, and every one of those misses would
  * also cost an analyzer call.
@@ -109,10 +127,20 @@ function escapeRegex(value: string): string {
  * answer to "работа".
  */
 export function messageNamesBot(text: string, displayName: string): boolean {
-  if (!text.trim() || !displayNameMatchable(displayName)) return false;
+  return matchBotName(text, displayName) != null;
+}
+
+/**
+ * The same check, returning the word AS IT APPEARS in the message (the name
+ * matches case-insensitively, so the spelling the sender used is not
+ * necessarily the configured one). The verdict records it, so a decision to
+ * answer names its own evidence the way an analyzer verdict does.
+ */
+export function matchBotName(text: string, displayName: string): string | null {
+  if (!text.trim() || !displayNameMatchable(displayName)) return null;
   const name = escapeRegex(displayName.trim());
   const re = new RegExp(`(?<![\\p{L}\\p{N}_@])${name}(?![\\p{L}\\p{N}_])`, "iu");
-  return re.test(text);
+  return re.exec(text)?.[0] ?? null;
 }
 
 /** Telegram entity offsets are UTF-16 code units, matching JS string indexing. */
@@ -177,19 +205,28 @@ export function checkAddressed(
   bot: BotIdentity,
   transcript?: string,
 ): AddressResult {
-  if (chatType === "private") return { addressed: true, source: "private" };
+  if (chatType === "private") {
+    return { addressed: true, source: "private", reason: DETERMINISTIC_REASONS.private };
+  }
   if (chatType !== "group" && chatType !== "supergroup") return NOT_ADDRESSED;
   if (!bot.id || !bot.username) return NOT_ADDRESSED;
 
-  if (isReplyToBot(message, bot.id)) return { addressed: true, source: "reply" };
+  if (isReplyToBot(message, bot.id)) {
+    return { addressed: true, source: "reply", reason: DETERMINISTIC_REASONS.reply };
+  }
   // Command before the mention fallback: `/start@botname` carries a bot_command
   // entity, and its `@botname` suffix would otherwise match the loose mention check.
-  if (hasCommandForBot(message, bot.username)) return { addressed: true, source: "command" };
-  if (hasUsernameMention(message, bot.id, bot.username)) return { addressed: true, source: "mention" };
+  if (hasCommandForBot(message, bot.username)) {
+    return { addressed: true, source: "command", reason: DETERMINISTIC_REASONS.command };
+  }
+  if (hasUsernameMention(message, bot.id, bot.username)) {
+    return { addressed: true, source: "mention", reason: DETERMINISTIC_REASONS.mention };
+  }
 
   const text = messageText(message) || transcript?.trim() || "";
-  if (messageNamesBot(text, bot.displayName)) {
-    return { addressed: true, source: "name", reason: "display name spoken" };
+  const named = matchBotName(text, bot.displayName);
+  if (named) {
+    return { addressed: true, source: "name", reason: spokenNameReason(named), matchedText: named };
   }
   // Undecided rather than silent: the name may still be here transliterated or
   // declined, which only the analyzer can see. Media with no caption gives it

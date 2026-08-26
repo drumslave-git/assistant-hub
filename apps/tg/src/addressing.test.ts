@@ -64,6 +64,22 @@ describe("checkAddressed (structural half — the name check is the core's)", ()
     });
   });
 
+  it("every verdict says what it decided on", () => {
+    // A message these checks address never reaches the analyzer, so the
+    // verdict is the whole account of why the bot answered.
+    const decided = [
+      checkAddressed(msg({ text: "hi" }), "private", BOT),
+      checkAddressed(
+        msg({ text: "and you?", reply_to_message: { from: { id: BOT.id } } as never }),
+        "supergroup",
+        BOT,
+      ),
+      checkAddressed(msg({ text: "@fixture_bot hi" }), "supergroup", BOT),
+      checkAddressed(msg({ text: "unrelated chatter" }), "supergroup", BOT),
+    ];
+    for (const verdict of decided) expect(verdict.reason).toBeTruthy();
+  });
+
   it("a text-less group message decides nothing and asks for no analyzer", () => {
     expect(checkAddressed(msg({}), "supergroup", BOT)).toMatchObject({
       addressed: false,
@@ -101,6 +117,27 @@ describe("checkCrossFedAddressed", () => {
         repliesToOwnMessage: false,
       }),
     ).toMatchObject({ addressed: false, needsAnalyzer: true });
+  });
+
+  it("every cross-fed verdict says what it decided on", () => {
+    const decided = [
+      checkCrossFedAddressed({
+        text: "good point",
+        botUsername: "fixture_bot",
+        repliesToOwnMessage: true,
+      }),
+      checkCrossFedAddressed({
+        text: "@fixture_bot thoughts?",
+        botUsername: "fixture_bot",
+        repliesToOwnMessage: false,
+      }),
+      checkCrossFedAddressed({
+        text: "Aria, help",
+        botUsername: "fixture_bot",
+        repliesToOwnMessage: false,
+      }),
+    ];
+    for (const verdict of decided) expect(verdict.reason).toBeTruthy();
   });
 
   it("an empty message decides nothing and asks for no analyzer", () => {

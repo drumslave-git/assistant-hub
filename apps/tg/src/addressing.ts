@@ -26,6 +26,23 @@ export interface BotAddressIdentity {
 
 const NOT_ADDRESSED: Addressing = { addressed: false, needsAnalyzer: false };
 
+/**
+ * What each structural verdict says for itself, carried to the core and onto
+ * the turn's trace. A message these checks address never reaches the LLM
+ * analyzer, so there is no exchange to read afterwards — this sentence is the
+ * whole account of why the bot answered, and it has to name the evidence
+ * rather than the branch that fired.
+ */
+const REASONS = {
+  private: "a direct chat — every message in it is for this bot",
+  reply: "the sender replied to one of this bot's messages",
+  mention: "the message @mentions this bot's username",
+  command: "a /command addressed to this bot's username",
+  crossFedReply: "this assistant's own message was answered",
+  crossFedMention: "the other assistant's message @mentions this bot's username",
+  undecided: "nothing in the message structure names this bot — over to the name check",
+} as const;
+
 /** Telegram entity offsets are UTF-16 code units, matching JS string indexing. */
 function sliceEntity(text: string, offset: number, length: number): string {
   return text.slice(offset, offset + length);
@@ -92,26 +109,26 @@ export function checkAddressed(
   transcript?: string,
 ): Addressing {
   if (chatType === "private") {
-    return { addressed: true, source: "private", needsAnalyzer: false };
+    return { addressed: true, source: "private", needsAnalyzer: false, reason: REASONS.private };
   }
   if (chatType !== "group" && chatType !== "supergroup") return NOT_ADDRESSED;
   if (!bot.id || !bot.username) return NOT_ADDRESSED;
 
   if (isReplyToBot(message, bot.id)) {
-    return { addressed: true, source: "reply", needsAnalyzer: false };
+    return { addressed: true, source: "reply", needsAnalyzer: false, reason: REASONS.reply };
   }
   // Command before the mention fallback: `/start@botname` carries a
   // bot_command entity whose suffix would otherwise match the loose check.
   if (hasCommandForBot(message, bot.username)) {
-    return { addressed: true, source: "command", needsAnalyzer: false };
+    return { addressed: true, source: "command", needsAnalyzer: false, reason: REASONS.command };
   }
   if (hasUsernameMention(message, bot.id, bot.username)) {
-    return { addressed: true, source: "mention", needsAnalyzer: false };
+    return { addressed: true, source: "mention", needsAnalyzer: false, reason: REASONS.mention };
   }
 
   const text = messageText(message) || transcript?.trim() || "";
   if (text.trim()) {
-    return { addressed: false, needsAnalyzer: true };
+    return { addressed: false, needsAnalyzer: true, reason: REASONS.undecided };
   }
   return NOT_ADDRESSED;
 }
@@ -133,11 +150,23 @@ export function checkCrossFedAddressed(input: {
   repliesToOwnMessage: boolean;
 }): Addressing {
   if (input.repliesToOwnMessage) {
-    return { addressed: true, source: "reply", needsAnalyzer: false };
+    return {
+      addressed: true,
+      source: "reply",
+      needsAnalyzer: false,
+      reason: REASONS.crossFedReply,
+    };
   }
   if (input.botUsername && textMentionsUsername(input.text, input.botUsername)) {
-    return { addressed: true, source: "mention", needsAnalyzer: false };
+    return {
+      addressed: true,
+      source: "mention",
+      needsAnalyzer: false,
+      reason: REASONS.crossFedMention,
+    };
   }
-  if (input.text.trim()) return { addressed: false, needsAnalyzer: true };
+  if (input.text.trim()) {
+    return { addressed: false, needsAnalyzer: true, reason: REASONS.undecided };
+  }
   return NOT_ADDRESSED;
 }

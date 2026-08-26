@@ -22,7 +22,8 @@ import {
 } from "@/features/bot-messaging/server/service";
 import {
   displayNameMatchable,
-  messageNamesBot,
+  matchBotName,
+  spokenNameReason,
   type AddressResult,
   type AddressSource,
 } from "@/features/bot-messaging/server/addressing";
@@ -220,11 +221,27 @@ interface TurnPlan {
  * not answer every message about bots); otherwise the LLM analyzer decides.
  */
 function resolveSpokenName(text: string, name: string | null): AddressResult {
-  if (name && messageNamesBot(text, name)) {
-    return { addressed: true, source: "name", reason: "assistant name spoken", needsAnalyzer: false };
+  const named = name ? matchBotName(text, name) : null;
+  if (named) {
+    // The word itself, not just "the name was spoken": a turn the cheap check
+    // addressed runs no analyzer, so this line is the whole account of why
+    // the bot answered.
+    return {
+      addressed: true,
+      source: "name",
+      reason: spokenNameReason(named),
+      matchedText: named,
+      needsAnalyzer: false,
+    };
   }
   if (!name || !displayNameMatchable(name)) {
-    return { addressed: false, needsAnalyzer: false };
+    return {
+      addressed: false,
+      needsAnalyzer: false,
+      reason: name
+        ? `"${name}" is too generic a name to match — the analyzer is not asked`
+        : "no assistant name to match",
+    };
   }
   return { addressed: false, needsAnalyzer: true };
 }

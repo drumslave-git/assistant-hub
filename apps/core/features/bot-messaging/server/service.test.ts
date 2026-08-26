@@ -605,9 +605,12 @@ describe("handleIncomingMessage", () => {
     expect(byMessage("addressing check").data).toEqual({
       addressed: true,
       source: "private",
-      reason: undefined,
-      // No analyzer ran, so there is no cited word — but the identity the check
-      // was made against is always recorded (the exclusion flow reads it).
+      // No analyzer ran, so the trace holds no exchange to read back — which
+      // is why the verdict has to say for itself what addressed the bot.
+      reason: "a direct chat — every message in it is for the bot",
+      // No cited word either (only the analyzer cites one) — but the identity
+      // the check was made against is always recorded (the exclusion flow
+      // reads it).
       matchedText: null,
       botDisplayName: "Aria",
     });

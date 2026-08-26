@@ -28,7 +28,7 @@ function replyFrom(id: number): Message["reply_to_message"] {
 
 describe("checkAddressed", () => {
   it("addresses every private message", () => {
-    expect(checkAddressed(msg({ text: "hello" }), "private", BOT)).toEqual({
+    expect(checkAddressed(msg({ text: "hello" }), "private", BOT)).toMatchObject({
       addressed: true,
       source: "private",
     });
@@ -42,7 +42,27 @@ describe("checkAddressed", () => {
     expect(checkAddressed(msg({ text: "aria, what time is it?" }), "group", BOT)).toMatchObject({
       addressed: true,
       source: "name",
+      // The word AS WRITTEN, not the configured spelling: a turn the cheap
+      // check addressed runs no analyzer, so the verdict is the only account
+      // of why the bot answered and has to carry the evidence.
+      matchedText: "aria",
+      reason: `the assistant's name is spoken: "aria"`,
     });
+  });
+
+  it("every verdict to answer says what addressed it", () => {
+    const cases: Message[] = [
+      msg({ text: "hello" }),
+      msg({ text: "and you?", reply_to_message: replyFrom(42) }),
+      withEntity("hey @mybot help", { type: "mention", offset: 4, length: 6 }),
+      withEntity("/help@mybot", { type: "bot_command", offset: 0, length: 11 }),
+      msg({ text: "aria, what time is it?" }),
+    ];
+    for (const [index, m] of cases.entries()) {
+      const verdict = checkAddressed(m, index === 0 ? "private" : "group", BOT);
+      expect(verdict.addressed).toBe(true);
+      expect(verdict.reason).toBeTruthy();
+    }
   });
 
   it("addresses the display name mid-sentence and regardless of case", () => {
@@ -54,7 +74,7 @@ describe("checkAddressed", () => {
 
   it("addresses a reply to one of the bot's messages", () => {
     const m = msg({ text: "and you?", reply_to_message: replyFrom(42) });
-    expect(checkAddressed(m, "supergroup", BOT)).toEqual({ addressed: true, source: "reply" });
+    expect(checkAddressed(m, "supergroup", BOT)).toMatchObject({ addressed: true, source: "reply" });
   });
 
   it("does not address a reply to someone else", () => {
@@ -64,7 +84,7 @@ describe("checkAddressed", () => {
 
   it("addresses an @username mention entity (case-insensitive)", () => {
     const m = withEntity("hey @mybot help", { type: "mention", offset: 4, length: 6 });
-    expect(checkAddressed(m, "group", BOT)).toEqual({ addressed: true, source: "mention" });
+    expect(checkAddressed(m, "group", BOT)).toMatchObject({ addressed: true, source: "mention" });
   });
 
   it("addresses a text_mention entity for the bot id", () => {
@@ -74,7 +94,7 @@ describe("checkAddressed", () => {
       length: 5,
       user: user(42),
     });
-    expect(checkAddressed(m, "group", BOT)).toEqual({ addressed: true, source: "mention" });
+    expect(checkAddressed(m, "group", BOT)).toMatchObject({ addressed: true, source: "mention" });
   });
 
   it("does not address an @mention of a different user", () => {
@@ -84,7 +104,7 @@ describe("checkAddressed", () => {
 
   it("addresses a /command@botusername targeting the bot", () => {
     const m = withEntity("/start@mybot", { type: "bot_command", offset: 0, length: 12 });
-    expect(checkAddressed(m, "group", BOT)).toEqual({ addressed: true, source: "command" });
+    expect(checkAddressed(m, "group", BOT)).toMatchObject({ addressed: true, source: "command" });
   });
 
   it("does not address a bare /command with no bot suffix in a group", () => {
