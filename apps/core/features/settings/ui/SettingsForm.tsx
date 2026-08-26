@@ -207,6 +207,7 @@ export function SettingsForm({
   const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
   const [timezone, setTimezone] = useState(initial.timezone);
   const [dailyJobsRunTime, setDailyJobsRunTime] = useState(initial.dailyJobsRunTime);
+  const [loopGuardTurns, setLoopGuardTurns] = useState(String(initial.assistantLoopGuardTurns));
   const [browserDownloadLimitGb, setBrowserDownloadLimitGb] = useState(
     String(initial.browserDownloadLimitGb),
   );
@@ -358,6 +359,14 @@ export function SettingsForm({
     if (dailyJobsRunTime.trim() !== initial.dailyJobsRunTime && dailyJobsRunTime.trim() !== "") {
       patch.dailyJobsRunTime = dailyJobsRunTime.trim();
     }
+    const guardTurns = Number(loopGuardTurns);
+    if (
+      loopGuardTurns.trim() !== "" &&
+      Number.isInteger(guardTurns) &&
+      guardTurns !== initial.assistantLoopGuardTurns
+    ) {
+      patch.assistantLoopGuardTurns = guardTurns;
+    }
     const limitGb = Number(browserDownloadLimitGb);
     if (
       Number.isInteger(limitGb) &&
@@ -413,6 +422,7 @@ export function SettingsForm({
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
       setDailyJobsRunTime(data.dailyJobsRunTime);
+      setLoopGuardTurns(String(data.assistantLoopGuardTurns));
       setBrowserDownloadLimitGb(String(data.browserDownloadLimitGb));
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
@@ -811,6 +821,25 @@ export function SettingsForm({
             value={dailyJobsRunTime}
             onChange={(e) => setDailyJobsRunTime(e.target.value)}
             placeholder="04:00"
+          />
+        )}
+      </Field>
+
+      <Field
+        id="assistantLoopGuardTurns"
+        label="Assistant replies in a row"
+        hint="How many assistant messages a chat may hold in a row before every assistant there goes quiet until a person speaks again. Assistants cannot see each other on Telegram, so the bot hands each reply to the others sharing a chat — this bounds how long they keep talking to each other. 0 stops them from answering each other at all. 0–10."
+      >
+        {({ id, describedBy }) => (
+          <Input
+            id={id}
+            type="number"
+            min={0}
+            max={10}
+            aria-describedby={describedBy}
+            value={loopGuardTurns}
+            onChange={(e) => setLoopGuardTurns(e.target.value)}
+            placeholder="3"
           />
         )}
       </Field>

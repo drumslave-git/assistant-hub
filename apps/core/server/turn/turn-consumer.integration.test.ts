@@ -15,10 +15,12 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { closePool } from "@/db/pool";
+import { resetEnvCache } from "@/server/env";
 import { closeStorePool } from "@/server/store/db";
 import type { MediaRecord } from "@/features/vision/server/repository";
 import type { DescribeDeps, MediaStorePort } from "@/features/vision/server/service";
 import type { ChatMessage } from "@/server/llm/client";
+import { getTraceDetail, listTraces } from "@/server/trace";
 
 import { createTurnActionMarkers } from "./actions";
 import { handleInboundJob, type TurnConsumerContext } from "./consume";
@@ -120,8 +122,12 @@ describe("inbound turn consumer", () => {
     // core-side name check and analyzer match (user decision, 2026-08-24) —
     // the connection's botDisplayName never drives addressing.
     await storePool.query(
-      `INSERT INTO assistants (id, name, persona) VALUES ('assistant-1', 'Aria', '')`,
+      `INSERT INTO assistants (id, name, persona) VALUES ('assistant-1', 'Aria', ''),
+                                                        ('assistant-2', 'Nova', '')`,
     );
+    // The loop-guard setting lives in the v2 store; the env was set above, so
+    // drop the cached parse before any code reads it.
+    resetEnvCache();
   });
 
   afterAll(async () => {
@@ -138,7 +144,55 @@ describe("inbound turn consumer", () => {
     published = [];
     reEnqueued = [];
     await storePool.query(`DELETE FROM turn_actions`);
+    await storePool.query(`DELETE FROM settings`);
   });
+
+  /**
+   * A message ANOTHER assistant delivered into the same group, handed over by
+   * the source's cross-feed (slice E): `assistant-1` speaking, `assistant-2`
+   * receiving. `history` is the shared group window, newest last.
+   */
+  function crossFedEvent(history: InboundMessageEvent["context"]["history"]): InboundMessageEvent {
+    return inboundMessageEventSchema.parse({
+      v: 1,
+      eventId: "evt-crossfed",
+      occurredAt: new Date().toISOString(),
+      correlationId: "-300:40:assistant-2",
+      type: "message.inbound",
+      source: "tg",
+      assistantId: "assistant-2",
+      connection: { botUsername: "second_bot", botDisplayName: "Second Bot" },
+      chat: { ref: "tg:chat:-300", kind: "group", title: "Fixture Group" },
+      // The authoring bot's ACCOUNT — never a person.
+      sender: { ref: "tg:user:9001", isOwner: false, label: "First Bot" },
+      authoredByAssistantId: "assistant-1",
+      addressing: { addressed: true, source: "mention", needsAnalyzer: false },
+      message: {
+        sourceMessageId: "40",
+        content: "@second_bot what do you make of it?",
+        sentAt: new Date().toISOString(),
+      },
+      context: { history, participants: [] },
+    });
+  }
+
+  /** One line of a shared group window. */
+  function historyLine(input: {
+    id: string;
+    role: "user" | "assistant";
+    assistantId?: string;
+    content: string;
+  }): InboundMessageEvent["context"]["history"][number] {
+    return {
+      sourceMessageId: input.id,
+      role: input.role,
+      assistantId: input.role === "assistant" ? (input.assistantId ?? "assistant-1") : null,
+      senderRef: input.role === "user" ? "tg:user:5001" : null,
+      senderLabel: input.role === "user" ? "Alice (@alice_example)" : null,
+      content: input.content,
+      sentAt: new Date().toISOString(),
+    };
+  }
 
   function ctx(overrides?: TurnConsumerContext["overrides"]): TurnConsumerContext {
     return {
@@ -266,6 +320,110 @@ describe("inbound turn consumer", () => {
     });
     const members = await getDb().select().from(groupMembers);
     expect(members.filter((m) => m.chatId === "-300")).toHaveLength(2);
+  });
+
+  it("answers another assistant's cross-fed message, in that assistant's voice", async () => {
+    const seen: ChatMessage[][] = [];
+    const result = await handleInboundJob(
+      crossFedEvent([
+        historyLine({ id: "38", role: "user", content: "what do you two think?" }),
+        historyLine({ id: "39", role: "assistant", assistantId: "assistant-1", content: "I say yes" }),
+      ]),
+      1,
+      ctx({
+        generateReply: async (messages) => {
+          seen.push(messages);
+          return { content: "I say no", model: "fixture-model", latencyMs: 1 };
+        },
+      }),
+    );
+
+    expect(result.status === "handled" && result.outcome.status).toBe("replied");
+    const delivery = replyDeliveryEventSchema.parse(published[1]);
+    expect(delivery).toMatchObject({
+      assistantId: "assistant-2",
+      replyToSourceMessageId: "40",
+      correlationId: "-300:40:assistant-2",
+      text: "I say no",
+    });
+
+    // The other assistant's words are attributed to IT — reading them as its
+    // own would make the turn incoherent.
+    const messages = seen[0];
+    const transcript = messages.find(
+      (m) => typeof m.content === "string" && m.content.includes("[#39]"),
+    );
+    expect(transcript?.content).toContain("[#39] Aria: I say yes");
+    const currentTurn = messages.find(
+      (m) => typeof m.content === "string" && m.content.startsWith("[#40]"),
+    );
+    expect(currentTurn?.content).toBe("[#40] Aria: @second_bot what do you make of it?");
+
+    // The authoring bot account is not a person: it never enters the
+    // directory the brain reads.
+    const { getDb } = await import("@/db/drizzle");
+    const { knownUsers } = await import("@/db/schema");
+    const users = await getDb().select().from(knownUsers);
+    expect(users.some((u) => u.userId === "9001")).toBe(false);
+  });
+
+  it("goes silent once the chat holds the configured run of assistant messages", async () => {
+    const history = [
+      historyLine({ id: "37", role: "user", content: "what do you two think?" }),
+      historyLine({ id: "38", role: "assistant", assistantId: "assistant-1", content: "I say yes" }),
+      historyLine({ id: "39", role: "assistant", assistantId: "assistant-2", content: "I say no" }),
+    ];
+    let generated = 0;
+    const result = await handleInboundJob(
+      crossFedEvent(history),
+      1,
+      ctx({
+        generateReply: async () => {
+          generated += 1;
+          return { content: "never sent", model: "fixture-model", latencyMs: 1 };
+        },
+      }),
+    );
+
+    // Default limit 3, and this message is the third in the run.
+    expect(result.status === "handled" && result.outcome).toMatchObject({
+      status: "ignored",
+      reason: "loop_guard",
+    });
+    expect(generated).toBe(0);
+    // Nothing delivered — but the turn still settles, so the source releases
+    // its hold on the message.
+    expect(published.map((p) => (p as { type: string; phase?: string }).phase ?? "")).toEqual([
+      "settled",
+    ]);
+    // And the silence is on the record, under the turn's own correlation.
+    const traces = await listTraces({ correlationId: "-300:40:assistant-2" });
+    const trace = traces.traces.find((t) => t.action === "reply");
+    expect(trace?.status).toBe("skipped");
+    const detail = await getTraceDetail(trace!.id);
+    expect(detail?.events.some((e) => e.message?.includes("loop guard"))).toBe(true);
+  });
+
+  it("honors the operator's limit — 0 keeps assistants from answering each other", async () => {
+    await storePool.query(
+      `INSERT INTO settings (id, assistant_loop_guard_turns) VALUES ('singleton', 0)
+       ON CONFLICT (id) DO UPDATE SET assistant_loop_guard_turns = 0`,
+    );
+    const result = await handleInboundJob(
+      crossFedEvent([historyLine({ id: "39", role: "user", content: "go on" })]),
+      1,
+      ctx({
+        generateReply: async () => ({
+          content: "never sent",
+          model: "fixture-model",
+          latencyMs: 1,
+        }),
+      }),
+    );
+    expect(result.status === "handled" && result.outcome).toMatchObject({
+      status: "ignored",
+      reason: "loop_guard",
+    });
   });
 
   it("ignores an unaddressed turn but still settles it (the source releases its hold)", async () => {

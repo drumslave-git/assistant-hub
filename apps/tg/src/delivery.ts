@@ -7,10 +7,11 @@ import {
 } from "@assistant-hub/contracts";
 import { openPublisher, openSubscriber, type BusPublisher, type BusSubscription } from "@assistant-hub/bus";
 
+import { recordAssistantMessage, type CrossFeed } from "./cross-feed";
 import type { TgDb } from "./db";
 import type { TgOutbound } from "./outbound";
 import { dashboardRefresh } from "./refresh";
-import { appendMessage, filterMirroredMessageIds, markMessageProcessed } from "./store";
+import { filterMirroredMessageIds, markMessageProcessed } from "./store";
 import { busTraceClient } from "./trace-client";
 import { findMessageRefs } from "./telegram";
 
@@ -21,6 +22,10 @@ import { findMessageRefs } from "./telegram";
  * release the mirror's live-processing hold when the turn settles). The
  * model never has to remember to deliver its own answer — and typing is
  * never an MCP tool (PLAN.md).
+ *
+ * A delivered reply is also what the OTHER assistants in a group hear:
+ * mirroring it runs through the shared seam that cross-feeds it to them
+ * (`cross-feed.ts`), since Telegram never hands one bot another's message.
  */
 
 /** What delivery needs from the running bot; the bot manager provides it. */
@@ -91,6 +96,12 @@ export async function startDeliveryConsumer(input: {
    * manager stops the poller and deletes the connection row).
    */
   onAssistantDeleted?: (assistantId: string) => Promise<void>;
+  /**
+   * Hands the delivered reply to the other assistants in the chat
+   * (`cross-feed.ts`). Absent → nobody else hears it, which is exactly the
+   * single-assistant deployment.
+   */
+  crossFeed?: CrossFeed;
   onError?: (context: string, error: unknown) => void;
 }): Promise<DeliveryConsumer> {
   const onError =
@@ -143,17 +154,20 @@ export async function startDeliveryConsumer(input: {
           level: "success",
           data: { messageId: sent.messageId, silent: event.silent, linkableMessageIds },
         });
-        await appendMessage(input.db, {
-          chatId,
-          assistantId: event.assistantId,
-          telegramMessageId: sent.messageId,
-          role: "assistant",
-          userId: null,
-          content: event.text,
-          replyToMessageId,
-          sentAt: new Date(),
-          processed: true,
-        }).catch((error) => {
+        await recordAssistantMessage(
+          input.db,
+          {
+            chatId,
+            assistantId: event.assistantId,
+            telegramMessageId: sent.messageId,
+            content: event.text,
+            replyToMessageId,
+            sentAt: new Date(),
+            threadId: event.threadId != null ? Number(event.threadId) : null,
+            silent: event.silent,
+          },
+          input.crossFeed,
+        ).catch((error) => {
           onError(`mirror of delivered reply ${chatId}:${sent.messageId}`, error);
           trace.event({
             message: "mirror write failed (message already delivered)",

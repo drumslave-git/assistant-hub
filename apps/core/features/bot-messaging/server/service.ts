@@ -119,6 +119,13 @@ export interface IncomingMessage {
   chatId: number;
   chatType: string;
   messageId: number;
+  /**
+   * The turn's correlation id when the caller owns one (the queue consumer —
+   * one message can open a turn for more than one assistant, so the id is
+   * not derivable from chat + message alone). Defaults to
+   * `<chatId>:<messageId>`, the shape the in-process runtime uses.
+   */
+  correlationId?: string;
   fromId?: number;
   fromIsBot: boolean;
   /** Extracted user text (message text or media caption). */
@@ -504,6 +511,8 @@ async function runActionClaimGate(
 export async function startReplyTrace(input: {
   chatId: number | string;
   messageId: number;
+  /** The turn's correlation id; defaults to `<chatId>:<messageId>`. */
+  correlationId?: string;
   fromId?: number;
   /** Whose turn this is — the assistant the receiving bot serves. */
   assistantId?: string;
@@ -517,7 +526,7 @@ export async function startReplyTrace(input: {
     trigger: {
       kind: "telegram",
       actor: input.fromId != null ? String(input.fromId) : String(input.chatId),
-      correlationId: `${input.chatId}:${input.messageId}`,
+      correlationId: input.correlationId ?? `${input.chatId}:${input.messageId}`,
     },
     inputSummary: input.inputSummary,
   });
@@ -543,6 +552,7 @@ export async function handleIncomingMessage(
     (trace ??= await startReplyTrace({
       chatId: incoming.chatId,
       messageId: incoming.messageId,
+      correlationId: incoming.correlationId,
       fromId: incoming.fromId,
       assistantId: deps.assistantId,
       inputSummary: text,

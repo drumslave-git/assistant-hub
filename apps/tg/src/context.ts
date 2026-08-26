@@ -65,6 +65,10 @@ export async function buildHistoryWindow(
     return {
       sourceMessageId: String(row.telegramMessageId),
       role: row.role === "assistant" ? "assistant" : "user",
+      // Whose words these are. In a group several assistants can speak, and
+      // the core renders another assistant's lines as somebody else, not as
+      // the reader's own (the cross-feed makes that routine).
+      assistantId: row.role === "assistant" ? row.assistantId : null,
       senderRef: row.userId ? scopedRef("tg", "user", row.userId) : null,
       senderLabel:
         row.role === "assistant"

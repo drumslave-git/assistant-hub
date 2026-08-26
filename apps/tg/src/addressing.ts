@@ -39,6 +39,12 @@ function isReplyToBot(message: Message, botId: number): boolean {
   return message.reply_to_message?.from?.id === botId;
 }
 
+/** Literal `@username` in the text — the entity-free half of the check. */
+function textMentionsUsername(text: string, username: string): boolean {
+  const user = username.toLowerCase();
+  return user.length > 0 && text.toLowerCase().includes(`@${user}`);
+}
+
 function hasUsernameMention(message: Message, botId: number, username: string): boolean {
   const text = messageText(message);
   if (!text) return false;
@@ -55,7 +61,7 @@ function hasUsernameMention(message: Message, botId: number, username: string): 
     }
   }
   // Fallback for clients that omit entities: literal "@username" substring.
-  return user.length > 0 && text.toLowerCase().includes(`@${user}`);
+  return textMentionsUsername(text, user);
 }
 
 function hasCommandForBot(message: Message, username: string): boolean {
@@ -107,5 +113,31 @@ export function checkAddressed(
   if (text.trim()) {
     return { addressed: false, needsAnalyzer: true };
   }
+  return NOT_ADDRESSED;
+}
+
+/**
+ * The same structural verdict for a message the cross-feed hands to another
+ * assistant. It never came off the wire for THIS bot, so there are no
+ * entities to read: what remains is whether the author answered one of this
+ * assistant's own messages, and whether the text spells its @username.
+ * Everything else is undecided — the core runs the name check against the
+ * assistant's name and, behind it, the analyzer.
+ */
+export function checkCrossFedAddressed(input: {
+  /** The authoring assistant's delivered text. */
+  text: string;
+  /** The receiving connection's @username (no leading `@`). */
+  botUsername: string;
+  /** True when the author replied to a message this assistant wrote. */
+  repliesToOwnMessage: boolean;
+}): Addressing {
+  if (input.repliesToOwnMessage) {
+    return { addressed: true, source: "reply", needsAnalyzer: false };
+  }
+  if (input.botUsername && textMentionsUsername(input.text, input.botUsername)) {
+    return { addressed: true, source: "mention", needsAnalyzer: false };
+  }
+  if (input.text.trim()) return { addressed: false, needsAnalyzer: true };
   return NOT_ADDRESSED;
 }

@@ -40,9 +40,11 @@ const delivery = await startDeliveryConsumer({
   redisUrl,
   senderFor: (assistantId) => manager.senderFor(assistantId),
   onAssistantDeleted: (assistantId) => manager.removeAssistant(assistantId),
+  crossFeed: manager.crossFeed,
 });
 
-const server = serve({ fetch: createApi({ db, manager, internalToken }).fetch, port }, (info) => {
+const api = createApi({ db, manager, internalToken, crossFeed: manager.crossFeed });
+const server = serve({ fetch: api.fetch, port }, (info) => {
   console.log(`tg API listening on :${info.port}`);
 });
 

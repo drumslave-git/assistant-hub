@@ -31,6 +31,7 @@ import {
 } from "@assistant-hub/contracts";
 import { Hono, type Context } from "hono";
 
+import { recordAssistantMessage, type CrossFeed } from "./cross-feed";
 import type { TgDb } from "./db";
 import type { BotManager, ConnectionStatus } from "./bot-manager";
 import {
@@ -74,7 +75,6 @@ import {
 import type { StoredMedia } from "./media/types";
 import type { TgOutbound } from "./outbound";
 import {
-  appendMessage,
   appendMessagesBulk,
   deleteConnection,
   filterMirroredMessageIds,
@@ -128,6 +128,11 @@ export function createApi(input: {
     "statuses" | "senderFor" | "reconcileConnection" | "removeConnection"
   >;
   internalToken: string;
+  /**
+   * Hands what these endpoints deliver to the chat's other assistants
+   * (`cross-feed.ts`), exactly as the reply-delivery consumer does.
+   */
+  crossFeed?: CrossFeed;
 }): Hono {
   const app = new Hono();
 
@@ -811,17 +816,20 @@ export function createApi(input: {
     } catch (err) {
       return c.json({ error: { message: errorText(err) } }, 502);
     }
-    await appendMessage(input.db, {
-      chatId,
-      assistantId: assistantIdOf(c),
-      telegramMessageId: sent.messageId,
-      role: "assistant",
-      userId: null,
-      content: body.text,
-      replyToMessageId,
-      sentAt: new Date(),
-      processed: true,
-    }).catch(() => null);
+    await recordAssistantMessage(
+      input.db,
+      {
+        chatId,
+        assistantId: assistantIdOf(c),
+        telegramMessageId: sent.messageId,
+        content: body.text,
+        replyToMessageId,
+        sentAt: new Date(),
+        threadId: body.threadId != null ? Number(body.threadId) : null,
+        silent: body.silent,
+      },
+      input.crossFeed,
+    ).catch(() => null);
     return c.json({ sourceMessageId: String(sent.messageId) });
   });
 
@@ -856,17 +864,19 @@ export function createApi(input: {
     }
     // The mirror records the spoken text — what history, search, and the
     // next turn's window read (v1: the text form is what is mirrored).
-    await appendMessage(input.db, {
-      chatId,
-      assistantId: assistantIdOf(c),
-      telegramMessageId: sent.messageId,
-      role: "assistant",
-      userId: null,
-      content: body.text,
-      replyToMessageId,
-      sentAt: new Date(),
-      processed: true,
-    }).catch(() => null);
+    await recordAssistantMessage(
+      input.db,
+      {
+        chatId,
+        assistantId: assistantIdOf(c),
+        telegramMessageId: sent.messageId,
+        content: body.text,
+        replyToMessageId,
+        sentAt: new Date(),
+        threadId,
+      },
+      input.crossFeed,
+    ).catch(() => null);
     return c.json({ sourceMessageId: String(sent.messageId), asVoice });
   });
 
@@ -897,17 +907,19 @@ export function createApi(input: {
       // The same pair of rows an incoming media message produces: a
       // media-only assistant mirror row (the picture IS the message) and a
       // pending media row keyed by the file id Telegram just minted.
-      const mirrored = await appendMessage(input.db, {
-        chatId,
-        assistantId: assistantIdOf(c),
-        telegramMessageId: sent.messageId,
-        role: "assistant",
-        userId: null,
-        content: "",
-        replyToMessageId: null,
-        sentAt: new Date(),
-        processed: true,
-      }).catch(() => null);
+      const mirrored = await recordAssistantMessage(
+        input.db,
+        {
+          chatId,
+          assistantId: assistantIdOf(c),
+          telegramMessageId: sent.messageId,
+          content: "",
+          replyToMessageId: null,
+          sentAt: new Date(),
+          threadId,
+        },
+        input.crossFeed,
+      ).catch(() => null);
       const stored =
         mirrored != null && sent.fileId
           ? await ingestGeneratedImage({
@@ -946,17 +958,19 @@ export function createApi(input: {
     }
     // The caption is the delivered message's readable content (a browser-run
     // report riding its file) — that is what the mirror records.
-    await appendMessage(input.db, {
-      chatId,
-      assistantId: assistantIdOf(c),
-      telegramMessageId: sent.messageId,
-      role: "assistant",
-      userId: null,
-      content: body.caption ?? "",
-      replyToMessageId: null,
-      sentAt: new Date(),
-      processed: true,
-    }).catch(() => null);
+    await recordAssistantMessage(
+      input.db,
+      {
+        chatId,
+        assistantId: assistantIdOf(c),
+        telegramMessageId: sent.messageId,
+        content: body.caption ?? "",
+        replyToMessageId: null,
+        sentAt: new Date(),
+        threadId: body.threadId != null ? Number(body.threadId) : null,
+      },
+      input.crossFeed,
+    ).catch(() => null);
     return c.json({ sourceMessageId: String(sent.messageId) });
   });
 

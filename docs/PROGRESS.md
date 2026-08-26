@@ -30,15 +30,30 @@ same top-level-await gotcha as the tg boot fix). The slice-D
 **MCP-outbound design call is confirmed** as the REST send API +
 core-side tool bindings — flag closed; Phase 5 may wrap the same
 handlers in an MCP endpoint if still wanted. Acceptance criteria are
-under "Phase 3 — Assistants" below. Slices A–D are done (assistants
+under "Phase 3 — Assistants" below. Slices A–E are done (assistants
 feature, persona flip, tasks flip, per-assistant connections + the tg
-UI extension), plus the live-test follow-up (per-assistant DM streams +
-the persona identity line — see the criterion and session log). Next
-best task: slice E (the cross-feed + loop guard). Waiting on the
-operator: restart both dev services (the tg service and the core dev
-server — the queue consumer and pollers are boot-bound), then re-run
-the two-bot check: DM each bot and confirm each answers as ITS
-assistant with only its own conversation history.
+UI extension, cross-feed + loop guard), plus the live-test follow-up
+(per-assistant DM streams + the persona identity line — see the
+criteria and session log). Next best task: slice F (aggregated
+directory + person links), which also carries the recorded
+content-plane follow-up.
+
+Waiting on the operator (both checks need the dev services restarted —
+the tg service and the core dev server, since the queue consumer and
+pollers are boot-bound; migrations are already applied to both dev
+databases):
+
+1. The two-bot DM check from slice D: DM each bot and confirm each
+   answers as ITS assistant with only its own conversation history.
+2. The slice-E group check: put both bots in one group, have a person
+   post something that summons one of them, and confirm the other
+   answers it (the cross-feed), that each reads the other's lines as
+   that assistant's name rather than its own, and that the exchange
+   stops after the configured run of assistant messages (Settings →
+   General → "Assistant replies in a row", default 3) until a person
+   speaks again. Note the presence rule: an assistant registers in a
+   group the first time Telegram delivers group traffic to its bot, so
+   a bot added since the last human message registers on the next one.
 
 The numbered list below records how the last Phase 2 items closed:
 
@@ -397,7 +412,7 @@ assistant converted from the active personality, all counts reconciled).
       lookups read DM chats unscoped, mixing both streams; scoping them
       needs URL-level controls and job redesign — slice F / Phase 6
       territory, recorded here so it is not mistaken for done.
-- [ ] Shared-chat behavior: ~~each assistant's deterministic addressing
+- [x] Shared-chat behavior: ~~each assistant's deterministic addressing
       checks its own name only~~ — landed early (`eeb3724`, user
       decision 2026-08-24): the spoken-summons identity is the
       ASSISTANT's name, and the name check moved CORE-side (the name
@@ -416,13 +431,86 @@ assistant converted from the active personality, all counts reconciled).
       assistants stay silent there until a human speaks. N lives in the
       v2 core settings row, operator-editable, default 3; the guard is
       deterministic (no LLM).
+      **Cross-feed + loop guard landed (2026-08-26).** tg side: an
+      assistant message that lands in a GROUP becomes an inbound event
+      for the other assistants present there
+      (`apps/tg/src/cross-feed.ts`). Presence is a new store table
+      (`chat_assistants`, migration 0003) stamped by each poller from
+      what Telegram actually delivered to its bot — a bot that is not in
+      the chat could not answer there anyway. The five outbound paths
+      that mirrored an assistant row by hand (the delivery consumer plus
+      the four internal send endpoints) now go through ONE seam,
+      `recordAssistantMessage`, so no delivery can grow a mirror row
+      without the chat's other assistants hearing it; that seam declines
+      to feed a `silent` send (a transient ack of background work), a
+      message with no text (a generated image), and a DM. The fed event
+      is an ordinary inbound event except for the new contract field
+      `authoredByAssistantId`; its structural verdict is the entity-free
+      half of the addressing check (reply to one of the receiver's own
+      messages, or its literal `@username`), everything else undecided
+      for the core's name check and analyzer. Its correlation carries the
+      receiving assistant (`<chatId>:<messageId>:<assistantId>`) — one
+      delivered message can open a turn per assistant present, and the
+      turn-action markers and traces key on it; `startReplyTrace` and
+      `IncomingMessage` grew a `correlationId` so the core stops deriving
+      one that would merge them.
+      Core side: the guard (`server/turn/loop-guard.ts`) counts the
+      trailing run of assistant messages in the composed window plus the
+      incoming one and, at the limit, ends the turn before any work —
+      ignored with reason `loop_guard`, still settled (the source
+      releases its hold), and recorded as a skipped reply trace so the
+      silence is explicable. N is `settings.assistant_loop_guard_turns`
+      in the v2 core store (migration 0003, default 3, bounds 0–10, 0 =
+      never answer each other), edited on Settings → General; the
+      settings service reads and writes that half through a second
+      repository (`store-repository.ts`) exactly as the owner field
+      routes to the tg app. Reads fall back to the default when
+      `STORE_DATABASE_URL` is unset (a v1-only deployment must still
+      render the page); the write does NOT fall back.
+      Two correctness fixes the cross-feed forced: history rows now carry
+      `assistantId`, so a transcript renders another assistant's lines
+      under its NAME instead of as the reader's own "You" (they were
+      indistinguishable before — a latent bug in any shared group), and a
+      cross-fed message's speaker is the authoring assistant's name, not
+      the bot account's. A cross-fed sender is a bot account, so it is
+      kept out of the person-shaped paths: no memory, no sender
+      preferences, no directory/roster shadow row.
+      The v1 import now stamps group replies with the derived assistant
+      and marks it present in every chat it has history in (v1 was
+      single-bot, so both are facts, not guesses); the dev tg store was
+      backfilled the same way (5 group replies, 1 presence row).
+      Tests: cross-feed + refusal cases (tg runtime integration), the
+      cross-fed structural verdict (tg unit), transcript attribution
+      (core unit), the streak/limit table (core unit), a cross-fed turn
+      answered in the other assistant's voice + silence at the limit +
+      the operator's limit of 0 (core turn-consumer integration), the
+      loop-guard setting's round trip into the store row (core settings
+      integration, which now runs a second database on its container),
+      and the import's stamping (tg import integration).
+      Remaining risks: with three or more assistants in one chat, a
+      reply fans out to each of them at once, so a short burst can land
+      before the streak reaches the limit — bounded (the guard closes
+      the chat as soon as the tail is N assistant messages), never
+      unbounded, but noisier than a two-bot exchange. Presence is
+      evidence-based, so an assistant only becomes cross-feedable after
+      Telegram has delivered that chat's traffic to its bot at least
+      once. And the operator control writes the v2 store while the rest
+      of the settings row is still v1 — one Save touching two databases
+      until the Phase 6 cutover collapses them.
 - [ ] Aggregated directory: users/chats dashboard pages read every
       source's operator API through the shared listing contract (tg
       today; chat joins in Phase 4), person links CRUD over the v2
       store's `person_links`/`person_link_members` with memory reading
       through links preserved.
 - [ ] Tests at each seam; lint/typecheck/test/build green from the
-      root; proof and risks recorded.
+      root; proof and risks recorded. Green as of slice E (2026-08-26,
+      all from the root): `turbo run typecheck` 8/8 workspaces;
+      `turbo run lint` clean (7 pre-existing unused-import warnings, none
+      in the changed files); `turbo run test` 1157 passed / 26 skipped;
+      `turbo run test:integration` core 329 passed / 30 skipped, tg 57
+      passed, chat 1, bus 2; `turbo run build` green. Migrations 0003
+      applied to both dev databases. Stays open until slice F lands its
+      own tests.
 
 **Boundary study (2026-08-24).** v1-personality readers to flip:
 `server/turn/consume.ts` (the reply turn — flips to the v2 assistant

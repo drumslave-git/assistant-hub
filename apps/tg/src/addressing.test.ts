@@ -1,7 +1,7 @@
 import type { Message } from "@grammyjs/types";
 import { describe, expect, it } from "vitest";
 
-import { checkAddressed } from "./addressing";
+import { checkAddressed, checkCrossFedAddressed } from "./addressing";
 
 const BOT = { id: 999, username: "fixture_bot" };
 
@@ -69,5 +69,43 @@ describe("checkAddressed (structural half — the name check is the core's)", ()
       addressed: false,
       needsAnalyzer: false,
     });
+  });
+});
+
+describe("checkCrossFedAddressed", () => {
+  it("an answer to one of this assistant's own messages is addressed to it", () => {
+    expect(
+      checkCrossFedAddressed({
+        text: "good point, though",
+        botUsername: "fixture_bot",
+        repliesToOwnMessage: true,
+      }),
+    ).toMatchObject({ addressed: true, source: "reply" });
+  });
+
+  it("a spelled-out @username summons this assistant", () => {
+    expect(
+      checkCrossFedAddressed({
+        text: "@fixture_bot what do you think?",
+        botUsername: "fixture_bot",
+        repliesToOwnMessage: false,
+      }),
+    ).toMatchObject({ addressed: true, source: "mention" });
+  });
+
+  it("anything else with text is undecided — the core runs the name check", () => {
+    expect(
+      checkCrossFedAddressed({
+        text: "Aria, help",
+        botUsername: "fixture_bot",
+        repliesToOwnMessage: false,
+      }),
+    ).toMatchObject({ addressed: false, needsAnalyzer: true });
+  });
+
+  it("an empty message decides nothing and asks for no analyzer", () => {
+    expect(
+      checkCrossFedAddressed({ text: "   ", botUsername: "fixture_bot", repliesToOwnMessage: false }),
+    ).toMatchObject({ addressed: false, needsAnalyzer: false });
   });
 });

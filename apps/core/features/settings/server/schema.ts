@@ -91,6 +91,8 @@ export const settingsSchema = z.object({
   ownerUsername: z.string().nullable(),
   /** Whether maintenance mode is on. */
   maintenanceModeEnabled: z.boolean(),
+  /** Consecutive assistant turns a chat may hold before every bot there goes quiet. */
+  assistantLoopGuardTurns: z.number().int(),
   /** Operator IANA timezone for wall-clock features (scheduled tasks). */
   timezone: z.string(),
   /** Local `HH:MM` (in `timezone`) every daily background job runs at. */
@@ -134,6 +136,11 @@ export const updateSettingsSchema = z
     tavilyApiKey: apiKey.nullable(),
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
+    /**
+     * Bounded 0–10: assistants answering each other is a conversation, not a
+     * budget. 0 stops them from answering each other at all.
+     */
+    assistantLoopGuardTurns: z.number().int().min(0).max(10),
     timezone: z.string().trim().min(1).max(64),
     dailyJobsRunTime: timeOfDay,
     /** Bounded 1–100 GB: a disk guard, not a quality choice. */

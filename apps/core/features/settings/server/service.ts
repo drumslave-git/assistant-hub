@@ -41,6 +41,7 @@ import {
   saveSourceOwner,
 } from "@/server/source/tg-operator";
 import { withTrace, type TraceRecorder } from "@/server/trace";
+import { getEnv } from "@/server/env";
 import {
   getSettingsRecord,
   SETTINGS_ID,
@@ -48,6 +49,13 @@ import {
   type SettingsPatch,
   type SettingsRecord,
 } from "./repository";
+import {
+  getStoreSettings,
+  upsertStoreSettings,
+  STORE_SETTINGS_DEFAULTS,
+  type StoreSettingsPatch,
+  type StoreSettingsRecord,
+} from "./store-repository";
 import type {
   ProbePart,
   ProbeReport,
@@ -72,8 +80,28 @@ import type {
 
 const FEATURE = FEATURES["settings"];
 
-/** Project an internal record to the client-safe shape (masking secrets). */
-function toClientSettings(record: SettingsRecord | null): Settings {
+/**
+ * The store-owned half of the settings, read best-effort. A deployment that
+ * has not been given the v2 store yet (the transitional `STORE_DATABASE_URL`
+ * is optional until the Phase 6 cutover) simply reads the defaults instead of
+ * failing the whole settings page; writes to these fields are NOT forgiving —
+ * see {@link updateSettings}.
+ */
+async function readStoreSettings(): Promise<StoreSettingsRecord> {
+  if (!getEnv().STORE_DATABASE_URL) return { ...STORE_SETTINGS_DEFAULTS };
+  try {
+    return await getStoreSettings();
+  } catch (err) {
+    console.warn(
+      "Core store settings unreadable — showing defaults:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return { ...STORE_SETTINGS_DEFAULTS };
+  }
+}
+
+/** Project the internal records to the client-safe shape (masking secrets). */
+function toClientSettings(record: SettingsRecord | null, store: StoreSettingsRecord): Settings {
   return {
     chatBackendId: record?.chatBackendId ?? null,
     model: record?.model ?? null,
@@ -99,6 +127,7 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     ownerUsername: record?.ownerUsername ?? null,
     ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
+    assistantLoopGuardTurns: store.assistantLoopGuardTurns,
     timezone: record?.timezone ?? "UTC",
     dailyJobsRunTime: record?.dailyJobsRunTime ?? DEFAULT_DAILY_JOBS_RUN_TIME,
     browserDownloadLimitGb: record?.browserDownloadLimitGb ?? DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB,
@@ -108,7 +137,19 @@ function toClientSettings(record: SettingsRecord | null): Settings {
 
 /** Current settings (no secret values), or empty defaults when never configured. */
 export async function getSettings(db: DrizzleDb = getDb()): Promise<Settings> {
-  return toClientSettings(await getSettingsRecord(db));
+  const [record, store] = await Promise.all([getSettingsRecord(db), readStoreSettings()]);
+  return toClientSettings(record, store);
+}
+
+/**
+ * Server-only: the bot-to-bot loop guard — how many assistant turns a chat
+ * may hold in a row before every assistant there stays silent until a human
+ * speaks (user decision, 2026-08-24: default 3, deterministic, never an LLM
+ * judgement). Read at call time so an operator change applies without a
+ * restart, exactly like {@link getTimezone}.
+ */
+export async function getAssistantLoopGuardTurns(): Promise<number> {
+  return (await readStoreSettings()).assistantLoopGuardTurns;
 }
 
 /**
@@ -542,6 +583,15 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   return patch;
 }
 
+/** The half of a validated update that belongs to the v2 core store. */
+function toStorePatch(input: UpdateSettings): StoreSettingsPatch {
+  const patch: StoreSettingsPatch = {};
+  if (input.assistantLoopGuardTurns !== undefined) {
+    patch.assistantLoopGuardTurns = input.assistantLoopGuardTurns;
+  }
+  return patch;
+}
+
 /** Whether `Intl` recognizes the given IANA timezone name. */
 function isValidIanaTimezone(timeZone: string): boolean {
   try {
@@ -790,6 +840,18 @@ export async function updateSettings(
       );
       const record = await upsertSettings(db, patch);
       await trace.event({ type: "db", message: "settings row upserted" });
+      // The store-owned half (fields with no v1 column — see
+      // `store-repository.ts`). Unlike the read path this does NOT fall back:
+      // a save the operator watched must never report success it did not
+      // achieve.
+      const storePatch = toStorePatch(input);
+      let store: StoreSettingsRecord;
+      if (Object.keys(storePatch).length > 0) {
+        store = await upsertStoreSettings(storePatch);
+        await trace.event({ type: "db", message: "core store settings row upserted" });
+      } else {
+        store = await readStoreSettings();
+      }
       await trace.succeed({
         outputSummary:
           cleared.length > 0
@@ -797,7 +859,7 @@ export async function updateSettings(
             : `Updated ${fields.join(", ")}`,
         relatedIds: { [FEATURE.relatedIdsKey]: [SETTINGS_ID] },
       });
-      return toClientSettings(record);
+      return toClientSettings(record, store);
     },
   );
 }

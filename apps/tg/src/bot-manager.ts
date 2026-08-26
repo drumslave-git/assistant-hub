@@ -8,6 +8,7 @@ import {
 import { run, sequentialize, type RunnerHandle } from "@grammyjs/runner";
 import { Bot, HttpError, type Context } from "grammy";
 
+import { createCrossFeed, type CrossFeed, type CrossFeedTarget } from "./cross-feed";
 import type { TgDb } from "./db";
 import {
   captureFeedbackReply,
@@ -144,6 +145,12 @@ export class BotManager {
   private queue: ReturnType<typeof openQueue<InboundMessageEvent>>;
   private publisher: BusPublisher;
   private traces: SourceTraceClient;
+  /**
+   * Hands an assistant's delivered message to the chat's other assistants
+   * (`cross-feed.ts`). It lives here because this is where both halves it
+   * needs already are: the queue producer, and the running bots' identities.
+   */
+  readonly crossFeed: CrossFeed;
 
   constructor(
     private readonly deps: {
@@ -155,6 +162,38 @@ export class BotManager {
     this.queue = openQueue<InboundMessageEvent>(INBOUND_MESSAGES_QUEUE, deps.redisUrl);
     this.publisher = openPublisher(deps.redisUrl);
     this.traces = busTraceClient(this.publisher);
+    this.crossFeed = createCrossFeed({
+      db: deps.db,
+      targets: () => this.crossFeedTargets(),
+      enqueue: (event) => this.enqueueInbound(event),
+    });
+  }
+
+  /** Enqueue one normalized inbound event for the core's pipeline. */
+  private async enqueueInbound(event: InboundMessageEvent): Promise<void> {
+    await this.queue.add("message.inbound", event);
+  }
+
+  /**
+   * Every connection with a live bot account, as cross-feed targets. A
+   * stopped or still-connecting poller is not one: it has no identity to put
+   * on an event and could not deliver an answer either.
+   */
+  private crossFeedTargets(): CrossFeedTarget[] {
+    return [...this.pollers.values()].flatMap((poller) =>
+      poller.bot?.botInfo
+        ? [
+            {
+              assistantId: poller.assistantId,
+              botId: poller.bot.botInfo.id,
+              identity: {
+                botUsername: poller.bot.botInfo.username,
+                botDisplayName: poller.bot.botInfo.first_name,
+              },
+            },
+          ]
+        : [],
+    );
   }
 
   /** The feedback flows' collaborators over one running bot. */
@@ -373,9 +412,7 @@ export class BotManager {
         },
         botId: ctx.me.id,
         botToken,
-        enqueue: async (event) => {
-          await this.queue.add("message.inbound", event);
-        },
+        enqueue: (event) => this.enqueueInbound(event),
         // A reply to an awaiting feedback menu is that menu's answer, not a
         // turn; the capture deletes the menu and publishes the completion.
         captureFeedback: bot

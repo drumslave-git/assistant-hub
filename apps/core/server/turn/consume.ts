@@ -34,10 +34,17 @@ import { listAddressingExclusionTerms } from "@/features/bot-messaging/server/ex
 import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import { getMemoryContext } from "@/features/memory/server/service";
 import { getPreferencesContext, getLatestSelfCorrectionPrompt } from "@/features/self-improvement/server/service";
-import { getAssistantPromptIdentity } from "@/features/assistants/server/service";
+import {
+  getAssistantNames,
+  getAssistantPromptIdentity,
+} from "@/features/assistants/server/service";
 import { buildStandingTasksBlock } from "@/features/tasks/format";
 import { getActiveTasksForChat } from "@/features/tasks/server/service";
-import { getBotPolicy, getTimezone } from "@/features/settings/server/service";
+import {
+  getAssistantLoopGuardTurns,
+  getBotPolicy,
+  getTimezone,
+} from "@/features/settings/server/service";
 import { mediaKindLabel } from "@/features/vision/format";
 import {
   describeAndStore,
@@ -59,8 +66,15 @@ import { getEnv } from "@/server/env";
 import type { TraceRecorder } from "@/server/trace";
 
 import { createTurnActionMarkers, closeTurnActionStore, type TurnActionMarkers } from "./actions";
+import { checkLoopGuard } from "./loop-guard";
 import { shadowDirectory } from "./shadow-directory";
-import { botTranscriptLabel, renderChatContext, renderCurrentTurn, renderHistoryWindow } from "./render";
+import {
+  botTranscriptLabel,
+  renderChatContext,
+  renderCurrentTurn,
+  renderHistoryWindow,
+  type TranscriptVoices,
+} from "./render";
 import { tgApiMediaStore } from "./tg-media";
 import { resolveSourceOutbound, type SourceOutboundPort } from "./tg-outbound";
 
@@ -95,6 +109,8 @@ import { resolveSourceOutbound, type SourceOutboundPort } from "./tg-outbound";
 
 /** Re-enqueue delay for a turn that failed before performing any action. */
 const RETRY_DELAY_MS = 15_000;
+/** Loop-guard limit used when the setting cannot be read (user decision, 2026-08-24). */
+const DEFAULT_LOOP_GUARD_TURNS = 3;
 /** Total tries for such a turn (first + re-enqueues) before it fails for good. */
 const MAX_ATTEMPTS = 5;
 
@@ -189,6 +205,12 @@ interface TurnPlan {
    * whose connection outlived the bus event).
    */
   assistantIdentity: { name: string; personaBlock: string } | null;
+  /**
+   * Who else speaks in this chat: the ids the transcript must attribute to a
+   * named assistant instead of to "You". Empty in the ordinary
+   * single-assistant chat, which is why the name lookup is skipped there.
+   */
+  voices: TranscriptVoices;
 }
 
 /**
@@ -354,9 +376,9 @@ async function buildEventDeps(
     },
     trace: turn.replyTrace,
     loadHistory: async (options) =>
-      renderHistoryWindow(event.context.history, botLabel, options),
+      renderHistoryWindow(event.context.history, botLabel, { ...options, voices: turn.voices }),
     loadCurrentTurn: async () =>
-      renderCurrentTurn(event, { contentOverride: turn.effectiveText }),
+      renderCurrentTurn(event, { contentOverride: turn.effectiveText, voices: turn.voices }),
     // Media resolved to TEXT inside the turn — the v1 `loadVision` flow over
     // the owning source's media API. Raw bytes never reach the reply request.
     loadVision: turn.attachment
@@ -437,8 +459,16 @@ async function buildEventDeps(
         }
       : undefined,
     loadChatContext: () => Promise.resolve(renderChatContext(event)),
-    loadMemory: () => getMemoryContext({ chatId, senderId, isGroup }).catch(() => null),
-    loadSenderPreferences: () => getPreferencesContext(senderId).catch(() => null),
+    // Memory and preferences are about PEOPLE. A cross-fed message was
+    // written by another assistant's bot account, which is nobody's identity
+    // — reading (and later writing) a person's memory under it would invent a
+    // user out of a bot.
+    loadMemory: isCrossFed(event)
+      ? undefined
+      : () => getMemoryContext({ chatId, senderId, isGroup }).catch(() => null),
+    loadSenderPreferences: isCrossFed(event)
+      ? undefined
+      : () => getPreferencesContext(senderId).catch(() => null),
     loadAddressExclusions: () => listAddressingExclusionTerms().catch(() => []),
     generateReply: bindings.generateReply,
     applyStandingTasks: bindings.applyStandingTasks,
@@ -493,6 +523,11 @@ async function buildEventDeps(
   };
 }
 
+/** Whether this event is another assistant's message, handed over by the source. */
+function isCrossFed(event: InboundMessageEvent): boolean {
+  return Boolean(event.authoredByAssistantId);
+}
+
 /** Map the event's pre-decided verdict onto the service's shape. */
 function toAddressResult(event: InboundMessageEvent): AddressResult {
   return {
@@ -514,6 +549,34 @@ export async function processInboundEvent(
   const store = resolveMediaStore(ctx);
   const outbound = resolveOutbound(ctx);
 
+  // The bot-to-bot loop guard, before anything else this turn would cost:
+  // a chat that already holds N assistant messages in a row is closed to
+  // assistants until a person speaks (see loop-guard.ts). Deterministic, and
+  // only ever reachable on a cross-fed turn — but recorded, because silence
+  // an operator can see two bots earning is silence they must be able to
+  // explain.
+  if (isCrossFed(event)) {
+    const limit = await getAssistantLoopGuardTurns().catch(() => DEFAULT_LOOP_GUARD_TURNS);
+    const verdict = checkLoopGuard(event, limit);
+    if (verdict.silenced) {
+      const trace = await startReplyTrace({
+        chatId,
+        messageId: Number(event.message.sourceMessageId),
+        correlationId: event.correlationId,
+        fromId: Number(parseScopedRef(event.sender.ref).id),
+        assistantId: event.assistantId,
+        inputSummary: event.message.content,
+      });
+      await trace.event({
+        type: "step",
+        message: "loop guard: assistants are silent in this chat",
+        data: { ...verdict, authoredByAssistantId: event.authoredByAssistantId },
+      });
+      await trace.skip(undefined, { outputSummary: verdict.reason });
+      return { status: "ignored", reason: "loop_guard" };
+    }
+  }
+
   // Live traffic: push the idle background runs out and yield any batch in
   // flight, so they only ever run while the bot is quiet (v1 behavior).
   pokeVisionBackfill();
@@ -522,8 +585,10 @@ export async function processInboundEvent(
   // Transitional shadow of the source's directory into the v1 tables the
   // brain still FKs and reads (see shadow-directory.ts). Awaited so the
   // turn's own preference/memory writes find their FK targets; failures are
-  // swallowed inside — never a lost turn.
-  await shadowDirectory(event);
+  // swallowed inside — never a lost turn. A cross-fed message's "sender" is
+  // another assistant's bot account, which has no business in a directory of
+  // people (the chat and its roster still refresh).
+  await shadowDirectory(event, { skipSender: isCrossFed(event) });
 
   let effectiveText = event.message.content;
   let addressing = toAddressResult(event);
@@ -536,6 +601,23 @@ export async function processInboundEvent(
   // source sends only structural verdicts).
   const assistantIdentity = await getAssistantPromptIdentity(event.assistantId).catch(() => null);
   const spokenName = assistantIdentity?.name ?? null;
+
+  // Other assistants speaking in this chat — their lines are somebody else's
+  // words, not this one's. The name lookup runs only when the chat actually
+  // holds someone else's line, so an ordinary single-assistant turn pays
+  // nothing for it.
+  const others = new Set(
+    [
+      ...event.context.history.flatMap((entry) =>
+        entry.role === "assistant" && entry.assistantId ? [entry.assistantId] : [],
+      ),
+      ...(event.authoredByAssistantId ? [event.authoredByAssistantId] : []),
+    ].filter((id) => id !== event.assistantId),
+  );
+  const voices: TranscriptVoices = {
+    selfAssistantId: event.assistantId,
+    assistantNames: others.size > 0 ? await getAssistantNames().catch(() => new Map()) : new Map(),
+  };
 
   // The name half of the deterministic check, on the source's undecided
   // group turns: a literal name match is a summons; otherwise the analyzer
@@ -552,6 +634,7 @@ export async function processInboundEvent(
     replyTrace = await startReplyTrace({
       chatId: Number(chatId),
       messageId: Number(event.message.sourceMessageId),
+      correlationId: event.correlationId,
       fromId: Number(parseScopedRef(event.sender.ref).id),
       assistantId: event.assistantId,
       inputSummary: "",
@@ -605,6 +688,7 @@ export async function processInboundEvent(
     generatedImages: [],
     enqueuedBrowserRuns: [],
     assistantIdentity,
+    voices,
   };
   const deps = await buildEventDeps(event, ctx, turn);
   const outcome = await handleIncomingMessage(
@@ -613,7 +697,13 @@ export async function processInboundEvent(
       chatId: Number(chatId),
       chatType: event.chat.kind === "group" ? "supergroup" : "private",
       messageId: Number(event.message.sourceMessageId),
+      // One message can open a turn per assistant present, so the source's
+      // correlation is authoritative — deriving it here would merge them.
+      correlationId: event.correlationId,
       fromId: Number(parseScopedRef(event.sender.ref).id),
+      // A cross-fed message DID come from a bot account, but it is exactly
+      // the message this assistant was handed to consider; the loop guard
+      // above, not the blanket bot rule, is what bounds it.
       fromIsBot: false,
       text: effectiveText,
       // A loadable attachment makes a caption-less message real content (v1).

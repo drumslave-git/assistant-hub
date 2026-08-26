@@ -26,32 +26,47 @@ import { rememberUser } from "@/features/known-users/server/service";
  * Best-effort by design, like the v1 capture path: a directory hiccup must
  * never cost a turn.
  */
-export async function shadowDirectory(event: InboundMessageEvent): Promise<void> {
+export async function shadowDirectory(
+  event: InboundMessageEvent,
+  options?: {
+    /**
+     * Skip the sender half: the message was cross-fed from another assistant,
+     * so its "sender" is a bot account. The directory is of people — a bot
+     * belongs in it no more than it belongs in someone's memory.
+     */
+    skipSender?: boolean;
+  },
+): Promise<void> {
   try {
     const db = getDb();
     const chatId = parseScopedRef(event.chat.ref).id;
     const senderId = parseScopedRef(event.sender.ref).id;
+    const shadowSender = !options?.skipSender;
 
-    await rememberUser({
-      userId: senderId,
-      username: event.sender.username ?? null,
-      firstName: event.sender.firstName ?? null,
-      lastName: event.sender.lastName ?? null,
-    });
-    await db
-      .update(knownUsers)
-      .set({
-        aliases: event.sender.aliases,
-        language: event.sender.language ?? null,
-      })
-      .where(eq(knownUsers.userId, senderId));
+    if (shadowSender) {
+      await rememberUser({
+        userId: senderId,
+        username: event.sender.username ?? null,
+        firstName: event.sender.firstName ?? null,
+        lastName: event.sender.lastName ?? null,
+      });
+      await db
+        .update(knownUsers)
+        .set({
+          aliases: event.sender.aliases,
+          language: event.sender.language ?? null,
+        })
+        .where(eq(knownUsers.userId, senderId));
+    }
 
     if (event.chat.kind === "group") {
       await rememberGroupActivity({
         chatId,
         title: event.chat.title ?? null,
         type: event.chat.type ?? null,
-        userId: senderId,
+        // Membership follows the same rule: a bot account is not a member of
+        // anyone's group roster.
+        userId: shadowSender ? senderId : null,
       });
       await db
         .update(knownGroups)
@@ -67,7 +82,7 @@ export async function shadowDirectory(event: InboundMessageEvent): Promise<void>
       // degrade every label they feed.
       for (const participant of event.context.participants) {
         const userId = parseScopedRef(participant.ref).id;
-        if (userId === senderId) continue;
+        if (shadowSender && userId === senderId) continue;
         await db
           .insert(knownUsers)
           .values({ userId, username: participant.username ?? null })

@@ -153,6 +153,26 @@ describe("v1 → tg store import", () => {
       { assistant_id: "persona-1", bot_token: "12345:fixture-token", enabled: true },
     ]);
 
+    // v1 was single-bot, so every message it authored belongs to the derived
+    // assistant — DMs (whose ids are per bot) and group replies alike. Group
+    // USER rows stay unattributed: the group is one shared stream.
+    const authored = await target.query(
+      `SELECT telegram_message_id, assistant_id FROM messages
+        WHERE telegram_message_id < 99 ORDER BY telegram_message_id`,
+    );
+    expect(authored.rows).toEqual([
+      { telegram_message_id: "11", assistant_id: null },
+      { telegram_message_id: "12", assistant_id: "persona-1" },
+      { telegram_message_id: "21", assistant_id: "persona-1" },
+    ]);
+
+    // And it is recorded as present in the groups it has history in — what
+    // the cross-feed reads to know who else is listening in a chat.
+    const presence = await target.query(
+      `SELECT chat_id, assistant_id FROM chat_assistants ORDER BY chat_id`,
+    );
+    expect(presence.rows).toEqual([{ chat_id: "-2001", assistant_id: "persona-1" }]);
+
     // The owner identity now lives in this app's settings singleton.
     const settings = await target.query(`SELECT owner_username, owner_user_id FROM settings`);
     expect(settings.rows).toEqual([{ owner_username: "alice_example", owner_user_id: "1001" }]);

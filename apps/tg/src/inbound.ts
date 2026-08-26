@@ -30,10 +30,10 @@ import {
  * consumes it from the queue and never reads this database.
  *
  * Deliberately does NOT decide anything about replying: addressing,
- * policy gates and the LLM turn are the core's business. Messages from
- * bots are still mirrored-not-forwarded the way v1 ignored them — the
- * assistant never answers bots, and Phase 3's bot-to-bot rules arrive with
- * assistants.
+ * policy gates and the LLM turn are the core's business. Messages that
+ * arrive from bot accounts are dropped here as v1 dropped them; another
+ * ASSISTANT's message reaches this app's other connections through the
+ * cross-feed instead (`cross-feed.ts`), which Telegram cannot do.
  *
  * Media (slice B): ingested here — downloaded with the connection's token,
  * normalized, stored `pending` in this app's store — and carried on the
@@ -88,7 +88,9 @@ export async function processIncomingMessage(
   const now = deps.now?.() ?? new Date();
 
   // Bot-authored messages: not mirrored (the media FK convention relies on
-  // it) and never answered — v1 behavior, revisited in Phase 3.
+  // it) and never answered. An assistant's own reply is already mirrored by
+  // the send that made it, and reaches the chat's other assistants through
+  // the cross-feed — not through an update Telegram never sends anyway.
   if (!from || from.is_bot) {
     return { status: "skipped", reason: "bot_or_anonymous_sender" };
   }
@@ -113,6 +115,9 @@ export async function processIncomingMessage(
       title: chat.title ?? null,
       type: chat.type,
       userId: senderId,
+      // Telegram delivered this group's traffic to THIS bot — the evidence
+      // the cross-feed reads to know which assistants listen here.
+      assistantId: deps.assistantId,
     });
   }
   // `processed: false` takes the live-processing hold; the lifecycle

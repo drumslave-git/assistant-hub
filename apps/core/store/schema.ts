@@ -151,6 +151,14 @@ export const settings = pgTable(
     browserModel: text("browser_model"),
     /** Maintenance mode: only the owner can trigger LLM replies. */
     maintenanceModeEnabled: boolean("maintenance_mode_enabled").notNull().default(false),
+    /**
+     * Bot-to-bot loop guard (PLAN "Shared-chat behavior", user decision
+     * 2026-08-24 — default 3): how many assistant-authored turns a chat may
+     * hold in a row before every assistant there falls silent until a human
+     * speaks again. Deterministic, never an LLM judgement. 0 stops
+     * assistants from answering each other at all.
+     */
+    assistantLoopGuardTurns: integer("assistant_loop_guard_turns").notNull().default(3),
     /** Operator timezone (IANA name) for wall-clock features. */
     timezone: text("timezone").notNull().default("UTC"),
     /** Local wall-clock `HH:MM` at which the daily background jobs run. */

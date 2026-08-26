@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
+import { applyMigrations } from "@assistant-hub/db/testing";
+import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { insertBackend } from "@/features/backends/server/repository";
@@ -11,10 +14,13 @@ import { probeImages } from "@/server/llm/images";
 import { probeSpeech } from "@/server/llm/speech";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import { getTraceDetail, listTraces } from "@/server/trace";
+import { resetEnvCache } from "@/server/env";
+import { closeStorePool } from "@/server/store/db";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "./repository";
 import { updateSettingsSchema, type ProbeReport } from "./schema";
 import {
+  getAssistantLoopGuardTurns,
   getAudioRuntime,
   getBackgroundRuntime,
   getBotPolicy,
@@ -102,18 +108,44 @@ async function seedBackend(
   return id;
 }
 
+const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
+
 let ctx: TestDb;
+/**
+ * The settings row is split while the cutover is pending: the v1 database
+ * holds everything that predates the redesign, and the v2 core store holds
+ * the fields Phase 3 added (`store-repository.ts`). The suite runs both, on
+ * one container, so a save can be followed all the way to whichever row owns
+ * the field.
+ */
+let storePool: Pool;
 
 beforeAll(async () => {
   ctx = await startTestDb();
+  const admin = new Pool({ connectionString: ctx.connectionUri });
+  try {
+    await admin.query(`CREATE DATABASE core_store`);
+  } finally {
+    await admin.end();
+  }
+  const storeUrl = ctx.connectionUri.replace(/\/[^/?]+(\?|$)/, "/core_store$1");
+  await applyMigrations(storeUrl, STORE_MIGRATIONS);
+  process.env.STORE_DATABASE_URL = storeUrl;
+  resetEnvCache();
+  storePool = new Pool({ connectionString: storeUrl });
 });
 
 afterAll(async () => {
+  await storePool?.end();
+  // Production code opened the process-global store pool; close it before the
+  // container stops or its dying clients fail an otherwise green run.
+  await closeStorePool();
   await ctx?.stop();
 });
 
 beforeEach(async () => {
   await ctx.truncate();
+  await storePool.query(`DELETE FROM settings`);
   // Endpoint unreachable unless a test says otherwise — the conservative case,
   // in which stored selections are never cleared.
   listModelsMock.mockReset();
@@ -159,11 +191,44 @@ describe("getSettings", () => {
       ownerUsername: null,
       ownerUserId: null,
       maintenanceModeEnabled: false,
+      // Store-owned (see `store-repository.ts`): a suite with no v2 store
+      // configured reads the documented default rather than failing.
+      assistantLoopGuardTurns: 3,
       timezone: "UTC",
       dailyJobsRunTime: "04:00",
       browserDownloadLimitGb: 10,
       updatedAt: null,
     });
+  });
+});
+
+describe("the store-owned half of the settings", () => {
+  it("saves the loop guard into the core store and reads it back", async () => {
+    const saved = await updateSettings({ assistantLoopGuardTurns: 5 }, trigger, ctx.db);
+    expect(saved.assistantLoopGuardTurns).toBe(5);
+
+    // In the v2 store's row — not the v1 settings table, which has no such
+    // column and never will.
+    const rows = await storePool.query(`SELECT assistant_loop_guard_turns FROM settings`);
+    expect(rows.rows).toEqual([{ assistant_loop_guard_turns: 5 }]);
+    expect(await getSettings(ctx.db)).toMatchObject({ assistantLoopGuardTurns: 5 });
+    expect(await getAssistantLoopGuardTurns()).toBe(5);
+  });
+
+  it("leaves it alone when a save does not mention it", async () => {
+    await updateSettings({ assistantLoopGuardTurns: 1 }, trigger, ctx.db);
+    const after = await updateSettings({ timezone: "Europe/Berlin" }, trigger, ctx.db);
+    expect(after).toMatchObject({ timezone: "Europe/Berlin", assistantLoopGuardTurns: 1 });
+  });
+
+  it("reads the documented default before anything is ever saved", async () => {
+    expect(await getAssistantLoopGuardTurns()).toBe(3);
+  });
+
+  it("refuses a limit outside the bounds the loop guard is meaningful in", () => {
+    expect(updateSettingsSchema.safeParse({ assistantLoopGuardTurns: -1 }).success).toBe(false);
+    expect(updateSettingsSchema.safeParse({ assistantLoopGuardTurns: 11 }).success).toBe(false);
+    expect(updateSettingsSchema.safeParse({ assistantLoopGuardTurns: 0 }).success).toBe(true);
   });
 });
 

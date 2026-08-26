@@ -103,6 +103,19 @@ export async function getAssistantPromptIdentity(
 }
 
 /**
+ * Server-only: display names of every assistant, by id. A chat where several
+ * assistants speak needs them to attribute each line — one assistant's own
+ * words read as "You", another's read as that assistant's name (never as the
+ * bot account's profile name; user decision, 2026-08-24).
+ */
+export async function getAssistantNames(
+  db: StoreDb = getStoreDb(),
+): Promise<Map<string, string>> {
+  const records = await listAssistants(db);
+  return new Map(records.map((record) => [record.id, record.name]));
+}
+
+/**
  * Server-only, transitional: the persona when exactly ONE assistant exists,
  * else null. Assistant-less flows (timed task fires, the self-improvement
  * reflection context) have no event to name an assistant until the tasks

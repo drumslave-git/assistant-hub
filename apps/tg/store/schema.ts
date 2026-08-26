@@ -106,6 +106,37 @@ export type ChatMemberRow = typeof chatMembers.$inferSelect;
 export type ChatMemberInsert = typeof chatMembers.$inferInsert;
 
 /**
+ * Which assistants are present in a group chat. Stamped by each connection's
+ * poller whenever it sees activity there, so it records what Telegram
+ * actually delivers to that bot rather than what an operator believes.
+ *
+ * The cross-feed reads it: Telegram never delivers a bot's messages to other
+ * bots, so an assistant's reply is handed to the OTHER assistants listening
+ * in the same chat as an inbound event, and only to those (a bot that is not
+ * in the chat could not answer there anyway). Group chats only — a DM has
+ * exactly one bot in it. `assistant_id` is a core-store id as a plain string,
+ * like `connections.assistant_id`.
+ */
+export const chatAssistants = pgTable(
+  "chat_assistants",
+  {
+    chatId: text("chat_id")
+      .notNull()
+      .references(() => chats.chatId, { onDelete: "cascade" }),
+    assistantId: text("assistant_id").notNull(),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.chatId, t.assistantId] }),
+    index("chat_assistants_chat_idx").on(t.chatId),
+  ],
+);
+
+export type ChatAssistantRow = typeof chatAssistants.$inferSelect;
+export type ChatAssistantInsert = typeof chatAssistants.$inferInsert;
+
+/**
  * The 1:1 mirror of the Telegram conversation (v1 `chat_messages`): every
  * human message and every bot reply, keyed by chat. Append-only log —
  * identity id preserves insertion order; per-conversation uniqueness (see the

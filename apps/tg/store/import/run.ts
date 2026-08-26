@@ -38,6 +38,7 @@ const TARGET_TABLES = [
   "users",
   "chats",
   "chat_members",
+  "chat_assistants",
   "messages",
   "message_search",
   "media",
@@ -355,6 +356,27 @@ export async function runTgImport(input: {
       [assistantId],
     );
     report.note(`stamped ${stamped.rowCount ?? 0} DM message(s) with assistant '${assistantId}'`);
+    // Group replies get the same author for the same reason: v1 had one bot,
+    // so every assistant line in every group is that assistant's. Unstamped
+    // they would read as "You" to a SECOND assistant added to the group
+    // later, which would have it claim words it never said.
+    const stampedGroup = await target.query(
+      `UPDATE messages SET assistant_id = $1
+        WHERE chat_id LIKE '-%' AND role = 'assistant'`,
+      [assistantId],
+    );
+    report.note(
+      `stamped ${stampedGroup.rowCount ?? 0} group repl(ies) with assistant '${assistantId}'`,
+    );
+    // …and it is present in every group it has history in, which is what the
+    // cross-feed reads (a poller refreshes this on the next message anyway).
+    const presence = await target.query(
+      `INSERT INTO chat_assistants (chat_id, assistant_id)
+       SELECT chat_id, $1 FROM chats
+       ON CONFLICT (chat_id, assistant_id) DO NOTHING`,
+      [assistantId],
+    );
+    report.note(`assistant '${assistantId}' marked present in ${presence.rowCount ?? 0} chat(s)`);
     if (token) {
       await insertBatch(target, {
         table: "connections",

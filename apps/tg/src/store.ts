@@ -1,6 +1,7 @@
 import { and, asc, count, eq, gte, inArray, isNull, lt, lte, max, ne, sql } from "drizzle-orm";
 
 import {
+  chatAssistants,
   chatMembers,
   chats,
   connections,
@@ -47,13 +48,25 @@ export async function upsertUser(
 }
 
 /**
- * Upsert a group chat (title/type refreshed; notes/language never touched)
- * and record the sender as a member. Call after {@link upsertUser} — the
- * membership FK needs the user row.
+ * Upsert a group chat (title/type refreshed; notes/language never touched),
+ * record the sender as a member, and stamp the receiving assistant's
+ * presence in the chat. Call after {@link upsertUser} — the membership FK
+ * needs the user row.
+ *
+ * Presence is stamped from what Telegram delivered to THIS connection, which
+ * is the only honest evidence the bot is in the chat; the cross-feed reads
+ * it to know who else is listening.
  */
 export async function upsertChatActivity(
   db: TgDb,
-  input: { chatId: string; title: string | null; type: string; userId: string },
+  input: {
+    chatId: string;
+    title: string | null;
+    type: string;
+    userId: string;
+    /** The connection that received the update; null skips the presence stamp. */
+    assistantId: string | null;
+  },
 ): Promise<void> {
   await db
     .insert(chats)
@@ -74,6 +87,24 @@ export async function upsertChatActivity(
       target: [chatMembers.chatId, chatMembers.userId],
       set: { lastSeenAt: new Date() },
     });
+  if (input.assistantId) {
+    await db
+      .insert(chatAssistants)
+      .values({ chatId: input.chatId, assistantId: input.assistantId })
+      .onConflictDoUpdate({
+        target: [chatAssistants.chatId, chatAssistants.assistantId],
+        set: { lastSeenAt: new Date() },
+      });
+  }
+}
+
+/** The assistants known to be present in one chat (see {@link chatAssistants}). */
+export async function listChatAssistants(db: TgDb, chatId: string): Promise<string[]> {
+  const rows = await db
+    .select({ assistantId: chatAssistants.assistantId })
+    .from(chatAssistants)
+    .where(eq(chatAssistants.chatId, chatId));
+  return rows.map((row) => row.assistantId);
 }
 
 /** Whether a chat id is a DM (group ids are negative). */

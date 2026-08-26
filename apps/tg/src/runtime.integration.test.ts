@@ -19,6 +19,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import * as schema from "../store/schema";
+import { createCrossFeed, recordAssistantMessage, type CrossFeedTarget } from "./cross-feed";
 import { startDeliveryConsumer, type TgSender } from "./delivery";
 import { processIncomingMessage } from "./inbound";
 
@@ -254,6 +255,196 @@ describe("tg runtime", () => {
       { assistant_id: "assistant-b", telegram_message_id: "1" },
       { assistant_id: "assistant-b", telegram_message_id: "2" },
     ]);
+  });
+
+  it("cross-feeds a delivered reply to the other assistants present in the chat", async () => {
+    // Telegram never hands one bot another bot's message, so without this
+    // two assistants in the same group can never answer each other.
+    const chatId = -700;
+    const enqueued: InboundMessageEvent[] = [];
+    const targets: CrossFeedTarget[] = [
+      {
+        assistantId: "assistant-a",
+        botId: 111,
+        identity: { botUsername: "bot_a", botDisplayName: "Bot A" },
+      },
+      {
+        assistantId: "assistant-b",
+        botId: 222,
+        identity: { botUsername: "bot_b", botDisplayName: "Bot B" },
+      },
+      // In the manager's list, but never in this chat.
+      {
+        assistantId: "assistant-c",
+        botId: 333,
+        identity: { botUsername: "bot_c", botDisplayName: "Bot C" },
+      },
+    ];
+    const crossFeed = createCrossFeed({
+      db,
+      targets: () => targets,
+      enqueue: async (event) => {
+        enqueued.push(event);
+      },
+    });
+    const depsFor = (assistantId: string, botUsername: string, botId: number) => ({
+      db,
+      assistantId,
+      identity: { botUsername, botDisplayName: botUsername },
+      botId,
+      botToken: `${botId}:fixture-token`,
+      enqueue: async () => {},
+    });
+
+    // Both bots poll this group, which is how presence is recorded; the
+    // human message is one shared mirror row.
+    const human = tgMessage({
+      messageId: 1,
+      chatId,
+      group: true,
+      text: "what do you two think?",
+      from: { id: 5001, username: "alice_example", firstName: "Alice" },
+    });
+    expect((await processIncomingMessage(human, depsFor("assistant-a", "bot_a", 111))).status).toBe(
+      "enqueued",
+    );
+    expect((await processIncomingMessage(human, depsFor("assistant-b", "bot_b", 222))).status).toBe(
+      "skipped",
+    );
+
+    // Assistant A answers. The mirror seam feeds it to the chat's others.
+    const mirrored = await recordAssistantMessage(
+      db,
+      {
+        chatId: String(chatId),
+        assistantId: "assistant-a",
+        telegramMessageId: 2,
+        content: "I think so, @bot_b?",
+        replyToMessageId: 1,
+        sentAt: new Date(),
+      },
+      crossFeed,
+    );
+    expect(mirrored).not.toBeNull();
+    await expect.poll(() => enqueued.length, { timeout: 5_000 }).toBe(1);
+
+    // Only B — never the author, never a bot that does not poll this chat.
+    const event = inboundMessageEventSchema.parse(enqueued[0]);
+    expect(event.assistantId).toBe("assistant-b");
+    expect(event.authoredByAssistantId).toBe("assistant-a");
+    expect(event.connection).toEqual({ botUsername: "bot_b", botDisplayName: "Bot B" });
+    // The sender is A's bot ACCOUNT; the core names the assistant itself.
+    expect(event.sender).toMatchObject({ ref: "tg:user:111", isOwner: false });
+    // Its @username in the text is a summons, exactly as from a person.
+    expect(event.addressing).toMatchObject({ addressed: true, source: "mention" });
+    // A turn per receiver, so the correlation cannot collide with A's.
+    expect(event.correlationId).toBe(`${chatId}:2:assistant-b`);
+    // The window is the shared group stream, with the human's message in it
+    // and A's reply excluded (it IS the current turn).
+    expect(event.context.history.map((h) => h.sourceMessageId)).toEqual(["1"]);
+    expect(event.message.replyTo).toMatchObject({ sourceMessageId: "1", stored: true });
+
+    // The reply was mirrored once, attributed to its author.
+    const rows = await pool.query(
+      `SELECT assistant_id, role FROM messages WHERE chat_id = $1 ORDER BY id`,
+      [String(chatId)],
+    );
+    expect(rows.rows).toEqual([
+      { assistant_id: null, role: "user" },
+      { assistant_id: "assistant-a", role: "assistant" },
+    ]);
+  });
+
+  it("never cross-feeds a silent acknowledgement, an empty message, or a DM", async () => {
+    const chatId = -701;
+    const enqueued: InboundMessageEvent[] = [];
+    const crossFeed = createCrossFeed({
+      db,
+      targets: () => [
+        {
+          assistantId: "assistant-a",
+          botId: 111,
+          identity: { botUsername: "bot_a", botDisplayName: "Bot A" },
+        },
+        {
+          assistantId: "assistant-b",
+          botId: 222,
+          identity: { botUsername: "bot_b", botDisplayName: "Bot B" },
+        },
+      ],
+      enqueue: async (event) => {
+        enqueued.push(event);
+      },
+    });
+    const depsFor = (assistantId: string, botUsername: string, botId: number) => ({
+      db,
+      assistantId,
+      identity: { botUsername, botDisplayName: botUsername },
+      botId,
+      botToken: `${botId}:fixture-token`,
+      enqueue: async () => {},
+    });
+    const human = tgMessage({
+      messageId: 1,
+      chatId,
+      group: true,
+      text: "go on then",
+      from: { id: 5001, username: "alice_example", firstName: "Alice" },
+    });
+    await processIncomingMessage(human, depsFor("assistant-a", "bot_a", 111));
+    await processIncomingMessage(human, depsFor("assistant-b", "bot_b", 222));
+
+    // A silent ack of background work: mirrored, but nothing to answer.
+    await recordAssistantMessage(
+      db,
+      {
+        chatId: String(chatId),
+        assistantId: "assistant-a",
+        telegramMessageId: 2,
+        content: "looking into it…",
+        replyToMessageId: 1,
+        sentAt: new Date(),
+        silent: true,
+      },
+      crossFeed,
+    );
+    // A generated image: its own message, with no words in it.
+    await recordAssistantMessage(
+      db,
+      {
+        chatId: String(chatId),
+        assistantId: "assistant-a",
+        telegramMessageId: 3,
+        content: "",
+        replyToMessageId: null,
+        sentAt: new Date(),
+      },
+      crossFeed,
+    );
+    // A DM: one bot, one person — nobody else is listening.
+    await recordAssistantMessage(
+      db,
+      {
+        chatId: "7300",
+        assistantId: "assistant-a",
+        telegramMessageId: 4,
+        content: "just between us",
+        replyToMessageId: null,
+        sentAt: new Date(),
+      },
+      crossFeed,
+    );
+
+    expect(await crossFeed.feed({
+      chatId: String(chatId),
+      assistantId: "assistant-a",
+      telegramMessageId: 5,
+      content: "and this one does travel",
+      replyToMessageId: null,
+      sentAt: new Date(),
+    })).toHaveLength(1);
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0].message.content).toBe("and this one does travel");
   });
 
   it("enqueued events reach a queue worker intact", async () => {

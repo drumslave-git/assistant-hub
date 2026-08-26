@@ -52,6 +52,13 @@ export const historyMessageSchema = z.object({
   /** Source-local message id (`#<id>` transcript anchors dereference it). */
   sourceMessageId: z.string().min(1),
   role: z.enum(["user", "assistant"]),
+  /**
+   * Which assistant authored an `assistant` row. Chats where several
+   * assistants speak need it to render each other's lines as somebody
+   * else's words rather than the reader's own. Null/absent means the source
+   * does not know (pre-Phase-3 rows), which reads as the reader's own.
+   */
+  assistantId: z.string().nullable().optional(),
   /** Scoped ref of the human sender; null for assistant rows. */
   senderRef: scopedRefSchema.nullable(),
   /** Display label the source resolved for the sender (names + username). */
@@ -187,6 +194,15 @@ export const inboundMessageEventSchema = eventEnvelopeSchema.extend({
   connection: connectionIdentitySchema,
   chat: chatInfoSchema,
   sender: senderInfoSchema,
+  /**
+   * Set when the message was authored by ANOTHER assistant and cross-fed by
+   * the source: Telegram never delivers a bot's messages to other bots, so
+   * without this the assistants sharing a group can never hear each other
+   * (PLAN "Shared-chat behavior"). `sender` then describes the authoring
+   * bot's ACCOUNT — the core resolves the speaking assistant's own name
+   * from this id — and the core's loop guard counts these turns.
+   */
+  authoredByAssistantId: z.string().min(1).nullable().optional(),
   addressing: addressingSchema,
   message: z.object({
     sourceMessageId: z.string().min(1),

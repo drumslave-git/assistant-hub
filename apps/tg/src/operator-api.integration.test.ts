@@ -58,6 +58,7 @@ describe("tg operator API", () => {
       title: "Fixture Group",
       type: "supergroup",
       userId: DM_ID,
+      assistantId: null,
     });
     // Group traffic: a human message with media + a bot reply; DM traffic:
     // one human message.

@@ -1,0 +1,1 @@
+ALTER TABLE "settings" ADD COLUMN "assistant_loop_guard_turns" integer DEFAULT 3 NOT NULL;
