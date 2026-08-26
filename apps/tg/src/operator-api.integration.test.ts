@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 
 import {
+  operatorChatMembersResponseSchema,
   operatorChatResponseSchema,
   operatorChatsResponseSchema,
   operatorConnectionResponseSchema,
@@ -194,13 +195,20 @@ describe("tg operator API", () => {
     );
     expect(list.chats).toHaveLength(2);
     // Newest activity first: the DM message is more recent.
-    expect(list.chats[0]).toMatchObject({ id: DM_ID, kind: "direct", messageCount: 1 });
+    expect(list.chats[0]).toMatchObject({
+      id: DM_ID,
+      kind: "direct",
+      messageCount: 1,
+      // A DM has no membership rows — its participant is the chat itself.
+      memberCount: 0,
+    });
     expect(list.chats[1]).toMatchObject({
       id: GROUP_ID,
       kind: "group",
       title: "Fixture Group",
       type: "supergroup",
       messageCount: 2,
+      memberCount: 1,
     });
 
     const patched = operatorChatResponseSchema.parse(
@@ -221,6 +229,46 @@ describe("tg operator API", () => {
       body: JSON.stringify({ notes: "nope" }),
     });
     expect(missing.status).toBe(404);
+  });
+
+  it("serves one chat by id, and 404s for a chat it does not carry", async () => {
+    const app = api();
+    const body = operatorChatResponseSchema.parse(
+      await (await app.request(`/internal/chats/${GROUP_ID}`, { headers: HEADERS })).json(),
+    );
+    expect(body.chat).toMatchObject({
+      id: GROUP_ID,
+      kind: "group",
+      title: "Fixture Group",
+      messageCount: 2,
+      memberCount: 1,
+    });
+
+    const missing = await app.request("/internal/chats/-999999", { headers: HEADERS });
+    expect(missing.status).toBe(404);
+  });
+
+  it("serves a chat's roster with membership times", async () => {
+    const app = api();
+    const body = operatorChatMembersResponseSchema.parse(
+      await (
+        await app.request(`/internal/chats/${GROUP_ID}/members`, { headers: HEADERS })
+      ).json(),
+    );
+    expect(body.members).toHaveLength(1);
+    expect(body.members[0]).toMatchObject({
+      id: DM_ID,
+      username: "alice_example",
+      label: expect.stringContaining("Alice"),
+    });
+    expect(Date.parse(body.members[0].memberSinceAt)).not.toBeNaN();
+    expect(Date.parse(body.members[0].lastSeenAt)).not.toBeNaN();
+
+    // A chat with no membership rows answers with an empty roster, not a 404.
+    const empty = operatorChatMembersResponseSchema.parse(
+      await (await app.request(`/internal/chats/${DM_ID}/members`, { headers: HEADERS })).json(),
+    );
+    expect(empty.members).toEqual([]);
   });
 
   it("serves a chat's full mirror with media annotations and reactions", async () => {

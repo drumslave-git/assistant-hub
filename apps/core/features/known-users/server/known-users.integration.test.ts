@@ -16,10 +16,10 @@ import {
   updateLanguage,
 } from "./service";
 
-// Curated directory edits land at the source first (the tg service owns
-// the directory since the split); mocked so these tests assert the local
-// shadow behavior without a live service.
-vi.mock("@/server/source/tg-operator", () => ({
+// Curated directory edits land at the owning source first (the sources own
+// their directories since the split); mocked so these tests assert the local
+// shadow behavior without a live service. Edits name people by scoped ref.
+vi.mock("@/server/source/directory", () => ({
   writeSourceUser: vi.fn(),
   writeSourceChat: vi.fn(),
 }));
@@ -46,7 +46,7 @@ describe("rememberUser", () => {
       { userId: "1", username: "ann", firstName: "Ann", lastName: null },
       ctx.db,
     );
-    await updateAliases("1", { aliases: ["Boss"] }, trigger, ctx.db);
+    await updateAliases("tg:user:1", { aliases: ["Boss"] }, trigger, ctx.db);
 
     // A later message with a changed username refreshes the profile but keeps aliases.
     await rememberUser(
@@ -101,7 +101,7 @@ describe("updateLanguage / getUserLanguage", () => {
     // Unset → null (the runtime falls back to the default).
     expect(await getUserLanguage("1", ctx.db)).toBeNull();
 
-    const set = await updateLanguage("1", { language: "Ukrainian" }, trigger, ctx.db);
+    const set = await updateLanguage("tg:user:1", { language: "Ukrainian" }, trigger, ctx.db);
     expect(set.language).toBe("Ukrainian");
     expect(await getUserLanguage("1", ctx.db)).toBe("Ukrainian");
 
@@ -109,7 +109,7 @@ describe("updateLanguage / getUserLanguage", () => {
     await rememberUser({ userId: "1", username: "ann2", firstName: "Ann", lastName: null }, ctx.db);
     expect(await getUserLanguage("1", ctx.db)).toBe("Ukrainian");
 
-    const cleared = await updateLanguage("1", { language: null }, trigger, ctx.db);
+    const cleared = await updateLanguage("tg:user:1", { language: null }, trigger, ctx.db);
     expect(cleared.language).toBeNull();
 
     const { traces } = await listTraces({ feature: "known-users" });
@@ -120,7 +120,7 @@ describe("updateLanguage / getUserLanguage", () => {
 
   it("fails for an unknown user and records an error trace", async () => {
     await expect(
-      updateLanguage("404", { language: "Ukrainian" }, trigger, ctx.db),
+      updateLanguage("tg:user:404", { language: "Ukrainian" }, trigger, ctx.db),
     ).rejects.toThrow(/unknown user/i);
   });
 
@@ -133,7 +133,7 @@ describe("updateAliases", () => {
   it("replaces the alias list and records a trace", async () => {
     await upsertKnownUser(ctx.db, { userId: "1", username: "ann", firstName: "Ann", lastName: null });
 
-    const updated = await updateAliases("1", { aliases: ["Boss", "Chief"] }, trigger, ctx.db);
+    const updated = await updateAliases("tg:user:1", { aliases: ["Boss", "Chief"] }, trigger, ctx.db);
     expect(updated.aliases).toEqual(["Boss", "Chief"]);
 
     const { traces } = await listTraces({ feature: "known-users" });
@@ -143,7 +143,7 @@ describe("updateAliases", () => {
   });
 
   it("fails for an unknown user and records an error trace", async () => {
-    await expect(updateAliases("404", { aliases: [] }, trigger, ctx.db)).rejects.toThrow(
+    await expect(updateAliases("tg:user:404", { aliases: [] }, trigger, ctx.db)).rejects.toThrow(
       /unknown user/i,
     );
     const { traces } = await listTraces({ feature: "known-users" });

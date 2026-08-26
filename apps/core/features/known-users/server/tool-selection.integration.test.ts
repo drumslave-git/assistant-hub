@@ -11,7 +11,7 @@ import {
 // Curated directory edits land at the source first (the tg service owns
 // the directory since the split); mocked so these tests assert the local
 // shadow behavior without a live service.
-vi.mock("@/server/source/tg-operator", () => ({
+vi.mock("@/server/source/directory", () => ({
   writeSourceUser: vi.fn(),
   writeSourceChat: vi.fn(),
 }));

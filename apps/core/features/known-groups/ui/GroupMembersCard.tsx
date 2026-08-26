@@ -14,16 +14,16 @@ import {
   TableHeaderCell,
   TableRow,
 } from "@/components/ui";
-import { formatKnownUserLabel } from "@/features/known-users/format";
 import { Timestamp } from "@/components/time/Timestamp";
-import type { GroupMember } from "../server/schema";
+import type { DirectoryChatMember } from "@/server/source/directory";
 
 /**
- * Read-only roster of a group's known members: the people who have messaged in
- * it, with the aliases the operator has curated on the Users page. Server
- * Component — aliases are edited on `/users`, not here.
+ * Read-only roster of a chat's members: the people who have messaged in it,
+ * with the aliases the operator has curated on the Users page. The source
+ * resolved each label, so the dashboard shows the same names the model is
+ * told about. Server Component — aliases are edited on `/users`, not here.
  */
-export function GroupMembersCard({ members }: { members: GroupMember[] }) {
+export function GroupMembersCard({ members }: { members: DirectoryChatMember[] }) {
   return (
     <Card>
       <CardHeader>
@@ -50,14 +50,14 @@ export function GroupMembersCard({ members }: { members: GroupMember[] }) {
             </TableHead>
             <TableBody>
               {members.map((member) => (
-                <TableRow key={member.userId}>
+                <TableRow key={member.ref}>
                   <TableCell className="font-medium text-foreground">
                     <Link
                       href={`/users`}
                       className="text-primary hover:underline"
                       title="Edit on the Users page"
                     >
-                      {formatKnownUserLabel(member)}
+                      {member.label}
                     </Link>
                   </TableCell>
                   <TableCell className="text-muted">

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { parseScopedRef } from "@assistant-hub/contracts";
+
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
@@ -7,7 +9,7 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { writeSourceChat } from "@/server/source/tg-operator";
+import { writeSourceChat } from "@/server/source/directory";
 import { startTrace, withTrace } from "@/server/trace";
 import { formatGroupContext } from "../format";
 import {
@@ -20,14 +22,11 @@ import {
   setKnownGroupLanguage,
   setKnownGroupNotes,
   upsertKnownGroup,
-  type GroupMemberRecord,
   type KnownGroupRecord,
   type KnownGroupSummaryRecord,
   type TelegramGroupProfile,
 } from "./repository";
 import type {
-  GroupMember,
-  GroupWithMembers,
   KnownGroup,
   KnownGroupSummary,
   UpdateGroupLanguage,
@@ -55,10 +54,6 @@ function toClientSummary(record: KnownGroupSummaryRecord): KnownGroupSummary {
   return record;
 }
 
-function toClientMember(record: GroupMemberRecord): GroupMember {
-  return record;
-}
-
 /** All known groups (with member counts), most-recently-seen first. */
 export async function listGroups(db: DrizzleDb = getDb()): Promise<KnownGroupSummary[]> {
   return (await listKnownGroups(db)).map(toClientSummary);
@@ -73,17 +68,6 @@ export async function listMemberships(
   db: DrizzleDb = getDb(),
 ): Promise<{ chatId: string; userId: string }[]> {
   return listGroupMemberships(db);
-}
-
-/** One group with its resolved member list, or null if the group is unknown. */
-export async function getGroupWithMembers(
-  chatId: string,
-  db: DrizzleDb = getDb(),
-): Promise<GroupWithMembers | null> {
-  const group = await getKnownGroup(db, chatId);
-  if (!group) return null;
-  const members = await getGroupMembers(db, chatId);
-  return { group: toClientGroup(group), members: members.map(toClientMember) };
 }
 
 /**
@@ -187,18 +171,21 @@ async function traceGroupCapture(
 
 /** Replace a group's operator notes, recorded as a trace. */
 export async function updateNotes(
-  chatId: string,
+  chatRef: string,
   input: UpdateGroupNotes,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<KnownGroup> {
+  // The shadow row is keyed by the source-local id — see the known-users
+  // service for why the transitional shadow directory stays telegram-shaped.
+  const chatId = parseScopedRef(chatRef).id;
   return withTrace(
-    { feature: FEATURE.id, action: "update-notes", trigger, inputSummary: `group ${chatId}` },
+    { feature: FEATURE.id, action: "update-notes", trigger, inputSummary: `group ${chatRef}` },
     async (trace) => {
       await trace.event({ type: "input", message: "notes update", data: { chatId, notes: input.notes } });
       // The source owns the directory: the edit lands there first, then in
       // the local shadow (the next event refresh would otherwise revert it).
-      await writeSourceChat(chatId, { notes: input.notes });
+      await writeSourceChat(chatRef, { notes: input.notes });
       const record = await setKnownGroupNotes(db, chatId, input.notes);
       if (!record) throw ApiError.notFound("Unknown group");
       await trace.event({ type: "db", message: "notes updated (source + shadow)" });
@@ -214,13 +201,14 @@ export async function updateNotes(
 
 /** Replace a group's operator-configured reply language, recorded as a trace. */
 export async function updateLanguage(
-  chatId: string,
+  chatRef: string,
   input: UpdateGroupLanguage,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<KnownGroup> {
+  const chatId = parseScopedRef(chatRef).id;
   return withTrace(
-    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `group ${chatId}` },
+    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `group ${chatRef}` },
     async (trace) => {
       await trace.event({
         type: "input",
@@ -228,7 +216,7 @@ export async function updateLanguage(
         data: { chatId, language: input.language },
       });
       // Source first, shadow second — see updateNotes.
-      await writeSourceChat(chatId, { language: input.language });
+      await writeSourceChat(chatRef, { language: input.language });
       const record = await setKnownGroupLanguage(db, chatId, input.language);
       if (!record) throw ApiError.notFound("Unknown group");
       await trace.event({ type: "db", message: "language updated (source + shadow)" });

@@ -7,7 +7,6 @@ import { getGroupMembers, getKnownGroup } from "./repository";
 import {
   getGroupContext,
   getGroupLanguage,
-  getGroupWithMembers,
   listGroups,
   rememberGroupActivity,
   updateLanguage,
@@ -17,7 +16,7 @@ import {
 // Curated directory edits land at the source first (the tg service owns
 // the directory since the split); mocked so these tests assert the local
 // shadow behavior without a live service.
-vi.mock("@/server/source/tg-operator", () => ({
+vi.mock("@/server/source/directory", () => ({
   writeSourceUser: vi.fn(),
   writeSourceChat: vi.fn(),
 }));
@@ -55,7 +54,7 @@ describe("rememberGroupActivity", () => {
       { chatId: "-100", title: "Team", type: "supergroup", userId: "1" },
       ctx.db,
     );
-    await updateNotes("-100", { notes: "Work group" }, trigger, ctx.db);
+    await updateNotes("tg:chat:-100", { notes: "Work group" }, trigger, ctx.db);
 
     // A later message with a renamed group refreshes the title but keeps notes.
     await rememberGroupActivity(
@@ -119,31 +118,13 @@ describe("listGroups", () => {
   });
 });
 
-describe("getGroupWithMembers", () => {
-  it("returns the group and its members, most-recently-active first", async () => {
-    await seedUser({ userId: "1", username: "ann", firstName: "Ann", lastName: null });
-    await seedUser({ userId: "2", username: "bob", firstName: "Bob", lastName: null });
-    await rememberGroupActivity({ chatId: "-1", title: "G", type: "group", userId: "1" }, ctx.db);
-    await rememberGroupActivity({ chatId: "-1", title: "G", type: "group", userId: "2" }, ctx.db);
-
-    const detail = await getGroupWithMembers("-1", ctx.db);
-    expect(detail?.group.chatId).toBe("-1");
-    // Bob spoke last, so he is first.
-    expect(detail?.members.map((m) => m.userId)).toEqual(["2", "1"]);
-  });
-
-  it("returns null for an unknown group", async () => {
-    expect(await getGroupWithMembers("-404", ctx.db)).toBeNull();
-  });
-});
-
 describe("updateNotes", () => {
   it("sets and clears notes, recording a trace each time", async () => {
     await rememberGroupActivity({ chatId: "-1", title: "G", type: "group", userId: null }, ctx.db);
 
-    const set = await updateNotes("-1", { notes: "Casual" }, trigger, ctx.db);
+    const set = await updateNotes("tg:chat:-1", { notes: "Casual" }, trigger, ctx.db);
     expect(set.notes).toBe("Casual");
-    const cleared = await updateNotes("-1", { notes: null }, trigger, ctx.db);
+    const cleared = await updateNotes("tg:chat:-1", { notes: null }, trigger, ctx.db);
     expect(cleared.notes).toBeNull();
 
     const { traces } = await listTraces({ feature: "known-groups" });
@@ -153,7 +134,7 @@ describe("updateNotes", () => {
   });
 
   it("fails for an unknown group and records an error trace", async () => {
-    await expect(updateNotes("-404", { notes: "x" }, trigger, ctx.db)).rejects.toThrow(
+    await expect(updateNotes("tg:chat:-404", { notes: "x" }, trigger, ctx.db)).rejects.toThrow(
       /unknown group/i,
     );
     const { traces } = await listTraces({ feature: "known-groups" });
@@ -168,7 +149,7 @@ describe("updateLanguage / getGroupLanguage", () => {
     // Unset → null (the runtime falls back to the default).
     expect(await getGroupLanguage("-1", ctx.db)).toBeNull();
 
-    const set = await updateLanguage("-1", { language: "Ukrainian" }, trigger, ctx.db);
+    const set = await updateLanguage("tg:chat:-1", { language: "Ukrainian" }, trigger, ctx.db);
     expect(set.language).toBe("Ukrainian");
     expect(await getGroupLanguage("-1", ctx.db)).toBe("Ukrainian");
 
@@ -176,7 +157,7 @@ describe("updateLanguage / getGroupLanguage", () => {
     await rememberGroupActivity({ chatId: "-1", title: "G renamed", type: "group", userId: null }, ctx.db);
     expect(await getGroupLanguage("-1", ctx.db)).toBe("Ukrainian");
 
-    const cleared = await updateLanguage("-1", { language: null }, trigger, ctx.db);
+    const cleared = await updateLanguage("tg:chat:-1", { language: null }, trigger, ctx.db);
     expect(cleared.language).toBeNull();
     expect(await getGroupLanguage("-1", ctx.db)).toBeNull();
 
@@ -188,7 +169,7 @@ describe("updateLanguage / getGroupLanguage", () => {
 
   it("fails for an unknown group and records an error trace", async () => {
     await expect(
-      updateLanguage("-404", { language: "Ukrainian" }, trigger, ctx.db),
+      updateLanguage("tg:chat:-404", { language: "Ukrainian" }, trigger, ctx.db),
     ).rejects.toThrow(/unknown group/i);
     const { traces } = await listTraces({ feature: "known-groups" });
     expect(traces[0].status).toBe("error");
@@ -206,7 +187,7 @@ describe("getGroupContext", () => {
     await seedUser({ userId: "2", username: null, firstName: "Bob", lastName: "Jones" });
     await rememberGroupActivity({ chatId: "-1", title: "Family", type: "group", userId: "1" }, ctx.db);
     await rememberGroupActivity({ chatId: "-1", title: "Family", type: "group", userId: "2" }, ctx.db);
-    await updateNotes("-1", { notes: "Keep it casual" }, trigger, ctx.db);
+    await updateNotes("tg:chat:-1", { notes: "Keep it casual" }, trigger, ctx.db);
 
     const context = await getGroupContext("-1", ctx.db);
     expect(context?.memberCount).toBe(2);

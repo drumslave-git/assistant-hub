@@ -1,5 +1,7 @@
 import "server-only";
 
+import { parseScopedRef, scopedRef } from "@assistant-hub/contracts";
+
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { getGroupMembers } from "@/features/known-groups/server/repository";
@@ -8,7 +10,7 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { writeSourceUser } from "@/server/source/tg-operator";
+import { writeSourceUser } from "@/server/source/directory";
 import { startTrace, withTrace } from "@/server/trace";
 import { formatKnownUserLabel, formatUserContext } from "../format";
 import { matchUsersByReference } from "../match";
@@ -36,6 +38,15 @@ import {
  */
 
 const FEATURE = FEATURES["known-users"];
+
+/**
+ * The transitional v1 shadow directory this service reads is telegram-shaped
+ * (`known_users.user_id` IS a Telegram user id), so a bare id from the
+ * message path names a tg person. Curated writes go to the owning source by
+ * scoped ref, and the shadow row is keyed by that ref's source-local id —
+ * one place to change when Phase 6 collapses the shadow.
+ */
+const tgUserRef = (userId: string) => scopedRef("tg", "user", userId);
 
 /** A known user record is already client-safe (no secrets). */
 function toClient(record: KnownUserRecord): KnownUser {
@@ -269,7 +280,7 @@ export async function addAliasByReference(
       }
 
       // Source first, shadow second — see updateLanguage.
-      await writeSourceUser(user.userId, { aliases: parsed.data.aliases });
+      await writeSourceUser(tgUserRef(user.userId), { aliases: parsed.data.aliases });
       const record = await setKnownUserAliases(db, user.userId, parsed.data.aliases);
       if (!record) throw ApiError.notFound("Unknown user");
       await trace.event({ type: "db", message: "aliases updated (source + shadow)", data: { aliases: parsed.data.aliases } });
@@ -285,13 +296,14 @@ export async function addAliasByReference(
 
 /** Replace a user's operator-configured DM reply language, recorded as a trace. */
 export async function updateLanguage(
-  userId: string,
+  userRef: string,
   input: UpdateUserLanguage,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<KnownUser> {
+  const userId = parseScopedRef(userRef).id;
   return withTrace(
-    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `user ${userId}` },
+    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `user ${userRef}` },
     async (trace) => {
       await trace.event({
         type: "input",
@@ -300,7 +312,7 @@ export async function updateLanguage(
       });
       // The source owns the directory: the edit lands there first, then in
       // the local shadow the readers (and the next event refresh) agree with.
-      await writeSourceUser(userId, { language: input.language });
+      await writeSourceUser(userRef, { language: input.language });
       const record = await setKnownUserLanguage(db, userId, input.language);
       if (!record) throw ApiError.notFound("Unknown user");
       await trace.event({ type: "db", message: "language updated (source + shadow)" });
@@ -329,17 +341,18 @@ export async function getUserLanguage(
 
 /** Replace a known user's alias list, recorded as a trace. */
 export async function updateAliases(
-  userId: string,
+  userRef: string,
   input: UpdateAliases,
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<KnownUser> {
+  const userId = parseScopedRef(userRef).id;
   return withTrace(
-    { feature: FEATURE.id, action: "update-aliases", trigger, inputSummary: `user ${userId}` },
+    { feature: FEATURE.id, action: "update-aliases", trigger, inputSummary: `user ${userRef}` },
     async (trace) => {
       await trace.event({ type: "input", message: "aliases update", data: { userId, aliases: input.aliases } });
       // Source first, shadow second — see updateLanguage.
-      await writeSourceUser(userId, { aliases: input.aliases });
+      await writeSourceUser(userRef, { aliases: input.aliases });
       const record = await setKnownUserAliases(db, userId, input.aliases);
       if (!record) throw ApiError.notFound("Unknown user");
       await trace.event({ type: "db", message: "aliases updated" });

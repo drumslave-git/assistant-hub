@@ -17,6 +17,7 @@ import {
   type InternalReactionResponse,
   type InternalSentPhotosResponse,
   type OperatorChat,
+  type OperatorChatMember,
   type OperatorConnection,
   type OperatorMessage,
   type OperatorUser,
@@ -86,6 +87,7 @@ import {
   getUserById,
   insertConnection,
   listChatListings,
+  listChatMemberListings,
   listChatMessages,
   listConnections,
   listUsers,
@@ -99,6 +101,7 @@ import {
   updateUserAliases,
   updateUserLanguage,
   type ChatListing,
+  type ChatMemberListing,
 } from "./store";
 import type { ConnectionRow, MessageRow, UserRow } from "../store/schema";
 import { findMessageRefs } from "./telegram";
@@ -187,7 +190,14 @@ export function createApi(input: {
     notes: listing.chat?.notes ?? null,
     language: listing.chat?.language ?? null,
     messageCount: listing.messageCount,
+    memberCount: listing.memberCount,
     lastMessageAt: listing.lastMessageAt ? listing.lastMessageAt.toISOString() : null,
+  });
+
+  const toOperatorChatMember = (listing: ChatMemberListing): OperatorChatMember => ({
+    ...toOperatorUser(listing.user),
+    memberSinceAt: listing.memberSinceAt.toISOString(),
+    lastSeenAt: listing.lastSeenAt.toISOString(),
   });
 
   const toOperatorMessage = (
@@ -267,6 +277,19 @@ export function createApi(input: {
   internal.get("/chats", async (c) => {
     const listings = await listChatListings(input.db);
     return c.json({ chats: listings.map(toOperatorChat) });
+  });
+
+  internal.get("/chats/:chatId", async (c) => {
+    const chatId = c.req.param("chatId");
+    const listings = await listChatListings(input.db);
+    const listing = listings.find((l) => l.chatId === chatId);
+    if (!listing) return c.json({ error: { message: "chat not found" } }, 404);
+    return c.json({ chat: toOperatorChat(listing) });
+  });
+
+  internal.get("/chats/:chatId/members", async (c) => {
+    const listings = await listChatMemberListings(input.db, c.req.param("chatId"));
+    return c.json({ members: listings.map(toOperatorChatMember) });
   });
 
   internal.patch("/chats/:chatId", async (c) => {

@@ -6,10 +6,13 @@ import { updateAliases, updateLanguage } from "@/features/known-users/server/ser
 import { defineRoute, ok, readJsonBody } from "@/server/http";
 
 /**
- * Update a known user's operator-curated fields. Thin handler: shared wrappers
- * own validation and error mapping; the service owns persistence and trace
- * recording. The dashboard saves each field on its own, so the body carries one
- * of `language` or `aliases` and is dispatched to the matching traced action.
+ * Update a directory person's operator-curated fields. `id` is the person's
+ * scoped ref (`tg:user:123`) — the aggregated listing names people that way,
+ * and the ref is what tells the service which source owns the edit. Thin
+ * handler: shared wrappers own validation and error mapping; the service owns
+ * persistence and trace recording. The dashboard saves each field on its own,
+ * so the body carries one of `language` or `aliases` and is dispatched to the
+ * matching traced action.
  */
 export const PATCH = defineRoute(async ({ request, params }) => {
   const raw = await readJsonBody(request);

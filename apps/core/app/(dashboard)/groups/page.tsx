@@ -1,34 +1,32 @@
-import { Bug, Database } from "lucide-react";
+import { Bug } from "lucide-react";
 import Link from "next/link";
 
-import { Button, EmptyState, PageHeader } from "@/components/ui";
+import { Button, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
+import { SourceUnavailableNotice } from "@/components/source/SourceUnavailableNotice";
 import { featureDebugHref } from "@/lib/features";
-import { listGroups } from "@/features/known-groups/server/service";
-import type { KnownGroupSummary } from "@/features/known-groups/server/schema";
+import { listDirectoryChats } from "@/server/source/directory";
 import { KnownGroupsList } from "@/features/known-groups/ui/KnownGroupsList";
 
-// Groups are read from the database at request time.
+// The directory is read from the source apps at request time.
 export const dynamic = "force-dynamic";
 
 /**
- * Known-groups dashboard page. Server Component: lists every group the bot is
- * active in. Each row links to the group's detail (members + notes).
+ * Known-groups directory. Server Component: aggregates every registered source
+ * app's own chat listing through the shared operator contract and shows the
+ * shared conversations (a direct chat's identity is its person, so those are
+ * listed under Users). A source that could not be read is named above the
+ * table rather than silently omitted.
  */
 export default async function GroupsPage() {
-  let groups: KnownGroupSummary[] | null = null;
-  let dbError: string | null = null;
-  try {
-    groups = await listGroups();
-  } catch (err) {
-    dbError = err instanceof Error ? err.message : "Could not read groups from the database";
-  }
+  const { entries, unavailable } = await listDirectoryChats();
+  const groups = entries.filter((chat) => chat.kind === "group");
 
   return (
     <>
       <PageHeader
         title="Known groups"
-        description="Every group the bot is in. Members feed the participant roster injected into the model's context for that group."
+        description="Every shared conversation the bot takes part in, across every connected source. Members feed the participant roster injected into the model's context for that chat."
         actions={
           <div className="flex items-center gap-2">
             <LiveIndicator topic="groups" />
@@ -42,15 +40,8 @@ export default async function GroupsPage() {
         }
       />
 
-      {groups ? (
-        <KnownGroupsList groups={groups} />
-      ) : (
-        <EmptyState
-          icon={Database}
-          title="Database unavailable"
-          description={dbError ?? "The groups database could not be reached."}
-        />
-      )}
+      <SourceUnavailableNotice sources={unavailable} />
+      <KnownGroupsList groups={groups} />
     </>
   );
 }

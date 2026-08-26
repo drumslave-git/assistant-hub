@@ -6,10 +6,12 @@ import { updateLanguage, updateNotes } from "@/features/known-groups/server/serv
 import { defineRoute, ok, readJsonBody } from "@/server/http";
 
 /**
- * Update a known group's operator-curated fields. Thin handler: shared wrappers
- * own validation and error mapping; the service owns persistence and trace
- * recording. The dashboard saves each field on its own, so the body carries one
- * of `language` or `notes` and is dispatched to the matching traced action.
+ * Update a directory chat's operator-curated fields. `id` is the chat's
+ * scoped ref (`tg:chat:-100…`), which names the source that owns the edit.
+ * Thin handler: shared wrappers own validation and error mapping; the service
+ * owns persistence and trace recording. The dashboard saves each field on its
+ * own, so the body carries one of `language` or `notes` and is dispatched to
+ * the matching traced action.
  */
 export const PATCH = defineRoute(async ({ request, params }) => {
   const raw = await readJsonBody(request);

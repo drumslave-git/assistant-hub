@@ -21,14 +21,18 @@ import {
 } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
 import { DEFAULT_CHAT_LANGUAGE } from "@/lib/language";
+import type { DirectoryUser } from "@/server/source/directory";
 import type { KnownUser } from "../server/schema";
 
 /**
- * Known-users table with inline alias + language editing. Client Component: each
- * field is edited per row and saved via `PATCH /api/users/[id]` (aliases as a
- * comma-separated list, language as free text). The server normalizes and the
- * returned record replaces the row so the input reflects the stored result. A
- * user's language governs the bot's reply language in their private (DM) chat.
+ * The people directory's table, with inline alias + language editing. Client
+ * Component: rows come from every source app's own listing (each tagged with
+ * its origin), and each field is edited per row and saved via
+ * `PATCH /api/users/<scoped ref>` (aliases as a comma-separated list, language
+ * as free text) — the ref is what routes the edit to the owning source. The
+ * server normalizes and the returned record replaces the row so the input
+ * reflects the stored result. A user's language governs the bot's reply
+ * language in their private (DM) chat.
  */
 
 const aliasesToText = (aliases: string[]) => aliases.join(", ");
@@ -47,11 +51,14 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
-function fullName(user: KnownUser): string {
+function fullName(user: DirectoryUser): string {
   return [user.firstName, user.lastName].filter(Boolean).join(" ") || "—";
 }
 
-function AliasRow({ user }: { user: KnownUser }) {
+/** The edit endpoint for one row — the person's scoped ref names its source. */
+const editHref = (user: DirectoryUser) => `/api/users/${encodeURIComponent(user.ref)}`;
+
+function AliasRow({ user }: { user: DirectoryUser }) {
   const [stored, setStored] = useState(user.aliases);
   const [text, setText] = useState(aliasesToText(user.aliases));
   const [state, setState] = useState<"idle" | "saving" | "saved" | { error: string }>("idle");
@@ -61,7 +68,7 @@ function AliasRow({ user }: { user: KnownUser }) {
   async function save() {
     setState("saving");
     try {
-      const res = await fetch(`/api/users/${encodeURIComponent(user.userId)}`, {
+      const res = await fetch(editHref(user), {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ aliases: textToAliases(text) }),
@@ -83,7 +90,8 @@ function AliasRow({ user }: { user: KnownUser }) {
     <TableRow>
       <TableCell className="font-medium text-foreground">{fullName(user)}</TableCell>
       <TableCell className="text-muted">{user.username ? `@${user.username}` : "—"}</TableCell>
-      <TableCell className="font-mono text-xs text-faint">{user.userId}</TableCell>
+      <TableCell className="text-muted">{user.sourceLabel}</TableCell>
+      <TableCell className="font-mono text-xs text-faint">{user.id}</TableCell>
       <TableCell>
         <div className="flex items-center gap-2">
           <Input
@@ -116,7 +124,7 @@ function AliasRow({ user }: { user: KnownUser }) {
  * Inline editor for a user's DM reply language: free text saved via
  * `PATCH /api/users/[id]` with a `{ language }` body. Empty clears to the default.
  */
-function LanguageCell({ user }: { user: KnownUser }) {
+function LanguageCell({ user }: { user: DirectoryUser }) {
   const [stored, setStored] = useState(user.language ?? "");
   const [text, setText] = useState(user.language ?? "");
   const [state, setState] = useState<"idle" | "saving" | "saved" | { error: string }>("idle");
@@ -126,7 +134,7 @@ function LanguageCell({ user }: { user: KnownUser }) {
   async function save() {
     setState("saving");
     try {
-      const res = await fetch(`/api/users/${encodeURIComponent(user.userId)}`, {
+      const res = await fetch(editHref(user), {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ language: text }),
@@ -170,15 +178,16 @@ function LanguageCell({ user }: { user: KnownUser }) {
   );
 }
 
-export function KnownUsersTable({ users }: { users: KnownUser[] }) {
+export function KnownUsersTable({ users }: { users: DirectoryUser[] }) {
   return (
     <Card>
       <CardHeader>
         <div>
           <CardTitle>Users</CardTitle>
           <CardDescription>
-            Captured automatically on each message. Aliases are alternate names you add; DM language
-            is the language the bot must reply in for that user&apos;s private chat (empty = default).
+            Captured automatically on each message by the source they reached the bot through.
+            Aliases are alternate names you add; DM language is the language the bot must reply in
+            for that user&apos;s private chat (empty = default).
           </CardDescription>
         </div>
       </CardHeader>
@@ -190,11 +199,12 @@ export function KnownUsersTable({ users }: { users: KnownUser[] }) {
             description="Users appear here once they message the bot. Start the bot and send it a message."
           />
         ) : (
-          <Table minWidth={900}>
+          <Table minWidth={1000}>
             <TableHead>
               <TableRow header>
                 <TableHeaderCell>Name</TableHeaderCell>
                 <TableHeaderCell>Username</TableHeaderCell>
+                <TableHeaderCell>Source</TableHeaderCell>
                 <TableHeaderCell>User ID</TableHeaderCell>
                 <TableHeaderCell>Aliases</TableHeaderCell>
                 <TableHeaderCell>DM language</TableHeaderCell>
@@ -202,7 +212,7 @@ export function KnownUsersTable({ users }: { users: KnownUser[] }) {
             </TableHead>
             <TableBody>
               {users.map((user) => (
-                <AliasRow key={user.userId} user={user} />
+                <AliasRow key={user.ref} user={user} />
               ))}
             </TableBody>
           </Table>

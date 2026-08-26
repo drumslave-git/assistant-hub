@@ -13,12 +13,14 @@ import {
   Textarea,
 } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
+import type { DirectoryChat } from "@/server/source/directory";
 import type { KnownGroup } from "../server/schema";
 
 /**
- * Inline editor for a group's operator notes. Client Component: notes are saved
- * via `PATCH /api/groups/[id]`; the server trims (empty clears to null) and the
- * returned record replaces local state so the field reflects the stored result.
+ * Inline editor for a chat's operator notes. Client Component: notes are saved
+ * via `PATCH /api/groups/<scoped ref>` — the ref routes the edit to the source
+ * that owns the chat; the server trims (empty clears to null) and the returned
+ * record replaces local state so the field reflects the stored result.
  * Mirrors the known-users alias editor.
  */
 
@@ -31,7 +33,7 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
-export function GroupNotesEditor({ group }: { group: KnownGroup }) {
+export function GroupNotesEditor({ group }: { group: DirectoryChat }) {
   const [stored, setStored] = useState(group.notes ?? "");
   const [text, setText] = useState(group.notes ?? "");
   const [state, setState] = useState<"idle" | "saving" | "saved" | { error: string }>("idle");
@@ -41,7 +43,7 @@ export function GroupNotesEditor({ group }: { group: KnownGroup }) {
   async function save() {
     setState("saving");
     try {
-      const res = await fetch(`/api/groups/${encodeURIComponent(group.chatId)}`, {
+      const res = await fetch(`/api/groups/${encodeURIComponent(group.ref)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ notes: text }),

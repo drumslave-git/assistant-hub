@@ -73,6 +73,8 @@ export {
   type InternalSentVoiceResponse,
 } from "./internal-api";
 export {
+  operatorChatMemberSchema,
+  operatorChatMembersResponseSchema,
   operatorChatResponseSchema,
   operatorChatSchema,
   operatorChatUpdateRequestSchema,
@@ -93,6 +95,7 @@ export {
   operatorUserUpdateRequestSchema,
   operatorUsersResponseSchema,
   type OperatorChat,
+  type OperatorChatMember,
   type OperatorConnection,
   type OperatorMessage,
   type OperatorSourceSettings,

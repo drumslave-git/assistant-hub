@@ -1,13 +1,16 @@
 import "server-only";
 
 import {
+  operatorChatMembersResponseSchema,
   operatorChatResponseSchema,
   operatorChatsResponseSchema,
   operatorConnectionResponseSchema,
   operatorConnectionsResponseSchema,
   operatorSourceSettingsResponseSchema,
   operatorUserResponseSchema,
+  operatorUsersResponseSchema,
   type OperatorChat,
+  type OperatorChatMember,
   type OperatorConnection,
   type OperatorSourceSettings,
   type OperatorUser,
@@ -42,8 +45,14 @@ export interface BotStatus {
 const REQUEST_TIMEOUT_MS = 5_000;
 
 export interface TgOperatorClient {
+  /** Every person the source knows (its directory). */
+  listUsers(): Promise<OperatorUser[]>;
   /** Every conversation the source carries (mirror aggregates + metadata). */
   listChats(): Promise<OperatorChat[]>;
+  /** One conversation, or null when the source does not carry it. */
+  getChat(chatId: string): Promise<OperatorChat | null>;
+  /** One chat's roster with membership times. */
+  listChatMembers(chatId: string): Promise<OperatorChatMember[]>;
   listConnections(): Promise<OperatorConnection[]>;
   createConnection(input: {
     assistantId: string;
@@ -105,9 +114,30 @@ export function tgOperatorClient(): TgOperatorClient | null {
   };
 
   return {
+    async listUsers() {
+      const body = operatorUsersResponseSchema.parse(await request("/internal/users"));
+      return body.users;
+    },
     async listChats() {
       const body = operatorChatsResponseSchema.parse(await request("/internal/chats"));
       return body.chats;
+    },
+    async getChat(chatId) {
+      try {
+        const body = operatorChatResponseSchema.parse(
+          await request(`/internal/chats/${encodeURIComponent(chatId)}`),
+        );
+        return body.chat;
+      } catch (err) {
+        if (isApiError(err) && err.status === 404) return null;
+        throw err;
+      }
+    },
+    async listChatMembers(chatId) {
+      const body = operatorChatMembersResponseSchema.parse(
+        await request(`/internal/chats/${encodeURIComponent(chatId)}/members`),
+      );
+      return body.members;
     },
     async listConnections() {
       const body = operatorConnectionsResponseSchema.parse(await request("/internal/connections"));
@@ -167,30 +197,8 @@ export function tgOperatorClient(): TgOperatorClient | null {
 }
 
 /**
- * The source write behind a curated directory edit (aliases, languages,
- * group notes). The source owns the directory since the split, so the edit
- * lands there FIRST and a failure surfaces to the caller — an edit that did
- * not reach the authority must not pretend by updating only the local
- * shadow (the next inbound event would overwrite it with the source's old
- * value).
- */
-export async function writeSourceUser(
-  id: string,
-  input: { aliases: string[] } | { language: string | null },
-): Promise<void> {
-  const client = tgOperatorClient();
-  if (!client) {
-    throw ApiError.serviceUnavailable(
-      "telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN) — the edit cannot be saved",
-    );
-  }
-  await client.updateUser(id, input);
-}
-
-/**
- * Owner sibling of {@link writeSourceUser}: the source resolves `isOwner`
- * per inbound event, so the identity must land there or the change never
- * takes effect.
+ * The owner write: the source resolves `isOwner` per inbound event, so the
+ * identity must land there or the change never takes effect.
  */
 export async function saveSourceOwner(input: {
   ownerUsername: string | null;
@@ -203,20 +211,6 @@ export async function saveSourceOwner(input: {
     );
   }
   await client.putSettings(input);
-}
-
-/** Chat sibling of {@link writeSourceUser}. */
-export async function writeSourceChat(
-  id: string,
-  input: { notes: string | null } | { language: string | null },
-): Promise<void> {
-  const client = tgOperatorClient();
-  if (!client) {
-    throw ApiError.serviceUnavailable(
-      "telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN) — the edit cannot be saved",
-    );
-  }
-  await client.updateChat(id, input);
 }
 
 /**

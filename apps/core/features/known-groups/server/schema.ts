@@ -26,23 +26,6 @@ export interface KnownGroupSummary extends KnownGroup {
   memberCount: number;
 }
 
-/** A group member as returned to clients (known-user profile + membership times). */
-export interface GroupMember {
-  userId: string;
-  username: string | null;
-  firstName: string | null;
-  lastName: string | null;
-  aliases: string[];
-  firstSeenAt: string;
-  lastSeenAt: string;
-}
-
-/** A group with its resolved member list (detail view). */
-export interface GroupWithMembers {
-  group: KnownGroup;
-  members: GroupMember[];
-}
-
 /** Upper bound for the operator-curated notes field. */
 const MAX_NOTES_LEN = 2000;
 

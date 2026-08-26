@@ -69,6 +69,8 @@ export const operatorChatSchema = z.object({
   language: z.string().nullable(),
   /** Mirrored messages in this chat (soft-deleted rows excluded). */
   messageCount: z.number().int().nonnegative(),
+  /** People the source has seen in this chat (its roster size). */
+  memberCount: z.number().int().nonnegative(),
   /** When the newest mirrored message was sent, or null (metadata-only row). */
   lastMessageAt: z.string().nullable(),
 });
@@ -78,6 +80,26 @@ export type OperatorChat = z.infer<typeof operatorChatSchema>;
 /** GET /internal/chats */
 export const operatorChatsResponseSchema = z.object({
   chats: z.array(operatorChatSchema),
+});
+
+/**
+ * One member of a chat's roster: the source's user record plus when that
+ * person was seen in this chat. The roster is what the source injects as the
+ * participant list for the chat, so the dashboard shows the same people the
+ * model is told about.
+ */
+export const operatorChatMemberSchema = operatorUserSchema.extend({
+  /** When this person was first seen in this chat. */
+  memberSinceAt: z.string().min(1),
+  /** When this person last spoke in this chat. */
+  lastSeenAt: z.string().min(1),
+});
+
+export type OperatorChatMember = z.infer<typeof operatorChatMemberSchema>;
+
+/** GET /internal/chats/:id/members — the chat's roster, oldest member first. */
+export const operatorChatMembersResponseSchema = z.object({
+  members: z.array(operatorChatMemberSchema),
 });
 
 /** PATCH /internal/chats/:id — one operator-curated field per call. */

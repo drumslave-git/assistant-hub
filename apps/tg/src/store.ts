@@ -430,6 +430,8 @@ export interface ChatListing {
   chatId: string;
   chat: ChatRow | null;
   messageCount: number;
+  /** People this source has seen in the chat — the roster's size. */
+  memberCount: number;
   lastMessageAt: Date | null;
 }
 
@@ -437,10 +439,11 @@ export interface ChatListing {
  * Every conversation the source carries, newest activity first: mirror
  * aggregates for every chat that has messages (soft-deleted rows excluded),
  * merged with the chat rows (groups) — a group the bot joined but that has
- * no mirrored traffic yet still lists.
+ * no mirrored traffic yet still lists. The roster size rides along so the
+ * dashboard's listing needs one call, not one per row.
  */
 export async function listChatListings(db: TgDb): Promise<ChatListing[]> {
-  const [aggregates, chatRows] = await Promise.all([
+  const [aggregates, chatRows, memberCounts] = await Promise.all([
     db
       .select({
         chatId: messages.chatId,
@@ -451,12 +454,23 @@ export async function listChatListings(db: TgDb): Promise<ChatListing[]> {
       .where(isNull(messages.deletedAt))
       .groupBy(messages.chatId),
     db.select().from(chats),
+    db
+      .select({ chatId: chatMembers.chatId, memberCount: count() })
+      .from(chatMembers)
+      .groupBy(chatMembers.chatId),
   ]);
+  const members = new Map(memberCounts.map((row) => [row.chatId, Number(row.memberCount)]));
+  const blank = (chatId: string, chat: ChatRow | null): ChatListing => ({
+    chatId,
+    chat,
+    messageCount: 0,
+    memberCount: members.get(chatId) ?? 0,
+    lastMessageAt: null,
+  });
   const byId = new Map<string, ChatListing>();
   for (const row of aggregates) {
     byId.set(row.chatId, {
-      chatId: row.chatId,
-      chat: null,
+      ...blank(row.chatId, null),
       messageCount: Number(row.messageCount),
       lastMessageAt: row.lastMessageAt,
     });
@@ -466,12 +480,41 @@ export async function listChatListings(db: TgDb): Promise<ChatListing[]> {
     if (existing) {
       existing.chat = chat;
     } else {
-      byId.set(chat.chatId, { chatId: chat.chatId, chat, messageCount: 0, lastMessageAt: null });
+      byId.set(chat.chatId, blank(chat.chatId, chat));
     }
   }
   return [...byId.values()].sort(
     (a, b) => (b.lastMessageAt?.getTime() ?? 0) - (a.lastMessageAt?.getTime() ?? 0),
   );
+}
+
+/** One roster entry: the user row plus when they were seen in this chat. */
+export interface ChatMemberListing {
+  user: UserRow;
+  memberSinceAt: Date;
+  lastSeenAt: Date;
+}
+
+/**
+ * A chat's roster with membership times, oldest member first — the operator
+ * view of the same participant list the source injects into the turn's
+ * context ({@link listChatMemberUsers}).
+ */
+export async function listChatMemberListings(
+  db: TgDb,
+  chatId: string,
+): Promise<ChatMemberListing[]> {
+  const rows = await db
+    .select({
+      user: users,
+      memberSinceAt: chatMembers.firstSeenAt,
+      lastSeenAt: chatMembers.lastSeenAt,
+    })
+    .from(chatMembers)
+    .innerJoin(users, eq(chatMembers.userId, users.userId))
+    .where(eq(chatMembers.chatId, chatId))
+    .orderBy(asc(chatMembers.firstSeenAt));
+  return rows;
 }
 
 /** Set (or clear) a group's operator notes. Null when the chat is unknown. */

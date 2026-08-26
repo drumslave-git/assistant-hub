@@ -14,11 +14,12 @@ import {
 } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
 import { DEFAULT_CHAT_LANGUAGE } from "@/lib/language";
+import type { DirectoryChat } from "@/server/source/directory";
 import type { KnownGroup } from "../server/schema";
 
 /**
- * Inline editor for a group's reply language. Client Component: the language is
- * saved via `PATCH /api/groups/[id]` with a `{ language }` body; the server
+ * Inline editor for a chat's reply language. Client Component: the language is
+ * saved via `PATCH /api/groups/<scoped ref>` with a `{ language }` body; the server
  * normalizes (empty clears to null → default) and the returned record replaces
  * local state. Mirrors the notes editor.
  */
@@ -32,7 +33,7 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
-export function GroupLanguageEditor({ group }: { group: KnownGroup }) {
+export function GroupLanguageEditor({ group }: { group: DirectoryChat }) {
   const [stored, setStored] = useState(group.language ?? "");
   const [text, setText] = useState(group.language ?? "");
   const [state, setState] = useState<"idle" | "saving" | "saved" | { error: string }>("idle");
@@ -42,7 +43,7 @@ export function GroupLanguageEditor({ group }: { group: KnownGroup }) {
   async function save() {
     setState("saving");
     try {
-      const res = await fetch(`/api/groups/${encodeURIComponent(group.chatId)}`, {
+      const res = await fetch(`/api/groups/${encodeURIComponent(group.ref)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ language: text }),
