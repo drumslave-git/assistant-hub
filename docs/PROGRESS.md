@@ -45,15 +45,17 @@ databases):
 
 1. The two-bot DM check from slice D: DM each bot and confirm each
    answers as ITS assistant with only its own conversation history.
-2. The slice-E group check: put both bots in one group, have a person
-   post something that summons one of them, and confirm the other
-   answers it (the cross-feed), that each reads the other's lines as
-   that assistant's name rather than its own, and that the exchange
-   stops after the configured run of assistant messages (Settings →
-   General → "Assistant replies in a row", default 3) until a person
-   speaks again. Note the presence rule: an assistant registers in a
-   group the first time Telegram delivers group traffic to its bot, so
-   a bot added since the last human message registers on the next one.
+2. The slice-E group check (re-run after the fan-out fix below): in a
+   group holding both bots, confirm that naming EITHER assistant gets
+   that one to answer (the first live test failed here — see the
+   fix note under the criterion), that an assistant's reply reaches the
+   other (the cross-feed), that each reads the other's lines as that
+   assistant's name rather than its own, and that the exchange stops
+   after the configured run of assistant messages (Settings → General →
+   "Assistant replies in a row", default 3) until a person speaks
+   again. Note the presence rule: an assistant joins a chat's audience
+   the first time Telegram delivers that group's traffic to its bot, so
+   a bot added since the last message registers on the next one.
 
 The numbered list below records how the last Phase 2 items closed:
 
@@ -487,14 +489,51 @@ assistant converted from the active personality, all counts reconciled).
       loop-guard setting's round trip into the store row (core settings
       integration, which now runs a second database on its container),
       and the import's stamping (tg import integration).
+      **Live-test fix (2026-08-26), the half the cross-feed exposed.**
+      The operator's two-bot group test showed one bot answering a
+      message that named the OTHER, and the named bot silent. The
+      traces settled it: for each message there was exactly ONE tg
+      `inbound` trace, always the same assistant's — the other never
+      got a turn at all, so its addressing check never ran (the
+      analyzer was reading the messages correctly; it was only ever
+      asked on behalf of one bot).
+      Root cause, predating this slice: a group's mirror is ONE shared
+      stream, Telegram delivers the message to every bot in the chat,
+      and `processIncomingMessage` bailed with `already_mirrored` for
+      whichever poller lost the insert race. Whose turn ran was
+      therefore a race between pollers.
+      Fixed by fanning out where the message is processed: the poller
+      that wins the mirror enqueues one event per assistant LISTENING
+      in the chat, each with its own connection identity, its own
+      structural addressing verdict (`checkAddressed` against that
+      bot's account) and its own turn correlation. That set is now one
+      shared concept, `audience.ts` — the same "who is listening here"
+      the cross-feed uses. Fanning out at the winner (rather than
+      letting every poller enqueue its own) is also what keeps a photo
+      from being downloaded and ingested once per bot in the chat.
+      With it, the turn correlation became uniform:
+      `<chatId>:<messageId>:<assistantId>` for every turn
+      (`turnCorrelationId` in contracts), because a turn is one
+      assistant acting on one message, not one message. That closes a
+      second latent collision from slice D — a DM's chat id is the
+      peer's user id and its message ids are numbered per bot, so two
+      bots DM'd by the same person produced identical correlations, and
+      the core's turn-action markers key on them (one turn's settle
+      would clear the other's marker). The tg `inbound` trace sits on
+      the receiving poller's own turn and its enqueue event names every
+      turn the message opened.
       Remaining risks: with three or more assistants in one chat, a
       reply fans out to each of them at once, so a short burst can land
       before the streak reaches the limit — bounded (the guard closes
       the chat as soon as the tail is N assistant messages), never
       unbounded, but noisier than a two-bot exchange. Presence is
-      evidence-based, so an assistant only becomes cross-feedable after
-      Telegram has delivered that chat's traffic to its bot at least
-      once. And the operator control writes the v2 store while the rest
+      evidence-based, so an assistant joins a chat's audience (for both
+      the fan-out and the cross-feed) only after Telegram has delivered
+      that chat's traffic to its bot at least once — a bot added since
+      the last message registers on the next one, and a bot REMOVED
+      from a group keeps its presence row until something clears it, so
+      a turn can still be opened for a bot that can no longer post
+      there (its send fails and the trace says so). And the operator control writes the v2 store while the rest
       of the settings row is still v1 — one Save touching two databases
       until the Phase 6 cutover collapses them.
 - [ ] Aggregated directory: users/chats dashboard pages read every

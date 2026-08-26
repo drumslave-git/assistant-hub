@@ -117,6 +117,7 @@ export {
   replyTargetSchema,
   senderInfoSchema,
   sourceIdSchema,
+  turnCorrelationId,
   turnLifecycleEventSchema,
   type Addressing,
   type AssistantDeletedEvent,

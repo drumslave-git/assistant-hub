@@ -2,13 +2,15 @@ import { openPublisher, openQueue, type BusPublisher } from "@assistant-hub/bus"
 import {
   BUS_EVENTS_CHANNEL,
   INBOUND_MESSAGES_QUEUE,
+  turnCorrelationId,
   type InboundMessageEvent,
   type SourceTraceClient,
 } from "@assistant-hub/contracts";
 import { run, sequentialize, type RunnerHandle } from "@grammyjs/runner";
 import { Bot, HttpError, type Context } from "grammy";
 
-import { createCrossFeed, type CrossFeed, type CrossFeedTarget } from "./cross-feed";
+import type { AssistantConnection } from "./audience";
+import { createCrossFeed, type CrossFeed } from "./cross-feed";
 import type { TgDb } from "./db";
 import {
   captureFeedbackReply,
@@ -164,7 +166,7 @@ export class BotManager {
     this.traces = busTraceClient(this.publisher);
     this.crossFeed = createCrossFeed({
       db: deps.db,
-      targets: () => this.crossFeedTargets(),
+      running: () => this.runningConnections(),
       enqueue: (event) => this.enqueueInbound(event),
     });
   }
@@ -175,11 +177,12 @@ export class BotManager {
   }
 
   /**
-   * Every connection with a live bot account, as cross-feed targets. A
-   * stopped or still-connecting poller is not one: it has no identity to put
-   * on an event and could not deliver an answer either.
+   * Every connection with a live bot account. A stopped or still-connecting
+   * poller is not one: it has no identity to put on an event and could not
+   * deliver an answer either. Both shared-chat paths read this — the group
+   * fan-out of an inbound message and the cross-feed of a reply.
    */
-  private crossFeedTargets(): CrossFeedTarget[] {
+  private runningConnections(): AssistantConnection[] {
     return [...this.pollers.values()].flatMap((poller) =>
       poller.bot?.botInfo
         ? [
@@ -396,7 +399,14 @@ export class BotManager {
       trigger: {
         kind: "telegram",
         actor: message.from ? String(message.from.id) : String(ctx.chat.id),
-        correlationId: `${ctx.chat.id}:${message.message_id}`,
+        // This poller's own turn. In a group the same message may open a turn
+        // for other assistants too (the trace's enqueue event names them);
+        // the mirroring and ingest below happen once, here.
+        correlationId: turnCorrelationId(
+          String(ctx.chat.id),
+          String(message.message_id),
+          poller.assistantId,
+        ),
       },
       inputSummary: message.text ?? message.caption ?? "(media)",
     });
@@ -412,6 +422,9 @@ export class BotManager {
         },
         botId: ctx.me.id,
         botToken,
+        // A group message is a turn for every assistant in the chat;
+        // Telegram delivers it to each bot but only one poller mirrors it.
+        running: () => this.runningConnections(),
         enqueue: (event) => this.enqueueInbound(event),
         // A reply to an awaiting feedback menu is that menu's answer, not a
         // turn; the capture deletes the menu and publishes the completion.
@@ -427,13 +440,32 @@ export class BotManager {
         .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["history", "users", "groups"]))
         .catch(() => undefined);
       if (result.status === "enqueued") {
+        const events = result.events ?? [];
         trace.event({
-          message: "inbound event enqueued",
+          message:
+            events.length > 1
+              ? `inbound event enqueued for ${events.length} assistants`
+              : "inbound event enqueued",
           type: "output",
           level: "success",
-          data: { eventId: result.event?.eventId ?? null },
+          data: {
+            // Every turn this one message opened, so a group shared by
+            // several assistants shows who was handed it and under which
+            // correlation each of their turns runs.
+            turns: events.map((event) => ({
+              assistantId: event.assistantId,
+              eventId: event.eventId,
+              correlationId: event.correlationId,
+              addressed: event.addressing.addressed,
+            })),
+          },
         });
-        await trace.succeed({ outputSummary: "enqueued for the core" });
+        await trace.succeed({
+          outputSummary:
+            events.length > 1
+              ? `enqueued for the core (${events.length} assistants)`
+              : "enqueued for the core",
+        });
       }
     } catch (err) {
       console.error(

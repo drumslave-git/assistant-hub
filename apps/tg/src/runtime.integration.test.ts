@@ -19,7 +19,8 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import * as schema from "../store/schema";
-import { createCrossFeed, recordAssistantMessage, type CrossFeedTarget } from "./cross-feed";
+import type { AssistantConnection } from "./audience";
+import { createCrossFeed, recordAssistantMessage } from "./cross-feed";
 import { startDeliveryConsumer, type TgSender } from "./delivery";
 import { processIncomingMessage } from "./inbound";
 
@@ -142,7 +143,9 @@ describe("tg runtime", () => {
     expect(event.assistantId).toBe("assistant-1");
     expect(event.connection).toEqual({ botUsername: "fixture_bot", botDisplayName: "Fixture" });
     expect(event.chat).toMatchObject({ ref: "tg:chat:-300", kind: "group", title: "Fixture Group" });
-    expect(event.correlationId).toBe("-300:11");
+    // One turn = one assistant acting on one message, so the receiver is part
+    // of the correlation (several assistants can be handed the same message).
+    expect(event.correlationId).toBe("-300:11:assistant-1");
 
     // The owner was resolved from the configured username and persisted.
     expect(event.sender).toMatchObject({
@@ -257,12 +260,131 @@ describe("tg runtime", () => {
     ]);
   });
 
+  it("hands a group message to every assistant in the chat, not just the poller that mirrored it", async () => {
+    // The group mirror is ONE shared stream, so of the two pollers Telegram
+    // delivered this message to, exactly one wins the insert. Before the
+    // fan-out that made the loser's assistant miss the turn entirely — a
+    // message naming it went unanswered whenever the other bot mirrored
+    // first.
+    const chatId = -702;
+    const enqueued: InboundMessageEvent[] = [];
+    const running: AssistantConnection[] = [
+      {
+        assistantId: "assistant-a",
+        botId: 111,
+        identity: { botUsername: "bot_a", botDisplayName: "Bot A" },
+      },
+      {
+        assistantId: "assistant-b",
+        botId: 222,
+        identity: { botUsername: "bot_b", botDisplayName: "Bot B" },
+      },
+    ];
+    const depsFor = (connection: AssistantConnection) => ({
+      db,
+      assistantId: connection.assistantId,
+      identity: connection.identity,
+      botId: connection.botId,
+      botToken: `${connection.botId}:fixture-token`,
+      running: () => running,
+      enqueue: async (event: InboundMessageEvent) => {
+        enqueued.push(event);
+      },
+    });
+    const post = (messageId: number, text: string) =>
+      tgMessage({
+        messageId,
+        chatId,
+        group: true,
+        text,
+        from: { id: 5001, username: "alice_example", firstName: "Alice" },
+      });
+
+    // Both bots see the first message; presence is stamped by each poller as
+    // it processes, so the fan-out reaches both from the second one on.
+    await processIncomingMessage(post(1, "hello both"), depsFor(running[0]));
+    await processIncomingMessage(post(1, "hello both"), depsFor(running[1]));
+    enqueued.length = 0;
+
+    // Now the message that matters: bot A's poller wins the mirror race and
+    // bot B's sees it as already mirrored — yet BOTH get a turn.
+    const winner = await processIncomingMessage(post(2, "@bot_b are you there?"), depsFor(running[0]));
+    const loser = await processIncomingMessage(post(2, "@bot_b are you there?"), depsFor(running[1]));
+    expect(winner.status).toBe("enqueued");
+    expect(loser.status).toBe("skipped");
+    expect(loser.reason).toBe("already_mirrored");
+
+    expect(enqueued.map((e) => e.assistantId).sort()).toEqual(["assistant-a", "assistant-b"]);
+    // Each turn is its own: its own connection identity, its own correlation.
+    const forB = enqueued.find((e) => e.assistantId === "assistant-b")!;
+    const forA = enqueued.find((e) => e.assistantId === "assistant-a")!;
+    expect(forB.connection).toEqual({ botUsername: "bot_b", botDisplayName: "Bot B" });
+    expect(forB.correlationId).toBe(`${chatId}:2:assistant-b`);
+    expect(forA.correlationId).toBe(`${chatId}:2:assistant-a`);
+    // …and its own structural verdict: the @mention names B, not A.
+    expect(forB.addressing).toMatchObject({ addressed: true, source: "mention" });
+    expect(forA.addressing).toMatchObject({ addressed: false, needsAnalyzer: true });
+    // The shared window is composed once and is the same conversation for both.
+    expect(forA.context.history.map((h) => h.sourceMessageId)).toEqual(["1"]);
+    expect(forB.context.history.map((h) => h.sourceMessageId)).toEqual(["1"]);
+
+    // Still exactly one mirror row: the group is one shared stream.
+    const rows = await pool.query(
+      `SELECT telegram_message_id, count(*)::int AS n FROM messages
+        WHERE chat_id = $1 GROUP BY 1 ORDER BY 1`,
+      [String(chatId)],
+    );
+    expect(rows.rows).toEqual([
+      { telegram_message_id: "1", n: 1 },
+      { telegram_message_id: "2", n: 1 },
+    ]);
+  });
+
+  it("keeps a direct chat to the bot that received it", async () => {
+    const peerId = 7400;
+    const enqueued: InboundMessageEvent[] = [];
+    const running: AssistantConnection[] = [
+      {
+        assistantId: "assistant-a",
+        botId: 111,
+        identity: { botUsername: "bot_a", botDisplayName: "Bot A" },
+      },
+      {
+        assistantId: "assistant-b",
+        botId: 222,
+        identity: { botUsername: "bot_b", botDisplayName: "Bot B" },
+      },
+    ];
+    const result = await processIncomingMessage(
+      tgMessage({
+        messageId: 1,
+        chatId: peerId,
+        text: "just you",
+        from: { id: peerId, username: "peer_example", firstName: "Peer" },
+      }),
+      {
+        db,
+        assistantId: "assistant-a",
+        identity: running[0].identity,
+        botId: 111,
+        botToken: "111:fixture-token",
+        running: () => running,
+        enqueue: async (event: InboundMessageEvent) => {
+          enqueued.push(event);
+        },
+      },
+    );
+    expect(result.status).toBe("enqueued");
+    expect(enqueued.map((e) => e.assistantId)).toEqual(["assistant-a"]);
+    expect(enqueued[0].correlationId).toBe(`${peerId}:1:assistant-a`);
+  });
+
   it("cross-feeds a delivered reply to the other assistants present in the chat", async () => {
     // Telegram never hands one bot another bot's message, so without this
     // two assistants in the same group can never answer each other.
     const chatId = -700;
     const enqueued: InboundMessageEvent[] = [];
-    const targets: CrossFeedTarget[] = [
+    const running: AssistantConnection[] = [
       {
         assistantId: "assistant-a",
         botId: 111,
@@ -282,7 +404,7 @@ describe("tg runtime", () => {
     ];
     const crossFeed = createCrossFeed({
       db,
-      targets: () => targets,
+      running: () => running,
       enqueue: async (event) => {
         enqueued.push(event);
       },
@@ -360,7 +482,7 @@ describe("tg runtime", () => {
     const enqueued: InboundMessageEvent[] = [];
     const crossFeed = createCrossFeed({
       db,
-      targets: () => [
+      running: () => [
         {
           assistantId: "assistant-a",
           botId: 111,

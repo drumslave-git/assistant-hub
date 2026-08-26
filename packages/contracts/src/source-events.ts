@@ -338,6 +338,27 @@ export type AssistantDeletedEvent = z.infer<typeof assistantDeletedEventSchema>;
 export type ReplyDeliveryEvent = z.infer<typeof replyDeliveryEventSchema>;
 export type TurnLifecycleEvent = z.infer<typeof turnLifecycleEventSchema>;
 
+/**
+ * The id every event, job and trace of ONE turn shares (PLAN "Traces").
+ *
+ * A turn is one assistant acting on one message — not one message. Several
+ * assistants can share a chat, and each is handed its own turn for the same
+ * message, so the receiving assistant is part of the id. Without it their
+ * turn-action markers and traces would collide: one turn's settle would clear
+ * the other's marker, and Debug would show two turns as one.
+ *
+ * (Source-local ids: a Telegram DM's chat id is the peer's user id and its
+ * message ids are numbered per bot, so the chat/message pair alone is not even
+ * unique across bots there.)
+ */
+export function turnCorrelationId(
+  chatId: string,
+  sourceMessageId: string,
+  assistantId: string,
+): string {
+  return `${chatId}:${sourceMessageId}:${assistantId}`;
+}
+
 /** The queue the core pipeline consumes: one job per inbound message. */
 export const INBOUND_MESSAGES_QUEUE = "inbound-messages";
 

@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import {
   inboundMessageEventSchema,
   scopedRef,
-  type ConnectionIdentity,
+  turnCorrelationId,
   type InboundMessageEvent,
 } from "@assistant-hub/contracts";
 
 import { checkCrossFedAddressed } from "./addressing";
+import { listeningAssistants, type AssistantConnection } from "./audience";
 import { buildChatInfo, buildConversationContext } from "./context";
 import type { TgDb } from "./db";
 import { formatUserLabel } from "./format";
@@ -18,7 +19,6 @@ import {
   getMessageByTelegramId,
   getUserById,
   isDirectChat,
-  listChatAssistants,
 } from "./store";
 
 /**
@@ -33,8 +33,8 @@ import {
  * Everything about who may be fed is mechanical:
  *
  * - group chats only (a DM holds one bot and one person);
- * - the assistants the chat's presence rows name, minus the author — a bot
- *   that is not in the chat could not answer there anyway;
+ * - the assistants listening there (`audience.ts` — the same set the inbound
+ *   fan-out uses), minus the author;
  * - the message must carry text and must not be `silent` (a silent send is a
  *   transient acknowledgement of background work, not something to answer).
  *
@@ -42,14 +42,6 @@ import {
  * verdict travels on the event, the core runs the name check and the
  * analyzer, and the loop guard bounds the exchange.
  */
-
-/** One assistant the cross-feed can hand a message to. */
-export interface CrossFeedTarget {
-  assistantId: string;
-  /** Numeric Telegram id of the bot account serving this assistant. */
-  botId: number;
-  identity: ConnectionIdentity;
-}
 
 /** What an assistant just said in a chat — the mirror row's content. */
 export interface AssistantMessage {
@@ -79,33 +71,19 @@ export interface CrossFeed {
 export interface CrossFeedDeps {
   db: TgDb;
   /** The connections running right now, with their bot identities. */
-  targets: () => CrossFeedTarget[];
+  running: () => AssistantConnection[];
   /** Publish one event as a queue job (the same producer inbound uses). */
   enqueue: (event: InboundMessageEvent) => Promise<void>;
   onError?: (context: string, error: unknown) => void;
   now?: () => Date;
 }
 
-/**
- * The turn's correlation for a cross-fed message. One delivered message can
- * open a turn for every other assistant in the chat, so the receiver is part
- * of the id — turn-action markers and traces key on it and must not collide
- * (an ordinary turn keeps the plain `<chatId>:<messageId>` shape).
- */
-export function crossFedCorrelationId(
-  chatId: string,
-  telegramMessageId: number,
-  targetAssistantId: string,
-): string {
-  return `${chatId}:${telegramMessageId}:${targetAssistantId}`;
-}
-
 /** Build the inbound event one target assistant receives. */
 async function buildCrossFedEvent(
   deps: CrossFeedDeps,
   message: AssistantMessage,
-  author: CrossFeedTarget,
-  target: CrossFeedTarget,
+  author: AssistantConnection,
+  target: AssistantConnection,
 ): Promise<InboundMessageEvent> {
   const now = deps.now?.() ?? new Date();
   const { chatId } = message;
@@ -140,7 +118,11 @@ async function buildCrossFedEvent(
     v: 1,
     eventId: randomUUID(),
     occurredAt: now.toISOString(),
-    correlationId: crossFedCorrelationId(chatId, message.telegramMessageId, target.assistantId),
+    correlationId: turnCorrelationId(
+      chatId,
+      String(message.telegramMessageId),
+      target.assistantId,
+    ),
     type: "message.inbound",
     source: "tg",
     assistantId: target.assistantId,
@@ -201,15 +183,13 @@ export function createCrossFeed(deps: CrossFeedDeps): CrossFeed {
       if (isDirectChat(message.chatId)) return [];
       if (!message.assistantId) return [];
       if (message.silent || !message.content.trim()) return [];
-      const running = deps.targets();
-      const author = running.find((t) => t.assistantId === message.assistantId);
+      const running = deps.running();
+      const author = running.find((c) => c.assistantId === message.assistantId);
       // Without the author's bot account there is no honest sender to put on
       // the event — the connection stopped between the send and this call.
       if (!author) return [];
-      const present = new Set(await listChatAssistants(deps.db, message.chatId));
-      const targets = running.filter(
-        (t) => t.assistantId !== message.assistantId && present.has(t.assistantId),
-      );
+      const listening = await listeningAssistants(deps.db, message.chatId, running);
+      const targets = listening.filter((c) => c.assistantId !== message.assistantId);
       const fed: InboundMessageEvent[] = [];
       for (const target of targets) {
         try {
