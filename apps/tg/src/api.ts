@@ -73,7 +73,7 @@ import {
   markDescribed,
 } from "./media/store";
 import type { StoredMedia } from "./media/types";
-import type { TgOutbound } from "./outbound";
+import type { SentMessage, TgOutbound } from "./outbound";
 import {
   appendMessagesBulk,
   deleteConnection,
@@ -805,7 +805,7 @@ export function createApi(input: {
       findMessageRefs(body.text),
       assistantIdOf(c),
     ).catch(() => []);
-    let sent: { messageId: number };
+    let sent: SentMessage;
     try {
       sent = await senderOf(c).sendMessage(chatId, body.text, {
         replyToMessageId,
@@ -823,7 +823,8 @@ export function createApi(input: {
         assistantId: assistantIdOf(c),
         telegramMessageId: sent.messageId,
         content: body.text,
-        replyToMessageId,
+        // What Telegram actually attached, not what was asked for.
+        replyToMessageId: sent.replyToMessageId,
         sentAt: new Date(),
         threadId: body.threadId != null ? Number(body.threadId) : null,
         silent: body.silent,

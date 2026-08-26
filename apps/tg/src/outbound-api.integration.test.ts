@@ -50,7 +50,8 @@ function fakeSender(overrides?: Partial<TgOutbound>): {
   const sender: TgOutbound = {
     async sendMessage(chatId, text, opts) {
       calls.sendMessage.push({ chatId, text, opts });
-      return { messageId: ++nextId };
+      // Telegram echoes the reply target it actually attached.
+      return { messageId: ++nextId, replyToMessageId: opts?.replyToMessageId ?? null };
     },
     async sendVoice(chatId, voice, opts) {
       calls.sendVoice.push({ chatId, voice, opts });

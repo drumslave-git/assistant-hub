@@ -148,11 +148,24 @@ export async function startDeliveryConsumer(input: {
           silent: event.silent,
           linkableMessageIds,
         });
+        // Telegram drops a reply target it will not attach and delivers the
+        // message anyway (`allow_sending_without_reply` — losing the answer
+        // to save the pointer is the wrong trade). Silent by design, so it is
+        // said out loud here: what went in, what came back.
+        const replyTargetDropped = replyToMessageId != null && sent.replyToMessageId == null;
         trace.event({
-          message: "reply sent",
+          message: replyTargetDropped
+            ? "reply sent — Telegram did not attach the reply target"
+            : "reply sent",
           type: "external_call",
-          level: "success",
-          data: { messageId: sent.messageId, silent: event.silent, linkableMessageIds },
+          level: replyTargetDropped ? "warn" : "success",
+          data: {
+            messageId: sent.messageId,
+            silent: event.silent,
+            linkableMessageIds,
+            requestedReplyToMessageId: replyToMessageId,
+            replyToMessageId: sent.replyToMessageId,
+          },
         });
         await recordAssistantMessage(
           input.db,
@@ -161,7 +174,8 @@ export async function startDeliveryConsumer(input: {
             assistantId: event.assistantId,
             telegramMessageId: sent.messageId,
             content: event.text,
-            replyToMessageId,
+            // What is actually in the chat, not what was asked for.
+            replyToMessageId: sent.replyToMessageId,
             sentAt: new Date(),
             threadId: event.threadId != null ? Number(event.threadId) : null,
             silent: event.silent,

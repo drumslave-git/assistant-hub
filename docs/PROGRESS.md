@@ -522,6 +522,27 @@ assistant converted from the active personality, all counts reconciled).
       would clear the other's marker). The tg `inbound` trace sits on
       the receiving poller's own turn and its enqueue event names every
       turn the message opened.
+      **Second live test (2026-08-26) — the slice works end to end.**
+      One human message naming both assistants opened a turn for each
+      (the fan-out), both answered by name, one assistant's reply was
+      cross-fed to the other and answered, the other reply was cross-fed
+      and correctly ignored ("display name absent"), and the fourth
+      message hit the loop guard (streak 3, limit 3) and stopped the
+      exchange. The cross-fed transcript line read
+      `[#204] Igor [reply to #203]: …` — the other assistant's words
+      under its own name.
+      One question the traces could NOT answer: the operator saw the
+      cross-fed reply arrive as a plain message rather than attached to
+      the message it answered. The delivery asked Telegram for the reply
+      target, but `allow_sending_without_reply` means Telegram drops a
+      target it will not attach and delivers anyway — silently — and the
+      mirror recorded the REQUESTED target, so nothing anywhere said
+      what actually happened. Now `sendMessage` reads the attached
+      target back off the sent message: the mirror records what is in
+      the chat, and the deliver trace carries both
+      `requestedReplyToMessageId` and `replyToMessageId`, warning when
+      they differ. Whether Telegram refuses bot-to-bot reply targets is
+      then a fact the next live turn reports rather than a guess.
       Remaining risks: with three or more assistants in one chat, a
       reply fans out to each of them at once, so a short burst can land
       before the streak reaches the limit — bounded (the guard closes

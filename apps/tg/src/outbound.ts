@@ -29,7 +29,7 @@ export interface TgOutbound {
       silent?: boolean;
       linkableMessageIds?: readonly number[];
     },
-  ): Promise<{ messageId: number }>;
+  ): Promise<SentMessage>;
   /**
    * Deliver a reply as a Telegram voice bubble. `base64` is OGG/Opus audio —
    * the one encoding Telegram renders as a voice message (anything else
@@ -94,6 +94,28 @@ function isEntityParseError(err: unknown): boolean {
   );
 }
 
+/**
+ * What Telegram actually delivered. `replyToMessageId` is read back off the
+ * sent message rather than echoed from the request: `allow_sending_without_reply`
+ * means a target Telegram will not attach is dropped SILENTLY, and the mirror
+ * (and the trace) must record what is in the chat, not what was asked for.
+ */
+export interface SentMessage {
+  messageId: number;
+  /** The message this one actually replies to, or null when none was attached. */
+  replyToMessageId: number | null;
+}
+
+function delivered(sent: {
+  message_id: number;
+  reply_to_message?: { message_id: number };
+}): SentMessage {
+  return {
+    messageId: sent.message_id,
+    replyToMessageId: sent.reply_to_message?.message_id ?? null,
+  };
+}
+
 /** Reply/thread params shared by the send methods. */
 function sendParams(opts?: {
   replyToMessageId?: number | null;
@@ -135,11 +157,11 @@ export function createBotOutbound(requireBot: () => Bot): TgOutbound {
           ...params,
           parse_mode: "HTML",
         });
-        return { messageId: sent.message_id };
+        return delivered(sent);
       } catch (err) {
         if (!isEntityParseError(err)) throw err;
         const sent = await bot.api.sendMessage(chatId, text, params);
-        return { messageId: sent.message_id };
+        return delivered(sent);
       }
     },
     async sendVoice(chatId, voice, opts) {

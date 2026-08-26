@@ -614,6 +614,9 @@ describe("tg runtime", () => {
     }> = [];
     let typingCalls = 0;
     let nextMessageId = 500;
+    // Telegram silently drops a reply target it will not attach; the fake
+    // flips to that behavior for the case below.
+    let attachReplyTarget = true;
     const sender: TgSender = {
       sendMessage: async (chatId, text, opts) => {
         sends.push({
@@ -623,7 +626,11 @@ describe("tg runtime", () => {
           silent: opts?.silent ?? false,
           linkable: [...(opts?.linkableMessageIds ?? [])],
         });
-        return { messageId: ++nextMessageId };
+        // Telegram echoes the reply target it actually attached.
+        return {
+          messageId: ++nextMessageId,
+          replyToMessageId: attachReplyTarget ? (opts?.replyToMessageId ?? null) : null,
+        };
       },
       sendTyping: () => {
         typingCalls += 1;
@@ -717,6 +724,36 @@ describe("tg runtime", () => {
       await expect.poll(() => sends.length, { timeout: 10_000 }).toBe(2);
       expect(sends[1]).toMatchObject({ silent: true, linkable: [11] });
 
+      // Telegram accepted the send but would not attach the reply target
+      // (`allow_sending_without_reply`): the mirror must record the message
+      // that is actually in the chat, not the pointer that was asked for.
+      attachReplyTarget = false;
+      await publisher.publish(BUS_EVENTS_CHANNEL, {
+        v: 1,
+        eventId: "evt-d1c",
+        occurredAt: new Date().toISOString(),
+        correlationId: "-300:13",
+        type: "reply.delivery",
+        source: "tg",
+        assistantId: "assistant-1",
+        chatRef: "tg:chat:-300",
+        replyToSourceMessageId: "11",
+        text: "standing on my own",
+      });
+      await expect.poll(() => sends.length, { timeout: 10_000 }).toBe(3);
+      await expect
+        .poll(
+          async () => {
+            const row = await pool.query(
+              `SELECT reply_to_message_id FROM messages WHERE telegram_message_id = 503`,
+            );
+            return row.rows.length > 0 ? row.rows[0].reply_to_message_id : undefined;
+          },
+          { timeout: 10_000 },
+        )
+        .toBeNull();
+      attachReplyTarget = true;
+
       // Events for another source are not ours and change nothing.
       await publisher.publish(BUS_EVENTS_CHANNEL, {
         v: 1,
@@ -730,7 +767,7 @@ describe("tg runtime", () => {
         text: "not for telegram",
       });
       await new Promise((r) => setTimeout(r, 300));
-      expect(sends).toHaveLength(2);
+      expect(sends).toHaveLength(3);
     } finally {
       await publisher.close();
       await consumer.close();
@@ -747,7 +784,10 @@ describe("tg runtime", () => {
     const consumer = await startDeliveryConsumer({
       db,
       redisUrl,
-      senderFor: () => ({ sendMessage: async () => ({ messageId: 1 }), sendTyping: () => {} }),
+      senderFor: () => ({
+        sendMessage: async () => ({ messageId: 1, replyToMessageId: null }),
+        sendTyping: () => {},
+      }),
       // The seam the bot manager hangs off: rows deleted + pollers stopped.
       onAssistantDeleted: async (assistantId) => {
         const { deleteConnectionsByAssistant } = await import("./store");
