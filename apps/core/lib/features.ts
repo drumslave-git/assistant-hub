@@ -131,6 +131,17 @@ export const FEATURES = {
     relatedIdsKey: "known_groups",
     path: "/groups",
   },
+  // The operator's declaration that identities across sources are one human
+  // (redesign Phase 3). Lives on the Users page as its own tab: it is a view
+  // of the same people, not a separate corner of the dashboard.
+  "person-links": {
+    id: "person-links",
+    label: "Person links",
+    group: "people",
+    realtimeTopic: "users",
+    relatedIdsKey: "person_links",
+    path: "/users",
+  },
   // First-class successor of personalities (redesign Phase 3): many
   // assistants, each with its own persona and per-source connection; the
   // assistant in a chat is implied by which bot is in it — no "active" one.

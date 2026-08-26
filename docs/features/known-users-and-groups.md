@@ -1,6 +1,7 @@
 # Users and groups
 
-**Feature ids:** `known-users`, `known-groups`, `mcp-tools-known-users` ·
+**Feature ids:** `known-users`, `known-groups`, `person-links`,
+`mcp-tools-known-users` ·
 **Dashboard:** `/users`, `/groups` · **SSE topics:** `users`, `groups`
 
 Who the bot knows. Two mirror-image features — the groups service, repository,
@@ -89,26 +90,69 @@ The reply pipeline injects a system message describing who the bot is talking to
 Skipped entirely when there is nothing to inject. Long-term memory is injected right
 after it: the roster says *who* is here, memory says what is known *about* them.
 
+## The aggregated directory
+
+Since the source split, the source apps own their directories: the dashboard
+pages do not read a local table, they **aggregate** every registered source's
+operator listing (`server/source/directory.ts`) and tag each row with its
+origin and its scoped ref (`tg:user:123`). `apps/chat` joins by adding one
+entry to the registry.
+
+A source that is unconfigured or unreachable does not fail the read and is
+never silently dropped: it comes back under `unavailable` and
+`SourceUnavailableNotice` names it above the tables. A short list must never be
+mistaken for "nobody has messaged the bot".
+
+The core still keeps a **transitional shadow** of the directory
+(`known_users` / `known_groups` / `group_members`, written by the queue
+consumer) so v1 foreign keys, labels and rosters on the message path keep
+working. It is telegram-shaped and the Phase 6 cutover collapses it; the
+dashboard no longer reads it.
+
 ## Dashboard
 
 | Page | Contents |
 | --- | --- |
-| `/users` | Every user who has messaged the bot, with inline alias and language editing |
-| `/groups` | Every group the bot is active in, each linking to its detail |
-| `/groups/{chatId}` | The group's notes editor, language editor, and the roster of known members. `notFound()` for an unknown id |
+| `/users` → **Directory** | Every person every source knows, with its source, plus inline alias and language editing |
+| `/users` → **Linked people** | Person links (below) |
+| `/groups` | Every shared conversation the sources carry, with roster and message counts, each linking to its detail |
+| `/groups/{ref}` | The chat's notes editor, language editor, and the roster its source knows. `notFound()` for a ref no source carries |
 
 Each editor saves **one field at a time** and replaces local state with the returned
 record, so the input always reflects what was actually stored (the server trims,
 normalizes, and clears empties to null). Aliases are edited as a comma-separated list.
+Every edit lands at the owning **source first** — an edit that did not reach the
+authority must not pretend by updating only the shadow.
 
 Member aliases are shown on the group page but edited on `/users` — one place per
 concern.
 
+## Person links
+
+`person-links` (`relatedIdsKey`: `person_links`, v2 core store tables
+`person_links` / `person_link_members`) is the operator's declaration that
+several identities are the **same human**: two accounts on one source, or a
+telegram user and a web-chat user. Memory reads resolve through it
+(`resolveLinkedRefs`), so what the bot durably knows about someone follows the
+person rather than the account; unlinked identities stay separate.
+
+| Rule | Why |
+| --- | --- |
+| An identity belongs to **at most one** link | Keeps resolution a lookup, not a graph walk. A claimed identity is refused with a conflict naming it, and the picker disables it |
+| A link needs **at least two** identities | A link of one says nothing; breaking a person apart is a delete |
+| Reads are best-effort | Without the v2 store (or with it unreadable) every identity resolves to itself and memory behaves as it did before links existed. Writes are not forgiving this way |
+
+Reads only: a fact is still stored under the identity that was named, and the
+merged result is attributed to the identity present in the conversation. Two
+linked identities in one group are one person in the prompt, named once.
+
 ## API
 
-`GET /api/users`, `PATCH /api/users/{id}` (body carries **one** of `language` or
+`GET /api/users`, `PATCH /api/users/{ref}` (body carries **one** of `language` or
 `aliases`, dispatched to the matching traced action), `GET /api/groups`,
-`PATCH /api/groups/{id}` (one of `language` or `notes`).
+`PATCH /api/groups/{ref}` (one of `language` or `notes`).
+`GET|POST /api/person-links`, `PATCH|DELETE /api/person-links/{id}` (the PATCH
+body carries one of `note` or `members`).
 
 ## Owner selection
 
@@ -118,15 +162,20 @@ stored denormalized for display.
 
 ## Tracing
 
-`known-users` (`relatedIdsKey`: `known_users`) and `known-groups`
-(`relatedIdsKey`: `known_groups`). Alias, language and notes edits are traced; capture
-is not.
+`known-users` (`relatedIdsKey`: `known_users`), `known-groups`
+(`relatedIdsKey`: `known_groups`) and `person-links`
+(`relatedIdsKey`: `person_links`). Alias, language, notes and link edits are
+traced; capture is not.
 
 ## Tests
 
 Unit: `known-users/format.test.ts`, `known-users/match.test.ts`,
 `known-users/server/schema.test.ts`, `known-groups/format.test.ts`,
-`known-groups/server/schema.test.ts`, `lib/language.test.ts`.
+`known-groups/server/schema.test.ts`, `person-links/server/schema.test.ts`,
+`server/source/directory.test.ts`, `lib/language.test.ts`.
 Integration: `known-users/server/known-users.integration.test.ts`,
 `known-groups/server/known-groups.integration.test.ts`,
-`known-users/server/tool-selection.integration.test.ts`.
+`known-users/server/tool-selection.integration.test.ts`,
+`person-links/server/person-links.integration.test.ts`,
+`memory/server/memory-links.integration.test.ts` (memory read through links),
+and the tg side's `operator-api.integration.test.ts`.

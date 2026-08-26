@@ -1,11 +1,14 @@
 import "server-only";
 
+import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
+
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { getGroupMembers } from "@/features/known-groups/server/repository";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUser, getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { resolveChatUserByReference } from "@/features/known-users/server/service";
+import { resolveLinkedRefs } from "@/features/person-links/server/service";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
@@ -60,6 +63,57 @@ async function tryEmbed(text: string): Promise<number[] | null> {
   return embedOne(runtime, text).catch(() => null);
 }
 
+/* ------------------------------------------------------------- identities */
+
+/**
+ * The identities that are the same person as each given user id — the read
+ * that makes memory follow a human rather than an account (PLAN.md, "Person
+ * links"). Always includes the id itself, so callers use the result
+ * unconditionally and a deployment with no links behaves exactly as before.
+ *
+ * Memory is still keyed by Telegram user ids (v1 tables until the Phase 6
+ * cutover), so a link member from another source has no document to
+ * contribute yet and is dropped here rather than looked up under a key that
+ * cannot exist. Once memory moves to scoped refs this filter is what goes
+ * away, not the resolution.
+ */
+async function identitiesOf(userIds: readonly string[]): Promise<Map<string, string[]>> {
+  const refOf = (id: string) => scopedRef("tg", "user", id);
+  const linked = await resolveLinkedRefs(userIds.map(refOf));
+  return new Map(
+    userIds.map((id) => {
+      const refs = linked.get(refOf(id)) ?? [];
+      const local = refs.flatMap((ref) => {
+        const parsed = tryParseScopedRef(ref);
+        return parsed && parsed.source === "tg" && parsed.kind === "user" ? [parsed.id] : [];
+      });
+      return [id, [...new Set([id, ...local])]];
+    }),
+  );
+}
+
+/**
+ * Collapse the identities present in a conversation into the people they
+ * belong to: one entry per human, led by the identity actually here (the
+ * sender first, since the caller lists them first), carrying every identity
+ * whose memory is theirs. Two linked accounts both present in a group are one
+ * person, named once.
+ */
+function peoplePresent(
+  userIds: readonly string[],
+  identities: Map<string, string[]>,
+): Array<{ userId: string; identities: string[] }> {
+  const claimed = new Set<string>();
+  const people: Array<{ userId: string; identities: string[] }> = [];
+  for (const userId of userIds) {
+    if (claimed.has(userId)) continue;
+    const group = identities.get(userId) ?? [userId];
+    for (const identity of group) claimed.add(identity);
+    people.push({ userId, identities: group });
+  }
+  return people;
+}
+
 /* --------------------------------------------------------- reply injection */
 
 /** The long-term-memory block injected into a reply (parallel of UserContext). */
@@ -106,10 +160,15 @@ export async function getMemoryContext(
     }
   }
 
-  const userIds = ids;
+  // One human may be here under several identities the operator has linked;
+  // read all of them and speak about the person once.
+  const people = peoplePresent(ids, await identitiesOf(ids));
+  const readIds = people.flatMap((person) => person.identities);
+  const presentIds = people.map((person) => person.userId);
+
   const [documents, users, general] = await Promise.all([
-    userIds.length > 0 ? getUserMemoriesFor(db, userIds) : Promise.resolve([]),
-    userIds.length > 0 ? getKnownUsersByIds(db, userIds) : Promise.resolve([]),
+    readIds.length > 0 ? getUserMemoriesFor(db, readIds) : Promise.resolve([]),
+    presentIds.length > 0 ? getKnownUsersByIds(db, presentIds) : Promise.resolve([]),
     getGeneralMemory(db),
   ]);
 
@@ -117,14 +176,17 @@ export async function getMemoryContext(
   const labelBy = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
 
   let factCount = 0;
-  const blocks = userIds.map((userId) => {
-    const stored = documentBy.get(userId);
-    const facts = stored ? splitMemoryFacts(stored.content) : [];
+  const blocks = people.map((person) => {
+    const facts = person.identities.flatMap((identity) => {
+      const stored = documentBy.get(identity);
+      return stored ? splitMemoryFacts(stored.content) : [];
+    });
     factCount += facts.length;
     return {
-      userId,
-      label: labelBy.get(userId) ?? `User ${userId}`,
-      isSender: userId === params.senderId,
+      userId: person.userId,
+      label: labelBy.get(person.userId) ?? `User ${person.userId}`,
+      // A linked identity of the sender is still the sender.
+      isSender: params.senderId != null && person.identities.includes(params.senderId),
       facts,
     };
   });
@@ -254,13 +316,18 @@ export async function readMemory(
 ): Promise<MemoryMatch[]> {
   const userId = params.userId?.trim();
   if (!userId) return [];
-  const stored = await getUserMemory(db, userId);
-  if (!stored) return [];
-  return splitMemoryFacts(stored.content).map((content) => ({
-    scope: "user" as const,
-    userId,
-    content,
-  }));
+  // Everything this person knows-of-themself, whichever identity it was
+  // stored under; the model only ever saw the id it asked about, so that is
+  // the id the facts come back on.
+  const identities = (await identitiesOf([userId])).get(userId) ?? [userId];
+  const stored = await getUserMemoriesFor(db, identities);
+  return stored.flatMap((document) =>
+    splitMemoryFacts(document.content).map((content) => ({
+      scope: "user" as const,
+      userId,
+      content,
+    })),
+  );
 }
 
 /**

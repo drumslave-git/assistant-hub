@@ -142,6 +142,23 @@ question. The trade was reversed because knowledge the bot has to *think to look
 up* is knowledge it mostly does not use — and the nightly merge is what keeps the
 document from sprawling.
 
+## People, not accounts
+
+A read collects the documents of every identity the operator has declared to be
+the same human (person links — see
+[users and groups](known-users-and-groups.md)). Both the injected context and
+the `memory_recall` tool resolve that way, so a fact learned from someone's
+telegram account is theirs when they reach the bot by any other identity; two
+linked identities present in one group are one person in the prompt, named
+once by the identity actually there.
+
+Reads only. A fact is still stored under the identity that was named, and
+consolidation still merges per identity — links do not rewrite what is stored,
+they decide whose documents a read collects. Without the v2 core store (the
+transitional `STORE_DATABASE_URL`, optional until the Phase 6 cutover) every
+identity resolves to itself and memory behaves exactly as it did before links
+existed.
+
 ## Data
 
 | Table | Notes |
@@ -210,6 +227,8 @@ Tuesday" must be able to filter to that half alone.
 ## Tests
 
 Unit: `prompt.test.ts`, `extract-prompt.test.ts`, `format.test.ts`.
-Integration: `server/memory.integration.test.ts`. Extraction and consolidation take
-injected collaborators, so the whole flow is driven against a real database with a
+Integration: `server/memory.integration.test.ts` and
+`server/memory-links.integration.test.ts` (reads through person links, both
+databases on one container). Extraction and consolidation take injected
+collaborators, so the whole flow is driven against a real database with a
 deterministic model — no LLM, no network.
