@@ -196,6 +196,16 @@ Known pitfalls (in addition to the ones under "Phases" below):
 - `npm run <anything>` at the root fans out via turbo; per-app scripts run
   with `npm run <script> -w @assistant-hub/core`. The dev server and
   `.claude/launch.json` are unchanged (port 3200).
+- `npm run dev` at the root now starts all three processes — core (3200),
+  tg (3210) and chat (3220) — because each app has a `dev` script and
+  turbo runs them together. The dev chat store exists (database `chat`,
+  migrated, `apps/chat/.env` written, `CHAT_API_URL` in `apps/core/.env`).
+- **A code change in the turn consumer, the prompt or a source app is not
+  live until the process restarts.** They are boot-time modules: Next's
+  hot reload does not reach the consumer the instrumentation started, and
+  the tg/chat services are separate processes. Twice during Phase 4 an
+  edit looked ineffective and the trace showed the OLD code running —
+  read the trace before doubting the change.
 
 Known pitfalls for whoever starts:
 
