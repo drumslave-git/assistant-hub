@@ -70,13 +70,13 @@ describe("chat runtime", () => {
     });
   }
 
-  async function newThread(app: ReturnType<typeof createApi>, name: string) {
+  async function newThread(app: ReturnType<typeof createApi>, name?: string) {
     const created = chatThreadCreatedResponseSchema.parse(
       await (
         await app.request("/internal/threads", {
           method: "POST",
           headers: HEADERS,
-          body: JSON.stringify({ assistantId: ASSISTANT_ID, name }),
+          body: JSON.stringify({ assistantId: ASSISTANT_ID, ...(name ? { name } : {}) }),
         })
       ).json(),
     );
@@ -576,5 +576,76 @@ describe("chat runtime", () => {
       await (await app.request(`/internal/threads/${thread.id}`, { headers: HEADERS })).json(),
     );
     expect(body.messages.map((m) => m.media?.kind)).toEqual(["image", "file"]);
+  });
+
+  it("starts a chat nameless and lets the core name it from the first exchange", async () => {
+    const enqueued: InboundMessageEvent[] = [];
+    const app = apiWith(enqueued);
+
+    // No name given: nobody titles a conversation before having it.
+    const thread = await newThread(app);
+    expect(thread).toMatchObject({ name: "New chat", titleProvisional: true });
+
+    await app.request(`/internal/threads/${thread.id}/messages`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ text: "how do I get to the airport?" }),
+    });
+    // The event asks for a name — that flag is the whole request.
+    expect(enqueued.at(-1)!.chat).toMatchObject({ titleProvisional: true });
+
+    const named = (await (
+      await app.request(`/internal/chats/${thread.id}/title`, {
+        method: "PUT",
+        headers: HEADERS,
+        body: JSON.stringify({ title: "Getting to the airport" }),
+      })
+    ).json()) as { title: string };
+    expect(named.title).toBe("Getting to the airport");
+
+    // Named once: a second turn no longer asks, and a late title cannot
+    // overwrite the name it already has.
+    await app.request(`/internal/threads/${thread.id}/messages`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ text: "and back again?" }),
+    });
+    expect(enqueued.at(-1)!.chat.titleProvisional).toBe(false);
+
+    const late = (await (
+      await app.request(`/internal/chats/${thread.id}/title`, {
+        method: "PUT",
+        headers: HEADERS,
+        body: JSON.stringify({ title: "Something else entirely" }),
+      })
+    ).json()) as { title: string };
+    expect(late.title).toBe("Getting to the airport");
+  });
+
+  it("stops asking to be named once someone names it by hand", async () => {
+    const app = apiWith([]);
+    const thread = await newThread(app);
+    const renamed = chatThreadCreatedResponseSchema.parse(
+      await (
+        await app.request(`/internal/threads/${thread.id}`, {
+          method: "PATCH",
+          headers: HEADERS,
+          body: JSON.stringify({ name: "My own name for it" }),
+        })
+      ).json(),
+    );
+    expect(renamed.thread).toMatchObject({
+      name: "My own name for it",
+      titleProvisional: false,
+    });
+
+    const attempt = (await (
+      await app.request(`/internal/chats/${thread.id}/title`, {
+        method: "PUT",
+        headers: HEADERS,
+        body: JSON.stringify({ title: "A generated one" }),
+      })
+    ).json()) as { title: string };
+    expect(attempt.title).toBe("My own name for it");
   });
 });

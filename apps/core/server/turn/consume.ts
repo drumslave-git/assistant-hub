@@ -69,6 +69,7 @@ import type { TraceRecorder } from "@/server/trace";
 
 import { createTurnActionMarkers, closeTurnActionStore, type TurnActionMarkers } from "./actions";
 import { checkLoopGuard } from "./loop-guard";
+import { nameConversation } from "./name-conversation";
 import { shadowDirectory } from "./shadow-directory";
 import {
   botTranscriptLabel,
@@ -140,6 +141,8 @@ export interface TurnConsumerContext {
     describeDeps?: DescribeDeps;
     /** Test seam: TTS without a configured speech endpoint. */
     synthesizeVoice?: (text: string) => Promise<{ base64: string; filename: string } | null>;
+    /** Test seam: a conversation title without a configured classifier. */
+    generateTitle?: (exchange: { question: string; answer: string }) => Promise<string | null>;
   };
   now?: () => Date;
 }
@@ -788,6 +791,19 @@ export async function processInboundEvent(
           err instanceof Error ? err.message : String(err),
         ),
       );
+  }
+
+  // A conversation whose source has no name for it gets one from what was
+  // just said — after the reply, never before it, and never on the turn's
+  // critical path (`name-conversation.ts`).
+  if (outcome.status === "replied") {
+    await nameConversation({
+      event,
+      outbound,
+      question: effectiveText,
+      answer: outcome.text,
+      ...(ctx.overrides?.generateTitle ? { generateTitle: ctx.overrides.generateTitle } : {}),
+    }).catch(() => null);
   }
 
   return outcome;

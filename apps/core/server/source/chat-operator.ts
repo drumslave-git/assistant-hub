@@ -35,7 +35,7 @@ export interface ChatOperatorClient extends SourceDirectoryClient {
   /** The operator's own chat user, created on first contact. */
   operatorUser(): Promise<ChatUser>;
   listThreads(): Promise<ChatThread[]>;
-  createThread(input: { assistantId: string; name: string }): Promise<ChatThread>;
+  createThread(input: { assistantId: string; name?: string }): Promise<ChatThread>;
   getThread(
     id: string,
   ): Promise<{ thread: ChatThread; messages: ChatThreadMessage[]; turn: ChatThreadTurn | null }>;
@@ -143,7 +143,7 @@ export async function listChatThreads(): Promise<ChatThread[]> {
 /** Start a thread with one assistant, owned by the operator's chat user. */
 export async function createChatThread(input: {
   assistantId: string;
-  name: string;
+  name?: string;
 }): Promise<ChatThread> {
   return requireClient("a thread cannot be created").createThread(input);
 }

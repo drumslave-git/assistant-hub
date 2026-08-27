@@ -105,6 +105,14 @@ export const chatInfoSchema = z.object({
   notes: z.string().nullable().optional(),
   /** Operator-configured reply language for this chat, or null (default). */
   language: z.string().nullable().optional(),
+  /**
+   * True when `title` is a placeholder the source invented (a web thread
+   * starts as "New chat") and it would like the conversation named from what
+   * is actually said in it. The core names it once, after the first exchange,
+   * through the source's own `setChatTitle` — a source that has real names
+   * for its conversations, as Telegram does, never sets this.
+   */
+  titleProvisional: z.boolean().optional(),
 });
 
 /** The sender of an inbound message, as the source knows them. */

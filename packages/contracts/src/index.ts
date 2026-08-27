@@ -81,6 +81,8 @@ export {
   internalReactionResponseSchema,
   internalSendFileRequestSchema,
   internalSendMessageRequestSchema,
+  internalSetTitleRequestSchema,
+  internalSetTitleResponseSchema,
   internalSendPhotosRequestSchema,
   internalSendVoiceRequestSchema,
   internalSentFileResponseSchema,

@@ -228,24 +228,36 @@ export async function getOrCreateOperatorUser(db: ChatDb): Promise<ChatUserRow> 
   return inserted[0];
 }
 
-/** Start a thread, bound to one assistant for good (PLAN.md). */
+/** The name a thread wears until it has been said something worth naming. */
+export const PROVISIONAL_THREAD_NAME = "New chat";
+
+/**
+ * Start a thread, bound to one assistant for good (PLAN.md). Nameless by
+ * default: the thread carries a placeholder and says so, and the core names
+ * it from the first exchange.
+ */
 export async function createThread(
   db: ChatDb,
-  input: { userId: string; assistantId: string; name: string },
+  input: { userId: string; assistantId: string; name?: string | null },
 ): Promise<ThreadRow> {
+  const name = input.name?.trim();
   const rows = await db
     .insert(threads)
     .values({
       id: randomUUID(),
       userId: input.userId,
       assistantId: input.assistantId,
-      name: input.name,
+      name: name || PROVISIONAL_THREAD_NAME,
+      titleProvisional: !name,
     })
     .returning();
   return rows[0];
 }
 
-/** Rename a thread. Null when it is gone. The assistant never changes. */
+/**
+ * Rename a thread. Null when it is gone. The assistant never changes, and the
+ * name stops being provisional — a name someone chose is not a placeholder.
+ */
 export async function renameThread(
   db: ChatDb,
   threadId: string,
@@ -253,8 +265,26 @@ export async function renameThread(
 ): Promise<ThreadRow | null> {
   const rows = await db
     .update(threads)
-    .set({ name, updatedAt: new Date() })
+    .set({ name, titleProvisional: false, updatedAt: new Date() })
     .where(eq(threads.id, threadId))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * The core's answer to `titleProvisional`: name the thread from what was said
+ * in it. Only ever applied to a thread still wearing its placeholder, so a
+ * name the operator chose in the meantime wins over a late-arriving one.
+ */
+export async function setGeneratedTitle(
+  db: ChatDb,
+  threadId: string,
+  name: string,
+): Promise<ThreadRow | null> {
+  const rows = await db
+    .update(threads)
+    .set({ name, titleProvisional: false, updatedAt: new Date() })
+    .where(and(eq(threads.id, threadId), eq(threads.titleProvisional, true)))
     .returning();
   return rows[0] ?? null;
 }

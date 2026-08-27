@@ -15,6 +15,13 @@
       "when": 1787824426094,
       "tag": "0001_tearful_slyde",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787840675602,
+      "tag": "0002_small_lilith",
+      "breakpoints": true
     }
   ]
 }

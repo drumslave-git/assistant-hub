@@ -78,6 +78,9 @@ export function buildChatInfo(thread: ThreadRow): ChatInfo {
     type: null,
     notes: thread.notes,
     language: thread.language,
+    // Ask the core to name this thread once there is something to name it
+    // from; it does that through `setChatTitle` on its outbound port.
+    titleProvisional: thread.titleProvisional,
   };
 }
 

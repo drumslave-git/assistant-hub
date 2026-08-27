@@ -378,6 +378,79 @@ describe("inbound turn consumer", () => {
     expect(reply?.trigger).toMatchObject({ kind: "chat", actor: "user-abc" });
   });
 
+  it("names a conversation whose source has no name for it, once", async () => {
+    const named: Array<{ chatId: string; title: string }> = [];
+    const outbound = {
+      sendMessage: async () => ({ messageId: 1 }),
+      sendVoice: async () => ({ messageId: 1, asVoice: true }),
+      sendPhotos: async () => ({ delivered: [] }),
+      sendFile: async () => ({ messageId: 1 }),
+      deleteMessage: async () => ({ deleted: true }),
+      setReaction: async () => ({ status: "unsupported" as const, recorded: false }),
+      setChatTitle: async (chatId: string, title: string) => {
+        named.push({ chatId, title });
+        return { title };
+      },
+    };
+    const webEvent = (overrides: {
+      eventId: string;
+      messageId: string;
+      titleProvisional: boolean;
+      history?: InboundMessageEvent["context"]["history"];
+    }): InboundMessageEvent =>
+      inboundMessageEventSchema.parse({
+        v: 1,
+        eventId: overrides.eventId,
+        occurredAt: new Date().toISOString(),
+        correlationId: `thread-name:${overrides.messageId}:assistant-1`,
+        type: "message.inbound",
+        source: "chat",
+        assistantId: "assistant-1",
+        chat: {
+          ref: "chat:thread:thread-name",
+          kind: "direct",
+          title: "New chat",
+          titleProvisional: overrides.titleProvisional,
+        },
+        sender: { ref: "chat:user:user-abc", isOwner: true, label: "Operator" },
+        addressing: { addressed: true, source: "private", needsAnalyzer: false },
+        message: {
+          sourceMessageId: overrides.messageId,
+          content: "how do I get to the airport?",
+          sentAt: new Date().toISOString(),
+        },
+        context: { history: overrides.history ?? [], participants: [] },
+      });
+
+    const ctxWith = (): TurnConsumerContext => ({
+      ...ctx({
+        generateReply: async () => ({
+          content: "take the metro",
+          model: "fixture-model",
+          latencyMs: 1,
+        }),
+        generateTitle: async () => "Getting to the airport",
+      }),
+      outbound,
+    });
+
+    await handleInboundJob(
+      webEvent({ eventId: "evt-name-1", messageId: "1", titleProvisional: true }),
+      1,
+      ctxWith(),
+    );
+    expect(named).toEqual([{ chatId: "thread-name", title: "Getting to the airport" }]);
+
+    // A thread that already has a name asks for nothing, so nothing is spent
+    // on naming it again.
+    await handleInboundJob(
+      webEvent({ eventId: "evt-name-2", messageId: "2", titleProvisional: false }),
+      1,
+      ctxWith(),
+    );
+    expect(named).toHaveLength(1);
+  });
+
   it("answers another assistant's cross-fed message, in that assistant's voice", async () => {
     const seen: ChatMessage[][] = [];
     const result = await handleInboundJob(

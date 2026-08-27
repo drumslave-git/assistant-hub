@@ -9,9 +9,14 @@ import { createChatThread, listChatThreads } from "@/server/source/chat-operator
  * this layer adds the operator session and relays the source's verdicts.
  */
 
+/**
+ * A name is optional: a chat starts nameless and the core names it from the
+ * first exchange (`server/turn/name-conversation.ts`), so the browser sends
+ * only which assistant it is with.
+ */
 const createSchema = z.object({
   assistantId: z.string().min(1),
-  name: z.string().trim().min(1).max(120),
+  name: z.string().trim().min(1).max(120).optional(),
 });
 
 export const GET = defineRoute(async () => {

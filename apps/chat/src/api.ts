@@ -7,6 +7,7 @@ import {
   internalSendVoiceRequestSchema,
   chatThreadUpdateRequestSchema,
   internalSendMessageRequestSchema,
+  internalSetTitleRequestSchema,
   operatorChatUpdateRequestSchema,
   operatorUserUpdateRequestSchema,
   type ChatThread,
@@ -52,6 +53,7 @@ import {
   listUsers,
   markMessageDeleted,
   renameThread,
+  setGeneratedTitle,
   updateThreadLanguage,
   updateThreadNotes,
   updateUserAliases,
@@ -275,6 +277,7 @@ export function createApi(input: {
     id: listing.thread.id,
     assistantId: listing.thread.assistantId,
     name: listing.thread.name,
+    titleProvisional: listing.thread.titleProvisional,
     userId: listing.thread.userId,
     messageCount: listing.messageCount,
     lastMessageAt: listing.lastMessageAt ? listing.lastMessageAt.toISOString() : null,
@@ -323,7 +326,7 @@ export function createApi(input: {
     const thread = await createThread(input.db, {
       userId: user.id,
       assistantId: parsed.data.assistantId,
-      name: parsed.data.name,
+      name: parsed.data.name ?? null,
     });
     input.onThreadsChanged?.();
     return c.json(
@@ -521,6 +524,24 @@ export function createApi(input: {
     }).catch(() => null);
     input.onThreadsChanged?.();
     return c.json({ sourceMessageId: String(message.id) });
+  });
+
+  /**
+   * Name a thread from what was said in it — the core's answer to this app's
+   * `titleProvisional` flag. Ignored once the thread has a name someone
+   * chose: a late-arriving generated title must not overwrite it.
+   */
+  internal.put("/chats/:chatId/title", async (c) => {
+    const parsed = internalSetTitleRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: { message: "title is required" } }, 400);
+    const row = await setGeneratedTitle(input.db, c.req.param("chatId"), parsed.data.title);
+    if (!row) {
+      const current = await getThreadById(input.db, c.req.param("chatId"));
+      if (!current) return c.json({ error: { message: "thread not found" } }, 404);
+      return c.json({ title: current.name });
+    }
+    input.onThreadsChanged?.();
+    return c.json({ title: row.name });
   });
 
   /**

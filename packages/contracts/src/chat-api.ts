@@ -18,6 +18,8 @@ export const chatThreadSchema = z.object({
   /** The core-store assistant answering here, fixed at creation (PLAN.md). */
   assistantId: z.string().min(1),
   name: z.string().min(1),
+  /** True while the name is the placeholder a new thread starts with. */
+  titleProvisional: z.boolean().default(false),
   /** The chat user who owns the thread. */
   userId: z.string().min(1),
   messageCount: z.number().int().nonnegative(),
@@ -67,10 +69,15 @@ export const chatUserResponseSchema = z.object({ user: chatUserSchema });
 /** Thread name: long enough to be a sentence, short enough to be a label. */
 const threadNameSchema = z.string().trim().min(1).max(120);
 
-/** POST /internal/threads — start a thread with one assistant. */
+/**
+ * POST /internal/threads — start a thread with one assistant. The name is
+ * optional: a chat that has to be named before it is had is not how anyone
+ * chats. Without one the thread carries a placeholder and asks the core to
+ * name it from the first exchange.
+ */
 export const chatThreadCreateRequestSchema = z.object({
   assistantId: z.string().min(1),
-  name: threadNameSchema,
+  name: threadNameSchema.optional(),
 });
 
 /** PATCH /internal/threads/:id — rename (the assistant never changes). */

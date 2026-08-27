@@ -69,8 +69,14 @@ export const threads = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     /** The core-store assistant answering in this thread, fixed at creation. */
     assistantId: text("assistant_id").notNull(),
-    /** Thread name, chosen by the user. */
+    /** Thread name — auto-generated from the first exchange, or renamed by hand. */
     name: text("name").notNull(),
+    /**
+     * True while `name` is the placeholder a new thread starts with. The core
+     * names the thread from its first exchange and clears this; renaming by
+     * hand clears it too, since an operator's name is not a placeholder.
+     */
+    titleProvisional: boolean("title_provisional").notNull().default(false),
     /** Operator-curated free-text description of the thread, or null. */
     notes: text("notes"),
     /** Operator-configured reply language for this thread, or null (default). */

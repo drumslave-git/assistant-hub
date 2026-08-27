@@ -280,3 +280,17 @@ export const internalReactionResponseSchema = z.object({
 });
 
 export type InternalReactionResponse = z.infer<typeof internalReactionResponseSchema>;
+
+/**
+ * PUT /internal/chats/:chatId/title — name a conversation whose source asked
+ * for one (`chatInfo.titleProvisional`). Served only by sources whose
+ * conversations have no name of their own; the answer carries what was
+ * actually stored.
+ */
+export const internalSetTitleRequestSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+});
+
+export const internalSetTitleResponseSchema = z.object({
+  title: z.string().min(1),
+});

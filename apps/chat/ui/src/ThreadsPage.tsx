@@ -1,17 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ImagePlus, MessagesSquare, Mic, Plus, Send, Square, Trash2, X } from "lucide-react";
+import { ImagePlus, MessagesSquare, Mic, PenSquare, Send, Square, Trash2, X } from "lucide-react";
 
 import type { ChatThread, ChatThreadMessage, ChatThreadTurn } from "@assistant-hub/contracts";
 import {
   Button,
   Card,
   EmptyState,
-  Field,
-  Input,
   LiveIndicator,
   PageHeader,
   Timestamp,
@@ -28,11 +26,16 @@ import {
  * page, and fed only through the core proxy (`/api/chat/*`), never by
  * importing this app's server code (PLAN.md, "Dashboard composition").
  *
- * Two panes: the threads this app carries, and the conversation the URL
- * segment selects (`/apps/chat/<threadId>`), so a thread can be linked to and
- * come back on a reload. Sending is message-at-once — the reply arrives when
- * the turn produces it, over the same SSE stream every other live surface
- * uses, not as streamed tokens (PLAN.md).
+ * The shape is the one everybody already knows from a chat app: chats down the
+ * left with "New chat" at the top, the conversation on the right, the composer
+ * at the bottom of it. A new chat is a blank conversation, not a form — the
+ * thread is created by the first message and NAMED from that exchange by the
+ * core (`server/turn/name-conversation.ts`), so nobody has to title a
+ * conversation before having it.
+ *
+ * Sending is message-at-once: the reply arrives when the turn produces it,
+ * over the same SSE stream every other live surface uses, not as streamed
+ * tokens (PLAN.md).
  */
 
 interface Assistant {
@@ -67,10 +70,10 @@ export function ChatThreadsPage({ segments }: AppPageProps) {
   }, [loadThreads]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader
         title="Web chat"
-        description="Threads with your assistants, in the dashboard itself."
+        description="Talk to your assistants in the dashboard itself."
         actions={<LiveIndicator topic="threads" onEvent={loadThreads} />}
       />
 
@@ -81,16 +84,8 @@ export function ChatThreadsPage({ segments }: AppPageProps) {
           description={error}
         />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
-          <ThreadList
-            threads={threads}
-            assistants={assistants}
-            selectedId={selectedId}
-            onCreated={async (thread) => {
-              await loadThreads();
-              router.push(appPageHref("chat", thread.id));
-            }}
-          />
+        <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">
+          <ChatSidebar threads={threads} selectedId={selectedId} />
           {selectedId ? (
             <Conversation
               key={selectedId}
@@ -103,14 +98,12 @@ export function ChatThreadsPage({ segments }: AppPageProps) {
               }}
             />
           ) : (
-            <EmptyState
-              icon={MessagesSquare}
-              title={threads?.length ? "Pick a thread" : "No threads yet"}
-              description={
-                threads?.length
-                  ? "Open one on the left to read it and answer."
-                  : "Start one with an assistant to talk to it here."
-              }
+            <NewConversation
+              assistants={assistants}
+              onStarted={async (thread) => {
+                await loadThreads();
+                router.push(appPageHref("chat", thread.id));
+              }}
             />
           )}
         </div>
@@ -119,137 +112,164 @@ export function ChatThreadsPage({ segments }: AppPageProps) {
   );
 }
 
-/** The thread column: what exists, and how to start one more. */
-function ThreadList({
+/** The chat column: a new chat at the top, everything else under it. */
+function ChatSidebar({
   threads,
-  assistants,
   selectedId,
-  onCreated,
 }: {
   threads: ChatThread[] | null;
-  assistants: Assistant[];
   selectedId: string | null;
-  onCreated: (thread: ChatThread) => void | Promise<void>;
 }) {
-  const [name, setName] = useState("");
+  return (
+    <div className="flex max-h-[calc(100vh-13rem)] flex-col gap-2">
+      <Button asChild variant="outline" className="w-full justify-start">
+        <Link href={appPageHref("chat")}>
+          <PenSquare className="h-4 w-4" />
+          New chat
+        </Link>
+      </Button>
+
+      <nav className="min-h-0 flex-1 overflow-y-auto">
+        {threads === null ? <p className="px-2 text-sm text-muted">Loading…</p> : null}
+        {threads?.length === 0 ? (
+          <p className="px-2 py-6 text-sm text-muted">
+            No chats yet. The first thing you say starts one.
+          </p>
+        ) : null}
+        <ul className="space-y-0.5">
+          {threads?.map((thread) => (
+            <li key={thread.id}>
+              <Link
+                href={appPageHref("chat", thread.id)}
+                className={cn(
+                  "block truncate rounded-lg px-3 py-2 text-sm transition-colors",
+                  thread.id === selectedId
+                    ? "bg-surface-2 font-medium text-foreground"
+                    : "text-muted hover:bg-surface-2 hover:text-foreground",
+                )}
+                title={thread.name}
+              >
+                {thread.name}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </div>
+  );
+}
+
+/** Shared chrome, so a new chat and an old one are the same column. */
+function ConversationShell({
+  header,
+  children,
+  footer,
+}: {
+  header: ReactNode;
+  children: ReactNode;
+  footer: ReactNode;
+}) {
+  return (
+    <Card className="flex h-[calc(100vh-13rem)] min-h-96 flex-col">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
+        {header}
+      </header>
+      <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
+      <footer className="space-y-2 border-t border-border px-5 py-3">{footer}</footer>
+    </Card>
+  );
+}
+
+/**
+ * A chat that does not exist yet: an empty conversation with a composer. The
+ * assistant is picked here because it is the one thing fixed for the life of a
+ * thread (PLAN.md); everything else about the chat comes from what is said.
+ */
+function NewConversation({
+  assistants,
+  onStarted,
+}: {
+  assistants: Assistant[];
+  onStarted: (thread: ChatThread) => void | Promise<void>;
+}) {
   const [assistantId, setAssistantId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // The first assistant is the obvious default; a deployment with one
-  // assistant then needs no choice at all.
   useEffect(() => {
     if (!assistantId && assistants.length > 0) setAssistantId(assistants[0].id);
   }, [assistants, assistantId]);
 
-  const create = async () => {
-    if (!name.trim() || !assistantId) return;
+  const start = async (draft: Draft) => {
+    if (!assistantId) return;
     setBusy(true);
-    setFailure(null);
+    setError(null);
     try {
-      const data = await apiFetch<{ thread: ChatThread }>("/api/chat/threads", {
+      // Create, then speak: the thread exists the moment there is something in
+      // it, so an abandoned "New chat" never piles up in the sidebar.
+      const created = await apiFetch<{ thread: ChatThread }>("/api/chat/threads", {
         method: "POST",
-        body: JSON.stringify({ name: name.trim(), assistantId }),
+        body: JSON.stringify({ assistantId }),
       });
-      setName("");
-      await onCreated(data.thread);
+      await apiFetch(`/api/chat/threads/${encodeURIComponent(created.thread.id)}/messages`, {
+        method: "POST",
+        body: JSON.stringify(draftBody(draft)),
+      });
+      await onStarted(created.thread);
     } catch (err) {
-      setFailure(err instanceof Error ? err.message : "Could not create the thread");
+      setError(err instanceof Error ? err.message : "The chat could not be started");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="space-y-3">
-      <Card className="space-y-3 p-4">
-        <Field id="chat-thread-name" label="New thread">
-          {({ id }) => (
-            <Input
-              id={id}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="What is it about?"
-              maxLength={120}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void create();
-              }}
-            />
-          )}
-        </Field>
-        {assistants.length > 1 ? (
-          <Field
-            id="chat-thread-assistant"
-            label="Assistant"
-            hint="Fixed for the life of the thread."
-          >
-            {({ id, describedBy }) => (
-              <select
-                id={id}
-                aria-describedby={describedBy}
-                value={assistantId}
-                onChange={(e) => setAssistantId(e.target.value)}
-                className="h-9 w-full rounded-lg border border-border bg-surface-2 px-3 text-sm"
-              >
-                {assistants.map((assistant) => (
-                  <option key={assistant.id} value={assistant.id}>
-                    {assistant.name}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-        ) : null}
-        <Button
-          onClick={() => void create()}
-          disabled={busy || !name.trim() || !assistantId}
-          className="w-full"
-        >
-          <Plus className="h-4 w-4" />
-          {busy ? "Starting…" : "Start thread"}
-        </Button>
-        {assistants.length === 0 ? (
-          <p className="text-xs text-muted">
-            No assistants yet — create one first, and a thread can be bound to it.
+    <ConversationShell
+      header={
+        assistants.length > 1 ? (
+          <label className="flex items-center gap-2 text-xs text-muted">
+            Talking to
+            <select
+              value={assistantId}
+              onChange={(e) => setAssistantId(e.target.value)}
+              className="h-8 rounded-lg border border-border bg-surface-2 px-2 text-sm text-foreground"
+            >
+              {assistants.map((assistant) => (
+                <option key={assistant.id} value={assistant.id}>
+                  {assistant.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <p className="text-sm font-medium">
+            {assistants[0]?.name ?? "No assistant configured"}
           </p>
-        ) : null}
-        {failure ? <p className="text-xs text-danger">{failure}</p> : null}
-      </Card>
-
-      {threads === null ? <p className="text-sm text-muted">Loading threads…</p> : null}
-
-      {threads?.length ? (
-        <ul className="space-y-2">
-          {threads.map((thread) => (
-            <li key={thread.id}>
-              <Link href={appPageHref("chat", thread.id)} className="block">
-                <Card
-                  interactive
-                  className={cn(
-                    "px-4 py-3",
-                    thread.id === selectedId && "border-primary/40 bg-surface-hover",
-                  )}
-                >
-                  <p className="truncate text-sm font-medium">{thread.name}</p>
-                  <p className="flex items-center gap-2 text-xs text-muted">
-                    <span>
-                      {thread.messageCount}{" "}
-                      {thread.messageCount === 1 ? "message" : "messages"}
-                    </span>
-                    <span aria-hidden>·</span>
-                    <Timestamp iso={thread.lastMessageAt} fallback="not started" />
-                  </p>
-                </Card>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
+        )
+      }
+      footer={
+        <Composer
+          disabled={busy || !assistantId}
+          sending={busy}
+          error={error}
+          onSend={start}
+          placeholder="Say something to start a chat…"
+        />
+      }
+    >
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+        <MessagesSquare className="h-8 w-8 text-faint" aria-hidden />
+        <p className="text-sm text-muted">
+          {assistants.length === 0
+            ? "Create an assistant first — a chat is always with one."
+            : "What can I help with?"}
+        </p>
+      </div>
+    </ConversationShell>
   );
 }
 
-/** One thread: its transcript and the box to answer in. */
+/** One chat: its transcript, its live progress, and the box to answer in. */
 function Conversation({
   threadId,
   assistants,
@@ -265,15 +285,9 @@ function Conversation({
   const [messages, setMessages] = useState<ChatThreadMessage[]>([]);
   const [turn, setTurn] = useState<ChatThreadTurn | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
-  const [image, setImage] = useState<{ name: string; dataBase64: string; mimeType: string } | null>(
-    null,
-  );
-  const [audio, setAudio] = useState<{ dataBase64: string; mimeType: string } | null>(null);
-  const [recording, setRecording] = useState(false);
-  const recorder = useRef<MediaRecorder | null>(null);
   const [sending, setSending] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async () => {
@@ -288,7 +302,7 @@ function Conversation({
       setTurn(data.turn);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not read the thread");
+      setError(err instanceof Error ? err.message : "Could not read the chat");
     }
   }, [threadId]);
 
@@ -302,30 +316,18 @@ function Conversation({
     bottom.current?.scrollIntoView({ block: "nearest" });
   }, [messages.length, turn?.sourceMessageId]);
 
-  // Live: the chat app pings this topic when a thread changes, which includes
-  // the assistant's reply arriving after the turn ran. The page's own pill
-  // owns pausing; this subscription is what makes an answer appear without
-  // anyone reloading.
+  // Live: the chat app pings this topic when a thread changes — the reply
+  // arriving, and the generated title landing a moment after it.
   useLiveEvent("threads", load);
 
-  const send = async () => {
-    const text = draft.trim();
-    // A picture or a voice note with no typed words is a message too.
-    if (!text && !image && !audio) return;
+  const send = async (draft: Draft) => {
     setSending(true);
     setError(null);
     try {
       await apiFetch(`/api/chat/threads/${encodeURIComponent(threadId)}/messages`, {
         method: "POST",
-        body: JSON.stringify({
-          text,
-          ...(image ? { image: { dataBase64: image.dataBase64, mimeType: image.mimeType } } : {}),
-          ...(audio ? { audio } : {}),
-        }),
+        body: JSON.stringify(draftBody(draft)),
       });
-      setDraft("");
-      setImage(null);
-      setAudio(null);
       await load();
       await onChanged();
     } catch (err) {
@@ -335,13 +337,201 @@ function Conversation({
     }
   };
 
+  const rename = async (name: string) => {
+    setRenaming(null);
+    if (!name.trim() || name.trim() === thread?.name) return;
+    try {
+      await apiFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      await load();
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The chat was not renamed");
+    }
+  };
+
   const remove = async () => {
     try {
       await apiFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, { method: "DELETE" });
       await onDeleted();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "The thread was not deleted");
+      setError(err instanceof Error ? err.message : "The chat was not deleted");
     }
+  };
+
+  const assistantName =
+    assistants.find((a) => a.id === thread?.assistantId)?.name ?? "this chat's assistant";
+
+  return (
+    <ConversationShell
+      header={
+        <>
+          <div className="min-w-0">
+            {renaming !== null ? (
+              <input
+                autoFocus
+                value={renaming}
+                onChange={(e) => setRenaming(e.target.value)}
+                onBlur={() => void rename(renaming)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void rename(renaming);
+                  if (e.key === "Escape") setRenaming(null);
+                }}
+                maxLength={120}
+                className="w-full rounded border border-border bg-surface-2 px-2 py-0.5 text-sm"
+                aria-label="Chat name"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setRenaming(thread?.name ?? "")}
+                className="block max-w-full truncate text-sm font-medium hover:underline"
+                title="Click to rename"
+              >
+                {thread?.name ?? "Chat"}
+              </button>
+            )}
+            <p className="truncate text-xs text-muted">with {assistantName}</p>
+          </div>
+          <Button
+            variant={confirmingDelete ? "danger" : "ghost"}
+            size="sm"
+            onClick={() => (confirmingDelete ? void remove() : setConfirmingDelete(true))}
+            onBlur={() => setConfirmingDelete(false)}
+          >
+            <Trash2 className="h-4 w-4" />
+            {confirmingDelete ? "Delete for good?" : "Delete"}
+          </Button>
+        </>
+      }
+      footer={<Composer disabled={sending} sending={sending} error={error} onSend={send} />}
+    >
+      <div className="space-y-3">
+        {messages.length === 0 ? (
+          <p className="text-sm text-muted">Nothing said yet. Say something.</p>
+        ) : null}
+        {messages.map((message) => (
+          <Message key={message.id} message={message} />
+        ))}
+        {turn ? (
+          <p className="flex items-center gap-2 text-xs text-muted">
+            <span
+              className="h-1.5 w-1.5 animate-pulse rounded-full bg-current motion-reduce:animate-none"
+              aria-hidden
+            />
+            {turn.activity ? `Working — ${turn.activity}…` : "Thinking…"}
+          </p>
+        ) : null}
+        <div ref={bottom} />
+      </div>
+    </ConversationShell>
+  );
+}
+
+/** One line of the transcript, with whatever came attached to it. */
+function Message({ message }: { message: ChatThreadMessage }) {
+  const media = message.media;
+  const mediaUrl = media ? `/api/chat/media/${encodeURIComponent(media.id)}` : null;
+  return (
+    <div
+      className={cn(
+        "max-w-[80%] rounded-xl px-4 py-2 text-sm whitespace-pre-wrap",
+        message.role === "user"
+          ? "ml-auto bg-primary/15 text-foreground"
+          : "bg-surface-2 text-foreground",
+      )}
+    >
+      {media && mediaUrl ? (
+        media.kind === "voice" ? (
+          <audio controls preload="none" src={mediaUrl} className="mb-2 w-full" />
+        ) : media.kind === "file" ? (
+          <a href={mediaUrl} className="mb-2 block text-xs underline">
+            {media.description ?? "the file"}
+          </a>
+        ) : (
+          <figure className="mb-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={mediaUrl}
+              alt={media.description ?? "Uploaded image"}
+              className="max-h-64 rounded-lg"
+            />
+            <figcaption
+              // The description can run to paragraphs — it is what the
+              // assistant reads, not what the reader needs under a thumbnail.
+              className="mt-1 line-clamp-2 text-[10px] text-faint"
+              title={media.description ?? undefined}
+            >
+              {media.status === "described"
+                ? media.description
+                : media.status === "unavailable"
+                  ? "the assistant could not read this image"
+                  : "the assistant is still looking at this…"}
+            </figcaption>
+          </figure>
+        )
+      ) : null}
+      {message.content}
+      <span className="mt-1 block text-[10px] text-faint">
+        <Timestamp iso={message.sentAt} timeOnly />
+      </span>
+    </div>
+  );
+}
+
+/** What one send carries: words, and at most one thing attached to them. */
+interface Draft {
+  text: string;
+  image?: { name: string; dataBase64: string; mimeType: string } | null;
+  audio?: { dataBase64: string; mimeType: string } | null;
+}
+
+function draftBody(draft: Draft): Record<string, unknown> {
+  return {
+    text: draft.text,
+    ...(draft.image
+      ? { image: { dataBase64: draft.image.dataBase64, mimeType: draft.image.mimeType } }
+      : {}),
+    ...(draft.audio ? { audio: draft.audio } : {}),
+  };
+}
+
+/**
+ * The box at the bottom: type, attach a picture, record a voice note. Enter
+ * sends and shift+Enter breaks the line — the convention every chat box in the
+ * world already taught the operator.
+ */
+function Composer({
+  disabled,
+  sending,
+  error,
+  onSend,
+  placeholder = "Write a message…",
+}: {
+  disabled: boolean;
+  sending: boolean;
+  error: string | null;
+  onSend: (draft: Draft) => void | Promise<void>;
+  placeholder?: string;
+}) {
+  const [text, setText] = useState("");
+  const [image, setImage] = useState<Draft["image"]>(null);
+  const [audio, setAudio] = useState<Draft["audio"]>(null);
+  const [recording, setRecording] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const recorder = useRef<MediaRecorder | null>(null);
+
+  const empty = !text.trim() && !image && !audio;
+
+  const send = async () => {
+    if (empty || disabled) return;
+    const draft: Draft = { text: text.trim(), image, audio };
+    setText("");
+    setImage(null);
+    setAudio(null);
+    await onSend(draft);
   };
 
   /**
@@ -350,7 +540,7 @@ function Conversation({
    * before transcribing, exactly as it does for a Telegram voice message.
    */
   const startRecording = async () => {
-    setError(null);
+    setLocalError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const chunks: Blob[] = [];
@@ -367,202 +557,114 @@ function Conversation({
       recorder.current = rec;
       setRecording(true);
     } catch {
-      setError("The microphone is not available in this browser");
+      setLocalError("The microphone is not available in this browser");
     }
   };
 
-  const stopRecording = async () => {
+  const stopRecording = () => {
     recorder.current?.stop();
     recorder.current = null;
     setRecording(false);
   };
 
-  const assistantName =
-    assistants.find((a) => a.id === thread?.assistantId)?.name ?? "this thread's assistant";
-
   return (
-    <Card className="flex h-[calc(100vh-16rem)] min-h-96 flex-col">
-      <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{thread?.name ?? "Thread"}</p>
-          <p className="truncate text-xs text-muted">with {assistantName}</p>
-        </div>
-        <Button
-          variant={confirmingDelete ? "danger" : "ghost"}
-          size="sm"
-          onClick={() => (confirmingDelete ? void remove() : setConfirmingDelete(true))}
-          onBlur={() => setConfirmingDelete(false)}
+    <>
+      {error || localError ? <p className="text-xs text-danger">{error ?? localError}</p> : null}
+      {audio ? (
+        <Attachment
+          icon={<Mic className="h-3.5 w-3.5" />}
+          label="voice note ready to send"
+          onRemove={() => setAudio(null)}
+        />
+      ) : null}
+      {image ? (
+        <Attachment
+          icon={<ImagePlus className="h-3.5 w-3.5" />}
+          label={image.name}
+          onRemove={() => setImage(null)}
+        />
+      ) : null}
+      <div className="flex items-end gap-2">
+        <label
+          className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border text-muted hover:text-foreground"
+          title="Attach an image"
         >
-          <Trash2 className="h-4 w-4" />
-          {confirmingDelete ? "Delete for good?" : "Delete"}
-        </Button>
-      </header>
-
-      <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
-        {messages.length === 0 ? (
-          <p className="text-sm text-muted">Nothing said yet. Say something.</p>
-        ) : null}
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={cn(
-              "max-w-[80%] rounded-xl px-4 py-2 text-sm whitespace-pre-wrap",
-              message.role === "user"
-                ? "ml-auto bg-primary/15 text-foreground"
-                : "bg-surface-2 text-foreground",
-            )}
-          >
-            {message.media && (message.media.kind === "voice" || message.media.kind === "file") ? (
-              <div className="mb-2">
-                {message.media.kind === "voice" ? (
-                  <audio
-                    controls
-                    preload="none"
-                    src={`/api/chat/media/${encodeURIComponent(message.media.id)}`}
-                    className="w-full"
-                  />
-                ) : (
-                  <a
-                    href={`/api/chat/media/${encodeURIComponent(message.media.id)}`}
-                    className="text-xs underline"
-                  >
-                    {message.media.description ?? "the file"}
-                  </a>
-                )}
-              </div>
-            ) : null}
-            {message.media && message.media.kind !== "voice" && message.media.kind !== "file" ? (
-              <figure className="mb-2">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={`/api/chat/media/${encodeURIComponent(message.media.id)}`}
-                  alt={message.media.description ?? "Uploaded image"}
-                  className="max-h-64 rounded-lg"
-                />
-                <figcaption
-                  // The description can run to paragraphs — it is what the
-                  // assistant reads, not what the reader needs under a
-                  // thumbnail. Two lines here, the whole text on hover.
-                  className="mt-1 line-clamp-2 text-[10px] text-faint"
-                  title={message.media.description ?? undefined}
-                >
-                  {message.media.status === "described"
-                    ? message.media.description
-                    : message.media.status === "unavailable"
-                      ? "the assistant could not read this image"
-                      : "the assistant is still looking at this…"}
-                </figcaption>
-              </figure>
-            ) : null}
-            {message.content}
-            <span className="mt-1 block text-[10px] text-faint">
-              <Timestamp iso={message.sentAt} timeOnly />
-            </span>
-          </div>
-        ))}
-        {turn ? (
-          <p className="flex items-center gap-2 text-xs text-muted">
-            <span
-              className="h-1.5 w-1.5 animate-pulse rounded-full bg-current motion-reduce:animate-none"
-              aria-hidden
-            />
-            {turn.activity ? `Working — ${turn.activity}…` : "Thinking…"}
-          </p>
-        ) : null}
-        <div ref={bottom} />
-      </div>
-
-      <footer className="space-y-2 border-t border-border px-5 py-3">
-        {error ? <p className="text-xs text-danger">{error}</p> : null}
-        {audio ? (
-          <p className="flex items-center gap-2 text-xs text-muted">
-            <Mic className="h-3.5 w-3.5" />
-            <span>voice note ready to send</span>
-            <button
-              type="button"
-              onClick={() => setAudio(null)}
-              className="text-faint hover:text-foreground"
-              aria-label="Discard the recording"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </p>
-        ) : null}
-        {image ? (
-          <p className="flex items-center gap-2 text-xs text-muted">
-            <ImagePlus className="h-3.5 w-3.5" />
-            <span className="truncate">{image.name}</span>
-            <button
-              type="button"
-              onClick={() => setImage(null)}
-              className="text-faint hover:text-foreground"
-              aria-label="Remove the attached image"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </p>
-        ) : null}
-        <div className="flex items-end gap-2">
-          <label
-            className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border text-muted hover:text-foreground"
-            title="Attach an image"
-          >
-            <ImagePlus className="h-4 w-4" />
-            <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (!file) return;
-                try {
-                  setImage({
-                    name: file.name,
-                    mimeType: file.type || "image/jpeg",
-                    dataBase64: await readAsBase64(file),
-                  });
-                } catch {
-                  setError("That file could not be read");
-                }
-              }}
-            />
-          </label>
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              // Enter sends, shift+Enter breaks the line — the convention
-              // every chat box in the world already taught the operator.
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void send();
+          <ImagePlus className="h-4 w-4" />
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              try {
+                setImage({
+                  name: file.name,
+                  mimeType: file.type || "image/jpeg",
+                  dataBase64: await readAsBase64(file),
+                });
+              } catch {
+                setLocalError("That file could not be read");
               }
             }}
-            rows={2}
-            maxLength={10_000}
-            placeholder="Write a message…"
-            className="flex-1 resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm"
           />
-          <Button
-            variant={recording ? "danger" : "outline"}
-            size="icon"
-            onClick={() => void (recording ? stopRecording() : startRecording())}
-            title={recording ? "Stop recording" : "Record a voice note"}
-            aria-label={recording ? "Stop recording" : "Record a voice note"}
-          >
-            {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-          </Button>
-          <Button
-            onClick={() => void send()}
-            disabled={sending || (!draft.trim() && !image && !audio)}
-          >
-            <Send className="h-4 w-4" />
-            {sending ? "Sending…" : "Send"}
-          </Button>
-        </div>
-      </footer>
-    </Card>
+        </label>
+        <Button
+          variant={recording ? "danger" : "outline"}
+          size="icon"
+          onClick={() => (recording ? stopRecording() : void startRecording())}
+          title={recording ? "Stop recording" : "Record a voice note"}
+          aria-label={recording ? "Stop recording" : "Record a voice note"}
+        >
+          {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+        </Button>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+          rows={2}
+          maxLength={10_000}
+          placeholder={placeholder}
+          className="flex-1 resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm"
+        />
+        <Button onClick={() => void send()} disabled={disabled || empty}>
+          <Send className="h-4 w-4" />
+          {sending ? "Sending…" : "Send"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+/** One pending attachment, with the way to change your mind about it. */
+function Attachment({
+  icon,
+  label,
+  onRemove,
+}: {
+  icon: ReactNode;
+  label: string;
+  onRemove: () => void;
+}) {
+  return (
+    <p className="flex items-center gap-2 text-xs text-muted">
+      {icon}
+      <span className="truncate">{label}</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="text-faint hover:text-foreground"
+        aria-label={`Remove ${label}`}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </p>
   );
 }
 

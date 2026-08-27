@@ -7,6 +7,7 @@ import {
   internalSentMessageResponseSchema,
   internalSentPhotosResponseSchema,
   internalSentVoiceResponseSchema,
+  internalSetTitleResponseSchema,
 } from "@assistant-hub/contracts";
 
 import type { SourceId } from "@assistant-hub/contracts";
@@ -89,6 +90,13 @@ export interface SourceOutboundPort {
    * this chat does not allow, a message too old) throws with the platform's
    * message for the tool to relay.
    */
+  /**
+   * Name a conversation whose source asked to have it named
+   * (`chatInfo.titleProvisional`). Absent on sources whose conversations have
+   * real names of their own — Telegram's do — which is why it is optional
+   * rather than a call that answers "unsupported".
+   */
+  setChatTitle?(chatId: string, title: string): Promise<{ title: string }>;
   setReaction(
     chatId: string,
     messageId: number,
@@ -203,6 +211,15 @@ export function sourceApiOutbound(
         await request(chatPath(chatId, `/messages/${messageId}`), { method: "DELETE" }),
       );
       return { deleted: body.deleted };
+    },
+    async setChatTitle(chatId, title) {
+      const body = internalSetTitleResponseSchema.parse(
+        await request(chatPath(chatId, "/title"), {
+          method: "PUT",
+          body: JSON.stringify({ title }),
+        }),
+      );
+      return { title: body.title };
     },
     async setReaction(chatId, messageId, emoji, opts) {
       const body = internalReactionResponseSchema.parse(
