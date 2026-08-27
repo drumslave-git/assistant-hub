@@ -41,14 +41,29 @@ users and groups pages aggregate every source's operator listing
 instead of reading the transitional shadow, curated edits are
 routed by scoped ref, and person links have CRUD with memory
 reading through them. With the two operator live
-checks passed the same day, Phase 3 is closed. **Phase 4 (web chat) is
-in-progress** (started 2026-08-27) — the phase that turns the source
-registry, the listing contract and person links from one-source
-machinery into the thing they were designed for. Its four open design
-calls were answered by the user the same day (chat is a Hono service
-with its UI in the shell; parity scoped to memory/traces/vision/voice;
-voice both directions; the full outbound port) and are recorded with
-the acceptance criteria under "Phase 4 — Web chat" below.
+checks passed the same day, Phase 3 is closed. **Phase 4 (web chat) is DONE (2026-08-27)** — all six slices
+(A–F) landed the same day, each with its acceptance criterion met; the
+four design calls PLAN.md deferred to this phase were answered by the
+user up front (chat is a Hono service with its UI in the shell; parity
+scoped to memory/traces/vision/voice; voice both directions; the full
+outbound port). The web chat is a real source: threads bound to an
+assistant, text/image/voice in, live turn progress, replies and tools
+out, memory that follows a linked person across both apps, and traces
+in the one store under the turn's own correlation. Everything but the
+voice REPLY (no speech endpoint in this dev environment) and the
+operator's own person-link check was verified live in the dashboard.
+
+**Next best task: Phase 5 (MCP connections)** — HTTP connections CRUD,
+discovery + snapshot/apply, scoping, tools dashboard rework.
+
+What Phase 4 deliberately did NOT do, so nobody mistakes it for
+missing: web threads are absent from the summarizer, the hybrid search
+index and the analytics dashboard (decision 2 — the content plane stays
+telegram-only), the memory-extraction job reads telegram content only
+for the same reason, and three core callers still address chats by raw
+telegram id (the reaction tool's task-fire path, browser runs, timed
+task fires) because their stores keep v1-shaped ids; each says so in a
+comment where it resolves its port.
 
 **Both operator live checks passed (2026-08-27, after a service
 restart), verified from the traces.** Phase 3 has no open work.
@@ -200,7 +215,7 @@ Known pitfalls for whoever starts:
 | 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | done |
 | 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | done |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | done |
-| 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | in-progress |
+| 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | done |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
 | 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
 
@@ -559,14 +574,35 @@ Slices:
       and answered ("That was a silent one."). The voice REPLY half is
       test-covered only: this dev environment has no speech endpoint
       configured, so TTS could not run.
-- [ ] **F — memory, traces and person links.** Memory reads/writes for
-      chat users through scoped refs and person links (a linked
-      telegram+web pair is one body of knowledge), every chat-side
-      action records through the shared trace client into the one store
-      on the turn's correlation, and `/debug` scopes chat traces like
-      any other feature. Proof: a linked pair answered in both sources
-      from the same memory, and one turn's cross-app trace read in
-      `/debug`.
+- [x] **F — memory, traces and person links** (`150b986`, plus the
+      trigger work in `267fd80`). The blocker was not the reading —
+      Phase 3 built that — but the WRITING: both memory tables keyed
+      their person by a foreign key into the telegram directory, so a
+      fact about a web user could not be stored at all. **v1 migration
+      0060 drops that constraint** (reasoning in the SQL): the id is a
+      source-local user id from whichever source wrote it, and person
+      links tie a human's identities together. The read then became
+      source-aware where it was still telegram's — identities resolve in
+      the CALLER's source, and a linked identity from ANY source
+      contributes its document, since the memory tables are one flat
+      keyspace — and the turn hands over the labels the source already
+      resolved, so a uuid never reaches the model as "User 0b1c…".
+      Traces: chat-side actions record through the shared client into
+      the one store on the turn's correlation (slice B), and every
+      trigger now carries the turn's source (slice E), so `/debug`
+      filters web-thread turns as `chat` with a real actor id — checked
+      live in the explorer.
+      Proof: a new integration case walks the pair the design exists for
+      (telegram → web thread and back, plus the memory tool from either
+      side); memory suites 48 green; core 340 integration green.
+      **Known limits, recorded rather than papered over**: the
+      memory-extraction job still reads telegram content only (the
+      content-plane parity this phase deliberately excluded — decision
+      2), and naming a THIRD person by name inside a web thread refuses
+      because that resolver reads the v1 telegram directory (the "about
+      me" case, which is the one a thread has, works). The operator's
+      own live link check (link the web user to their telegram user and
+      watch memory follow) is the one verification left.
 
 ## Phase 3 — Assistants (acceptance criteria)
 
@@ -1199,6 +1235,17 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (Phase 4 closed)** — Slice F, and with it the phase. The
+  last thing standing between the assistant and a person it meets in two
+  apps was a foreign key: memory keyed its subject into the telegram
+  directory, so a web user could be READ about but never remembered.
+  Dropping it (v1 migration 0060) was the whole fix, plus resolving
+  identities in the caller's source and handing the model the names the
+  source already knew. Six slices in one session; the phase's real
+  product is not the chat page but everything it forced to stop assuming
+  Telegram — the outbound port, the media port, the prompt's idea of
+  where it is, the trace triggers, and the shape of an id.
 
 - **2026-08-27 (Phase 4, slice E)** — Voice, and the last of the outbound
   port. The interesting part was again what the second source revealed:
