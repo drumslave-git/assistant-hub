@@ -532,10 +532,33 @@ Slices:
       by the vision model ("a flat, even shade of red"), answered by the
       turn ("It's red."), rendered in the thread and in `/vision` under
       "Web chat".
-- [ ] **E — voice.** Recorded/uploaded audio in a thread is transcribed
-      by the core voice pipeline and drives the turn; a voice turn is
-      answered with an audio bubble (text fallback intact) when a speech
-      endpoint is configured; playback in the thread view.
+- [x] **E — voice, and the rest of the outbound port** (`267fd80`). A
+      voice note recorded in a thread (MediaRecorder → whatever container
+      the browser gives) is stored raw and transcribed by the core — the
+      same path a Telegram voice message takes, since the core converts
+      to WAV before asking the model either way. A voice turn is answered
+      with an audio bubble whose message CONTENT is the spoken text (what
+      the window and the next turn read), born `described` so the
+      backfill never goes listening to the assistant's own voice.
+      The port is now complete: `sendPhotos` lands one message per
+      generated image carrying the picture, `sendFile` keeps a produced
+      file where the thread can offer it back, and `setReaction` answers
+      a new `unsupported` status — a source saying the platform has no
+      such affordance, so the tool tells the model the truth instead of
+      the core inventing a refusal.
+      **Two roots the second source exposed, fixed as roots**:
+      `IncomingMessage.chatId`/`fromId` were numbers, so a thread's uuid
+      reached every trace as the string `NaN` — they are source-local
+      strings now; and the trace trigger said `telegram` for every turn
+      (reply, tool, TTS), so the turn's `source` now travels to each of
+      them and the Debug filter means something with two sources.
+      Proof: 19 chat integration cases, a web-thread case in the core's
+      turn-consumer suite pinning both the surface line and the trigger,
+      1175 unit + 339 integration green. **Live in dev**: a recorded tone
+      was stored, transcribed ("(no speech)" — correct for a sine wave)
+      and answered ("That was a silent one."). The voice REPLY half is
+      test-covered only: this dev environment has no speech endpoint
+      configured, so TTS could not run.
 - [ ] **F — memory, traces and person links.** Memory reads/writes for
       chat users through scoped refs and person links (a linked
       telegram+web pair is one body of knowledge), every chat-side
@@ -1176,6 +1199,16 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (Phase 4, slice E)** — Voice, and the last of the outbound
+  port. The interesting part was again what the second source revealed:
+  ids were typed as numbers in the message the pipeline consumes, so a
+  uuid became "NaN" in traces, and the trace trigger was hardcoded to
+  telegram everywhere — reply traces, tool traces, TTS traces. Both are
+  now the turn's own source, which is the difference between a Debug
+  filter that means something and one that lumps two apps together.
+  Reactions got an honest answer for a platform that has none, rather
+  than a refusal the core made up.
 
 - **2026-08-27 (Phase 4, slice D)** — Images. The vision pipeline needed
   no changes; the media PORT did, and it got the same treatment as the
