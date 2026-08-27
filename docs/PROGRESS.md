@@ -398,16 +398,51 @@ the decisions above and existing code):
 
 Slices:
 
-- [ ] **A — chat service + operator API + registry entry.** `apps/chat`
-      becomes a running Hono service (env, db handle, store repository,
-      `/health`) serving the shared operator listing contract for its
-      users/threads/messages; the core registers it in
-      `DIRECTORY_SOURCES` and proxies `/api/chat/*`; `apps/chat/ui`
-      exists and contributes nav; the shell's generic app mount renders
-      it. Proof: chat rows appear on the aggregated users/chats pages
-      tagged with their source, an unconfigured chat service degrades to
-      the named-unavailable row (never a silent empty list), and the
-      operator-API integration suite runs against the real store.
+- [x] **A — chat service + operator API + registry entry** (`ac08dc9`).
+      `apps/chat` is a running Hono service (`src/db|store|api|index`)
+      serving the operator listing contract for its users, threads and
+      messages: a thread is a `direct` chat whose roster is its owner,
+      and the curated fields are writable — store migration 0001 added
+      them (user aliases/language, thread notes/language) plus the
+      message reply target and soft delete the outbound port will need.
+      The core registers chat in `DIRECTORY_SOURCES` (one line), proxies
+      `/api/chat/threads`, and mounts the app's page generically:
+      `/apps/[app]/[[...rest]]` renders whichever app owns the segment,
+      so no shell route names "chat". `apps/chat/ui`
+      (`@assistant-hub/chat-ui`) contributes the nav entry and the
+      threads page.
+      **Extracted rather than copied a second time** (the second copy is
+      exactly what this slice would otherwise have written):
+      `@assistant-hub/service` — bootstrap env, the internal-token guard
+      and the source-parameterized bus helpers (trace client, dashboard
+      refresh); tg moved onto it and its three thin wrappers are gone.
+      Core-side, `server/source/internal-client.ts` resolves one
+      requester per source **from its id** (`TG_API_URL`/`CHAT_API_URL`
+      — a lookup, not a branch) and `operator-client.ts` holds the
+      source-neutral half of the operator client, leaving tg with only
+      its connections and owner settings. Page chrome
+      (`PageHeader`/`EmptyState`/`Card`) and the timestamp rule
+      (`<Timestamp>`, `TimezoneProvider`, the formatters) moved into
+      `@assistant-hub/ui` so an app-contributed page renders instants in
+      the operator's timezone and looks like the shell's own; core keeps
+      every import path via re-exports. Deployment came along: chat's
+      Dockerfile, its compose service, `CHAT_API_URL` on the core, the
+      release matrix entry, and the initdb hook generalized to create
+      every source app's database.
+      Proof: chat operator-API integration suite (7 cases, real
+      Postgres) green; tg integration 61 green after the refactor; core
+      unit 1175 green; typecheck across all 10 workspaces; lint clean
+      (only pre-existing warnings). The service was booted against the
+      dev store — `/health` probes the database, `/internal/chats`
+      answers, an untokened call is 401 — and `/apps/chat` was read in
+      the running dashboard, where an unconfigured `CHAT_API_URL` says
+      so in words instead of showing an empty list. Dev topology now
+      exists (database `chat` created + migrated, `apps/chat/.env`
+      written, `CHAT_API_URL` added to `apps/core/.env`); the dev server
+      has not been restarted, so the core still runs without that
+      variable — **the green listing path is verified after the next
+      restart** (`npm run dev -w @assistant-hub/chat` alongside the
+      other two processes).
 - [ ] **B — threads and the text turn end to end.** Thread CRUD (create
       with a name + an assistant chosen at creation, rename, delete;
       no mid-thread switching), the operator's chat user bound to the
@@ -1074,6 +1109,20 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (Phase 4, slice A)** — The chat app became a service.
+  Most of the slice was deciding what NOT to write twice: tg already had
+  the env helpers, the internal-token guard, the bus wrappers, the
+  operator client and the fetch plumbing, so all five were extracted
+  (`@assistant-hub/service`, `internal-client.ts`, `operator-client.ts`)
+  and tg moved onto them before chat got a line of its own. The core's
+  source lookup is now keyed by source id, which is the coupling the
+  phase criteria named first. The dashboard mount is generic too — one
+  route for whichever app owns `/apps/<app>` — and making an
+  app-contributed page look like a shell page meant moving the page
+  chrome and the `<Timestamp>` timezone rule into `@assistant-hub/ui`.
+  Checked in the running dashboard; the full listing path waits on a dev
+  server restart, since `CHAT_API_URL` is read at boot.
 
 - **2026-08-27 (Phase 4 opened)** — Phase 3 closed, Phase 4 started:
   the four design calls PLAN.md had left for this phase were put to the
