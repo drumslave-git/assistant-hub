@@ -1,9 +1,11 @@
 import "server-only";
 
+import type { SourceId } from "@assistant-hub/contracts";
+
 import { getSpeechRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { synthesizeSpeech } from "@/server/llm/speech";
-import { toOpusOggForTelegram } from "@/server/media/audio";
+import { toOpusOggVoice } from "@/server/media/audio";
 import { startTrace } from "@/server/trace";
 
 /**
@@ -21,6 +23,8 @@ const FEATURE = FEATURES["voice"];
  * caller falls back to the plain text send either way.
  */
 export async function synthesizeVoiceReply(params: {
+  /** Which source the turn belongs to (the trace's trigger kind). */
+  source?: SourceId;
   chatId: string;
   /** `chatId:messageId` of the turn being answered — links to the reply trace. */
   correlationId: string;
@@ -33,7 +37,13 @@ export async function synthesizeVoiceReply(params: {
     {
       feature: FEATURE.id,
       action: "synthesize",
-      trigger: { kind: "telegram", actor: params.chatId, correlationId: params.correlationId },
+      // The way in, named honestly — a web thread's voice reply is not a
+      // telegram one, and Debug filters on this.
+      trigger: {
+        kind: params.source === "chat" ? "chat" : "telegram",
+        actor: params.chatId,
+        correlationId: params.correlationId,
+      },
       // The whole spoken text, never trimmed.
       inputSummary: params.text,
     }
@@ -50,10 +60,10 @@ export async function synthesizeVoiceReply(params: {
       },
     });
     const mp3 = await synthesizeSpeech(runtime, params.text);
-    const ogg = await toOpusOggForTelegram(mp3);
+    const ogg = await toOpusOggVoice(mp3);
     await trace.event({
       type: "step",
-      message: "audio transcoded for Telegram",
+      message: "audio transcoded to OGG/Opus",
       data: { mp3Bytes: mp3.length, oggBytes: ogg.length },
     });
     await trace.succeed({ outputSummary: `${ogg.length} bytes of OGG/Opus speech` });

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ImagePlus, MessagesSquare, Plus, Send, Trash2, X } from "lucide-react";
+import { ImagePlus, MessagesSquare, Mic, Plus, Send, Square, Trash2, X } from "lucide-react";
 
 import type { ChatThread, ChatThreadMessage, ChatThreadTurn } from "@assistant-hub/contracts";
 import {
@@ -269,6 +269,9 @@ function Conversation({
   const [image, setImage] = useState<{ name: string; dataBase64: string; mimeType: string } | null>(
     null,
   );
+  const [audio, setAudio] = useState<{ dataBase64: string; mimeType: string } | null>(null);
+  const [recording, setRecording] = useState(false);
+  const recorder = useRef<MediaRecorder | null>(null);
   const [sending, setSending] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const bottom = useRef<HTMLDivElement | null>(null);
@@ -307,8 +310,8 @@ function Conversation({
 
   const send = async () => {
     const text = draft.trim();
-    // A picture with no words is a message too — "what is this?" is implied.
-    if (!text && !image) return;
+    // A picture or a voice note with no typed words is a message too.
+    if (!text && !image && !audio) return;
     setSending(true);
     setError(null);
     try {
@@ -317,10 +320,12 @@ function Conversation({
         body: JSON.stringify({
           text,
           ...(image ? { image: { dataBase64: image.dataBase64, mimeType: image.mimeType } } : {}),
+          ...(audio ? { audio } : {}),
         }),
       });
       setDraft("");
       setImage(null);
+      setAudio(null);
       await load();
       await onChanged();
     } catch (err) {
@@ -337,6 +342,39 @@ function Conversation({
     } catch (err) {
       setError(err instanceof Error ? err.message : "The thread was not deleted");
     }
+  };
+
+  /**
+   * Recording uses whatever container the browser gives us (webm/opus in
+   * Chrome): the chat app stores the bytes as they are and the core converts
+   * before transcribing, exactly as it does for a Telegram voice message.
+   */
+  const startRecording = async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const chunks: Blob[] = [];
+      const rec = new MediaRecorder(stream);
+      rec.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+        setAudio({ dataBase64: await blobToBase64(blob), mimeType: blob.type });
+      };
+      rec.start();
+      recorder.current = rec;
+      setRecording(true);
+    } catch {
+      setError("The microphone is not available in this browser");
+    }
+  };
+
+  const stopRecording = async () => {
+    recorder.current?.stop();
+    recorder.current = null;
+    setRecording(false);
   };
 
   const assistantName =
@@ -374,7 +412,26 @@ function Conversation({
                 : "bg-surface-2 text-foreground",
             )}
           >
-            {message.media ? (
+            {message.media && (message.media.kind === "voice" || message.media.kind === "file") ? (
+              <div className="mb-2">
+                {message.media.kind === "voice" ? (
+                  <audio
+                    controls
+                    preload="none"
+                    src={`/api/chat/media/${encodeURIComponent(message.media.id)}`}
+                    className="w-full"
+                  />
+                ) : (
+                  <a
+                    href={`/api/chat/media/${encodeURIComponent(message.media.id)}`}
+                    className="text-xs underline"
+                  >
+                    {message.media.description ?? "the file"}
+                  </a>
+                )}
+              </div>
+            ) : null}
+            {message.media && message.media.kind !== "voice" && message.media.kind !== "file" ? (
               <figure className="mb-2">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -417,6 +474,20 @@ function Conversation({
 
       <footer className="space-y-2 border-t border-border px-5 py-3">
         {error ? <p className="text-xs text-danger">{error}</p> : null}
+        {audio ? (
+          <p className="flex items-center gap-2 text-xs text-muted">
+            <Mic className="h-3.5 w-3.5" />
+            <span>voice note ready to send</span>
+            <button
+              type="button"
+              onClick={() => setAudio(null)}
+              className="text-faint hover:text-foreground"
+              aria-label="Discard the recording"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </p>
+        ) : null}
         {image ? (
           <p className="flex items-center gap-2 text-xs text-muted">
             <ImagePlus className="h-3.5 w-3.5" />
@@ -473,7 +544,19 @@ function Conversation({
             placeholder="Write a message…"
             className="flex-1 resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm"
           />
-          <Button onClick={() => void send()} disabled={sending || (!draft.trim() && !image)}>
+          <Button
+            variant={recording ? "danger" : "outline"}
+            size="icon"
+            onClick={() => void (recording ? stopRecording() : startRecording())}
+            title={recording ? "Stop recording" : "Record a voice note"}
+            aria-label={recording ? "Stop recording" : "Record a voice note"}
+          >
+            {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+          </Button>
+          <Button
+            onClick={() => void send()}
+            disabled={sending || (!draft.trim() && !image && !audio)}
+          >
             <Send className="h-4 w-4" />
             {sending ? "Sending…" : "Send"}
           </Button>
@@ -495,4 +578,13 @@ function readAsBase64(file: File): Promise<string> {
     };
     reader.readAsDataURL(file);
   });
+}
+
+/** A recorded blob as base64 (the payload the chat app stores). */
+async function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }

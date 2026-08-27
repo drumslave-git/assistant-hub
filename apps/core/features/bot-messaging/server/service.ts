@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { SourceId } from "@assistant-hub/contracts";
 import type { Message } from "@grammyjs/types";
 
 import type { DrizzleDb } from "@/db/drizzle";
@@ -102,6 +103,8 @@ export interface GeneratedReply {
 
 /** Normalized view of an incoming Telegram message (built by the runtime). */
 export interface IncomingMessage {
+  /** Which source app this message came from. Defaults to telegram (v1). */
+  source?: SourceId;
   /**
    * The raw source update, when the in-process telegram runtime is the
    * caller — the deterministic addressing check reads its wire shapes.
@@ -116,7 +119,13 @@ export interface IncomingMessage {
    * analyzer still runs for the undecided case.
    */
   addressing?: AddressResult;
-  chatId: number;
+  /**
+   * The conversation's SOURCE-LOCAL id, verbatim — a Telegram chat id, a web
+   * thread's uuid. A string because ids are the owning app's to shape, and
+   * parsing one as a number turned a uuid into `NaN` in every trace it
+   * reached.
+   */
+  chatId: string;
   chatType: string;
   messageId: number;
   /**
@@ -126,7 +135,8 @@ export interface IncomingMessage {
    * `<chatId>:<messageId>`, the shape the in-process runtime uses.
    */
   correlationId?: string;
-  fromId?: number;
+  /** The sender's source-local id, verbatim. */
+  fromId?: string;
   fromIsBot: boolean;
   /** Extracted user text (message text or media caption). */
   text: string;
@@ -509,11 +519,13 @@ async function runActionClaimGate(
  * transcription), passing it in via {@link BotMessagingDeps.trace}.
  */
 export async function startReplyTrace(input: {
-  chatId: number | string;
+  /** Which source this turn came from — the trace's trigger kind. */
+  source?: SourceId;
+  chatId: string;
   messageId: number;
   /** The turn's correlation id; defaults to `<chatId>:<messageId>`. */
   correlationId?: string;
-  fromId?: number;
+  fromId?: string;
   /** Whose turn this is — the assistant the receiving bot serves. */
   assistantId?: string;
   /** The whole incoming message, never trimmed (may be updated later — voice). */
@@ -524,8 +536,10 @@ export async function startReplyTrace(input: {
     action: "reply",
     assistantId: input.assistantId,
     trigger: {
-      kind: "telegram",
-      actor: input.fromId != null ? String(input.fromId) : String(input.chatId),
+      // The way in, named honestly: a web-thread turn is not a telegram one,
+      // and Debug filters on this.
+      kind: input.source === "chat" ? "chat" : "telegram",
+      actor: input.fromId ?? input.chatId,
       correlationId: input.correlationId ?? `${input.chatId}:${input.messageId}`,
     },
     inputSummary: input.inputSummary,
@@ -550,6 +564,7 @@ export async function handleIncomingMessage(
   let trace: TraceRecorder | null = deps.trace ?? null;
   const openTrace = async (): Promise<TraceRecorder> =>
     (trace ??= await startReplyTrace({
+      source: incoming.source,
       chatId: incoming.chatId,
       messageId: incoming.messageId,
       correlationId: incoming.correlationId,

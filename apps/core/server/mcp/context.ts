@@ -2,6 +2,8 @@ import "server-only";
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import type { SourceId } from "@assistant-hub/contracts";
+
 import type { TraceTrigger } from "@/lib/trace";
 
 /**
@@ -12,7 +14,13 @@ import type { TraceTrigger } from "@/lib/trace";
  * only ever touch the current conversation's data.
  */
 export interface McpToolContext {
-  /** The current chat's id (Telegram chat/group id as a string). */
+  /**
+   * Which source app the turn belongs to — the trace trigger's kind, so a
+   * web-thread tool call is not filed under telegram in Debug. Absent →
+   * telegram, the v1 shape (task fires and tests still bind that way).
+   */
+  source?: SourceId;
+  /** The current chat's id — a Telegram chat/group id, a web thread's uuid. */
   chatId: string;
   /**
    * The turn's assistant (Phase 3): a reply turn binds the inbound event's,
@@ -112,15 +120,19 @@ export interface McpToolContext {
    * turn's source owns the mirror (the queue-consumer path, redesign Phase 2):
    * the source checks its mirror (`not_found` / `own_message`), performs the
    * platform call (a platform refusal throws with its message), and records
-   * the reaction so the next turn remembers it (`recorded`). Absent on the
-   * v1 in-process path, where the tool reads the local mirror and bot
+   * the reaction so the next turn remembers it (`recorded`). A source with no
+   * reactions at all answers `unsupported`, and the tool says so. Absent on
+   * the v1 in-process path, where the tool reads the local mirror and bot
    * manager directly — that fallback dies with the swap.
    */
   reactToMessage?: (input: {
     messageId: number;
     emoji: string | null;
     big?: boolean;
-  }) => Promise<{ status: "ok" | "not_found" | "own_message"; recorded: boolean }>;
+  }) => Promise<{
+    status: "ok" | "not_found" | "own_message" | "unsupported";
+    recorded: boolean;
+  }>;
 }
 
 const STORE_KEY = Symbol.for("llm-tg-bot.mcp.tool-context");
@@ -190,7 +202,7 @@ export function tryGetToolContext(): McpToolContext | null {
  */
 export function toolContextTrigger(ctx: McpToolContext): TraceTrigger {
   return {
-    kind: "telegram",
+    kind: ctx.source === "chat" ? "chat" : "telegram",
     actor: ctx.userId ?? ctx.chatId,
     correlationId: ctx.correlationId ?? ctx.chatId,
   };

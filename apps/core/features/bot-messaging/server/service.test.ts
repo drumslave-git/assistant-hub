@@ -54,10 +54,10 @@ async function recordExchange(
 function incoming(partial: Partial<IncomingMessage>): IncomingMessage {
   return {
     message: makeMessage({ message_id: 7, chat: { id: 5, type: "private" } }),
-    chatId: 5,
+    chatId: "5",
     chatType: "private",
     messageId: 7,
-    fromId: 100,
+    fromId: "100",
     fromIsBot: false,
     text: "hello",
     ...partial,
@@ -691,7 +691,7 @@ describe("handleIncomingMessage", () => {
 
   it("blocks a non-owner in maintenance mode: sends a static notice, traces (skipped), no LLM", async () => {
     const d = deps({ policy: { maintenanceModeEnabled: true }, senderIsOwner: false });
-    const out = await handleIncomingMessage(incoming({ text: "hello", fromId: 100 }), d);
+    const out = await handleIncomingMessage(incoming({ text: "hello", fromId: "100" }), d);
     expect(out).toEqual({ status: "ignored", reason: "maintenance_mode", source: "private" });
     // Addressed-but-blocked is still traced for operator visibility, then skipped.
     expect(startTrace).toHaveBeenCalledOnce();
@@ -710,7 +710,7 @@ describe("handleIncomingMessage", () => {
 
   it("lets the owner through in maintenance mode (source's isOwner stamp)", async () => {
     const d = deps({ policy: { maintenanceModeEnabled: true }, senderIsOwner: true });
-    const out = await handleIncomingMessage(incoming({ text: "hi", fromId: 7 }), d);
+    const out = await handleIncomingMessage(incoming({ text: "hi", fromId: "7" }), d);
     expect(out).toEqual({ status: "replied", text: "hi back" });
     expect(d.generateReply).toHaveBeenCalledOnce();
     expect(recorder.succeed).toHaveBeenCalledOnce();
@@ -727,7 +727,7 @@ describe("handleIncomingMessage", () => {
     });
     const d = deps({ policy: { maintenanceModeEnabled: true }, senderIsOwner: true });
     const out = await handleIncomingMessage(
-      incoming({ message: m, chatType: "group", text: "thanks", fromId: 7 }),
+      incoming({ message: m, chatType: "group", text: "thanks", fromId: "7" }),
       d,
     );
     expect(out).toEqual({ status: "replied", text: "hi back" });
@@ -1228,7 +1228,7 @@ describe("voice turns", () => {
       policy: { maintenanceModeEnabled: true },
     });
     const out = await handleIncomingMessage(
-      incoming({ text: "hello", isVoice: true, fromId: 100 }),
+      incoming({ text: "hello", isVoice: true, fromId: "100" }),
       d,
     );
     expect(out).toMatchObject({ status: "ignored", reason: "maintenance_mode" });

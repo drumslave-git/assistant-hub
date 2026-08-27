@@ -209,3 +209,24 @@ export async function getMediaForMessages(
     .where(inArray(media.messageId, messageIds));
   return new Map(rows.map((row) => [row.messageId, row]));
 }
+
+/**
+ * Store media that needs no describing: the assistant's own voice reply (its
+ * words are the message's text) or a produced file. Born `described`, so the
+ * backfill never goes looking at something nobody needs read.
+ */
+export async function describeOnInsert(
+  db: ChatDb,
+  values: {
+    messageId: number;
+    kind: string;
+    mimeType: string | null;
+    frames: string[];
+    description: string;
+  },
+): Promise<StoredChatMedia | null> {
+  const stored = await insertMedia(db, values);
+  if (!stored) return null;
+  const updated = await markDescribed(db, stored.id, values.description);
+  return updated ?? stored;
+}

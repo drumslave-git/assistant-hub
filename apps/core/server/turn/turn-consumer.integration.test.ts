@@ -322,6 +322,62 @@ describe("inbound turn consumer", () => {
     expect(members.filter((m) => m.chatId === "-300")).toHaveLength(2);
   });
 
+  it("runs a web-thread turn: no bot account, its own surface, its own trigger", async () => {
+    // The same pipeline, from the source that has none of Telegram's
+    // furniture: no connection identity, uuid ids, and a trigger Debug can
+    // tell apart from an operator pressing a button.
+    const event = inboundMessageEventSchema.parse({
+      v: 1,
+      eventId: "evt-chat-1",
+      occurredAt: new Date().toISOString(),
+      correlationId: "thread-abc:7:assistant-1",
+      type: "message.inbound",
+      source: "chat",
+      assistantId: "assistant-1",
+      chat: { ref: "chat:thread:thread-abc", kind: "direct", title: "A thread" },
+      sender: { ref: "chat:user:user-abc", isOwner: true, label: "Operator" },
+      addressing: { addressed: true, source: "private", needsAnalyzer: false },
+      message: {
+        sourceMessageId: "7",
+        content: "where are we talking?",
+        sentAt: new Date().toISOString(),
+      },
+      context: { history: [], participants: [] },
+    });
+
+    const seen: ChatMessage[][] = [];
+    const result = await handleInboundJob(event, 1, ctx({
+      generateReply: async (messages) => {
+        seen.push(messages);
+        return { content: "in the dashboard", model: "fixture-model", latencyMs: 1 };
+      },
+    }));
+    expect(result.status).toBe("handled");
+
+    // The reply is delivered to the thread, not to a chat id nobody has.
+    const delivery = replyDeliveryEventSchema.parse(
+      published.find((p) => (p as { type?: string }).type === "reply.delivery"),
+    );
+    expect(delivery).toMatchObject({
+      source: "chat",
+      chatRef: "chat:thread:thread-abc",
+      correlationId: "thread-abc:7:assistant-1",
+    });
+
+    // The model is told where it is — and it is not Telegram.
+    const systemBlocks = seen[0]
+      .filter((message) => message.role === "system")
+      .map((message) => String(message.content))
+      .join(" | ");
+    expect(systemBlocks).toContain("web chat");
+    expect(systemBlocks).not.toContain("Telegram");
+
+    // The trace says which way in this was, with an id that is a real id.
+    const traces = await listTraces({ correlationId: "thread-abc:7:assistant-1" });
+    const reply = traces.traces.find((trace) => trace.action === "reply");
+    expect(reply?.trigger).toMatchObject({ kind: "chat", actor: "user-abc" });
+  });
+
   it("answers another assistant's cross-fed message, in that assistant's voice", async () => {
     const seen: ChatMessage[][] = [];
     const result = await handleInboundJob(

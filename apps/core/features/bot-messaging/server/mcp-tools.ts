@@ -239,6 +239,12 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
       }
       if (outcome.status === "not_found") return noMessageRefusal();
       if (outcome.status === "own_message") return ownMessageRefusal();
+      if (outcome.status === "unsupported") {
+        return reactionRefusal(
+          "This conversation does not support reactions at all. Answer in words instead, and " +
+            "do not claim you reacted.",
+        );
+      }
       // Whether the bot will *remember* reacting: the source's mirror renders
       // it on the target line (`[you reacted: 👍]`); without that record the
       // very next turn denied having set it (operator report, 2026-08-15).

@@ -2,6 +2,9 @@ import {
   chatPostMessageRequestSchema,
   chatThreadCreateRequestSchema,
   internalMediaDescribeRequestSchema,
+  internalSendFileRequestSchema,
+  internalSendPhotosRequestSchema,
+  internalSendVoiceRequestSchema,
   chatThreadUpdateRequestSchema,
   internalSendMessageRequestSchema,
   operatorChatUpdateRequestSchema,
@@ -21,6 +24,8 @@ import type { ChatDb } from "./db";
 import { postThreadMessage } from "./inbound";
 import {
   countPendingMedia,
+  describeOnInsert,
+  insertMedia,
   getMediaById,
   getMediaByMessage,
   getMediaForMessages as getThreadMedia,
@@ -388,6 +393,7 @@ export function createApi(input: {
       threadId: c.req.param("threadId"),
       text: parsed.data.text,
       image: parsed.data.image ?? null,
+      audio: parsed.data.audio ?? null,
       enqueue: input.enqueue,
     });
     if (!posted) return c.json({ error: { message: "thread not found" } }, 404);
@@ -419,6 +425,111 @@ export function createApi(input: {
     });
     input.onThreadsChanged?.();
     return c.json({ sourceMessageId: String(stored.id) });
+  });
+
+  /**
+   * A voice reply: the core synthesized the audio, this stores it as an
+   * assistant message with the spoken text as its content — that text is what
+   * the transcript, the window and the next turn read, exactly as tg mirrors
+   * the words rather than the bubble. `asVoice` is always true here: a
+   * browser plays whatever it is given, so there is no refusal to fall back
+   * from.
+   */
+  internal.post("/chats/:chatId/voice", async (c) => {
+    const parsed = internalSendVoiceRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: { message: "audioBase64 and text are required" } }, 400);
+    }
+    const threadId = c.req.param("chatId");
+    const thread = await getThreadById(input.db, threadId);
+    if (!thread) return c.json({ error: { message: "thread not found" } }, 404);
+    const body = parsed.data;
+    const stored = await appendMessage(input.db, {
+      threadId,
+      role: "assistant",
+      content: body.text,
+      replyToMessageId:
+        body.replyToSourceMessageId != null ? Number(body.replyToSourceMessageId) : null,
+    });
+    // The audio needs no describing — its words are the message's own text.
+    await describeOnInsert(input.db, {
+      messageId: stored.id,
+      kind: "voice",
+      mimeType: "audio/ogg",
+      frames: [body.audioBase64],
+      description: body.text,
+    }).catch(() => null);
+    input.onThreadsChanged?.();
+    return c.json({ sourceMessageId: String(stored.id), asVoice: true });
+  });
+
+  /**
+   * Generated images. One message per image, each carrying the picture as
+   * `pending` media so the vision pass describes what the assistant itself
+   * put in the thread (tg does the same).
+   */
+  internal.post("/chats/:chatId/photos", async (c) => {
+    const parsed = internalSendPhotosRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: { message: "images are required" } }, 400);
+    const threadId = c.req.param("chatId");
+    const thread = await getThreadById(input.db, threadId);
+    if (!thread) return c.json({ error: { message: "thread not found" } }, 404);
+    const delivered: Array<{ sourceMessageId: string; stored: boolean }> = [];
+    for (const image of parsed.data.images) {
+      const message = await appendMessage(input.db, {
+        threadId,
+        role: "assistant",
+        content: "",
+      });
+      const media = await insertMedia(input.db, {
+        messageId: message.id,
+        kind: "image",
+        mimeType: "image/png",
+        frames: [image],
+      }).catch(() => null);
+      delivered.push({ sourceMessageId: String(message.id), stored: media !== null });
+    }
+    input.onThreadsChanged?.();
+    return c.json({ delivered });
+  });
+
+  /**
+   * A file the assistant produced (a browser-run download). The caption is
+   * the message's text; the bytes are kept as media so the thread can offer
+   * them back — a web thread has nowhere else to put a file.
+   */
+  internal.post("/chats/:chatId/files", async (c) => {
+    const parsed = internalSendFileRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: { message: "dataBase64 is required" } }, 400);
+    const threadId = c.req.param("chatId");
+    const thread = await getThreadById(input.db, threadId);
+    if (!thread) return c.json({ error: { message: "thread not found" } }, 404);
+    const body = parsed.data;
+    const message = await appendMessage(input.db, {
+      threadId,
+      role: "assistant",
+      content: body.caption ?? body.filename,
+    });
+    // Nothing to describe: the caption already says what it is, and a
+    // pending row would send the backfill after a file it cannot read.
+    await describeOnInsert(input.db, {
+      messageId: message.id,
+      kind: "file",
+      mimeType: body.mime ?? null,
+      frames: [body.dataBase64],
+      description: body.filename,
+    }).catch(() => null);
+    input.onThreadsChanged?.();
+    return c.json({ sourceMessageId: String(message.id) });
+  });
+
+  /**
+   * Reactions have no web analogue. Answering `unsupported` (rather than
+   * throwing, or silently pretending) is what lets the tool tell the model
+   * the truth: there is nothing to react with here.
+   */
+  internal.post("/chats/:chatId/messages/:messageId/reaction", async (c) => {
+    return c.json({ status: "unsupported", recorded: false });
   });
 
   internal.delete("/chats/:chatId/messages/:messageId", async (c) => {

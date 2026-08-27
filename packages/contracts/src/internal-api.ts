@@ -265,7 +265,12 @@ export const internalReactionRequestSchema = z.object({
 });
 
 export const internalReactionResponseSchema = z.object({
-  status: z.enum(["ok", "not_found", "own_message"]),
+  /**
+   * `unsupported` is a source saying this affordance does not exist here —
+   * a web thread has no reactions — so the tool reports that instead of the
+   * core deciding for it.
+   */
+  status: z.enum(["ok", "not_found", "own_message", "unsupported"]),
   /**
    * Whether the reaction was also recorded on the mirror row (the bot's
    * memory of reacting) — false degrades exactly like v1: the reaction IS

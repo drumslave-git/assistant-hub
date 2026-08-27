@@ -1,3 +1,5 @@
+import type { SourceId } from "@assistant-hub/contracts";
+
 import "server-only";
 
 import { getClassifierRuntime, getLlmRuntime } from "@/features/settings/server/service";
@@ -69,6 +71,8 @@ export async function runTurnClassifier(
 }
 
 export interface TurnBindingsInput {
+  /** Which source the turn belongs to — carried onto every tool call's trace. */
+  source?: SourceId;
   chatId: string;
   /** The turn's assistant (from the inbound event) — bound onto tool calls. */
   assistantId: string;
@@ -122,6 +126,7 @@ export interface TurnBindings {
 
 export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
   const {
+    source,
     chatId,
     assistantId,
     senderId,
@@ -191,6 +196,7 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
       // ever read this conversation's data. See the v1 dep-builder notes.
       return runWithToolContext(
         {
+          source,
           chatId,
           assistantId,
           userId: senderId,

@@ -46,7 +46,11 @@ export interface ChatOperatorClient extends SourceDirectoryClient {
   /** Post what the human said; the source stores it and starts the turn. */
   postMessage(
     id: string,
-    input: { text: string; image?: { dataBase64: string; mimeType?: string | null } },
+    input: {
+      text: string;
+      image?: { dataBase64: string; mimeType?: string | null };
+      audio?: { dataBase64: string; mimeType?: string | null };
+    },
   ): Promise<{ message: ChatThreadMessage; correlationId: string | null }>;
 }
 
@@ -162,7 +166,11 @@ export async function deleteChatThread(id: string): Promise<void> {
 /** Say something in a thread: the source stores it and starts the turn. */
 export async function postChatMessage(
   id: string,
-  input: { text: string; image?: { dataBase64: string; mimeType?: string | null } },
+  input: {
+    text: string;
+    image?: { dataBase64: string; mimeType?: string | null };
+    audio?: { dataBase64: string; mimeType?: string | null };
+  },
 ): Promise<{ message: ChatThreadMessage; correlationId: string | null }> {
   return requireClient("the message cannot be sent").postMessage(id, input);
 }

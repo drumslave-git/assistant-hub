@@ -344,6 +344,7 @@ async function buildEventDeps(
   };
 
   const bindings = createTurnBindings({
+    source: event.source,
     chatId,
     assistantId: event.assistantId,
     senderId,
@@ -527,6 +528,7 @@ async function buildEventDeps(
             const audio = ctx.overrides?.synthesizeVoice
               ? await ctx.overrides.synthesizeVoice(text)
               : await synthesizeVoiceReply({
+                  source: event.source,
                   chatId,
                   correlationId: event.correlationId,
                   text,
@@ -594,7 +596,8 @@ export async function processInboundEvent(
         chatId,
         messageId: Number(event.message.sourceMessageId),
         correlationId: event.correlationId,
-        fromId: Number(parseScopedRef(event.sender.ref).id),
+        source: event.source,
+        fromId: parseScopedRef(event.sender.ref).id,
         assistantId: event.assistantId,
         inputSummary: event.message.content,
       });
@@ -663,10 +666,11 @@ export async function processInboundEvent(
     // the words (v1 flow). The whole turn, transcription included, is one
     // reply trace, so it opens here ahead of the service.
     replyTrace = await startReplyTrace({
-      chatId: Number(chatId),
+      source: event.source,
+      chatId,
       messageId: Number(event.message.sourceMessageId),
       correlationId: event.correlationId,
-      fromId: Number(parseScopedRef(event.sender.ref).id),
+      fromId: parseScopedRef(event.sender.ref).id,
       assistantId: event.assistantId,
       inputSummary: "",
     });
@@ -725,13 +729,14 @@ export async function processInboundEvent(
   const outcome = await handleIncomingMessage(
     {
       addressing,
-      chatId: Number(chatId),
+      source: event.source,
+      chatId,
       chatType: event.chat.kind === "group" ? "supergroup" : "private",
       messageId: Number(event.message.sourceMessageId),
       // One message can open a turn per assistant present, so the source's
       // correlation is authoritative — deriving it here would merge them.
       correlationId: event.correlationId,
-      fromId: Number(parseScopedRef(event.sender.ref).id),
+      fromId: parseScopedRef(event.sender.ref).id,
       // A cross-fed message DID come from a bot account, but it is exactly
       // the message this assistant was handed to consider; the loop guard
       // above, not the blanket bot rule, is what bounds it.

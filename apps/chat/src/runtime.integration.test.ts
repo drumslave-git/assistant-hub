@@ -472,4 +472,109 @@ describe("chat runtime", () => {
     // The turn still runs — losing the message would be the worse failure.
     expect(enqueued.at(-1)!.message).toMatchObject({ content: "look at this", media: [] });
   });
+
+  it("takes a voice note in and gives a voice reply back", async () => {
+    const enqueued: InboundMessageEvent[] = [];
+    const app = apiWith(enqueued);
+    const thread = await newThread(app, "Spoken");
+
+    // Inbound: the bytes are stored as-is — the core converts before
+    // transcribing, exactly as it does for Telegram audio.
+    const recorded = Buffer.from("not really opus, but bytes are bytes");
+    const posted = chatPostMessageResponseSchema.parse(
+      await (
+        await app.request(`/internal/threads/${thread.id}/messages`, {
+          method: "POST",
+          headers: HEADERS,
+          body: JSON.stringify({
+            audio: { dataBase64: recorded.toString("base64"), mimeType: "audio/webm" },
+          }),
+        })
+      ).json(),
+    );
+    expect(posted.message).toMatchObject({ content: "", media: { kind: "voice", status: "pending" } });
+    expect(enqueued.at(-1)!.message.media).toEqual([
+      { id: posted.message.media!.id, kind: "voice", status: "pending", description: null },
+    ]);
+    const stored = (await (
+      await app.request(`/internal/media/${posted.message.media!.id}`, { headers: HEADERS })
+    ).json()) as { media: { frames: string[]; mimeType: string } };
+    expect(Buffer.from(stored.media.frames[0], "base64").toString()).toBe(recorded.toString());
+
+    // Outbound: the core's TTS lands as an assistant message whose CONTENT is
+    // the spoken text — that is what the window and the next turn read.
+    const sent = (await (
+      await app.request(`/internal/chats/${thread.id}/voice`, {
+        method: "POST",
+        headers: HEADERS,
+        body: JSON.stringify({
+          audioBase64: Buffer.from("spoken bytes").toString("base64"),
+          text: "here is what I found",
+          replyToSourceMessageId: posted.message.id,
+        }),
+      })
+    ).json()) as { sourceMessageId: string; asVoice: boolean };
+    expect(sent.asVoice).toBe(true);
+
+    const body = chatThreadResponseSchema.parse(
+      await (await app.request(`/internal/threads/${thread.id}`, { headers: HEADERS })).json(),
+    );
+    const reply = body.messages.find((message) => message.id === sent.sourceMessageId)!;
+    expect(reply).toMatchObject({
+      role: "assistant",
+      content: "here is what I found",
+      // Born described: its words ARE the message text, so the backfill has
+      // no reason to go listening to the assistant's own voice.
+      media: { kind: "voice", status: "described", description: "here is what I found" },
+    });
+    const audio = await app.request(`/internal/media/${reply.media!.id}/bytes`, {
+      headers: HEADERS,
+    });
+    expect(audio.headers.get("content-type")).toBe("audio/ogg");
+  });
+
+  it("serves the rest of the outbound port: images, files, and an honest refusal", async () => {
+    const app = apiWith([]);
+    const thread = await newThread(app, "Tools at work");
+
+    const photos = (await (
+      await app.request(`/internal/chats/${thread.id}/photos`, {
+        method: "POST",
+        headers: HEADERS,
+        body: JSON.stringify({ images: [Buffer.from("png-ish").toString("base64")] }),
+      })
+    ).json()) as { delivered: Array<{ sourceMessageId: string; stored: boolean }> };
+    expect(photos.delivered).toHaveLength(1);
+    expect(photos.delivered[0].stored).toBe(true);
+
+    const file = (await (
+      await app.request(`/internal/chats/${thread.id}/files`, {
+        method: "POST",
+        headers: HEADERS,
+        body: JSON.stringify({
+          dataBase64: Buffer.from("a downloaded thing").toString("base64"),
+          filename: "report.txt",
+          mime: "text/plain",
+          caption: "the report you asked for",
+        }),
+      })
+    ).json()) as { sourceMessageId: string };
+    expect(file.sourceMessageId).toBeTruthy();
+
+    // Reactions do not exist here, and the source says so rather than
+    // throwing — the tool then tells the model the truth.
+    const reaction = (await (
+      await app.request(`/internal/chats/${thread.id}/messages/${file.sourceMessageId}/reaction`, {
+        method: "POST",
+        headers: HEADERS,
+        body: JSON.stringify({ emoji: "👍" }),
+      })
+    ).json()) as { status: string };
+    expect(reaction.status).toBe("unsupported");
+
+    const body = chatThreadResponseSchema.parse(
+      await (await app.request(`/internal/threads/${thread.id}`, { headers: HEADERS })).json(),
+    );
+    expect(body.messages.map((m) => m.media?.kind)).toEqual(["image", "file"]);
+  });
 });

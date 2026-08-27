@@ -44,8 +44,9 @@ export async function tracedToolCall(
         feature: toolTraceFeature(owningFeature),
         action: name,
         trigger: {
-          kind: "telegram",
-          actor: ctx?.chatId,
+          // The turn's own way in — a web-thread tool call is not telegram's.
+          kind: ctx?.source === "chat" ? "chat" : "telegram",
+          actor: ctx?.userId ?? ctx?.chatId,
           // The turn's correlation, so the tool call groups with the reply (or
           // fire) that made it; the bare chat id only as a legacy fallback.
           correlationId: ctx?.correlationId ?? ctx?.chatId,

@@ -58,10 +58,11 @@ export function toWavForTranscription(input: Buffer): Promise<Buffer> {
 }
 
 /**
- * Synthesized speech (MP3) → OGG/Opus mono, the format Telegram `sendVoice`
- * requires to render a real voice bubble (an MP3 upload shows as a music file).
+ * Synthesized speech (MP3) → OGG/Opus mono. Telegram `sendVoice` requires it
+ * to render a real voice bubble (an MP3 upload shows as a music file), and a
+ * browser plays it as happily — so every source's voice reply is this.
  */
-export function toOpusOggForTelegram(input: Buffer): Promise<Buffer> {
+export function toOpusOggVoice(input: Buffer): Promise<Buffer> {
   return transcode(input, "out.ogg", ["-c:a", "libopus", "-b:a", "48k", "-ac", "1"]);
 }
 

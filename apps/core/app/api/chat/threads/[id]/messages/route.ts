@@ -26,10 +26,17 @@ const postSchema = z
         mimeType: z.string().max(200).nullable().optional(),
       })
       .optional(),
+    audio: z
+      .object({
+        dataBase64: z.string().min(1).max(MAX_IMAGE_BASE64),
+        mimeType: z.string().max(200).nullable().optional(),
+      })
+      .optional(),
   })
-  .refine((value) => value.text.length > 0 || value.image !== undefined, {
-    message: "a message needs text, an image, or both",
-  });
+  .refine(
+    (value) => value.text.length > 0 || value.image !== undefined || value.audio !== undefined,
+    { message: "a message needs text, an image, a voice note, or some of each" },
+  );
 
 export const POST = defineRoute(async ({ request, params }) => {
   const input = await parseJson(request, postSchema);

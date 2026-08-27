@@ -30,8 +30,11 @@ import { internalRequester, sourceApiConfig } from "@/server/source/internal-cli
  * deciding for it.
  */
 
-/** Refusal states the source's mirror check can answer for a reaction. */
-export type SourceReactionStatus = "ok" | "not_found" | "own_message";
+/**
+ * Refusal states a source can answer for a reaction: the mirror's checks, and
+ * `unsupported` for a platform that has no reactions at all.
+ */
+export type SourceReactionStatus = "ok" | "not_found" | "own_message" | "unsupported";
 
 export interface SourceOutboundPort {
   sendMessage(

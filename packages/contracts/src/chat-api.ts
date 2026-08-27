@@ -105,7 +105,7 @@ export const chatThreadResponseSchema = z.object({
 
 /**
  * POST /internal/threads/:id/messages — the human says something, optionally
- * with an image. The bytes arrive base64 (the browser reads the file, the
+ * with an image or a voice note. The bytes arrive base64 (the browser reads the file, the
  * proxy passes it through); the chat app normalizes them to a bounded JPEG
  * before storing, so the vision pipeline gets what it gets from every source.
  *
@@ -121,10 +121,23 @@ export const chatPostMessageRequestSchema = z
         mimeType: z.string().max(200).nullable().optional(),
       })
       .optional(),
+    /**
+     * A recorded voice note, in whatever container the browser produced
+     * (webm/opus, usually). It is stored as-is and transcribed by the core,
+     * which converts before asking the model — the same path a Telegram
+     * voice message takes.
+     */
+    audio: z
+      .object({
+        dataBase64: z.string().min(1),
+        mimeType: z.string().max(200).nullable().optional(),
+      })
+      .optional(),
   })
-  .refine((value) => value.text.length > 0 || value.image !== undefined, {
-    message: "a message needs text, an image, or both",
-  });
+  .refine(
+    (value) => value.text.length > 0 || value.image !== undefined || value.audio !== undefined,
+    { message: "a message needs text, an image, a voice note, or some of each" },
+  );
 
 /**
  * What posting answers with: the stored message and the correlation id of the

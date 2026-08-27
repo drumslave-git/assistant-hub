@@ -34,9 +34,11 @@ import type { ChatMessageRow } from "../store/schema";
  *
  * An uploaded image is normalized here and stored `pending`, then referenced
  * on the event exactly as a Telegram photo is: the core describes it over the
- * media API and writes the text back. An image that cannot be normalized does
- * NOT lose the message — the turn runs on the text, the way a media message
- * the tg ingest could not store still gets answered.
+ * media API and writes the text back. A voice note is stored raw and
+ * referenced the same way; the core transcribes it and answers the words.
+ * Media that cannot be stored does NOT lose the message — the turn runs on
+ * the text, the way a media message the tg ingest could not store still gets
+ * answered.
  */
 
 export interface PostMessageResult {
@@ -53,6 +55,8 @@ export async function postThreadMessage(input: {
   text: string;
   /** An uploaded image, as the browser read it. */
   image?: { dataBase64: string; mimeType?: string | null } | null;
+  /** A recorded voice note, in the browser's own container. */
+  audio?: { dataBase64: string; mimeType?: string | null } | null;
   /** Publish the event as one queue job. A failure surfaces to the caller. */
   enqueue: (event: InboundMessageEvent) => Promise<void>;
   now?: () => Date;
@@ -72,9 +76,19 @@ export async function postThreadMessage(input: {
     sentAt: now,
   });
 
+  // One attachment per message (the store's index): a picture or a voice
+  // note. A voice note's bytes are stored raw — the core converts before
+  // transcribing, exactly as it does for Telegram audio.
   const stored = input.image
     ? await insertImage(input.db, message.id, input.image).catch(() => null)
-    : null;
+    : input.audio
+      ? await insertMedia(input.db, {
+          messageId: message.id,
+          kind: "voice",
+          mimeType: input.audio.mimeType ?? "audio/webm",
+          frames: [input.audio.dataBase64],
+        }).catch(() => null)
+      : null;
 
   const context = await buildConversationContext(input.db, {
     thread,
