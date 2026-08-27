@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { Trace, TraceEvent } from "@/lib/trace";
-import { ADDRESSING_CHECK_EVENT, readAddressingCheck } from "./addressing-trace";
+import {
+  ADDRESSING_CHECK_EVENT,
+  analyzerNote,
+  readAddressingCheck,
+} from "./addressing-trace";
 
 /** A minimal trace carrying the given events, in order. */
 function traceWith(events: Partial<TraceEvent>[]): Trace {
@@ -68,5 +72,42 @@ describe("readAddressingCheck", () => {
 
   it("returns null when the trace holds no addressing decision", () => {
     expect(readAddressingCheck(traceWith([{ message: "request" }]))).toBeNull();
+  });
+});
+
+describe("analyzerNote", () => {
+  const record = (source: string | null, reason: string | null = null) => ({
+    addressed: true,
+    source,
+    reason,
+    matchedText: null,
+    botDisplayName: "Igor",
+  });
+
+  it("says nothing when the analyzer decided — its exchange is in the trace", () => {
+    expect(analyzerNote(record("analyzer"))).toBeNull();
+  });
+
+  it("names the cheap check that decided instead, and that there is nothing to read", () => {
+    const note = analyzerNote(record("name"));
+    expect(note).toContain("No analyzer was asked");
+    expect(note).toContain("matched literally");
+    expect(note).toContain("no request or response");
+  });
+
+  it("covers every deterministic source", () => {
+    for (const source of ["private", "reply", "mention", "command", "name", "task"]) {
+      expect(analyzerNote(record(source))).toMatch(/^No analyzer was asked — \w/);
+    }
+  });
+
+  it("falls back to the recorded reason for a source it does not know", () => {
+    expect(analyzerNote(record("something-new", "because reasons"))).toContain(
+      "because reasons",
+    );
+  });
+
+  it("still explains a verdict with neither source nor reason", () => {
+    expect(analyzerNote(record(null))).toContain("the deterministic checks settled it");
   });
 });

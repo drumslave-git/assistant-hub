@@ -55,6 +55,16 @@ Undecided messages go to the LLM analyzer, which:
 
 Both calls fail closed. A provider failure resolves to "not addressed".
 
+**Most turns never reach the analyzer**, and the trace says so. A verdict from
+a cheap check (`private`, `reply`, `mention`, `command`, `name`, `task`) is the
+whole decision — there is no request or response in the trace because no model
+was asked — so the Debug timeline renders a note under the verdict naming what
+decided instead (`analyzerNote`, derived from the verdict so old traces explain
+themselves too). Only an `analyzer` verdict has an exchange above it, and then
+the note is absent. Without that line the missing exchange reads as missing
+data rather than as "nothing was asked", which is a question the debug page
+should answer rather than provoke.
+
 Design constraints worth preserving:
 
 - **No lexical pre-filter** in front of the analyzer. One was built and reverted

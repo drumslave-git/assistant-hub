@@ -3,6 +3,7 @@ import { Timestamp } from "@/components/time/Timestamp";
 import { ScrollArea } from "@/components/ui";
 import { callKindLabel } from "@/features/analytics/llm-call-kind";
 import { formatDuration } from "@/lib/format";
+import { eventNote } from "./event-notes";
 import { JsonBlock } from "./JsonBlock";
 
 /**
@@ -88,6 +89,10 @@ function UsageLine({ usage }: { usage: NonNullable<TraceEvent["usage"]> }) {
  * message, how long it took (elapsed since the previous step — so a response
  * shows the request's latency), LLM usage, and its full request/response body in
  * a collapsible JSON viewer. Used by every feature's Debug detail view.
+ *
+ * A step may also carry a note ({@link eventNote}) — a sentence about what the
+ * step means that its payload cannot state, most often why the exchange a
+ * reader is looking for is not in the trace at all.
  */
 export function TraceTimeline({
   events,
@@ -137,6 +142,12 @@ export function TraceTimeline({
                   <Timestamp iso={event.ts} timeOnly />
                 </span>
               </div>
+              {(() => {
+                const note = eventNote(event);
+                return note ? (
+                  <p className="mt-1.5 text-xs text-muted">{note}</p>
+                ) : null;
+              })()}
               {event.usage ? <UsageLine usage={event.usage} /> : null}
               {event.data !== undefined && event.data !== null ? (
                 <div className="mt-2">
