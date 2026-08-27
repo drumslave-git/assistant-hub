@@ -8,6 +8,8 @@ import {
   Button,
   Field,
   Input,
+  readApiError,
+  type ApiOkBody,
   type AssistantSectionProps,
   type BadgeTone,
 } from "@assistant-hub/ui";
@@ -20,23 +22,6 @@ import {
  * characters. Poller state renders live: the shell bumps `refreshSignal` on
  * every `status` event and the section re-reads.
  */
-
-/** The core proxy's response envelopes. */
-interface OkBody<T> {
-  data?: T;
-}
-interface ErrorBody {
-  error?: { message?: string };
-}
-
-async function readError(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as ErrorBody;
-    return body.error?.message ?? `Request failed (${res.status})`;
-  } catch {
-    return `Request failed (${res.status})`;
-  }
-}
 
 type LoadState =
   | { kind: "loading" }
@@ -85,10 +70,10 @@ export function TgConnectionSection({ assistantId, refreshSignal }: AssistantSec
         `/api/telegram/connections?assistantId=${encodeURIComponent(assistantId)}`,
       );
       if (!res.ok) {
-        setState({ kind: "error", message: await readError(res) });
+        setState({ kind: "error", message: await readApiError(res) });
         return;
       }
-      const body = (await res.json()) as OkBody<{ connections: OperatorConnection[] }>;
+      const body = (await res.json()) as ApiOkBody<{ connections: OperatorConnection[] }>;
       setState({ kind: "ready", connection: body.data?.connections[0] ?? null });
     } catch {
       setState({ kind: "error", message: "Network error — could not reach the server" });
@@ -106,7 +91,7 @@ export function TgConnectionSection({ assistantId, refreshSignal }: AssistantSec
     try {
       const res = await request();
       if (!res.ok) {
-        setActionError(await readError(res));
+        setActionError(await readApiError(res));
         return;
       }
       setToken("");

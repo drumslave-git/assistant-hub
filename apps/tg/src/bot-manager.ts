@@ -1,4 +1,5 @@
 import { openPublisher, openQueue, type BusPublisher } from "@assistant-hub/bus";
+import { busTraceClient, dashboardRefresh } from "@assistant-hub/service";
 import {
   BUS_EVENTS_CHANNEL,
   INBOUND_MESSAGES_QUEUE,
@@ -21,8 +22,7 @@ import {
 } from "./feedback/flows";
 import { processIncomingMessage } from "./inbound";
 import { createBotOutbound, type TgOutbound } from "./outbound";
-import { dashboardRefresh } from "./refresh";
-import { busTraceClient } from "./trace-client";
+
 import {
   applyMessageEdit,
   deleteConnectionsByAssistant,
@@ -163,7 +163,7 @@ export class BotManager {
   ) {
     this.queue = openQueue<InboundMessageEvent>(INBOUND_MESSAGES_QUEUE, deps.redisUrl);
     this.publisher = openPublisher(deps.redisUrl);
-    this.traces = busTraceClient(this.publisher);
+    this.traces = busTraceClient("tg", this.publisher);
     this.crossFeed = createCrossFeed({
       db: deps.db,
       running: () => this.runningConnections(),
@@ -258,7 +258,7 @@ export class BotManager {
     // The dashboard's bot card watches `status` — a poller that dies or
     // reconnects must show up without a reload (v1 behavior, over the bus).
     void this.publisher
-      .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["status"]))
+      .publish(BUS_EVENTS_CHANNEL, dashboardRefresh("tg", ["status"]))
       .catch(() => undefined);
   }
 
@@ -437,7 +437,7 @@ export class BotManager {
       // The mirror and the directory just changed — ping the pages that
       // show them (best-effort; the message is already stored).
       void this.publisher
-        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["history", "users", "groups"]))
+        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh("tg", ["history", "users", "groups"]))
         .catch(() => undefined);
       if (result.status === "enqueued") {
         const events = result.events ?? [];
@@ -624,7 +624,7 @@ export class BotManager {
         `assistant ${assistantId} deleted — dropped ${rows.length} connection(s) and stopped polling`,
       );
       void this.publisher
-        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["status"]))
+        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh("tg", ["status"]))
         .catch(() => undefined);
     }
   }

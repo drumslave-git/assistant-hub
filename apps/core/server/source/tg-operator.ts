@@ -1,23 +1,20 @@
 import "server-only";
 
 import {
-  operatorChatMembersResponseSchema,
-  operatorChatResponseSchema,
-  operatorChatsResponseSchema,
   operatorConnectionResponseSchema,
   operatorConnectionsResponseSchema,
   operatorSourceSettingsResponseSchema,
-  operatorUserResponseSchema,
-  operatorUsersResponseSchema,
-  type OperatorChat,
-  type OperatorChatMember,
   type OperatorConnection,
   type OperatorSourceSettings,
-  type OperatorUser,
 } from "@assistant-hub/contracts";
 
 import { ApiError, isApiError } from "@/lib/api-error";
-import { getEnv } from "@/server/env";
+
+import {
+  createDirectoryClient,
+  operatorRequester,
+  type SourceDirectoryClient,
+} from "./operator-client";
 
 /**
  * The tg source app's operator API, reached from the core's server code (the
@@ -41,18 +38,7 @@ export interface BotStatus {
   error: string | null;
 }
 
-/** Status probes must stay snappy — the dashboard shell awaits them. */
-const REQUEST_TIMEOUT_MS = 5_000;
-
-export interface TgOperatorClient {
-  /** Every person the source knows (its directory). */
-  listUsers(): Promise<OperatorUser[]>;
-  /** Every conversation the source carries (mirror aggregates + metadata). */
-  listChats(): Promise<OperatorChat[]>;
-  /** One conversation, or null when the source does not carry it. */
-  getChat(chatId: string): Promise<OperatorChat | null>;
-  /** One chat's roster with membership times. */
-  listChatMembers(chatId: string): Promise<OperatorChatMember[]>;
+export interface TgOperatorClient extends SourceDirectoryClient {
   listConnections(): Promise<OperatorConnection[]>;
   createConnection(input: {
     assistantId: string;
@@ -69,76 +55,16 @@ export interface TgOperatorClient {
     ownerUsername: string | null;
     ownerUserId?: string | null;
   }): Promise<OperatorSourceSettings>;
-  /** Curated user fields — the source is the authority for its directory. */
-  updateUser(
-    id: string,
-    input: { aliases: string[] } | { language: string | null },
-  ): Promise<OperatorUser>;
-  /** Curated chat fields (group notes / reply language). */
-  updateChat(
-    id: string,
-    input: { notes: string | null } | { language: string | null },
-  ): Promise<OperatorChat>;
 }
 
 /** The client, or null when the source API is not configured. */
 export function tgOperatorClient(): TgOperatorClient | null {
-  const env = getEnv();
-  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
-  const baseUrl = env.TG_API_URL.replace(/\/$/, "");
-  const token = env.INTERNAL_API_TOKEN;
-
-  const request = async (path: string, init?: RequestInit): Promise<unknown> => {
-    const res = await fetch(`${baseUrl}${path}`, {
-      ...init,
-      headers: {
-        "x-internal-token": token,
-        ...(init?.body ? { "content-type": "application/json" } : {}),
-        ...init?.headers,
-      },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      const body = (await res.json().catch(() => null)) as {
-        error?: { message?: string };
-      } | null;
-      const message = body?.error?.message ?? `tg operator API ${path} answered ${res.status}`;
-      // Preserve the source's verdict for callers that relay it to the
-      // dashboard (a 409 "already has a connection" must not become a 500).
-      if (res.status === 400) throw ApiError.badRequest(message);
-      if (res.status === 404) throw ApiError.notFound(message);
-      if (res.status === 409) throw ApiError.conflict(message);
-      throw ApiError.serviceUnavailable(message);
-    }
-    return res.json();
-  };
+  const resolved = operatorRequester("tg");
+  if (!resolved) return null;
+  const { request, label } = resolved;
 
   return {
-    async listUsers() {
-      const body = operatorUsersResponseSchema.parse(await request("/internal/users"));
-      return body.users;
-    },
-    async listChats() {
-      const body = operatorChatsResponseSchema.parse(await request("/internal/chats"));
-      return body.chats;
-    },
-    async getChat(chatId) {
-      try {
-        const body = operatorChatResponseSchema.parse(
-          await request(`/internal/chats/${encodeURIComponent(chatId)}`),
-        );
-        return body.chat;
-      } catch (err) {
-        if (isApiError(err) && err.status === 404) return null;
-        throw err;
-      }
-    },
-    async listChatMembers(chatId) {
-      const body = operatorChatMembersResponseSchema.parse(
-        await request(`/internal/chats/${encodeURIComponent(chatId)}/members`),
-      );
-      return body.members;
-    },
+    ...createDirectoryClient(request, label),
     async listConnections() {
       const body = operatorConnectionsResponseSchema.parse(await request("/internal/connections"));
       return body.connections;
@@ -147,7 +73,7 @@ export function tgOperatorClient(): TgOperatorClient | null {
       const body = operatorConnectionResponseSchema.parse(
         await request("/internal/connections", { method: "POST", body: JSON.stringify(input) }),
       );
-      if (!body.connection) throw new Error("tg operator API returned no connection");
+      if (!body.connection) throw new Error(`${label} returned no connection`);
       return body.connection;
     },
     async updateConnection(id, input) {
@@ -157,7 +83,7 @@ export function tgOperatorClient(): TgOperatorClient | null {
           body: JSON.stringify(input),
         }),
       );
-      if (!body.connection) throw new Error("tg operator API returned no connection");
+      if (!body.connection) throw new Error(`${label} returned no connection`);
       return body.connection;
     },
     async deleteConnection(id) {
@@ -172,26 +98,6 @@ export function tgOperatorClient(): TgOperatorClient | null {
         await request("/internal/settings", { method: "PUT", body: JSON.stringify(input) }),
       );
       return body.settings;
-    },
-    async updateUser(id, input) {
-      const body = operatorUserResponseSchema.parse(
-        await request(`/internal/users/${encodeURIComponent(id)}`, {
-          method: "PATCH",
-          body: JSON.stringify(input),
-        }),
-      );
-      if (!body.user) throw new Error("tg operator API returned no user");
-      return body.user;
-    },
-    async updateChat(id, input) {
-      const body = operatorChatResponseSchema.parse(
-        await request(`/internal/chats/${encodeURIComponent(id)}`, {
-          method: "PATCH",
-          body: JSON.stringify(input),
-        }),
-      );
-      if (!body.chat) throw new Error("tg operator API returned no chat");
-      return body.chat;
     },
   };
 }

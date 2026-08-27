@@ -52,6 +52,28 @@ export interface AssistantSection {
   Section: ComponentType<AssistantSectionProps>;
 }
 
+/** Props the shell passes to a mounted app page. */
+export interface AppPageProps {
+  /**
+   * Path segments below the app's mount point — `/apps/chat/<threadId>`
+   * arrives as `["<threadId>"]`. The app routes within itself; the shell
+   * knows only that an app owns everything under its mount.
+   */
+  segments: string[];
+}
+
+/**
+ * The page an app mounts in the dashboard (PLAN.md: "routes/pages — chat
+ * contributes the thread list and chat view"). One entry per app: the shell
+ * renders it for the app's mount point and every path below it, so adding a
+ * view is the app's business, not the shell's. A Client Component, like every
+ * extension — its data goes through the owning app's operator API behind the
+ * shell's proxy.
+ */
+export interface AppPage {
+  Page: ComponentType<AppPageProps>;
+}
+
 /**
  * Everything one source app contributes to the dashboard shell.
  *
@@ -67,6 +89,21 @@ export interface AppExtensions {
   navGroups?: NavGroup[];
   /** Sections this app adds to the assistant editor. */
   assistantSections?: AssistantSection[];
+  /** The page this app mounts at `/apps/<app>` and everything below it. */
+  page?: AppPage;
+}
+
+/** The mount path of an app's contributed page. */
+export function appPageHref(app: string, ...segments: string[]): string {
+  return ["/apps", app, ...segments.map(encodeURIComponent)].join("/");
+}
+
+/** The app whose page owns this mount, or undefined when none does. */
+export function findAppPage(
+  extensions: readonly AppExtensions[],
+  app: string,
+): AppPage | undefined {
+  return extensions.find((e) => e.app === app)?.page;
 }
 
 /**

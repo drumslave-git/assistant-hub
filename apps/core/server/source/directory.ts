@@ -10,6 +10,9 @@ import {
 } from "@assistant-hub/contracts";
 
 import { ApiError, isApiError } from "@/lib/api-error";
+
+import { chatOperatorClient } from "./chat-operator";
+import type { SourceDirectoryClient } from "./operator-client";
 import { tgOperatorClient } from "./tg-operator";
 
 /**
@@ -19,29 +22,14 @@ import { tgOperatorClient } from "./tg-operator";
  *
  * Every source app serves the same operator listing contract, so aggregating
  * is a fan-out plus a scoped ref per row: nothing here knows what Telegram is.
- * `apps/chat` joins the registry in Phase 4 by adding one entry.
+ * `apps/chat` joined in Phase 4 as the second entry — one line, which is the
+ * whole point of the contract.
  *
  * A source that is unconfigured or unreachable does NOT fail the read: it
  * comes back under `unavailable` with its reason, so the page renders the
  * sources that answered and says plainly which one it could not reach. A
  * silent empty list would read as "nobody has messaged the bot".
  */
-
-/** The slice of a source's operator API the directory needs. */
-export interface SourceDirectoryClient {
-  listUsers(): Promise<OperatorUser[]>;
-  listChats(): Promise<OperatorChat[]>;
-  getChat(chatId: string): Promise<OperatorChat | null>;
-  listChatMembers(chatId: string): Promise<OperatorChatMember[]>;
-  updateUser(
-    id: string,
-    input: { aliases: string[] } | { language: string | null },
-  ): Promise<OperatorUser>;
-  updateChat(
-    id: string,
-    input: { notes: string | null } | { language: string | null },
-  ): Promise<OperatorChat>;
-}
 
 export interface DirectorySource {
   id: SourceId;
@@ -53,6 +41,7 @@ export interface DirectorySource {
 /** Registered sources, in the order the dashboard lists them. */
 export const DIRECTORY_SOURCES: readonly DirectorySource[] = [
   { id: "tg", label: "Telegram", client: tgOperatorClient },
+  { id: "chat", label: "Web chat", client: chatOperatorClient },
 ];
 
 /** Where a directory row came from, carried on every entry. */

@@ -1,0 +1,24 @@
+{
+  "name": "@assistant-hub/chat-ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The chat source app's dashboard UI subpackage: the threads page the core shell mounts at /apps/chat, composed at build time (PLAN.md, \"Dashboard composition\"). Imports shared packages only — never the app's server code.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@assistant-hub/contracts": "*",
+    "@assistant-hub/ui": "*",
+    "lucide-react": "^1.24.0"
+  },
+  "peerDependencies": {
+    "react": "^19"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "typescript": "^5"
+  }
+}

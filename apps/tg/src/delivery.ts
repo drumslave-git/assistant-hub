@@ -6,13 +6,12 @@ import {
   turnLifecycleEventSchema,
 } from "@assistant-hub/contracts";
 import { openPublisher, openSubscriber, type BusPublisher, type BusSubscription } from "@assistant-hub/bus";
+import { busTraceClient, dashboardRefresh } from "@assistant-hub/service";
 
 import { recordAssistantMessage, type CrossFeed } from "./cross-feed";
 import type { TgDb } from "./db";
 import type { TgOutbound } from "./outbound";
-import { dashboardRefresh } from "./refresh";
 import { filterMirroredMessageIds, markMessageProcessed } from "./store";
-import { busTraceClient } from "./trace-client";
 import { findMessageRefs } from "./telegram";
 
 /**
@@ -109,7 +108,7 @@ export async function startDeliveryConsumer(input: {
     ((context: string, error: unknown) => console.error(`[tg delivery] ${context}:`, error));
   const typing = new TypingLoops(input.senderFor);
   const publisher: BusPublisher = openPublisher(input.redisUrl);
-  const traces = busTraceClient(publisher);
+  const traces = busTraceClient("tg", publisher);
 
   const handle = async (payload: unknown): Promise<void> => {
     const type =
@@ -193,7 +192,7 @@ export async function startDeliveryConsumer(input: {
         });
         // The mirror grew a reply — ping the history pages (best-effort).
         void publisher
-          .publish(BUS_EVENTS_CHANNEL, dashboardRefresh(["history"]))
+          .publish(BUS_EVENTS_CHANNEL, dashboardRefresh("tg", ["history"]))
           .catch(() => undefined);
         await trace.succeed({ outputSummary: `delivered ${chatId}:${sent.messageId}` });
       } catch (error) {

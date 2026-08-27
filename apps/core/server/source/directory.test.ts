@@ -2,18 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import type { OperatorChat, OperatorUser } from "@assistant-hub/contracts";
 
-import {
-  listDirectoryChats,
-  listDirectoryUsers,
-  type DirectorySource,
-  type SourceDirectoryClient,
-} from "./directory";
+import { listDirectoryChats, listDirectoryUsers, type DirectorySource } from "./directory";
+import type { SourceDirectoryClient } from "./operator-client";
 
 /**
  * The aggregation seam itself: fan-out across registered sources, scoped refs,
  * ordering, and the rule that one unreachable source narrows the listing
  * instead of failing (or silently emptying) it. Sources are injected, so the
- * multi-source behavior is covered before `apps/chat` exists.
+ * multi-source behavior is covered with injected sources, independent of
+ * which apps a deployment actually runs.
  */
 
 const user = (id: string, updatedAt: string): OperatorUser => ({

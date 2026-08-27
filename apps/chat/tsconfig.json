@@ -1,5 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["store/**/*.ts", "drizzle.config.ts", "vitest.integration.config.ts"],
+  "include": [
+    "src/**/*.ts",
+    "store/**/*.ts",
+    "drizzle.config.ts",
+    "vitest.config.ts",
+    "vitest.integration.config.ts"
+  ],
   "exclude": ["node_modules"]
 }

@@ -8,6 +8,13 @@
       "when": 1787340620617,
       "tag": "0000_majestic_doctor_spectrum",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787824426094,
+      "tag": "0001_tearful_slyde",
+      "breakpoints": true
     }
   ]
 }

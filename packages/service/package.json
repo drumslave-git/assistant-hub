@@ -1,0 +1,22 @@
+{
+  "name": "@assistant-hub/service",
+  "version": "0.0.0",
+  "private": true,
+  "description": "What every source-app service needs and none of them should own twice: bootstrap env access, the internal-token guard on their HTTP surface, and the source-parameterized bus helpers (trace client, dashboard refresh ping).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@assistant-hub/contracts": "*",
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}

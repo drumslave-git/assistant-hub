@@ -30,6 +30,7 @@ import {
   contentSearchMessagesRequestSchema,
   contentSearchSummariesRequestSchema,
 } from "@assistant-hub/contracts";
+import { internalTokenGuard } from "@assistant-hub/service";
 import { Hono, type Context } from "hono";
 
 import { recordAssistantMessage, type CrossFeed } from "./cross-feed";
@@ -151,12 +152,7 @@ export function createApi(input: {
   });
 
   const internal = new Hono();
-  internal.use("*", async (c, next) => {
-    if (c.req.header("x-internal-token") !== input.internalToken) {
-      return c.json({ error: { message: "unauthorized" } }, 401);
-    }
-    await next();
-  });
+  internal.use("*", internalTokenGuard(input.internalToken));
   // ---- Operator listing/CRUD (slice D) ------------------------------------
   // The shared operator contract (`operator-api` in contracts): users,
   // chats, messages, connections, and this app's settings — what the

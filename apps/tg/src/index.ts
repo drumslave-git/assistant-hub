@@ -6,7 +6,7 @@ import { createApi } from "./api";
 import { BotManager } from "./bot-manager";
 import { closeTgDb, getTgDb } from "./db";
 import { startDeliveryConsumer } from "./delivery";
-import { optionalEnv, requireEnv } from "./env";
+import { optionalEnv, requireEnv } from "@assistant-hub/service";
 
 /**
  * The tg source app's entry: store + pollers for enabled connections +

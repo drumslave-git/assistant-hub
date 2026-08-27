@@ -61,10 +61,12 @@ const envSchema = z.object({
   // Redis (bus + inbound queue). Unset → the queue consumer stays off.
   REDIS_URL: optionalString,
 
-  // The tg source app's internal API (redesign transition): base URL and the
-  // shared secret both sides present. Media describe/transcribe on the
-  // queue-consumer path needs them.
+  // The source apps' internal APIs (redesign transition): one base URL per
+  // source app plus the shared secret every side presents. An unset base URL
+  // means this deployment does not run that app — its listings report as
+  // unavailable rather than failing the page.
   TG_API_URL: optionalString,
+  CHAT_API_URL: optionalString,
   INTERNAL_API_TOKEN: optionalString,
 
   // Runtime

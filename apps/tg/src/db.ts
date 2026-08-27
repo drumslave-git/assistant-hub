@@ -1,8 +1,8 @@
 import { closeProcessPool, getProcessPool } from "@assistant-hub/db";
+import { requireEnv } from "@assistant-hub/service";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 
 import * as schema from "../store/schema";
-import { requireEnv } from "./env";
 
 /** The tg store's Drizzle handle — this app's OWN database. */
 export type TgDb = NodePgDatabase<typeof schema>;

@@ -6,10 +6,10 @@ import {
   type DashboardRefreshEvent,
   type FeedbackRecordedEvent,
 } from "@assistant-hub/contracts";
+import { dashboardRefresh } from "@assistant-hub/service";
 import type { CallbackQuery, MessageReactionUpdated, ReactionType } from "@grammyjs/types";
 
 import type { TgDb } from "../db";
-import { dashboardRefresh } from "../refresh";
 import { getMessageByTelegramId } from "../store";
 import {
   MENU_AWAITING_TEXT,
@@ -186,7 +186,7 @@ export async function processReactionUpdate(
   });
   await setFeedbackMenuMessage(deps.db, feedback.id, sent.messageId);
   // A fresh pending row — the dashboard's feedback listing shows it live.
-  await deps.publish(dashboardRefresh(["feedback"])).catch(() => undefined);
+  await deps.publish(dashboardRefresh("tg", ["feedback"])).catch(() => undefined);
   return { status: "menu_sent", feedback, menuMessageId: sent.messageId };
 }
 

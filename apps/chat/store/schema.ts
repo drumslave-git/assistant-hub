@@ -43,6 +43,10 @@ export const users = pgTable("users", {
   name: text("name").notNull(),
   /** True for the operator's own chat user (single-operator system). */
   isOperator: boolean("is_operator").notNull().default(false),
+  /** Operator-curated alternate names, as in every source's directory. */
+  aliases: text("aliases").array().notNull().default(sql`'{}'::text[]`),
+  /** Operator-configured reply language for this person, or null (default). */
+  language: text("language"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -67,6 +71,10 @@ export const threads = pgTable(
     assistantId: text("assistant_id").notNull(),
     /** Thread name, chosen by the user. */
     name: text("name").notNull(),
+    /** Operator-curated free-text description of the thread, or null. */
+    notes: text("notes"),
+    /** Operator-configured reply language for this thread, or null (default). */
+    language: text("language"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -94,6 +102,14 @@ export const messages = pgTable(
     content: text("content").notNull(),
     /** When the message was sent. */
     sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+    /** The message this one answers, or null (unprompted / a fresh turn). */
+    replyToMessageId: bigint("reply_to_message_id", { mode: "number" }),
+    /**
+     * Soft delete: the core's outbound port can retract what it sent (a
+     * browsing acknowledgement it replaces with the real answer). Rows stay
+     * so ids never dangle — the thread view and the listings skip them.
+     */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

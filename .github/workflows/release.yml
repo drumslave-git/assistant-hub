@@ -102,14 +102,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       # Per-app images, all released together on the same version. Every app
-      # that ships an image adds a matrix entry here (tg and chat join as the
-      # source split lands).
+      # that ships an image adds a matrix entry here.
       matrix:
         include:
           - image: assistant-hub-core
             dockerfile: apps/core/Dockerfile
           - image: assistant-hub-tg
             dockerfile: apps/tg/Dockerfile
+          - image: assistant-hub-chat
+            dockerfile: apps/chat/Dockerfile
     env:
       VERSION: ${{ needs.version.outputs.version }}
       IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
