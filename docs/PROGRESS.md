@@ -484,12 +484,27 @@ Slices:
       the turn consumer is a boot-time module — a prompt edit is not
       live until the dev server restarts, which is exactly how the wrong
       answer was diagnosed (the trace showed the old system prompt).
-- [ ] **C — live turn progress.** `turn.lifecycle` (accepted /
-      progress / settled) reaches the thread view over the existing SSE
-      bridge and renders as live progress with the current tool's label;
-      the thread list live-updates too. No token streaming
-      (message-at-once — PLAN). Proof: the progress phases are asserted
-      in a test and seen in the dev UI.
+- [x] **C — live turn progress** (`0cd86a4`). The core published a
+      turn's lifecycle already; what was missing was the tool's NAME —
+      the actions-started hook wrapped every tool call and threw it
+      away. It now travels with the hook, so the same `progress` event
+      serves both sources: tg ignores the label and keeps typing, the
+      chat app keeps the running turn per thread (`src/turns.ts`) and
+      serves it with the transcript, so the view shows "Thinking…" from
+      `accepted`, "Working — <tool>…" during a tool, and nothing after
+      `settled`. The dashboard is pinged only when what a reader would
+      see actually changed. Still message-at-once — no token streaming
+      (PLAN). The state is in memory and expires on its own: a turn the
+      core never settles must stop claiming to run rather than leave a
+      thread thinking forever, and after a restart the transcript is
+      the record. Proof: 5 unit cases on the state machine, one
+      integration case driving accepted → progress → settled over the
+      real bus and reading it back through the API, tg's 61 integration
+      cases green with progress events now arriving. Live: "Thinking…"
+      appeared and cleared in the dashboard; the tool-label window was
+      under a second on this model (the trace shows the `history_search`
+      call it belonged to), so the label itself is proven by the bus
+      test rather than by a screenshot.
 - [ ] **D — images.** Upload in a thread → chat store media + blobs →
       the core vision pipeline describes it through the per-source media
       port → the description reaches the turn as the media note, exactly
@@ -1140,6 +1155,14 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (Phase 4, slice C)** — Live progress, which turned out to
+  be one missing argument: the hook that marks a turn as having acted
+  already ran on every tool call and knew the tool's name. Passing it on
+  gave both sources what they need from one event — Telegram keeps
+  typing, the browser says what is happening. The chat side keeps that
+  state in memory with an expiry, because a spinner that outlives its
+  turn is worse than no spinner.
 
 - **2026-08-27 (Phase 4, slice B)** — Web chat answers. The pipeline
   needed no changes to run a thread turn, which was the point; what
