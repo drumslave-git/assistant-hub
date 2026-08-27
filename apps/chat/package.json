@@ -17,12 +17,14 @@
     "@assistant-hub/bus": "*",
     "@assistant-hub/contracts": "*",
     "@assistant-hub/db": "*",
+    "@assistant-hub/media": "*",
     "@assistant-hub/service": "*",
     "@hono/node-server": "^1.14.0",
     "dotenv": "^17.2.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.7.0",
     "pg": "^8.22.0",
+    "sharp": "^0.34.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {

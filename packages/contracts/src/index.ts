@@ -15,6 +15,7 @@ export {
   type RealtimeTopic,
 } from "./realtime";
 export {
+  chatMessageMediaSchema,
   chatPostMessageRequestSchema,
   chatPostMessageResponseSchema,
   chatThreadCreateRequestSchema,
@@ -27,6 +28,7 @@ export {
   chatThreadsResponseSchema,
   chatUserResponseSchema,
   chatUserSchema,
+  type ChatMessageMedia,
   type ChatThread,
   type ChatThreadMessage,
   type ChatThreadTurn,

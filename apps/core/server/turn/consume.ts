@@ -77,7 +77,7 @@ import {
   renderHistoryWindow,
   type TranscriptVoices,
 } from "./render";
-import { tgApiMediaStore } from "./tg-media";
+import { sourceMediaStore } from "./source-media";
 import { sourceOutbound, type SourceOutboundPort } from "./source-outbound";
 
 /**
@@ -144,11 +144,12 @@ export interface TurnConsumerContext {
   now?: () => Date;
 }
 
-function resolveMediaStore(ctx: TurnConsumerContext): MediaStorePort | null {
-  if (ctx.mediaStore) return ctx.mediaStore;
-  const env = getEnv();
-  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
-  return tgApiMediaStore();
+/** The media store of the source this turn belongs to — a lookup, not a branch. */
+function resolveMediaStore(
+  ctx: TurnConsumerContext,
+  source: SourceId,
+): MediaStorePort | null {
+  return ctx.mediaStore ?? sourceMediaStore(source);
 }
 
 /** The port of the source this turn belongs to — a lookup, never a branch. */
@@ -576,7 +577,7 @@ export async function processInboundEvent(
   const chatId = parseScopedRef(event.chat.ref).id;
   const media = event.message.media[0] ?? null;
   const isVoice = media?.kind === "voice";
-  const store = resolveMediaStore(ctx);
+  const store = resolveMediaStore(ctx, event.source);
   const outbound = resolveOutbound(ctx, event.source);
 
   // The bot-to-bot loop guard, before anything else this turn would cost:

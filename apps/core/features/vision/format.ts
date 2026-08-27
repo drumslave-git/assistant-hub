@@ -17,6 +17,7 @@ const KIND_LABEL: Record<MediaKind, string> = {
   animation: "GIF",
   video: "video",
   voice: "voice message",
+  image: "image",
 };
 
 /** Human label for a media kind. */

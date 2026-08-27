@@ -1,6 +1,7 @@
 import {
   chatPostMessageRequestSchema,
   chatThreadCreateRequestSchema,
+  internalMediaDescribeRequestSchema,
   chatThreadUpdateRequestSchema,
   internalSendMessageRequestSchema,
   operatorChatUpdateRequestSchema,
@@ -18,6 +19,16 @@ import { Hono } from "hono";
 
 import type { ChatDb } from "./db";
 import { postThreadMessage } from "./inbound";
+import {
+  countPendingMedia,
+  getMediaById,
+  getMediaByMessage,
+  getMediaForMessages as getThreadMedia,
+  listPendingMediaRefs,
+  listRecentMedia,
+  markDescribed,
+  type StoredChatMedia,
+} from "./media";
 import type { ThreadTurns } from "./turns";
 import {
   appendMessage,
@@ -266,12 +277,23 @@ export function createApi(input: {
     updatedAt: listing.thread.updatedAt.toISOString(),
   });
 
-  const toThreadMessage = (row: ChatMessageRow): ChatThreadMessage => ({
+  const toThreadMessage = (
+    row: ChatMessageRow,
+    attached?: { id: string; kind: string; status: string; description: string | null } | null,
+  ): ChatThreadMessage => ({
     id: String(row.id),
     role: row.role === "assistant" ? "assistant" : "user",
     content: row.content,
     sentAt: row.sentAt.toISOString(),
     replyToId: row.replyToMessageId != null ? String(row.replyToMessageId) : null,
+    media: attached
+      ? {
+          id: attached.id,
+          kind: attached.kind,
+          status: attached.status as "pending" | "described" | "unavailable",
+          description: attached.description,
+        }
+      : null,
   });
 
   /** The operator's own chat user, created on first contact. */
@@ -310,10 +332,14 @@ export function createApi(input: {
     const listing = await getThreadListing(input.db, threadId);
     if (!listing) return c.json({ error: { message: "thread not found" } }, 404);
     const rows = await listLiveMessages(input.db, threadId);
+    const attached = await getThreadMedia(
+      input.db,
+      rows.map((row) => row.id),
+    );
     const turn = input.turns?.get(threadId) ?? null;
     return c.json({
       thread: toChatThread(listing),
-      messages: rows.map(toThreadMessage),
+      messages: rows.map((row) => toThreadMessage(row, attached.get(row.id) ?? null)),
       turn: turn
         ? {
             sourceMessageId: turn.sourceMessageId,
@@ -361,12 +387,13 @@ export function createApi(input: {
       db: input.db,
       threadId: c.req.param("threadId"),
       text: parsed.data.text,
+      image: parsed.data.image ?? null,
       enqueue: input.enqueue,
     });
     if (!posted) return c.json({ error: { message: "thread not found" } }, 404);
     input.onThreadsChanged?.();
     return c.json({
-      message: toThreadMessage(posted.message),
+      message: toThreadMessage(posted.message, posted.media),
       correlationId: posted.correlationId,
     });
   });
@@ -402,6 +429,103 @@ export function createApi(input: {
     const deleted = await markMessageDeleted(input.db, c.req.param("chatId"), messageId);
     if (deleted) input.onThreadsChanged?.();
     return c.json({ deleted });
+  });
+
+
+  // ---- Media: what the core's vision pipeline reads and writes back -------
+  // Same paths and shapes as the tg app serves, so the core's per-source
+  // media port is one client. Frames are kept after describing here (see
+  // `media.ts`): a web thread is the only archive its images have.
+
+  const toInternalMedia = (row: StoredChatMedia) => ({
+    id: row.id,
+    chatId: row.threadId,
+    sourceMessageId: String(row.messageId),
+    kind: row.kind,
+    status: row.status as "pending" | "described" | "unavailable",
+    description: row.description,
+    // A browser upload carries no describe hint of its own.
+    visionHint: null,
+    mimeType: row.mimeType,
+    // Bytes travel with a PENDING row only — that is what the describe pass
+    // needs, and a listing of a hundred described rows must not ship a
+    // hundred pictures. The thread view fetches one by id when it renders it.
+    frames: row.status === "pending" ? row.frames : [],
+    createdAt: row.createdAt.toISOString(),
+    describedAt: row.describedAt ? row.describedAt.toISOString() : null,
+  });
+
+  internal.get("/chats/:chatId/messages/:messageId/media", async (c) => {
+    const messageId = Number(c.req.param("messageId"));
+    if (!Number.isFinite(messageId)) {
+      return c.json({ error: { message: "messageId must be a number" } }, 400);
+    }
+    const row = await getMediaByMessage(input.db, c.req.param("chatId"), messageId);
+    return c.json({ media: row ? toInternalMedia(row) : null });
+  });
+
+  // Specific media routes before `/media/:id` — Hono matches in order.
+  internal.get("/media/pending", async (c) => {
+    const limit = Number(c.req.query("limit") ?? "20");
+    const [refs, total] = await Promise.all([
+      listPendingMediaRefs(input.db, Number.isFinite(limit) ? limit : 20),
+      countPendingMedia(input.db),
+    ]);
+    return c.json({
+      media: refs.map((ref) => ({
+        id: ref.id,
+        chatId: ref.threadId,
+        sourceMessageId: String(ref.messageId),
+      })),
+      total,
+    });
+  });
+
+  internal.get("/media/recent", async (c) => {
+    const limit = Number(c.req.query("limit") ?? "100");
+    const rows = await listRecentMedia(input.db, Number.isFinite(limit) ? limit : 100);
+    return c.json({ media: rows.map(toInternalMedia) });
+  });
+
+  internal.get("/media/:id", async (c) => {
+    const row = await getMediaById(input.db, c.req.param("id"));
+    return c.json({ media: row ? toInternalMedia(row) : null });
+  });
+
+  /**
+   * The picture itself, for rendering: one image, as bytes, whatever its
+   * describe status. This is why the frames are kept — a thread showing an
+   * image the operator sent is the whole point of uploading it.
+   */
+  internal.get("/media/:id/bytes", async (c) => {
+    const row = await getMediaById(input.db, c.req.param("id"));
+    const frame = row?.frames[0];
+    if (!row || !frame) return c.json({ error: { message: "media not found" } }, 404);
+    return c.body(Buffer.from(frame, "base64"), 200, {
+      "content-type": row.mimeType ?? "image/jpeg",
+      // Immutable: a media row's bytes never change once stored.
+      "cache-control": "private, max-age=31536000, immutable",
+    });
+  });
+
+  internal.put("/media/:id/description", async (c) => {
+    const parsed = internalMediaDescribeRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: { message: "description is required" } }, 400);
+    }
+    const id = c.req.param("id");
+    const updated = await markDescribed(input.db, id, parsed.data.description);
+    if (updated) {
+      input.onThreadsChanged?.();
+      return c.json({ updated: true, media: toInternalMedia(updated) });
+    }
+    // Not pending any more: a concurrent pass won — serve the stored winner
+    // (the shared contract), or 404 for an unknown id.
+    const current = await getMediaById(input.db, id);
+    if (!current) return c.json({ error: { message: "media not found" } }, 404);
+    return c.json({ updated: false, media: toInternalMedia(current) });
   });
 
   app.route("/internal", internal);

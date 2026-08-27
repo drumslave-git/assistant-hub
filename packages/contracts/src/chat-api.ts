@@ -28,6 +28,17 @@ export const chatThreadSchema = z.object({
 
 export type ChatThread = z.infer<typeof chatThreadSchema>;
 
+/** Media attached to one line of a transcript, as the thread view renders it. */
+export const chatMessageMediaSchema = z.object({
+  id: z.string().min(1),
+  kind: z.string().min(1),
+  status: z.enum(["pending", "described", "unavailable"]),
+  /** The vision model's text, once it exists. */
+  description: z.string().nullable(),
+});
+
+export type ChatMessageMedia = z.infer<typeof chatMessageMediaSchema>;
+
 /** One line of a thread's transcript. */
 export const chatThreadMessageSchema = z.object({
   /** Source-local message id, as a string (scoped refs and anchors use it). */
@@ -37,6 +48,8 @@ export const chatThreadMessageSchema = z.object({
   sentAt: z.string().min(1),
   /** The message this one answers, or null. */
   replyToId: z.string().nullable(),
+  /** Media on this line, or null. The bytes are fetched by id when rendering. */
+  media: chatMessageMediaSchema.nullable().default(null),
 });
 
 export type ChatThreadMessage = z.infer<typeof chatThreadMessageSchema>;
@@ -90,10 +103,28 @@ export const chatThreadResponseSchema = z.object({
   turn: chatThreadTurnSchema.nullable().default(null),
 });
 
-/** POST /internal/threads/:id/messages — the human says something. */
-export const chatPostMessageRequestSchema = z.object({
-  text: z.string().trim().min(1).max(10_000),
-});
+/**
+ * POST /internal/threads/:id/messages — the human says something, optionally
+ * with an image. The bytes arrive base64 (the browser reads the file, the
+ * proxy passes it through); the chat app normalizes them to a bounded JPEG
+ * before storing, so the vision pipeline gets what it gets from every source.
+ *
+ * Either text or an image is required: a picture with no words is a perfectly
+ * good message, and so is "what is this?".
+ */
+export const chatPostMessageRequestSchema = z
+  .object({
+    text: z.string().trim().max(10_000).default(""),
+    image: z
+      .object({
+        dataBase64: z.string().min(1),
+        mimeType: z.string().max(200).nullable().optional(),
+      })
+      .optional(),
+  })
+  .refine((value) => value.text.length > 0 || value.image !== undefined, {
+    message: "a message needs text, an image, or both",
+  });
 
 /**
  * What posting answers with: the stored message and the correlation id of the

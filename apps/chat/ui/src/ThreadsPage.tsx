@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { MessagesSquare, Plus, Send, Trash2 } from "lucide-react";
+import { ImagePlus, MessagesSquare, Plus, Send, Trash2, X } from "lucide-react";
 
 import type { ChatThread, ChatThreadMessage, ChatThreadTurn } from "@assistant-hub/contracts";
 import {
@@ -266,6 +266,9 @@ function Conversation({
   const [turn, setTurn] = useState<ChatThreadTurn | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [image, setImage] = useState<{ name: string; dataBase64: string; mimeType: string } | null>(
+    null,
+  );
   const [sending, setSending] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const bottom = useRef<HTMLDivElement | null>(null);
@@ -304,15 +307,20 @@ function Conversation({
 
   const send = async () => {
     const text = draft.trim();
-    if (!text) return;
+    // A picture with no words is a message too — "what is this?" is implied.
+    if (!text && !image) return;
     setSending(true);
     setError(null);
     try {
       await apiFetch(`/api/chat/threads/${encodeURIComponent(threadId)}/messages`, {
         method: "POST",
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({
+          text,
+          ...(image ? { image: { dataBase64: image.dataBase64, mimeType: image.mimeType } } : {}),
+        }),
       });
       setDraft("");
+      setImage(null);
       await load();
       await onChanged();
     } catch (err) {
@@ -366,6 +374,29 @@ function Conversation({
                 : "bg-surface-2 text-foreground",
             )}
           >
+            {message.media ? (
+              <figure className="mb-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`/api/chat/media/${encodeURIComponent(message.media.id)}`}
+                  alt={message.media.description ?? "Uploaded image"}
+                  className="max-h-64 rounded-lg"
+                />
+                <figcaption
+                  // The description can run to paragraphs — it is what the
+                  // assistant reads, not what the reader needs under a
+                  // thumbnail. Two lines here, the whole text on hover.
+                  className="mt-1 line-clamp-2 text-[10px] text-faint"
+                  title={message.media.description ?? undefined}
+                >
+                  {message.media.status === "described"
+                    ? message.media.description
+                    : message.media.status === "unavailable"
+                      ? "the assistant could not read this image"
+                      : "the assistant is still looking at this…"}
+                </figcaption>
+              </figure>
+            ) : null}
             {message.content}
             <span className="mt-1 block text-[10px] text-faint">
               <Timestamp iso={message.sentAt} timeOnly />
@@ -386,7 +417,46 @@ function Conversation({
 
       <footer className="space-y-2 border-t border-border px-5 py-3">
         {error ? <p className="text-xs text-danger">{error}</p> : null}
+        {image ? (
+          <p className="flex items-center gap-2 text-xs text-muted">
+            <ImagePlus className="h-3.5 w-3.5" />
+            <span className="truncate">{image.name}</span>
+            <button
+              type="button"
+              onClick={() => setImage(null)}
+              className="text-faint hover:text-foreground"
+              aria-label="Remove the attached image"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </p>
+        ) : null}
         <div className="flex items-end gap-2">
+          <label
+            className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border text-muted hover:text-foreground"
+            title="Attach an image"
+          >
+            <ImagePlus className="h-4 w-4" />
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (!file) return;
+                try {
+                  setImage({
+                    name: file.name,
+                    mimeType: file.type || "image/jpeg",
+                    dataBase64: await readAsBase64(file),
+                  });
+                } catch {
+                  setError("That file could not be read");
+                }
+              }}
+            />
+          </label>
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -403,7 +473,7 @@ function Conversation({
             placeholder="Write a message…"
             className="flex-1 resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm"
           />
-          <Button onClick={() => void send()} disabled={sending || !draft.trim()}>
+          <Button onClick={() => void send()} disabled={sending || (!draft.trim() && !image)}>
             <Send className="h-4 w-4" />
             {sending ? "Sending…" : "Send"}
           </Button>
@@ -411,4 +481,18 @@ function Conversation({
       </footer>
     </Card>
   );
+}
+
+/** Read a picked file as base64 (the payload the chat app normalizes). */
+function readAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      // Strip the data-URI prefix; the app wants the payload, not the wrapper.
+      resolve(result.slice(result.indexOf(",") + 1));
+    };
+    reader.readAsDataURL(file);
+  });
 }

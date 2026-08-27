@@ -10,9 +10,28 @@ import { postChatMessage } from "@/server/source/chat-operator";
  * the bus.
  */
 
-const postSchema = z.object({ text: z.string().trim().min(1).max(10_000) });
+/**
+ * Text, an image, or both. The image arrives base64 from the browser and is
+ * capped here: the chat app normalizes it down to a bounded JPEG, but the
+ * proxy should refuse an upload nobody could want before it is buffered.
+ */
+const MAX_IMAGE_BASE64 = 16 * 1024 * 1024;
+
+const postSchema = z
+  .object({
+    text: z.string().trim().max(10_000).default(""),
+    image: z
+      .object({
+        dataBase64: z.string().min(1).max(MAX_IMAGE_BASE64),
+        mimeType: z.string().max(200).nullable().optional(),
+      })
+      .optional(),
+  })
+  .refine((value) => value.text.length > 0 || value.image !== undefined, {
+    message: "a message needs text, an image, or both",
+  });
 
 export const POST = defineRoute(async ({ request, params }) => {
-  const { text } = await parseJson(request, postSchema);
-  return ok(await postChatMessage(params.id, text));
+  const input = await parseJson(request, postSchema);
+  return ok(await postChatMessage(params.id, input));
 });

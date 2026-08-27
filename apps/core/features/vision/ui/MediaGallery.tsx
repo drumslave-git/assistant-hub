@@ -33,6 +33,9 @@ const STATUS_LABEL: Record<MediaStatus, string> = {
   unavailable: "Unavailable",
 };
 
+/** Which app a row came from — pictures arrive in more than one place now. */
+const SOURCE_LABEL: Record<string, string> = { tg: "Telegram", chat: "Web chat" };
+
 function MediaCard({ media }: { media: MediaView }) {
   const isVoice = media.kind === "voice";
   return (
@@ -56,10 +59,16 @@ function MediaCard({ media }: { media: MediaView }) {
               />
             ))}
           </div>
-        ) : media.preview ? (
-          // Stored base64 thumbnail for a pending still image.
+        ) : media.preview || media.bytesUrl ? (
+          // The picture itself: inline bytes when the listing carried them,
+          // otherwise fetched from the source that still holds it.
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={media.preview} alt="" className="h-full w-full object-contain" />
+          <img
+            src={media.preview ?? media.bytesUrl!}
+            alt=""
+            loading="lazy"
+            className="h-full w-full object-contain"
+          />
         ) : (
           <p className="max-h-full overflow-y-auto p-3 text-xs text-muted">
             {media.description ?? "No preview"}
@@ -74,8 +83,11 @@ function MediaCard({ media }: { media: MediaView }) {
           </Badge>
         </div>
         <div className="flex items-center justify-between gap-2 text-xs text-faint">
-          <span className="truncate font-mono" title={`chat ${media.chatId}`}>
-            {media.chatId}
+          <span
+            className="truncate font-mono"
+            title={`${SOURCE_LABEL[media.source] ?? media.source} · chat ${media.chatId}`}
+          >
+            {SOURCE_LABEL[media.source] ?? media.source} · {media.chatId}
           </span>
           <Timestamp iso={media.createdAt} />
         </div>

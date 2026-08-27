@@ -4,7 +4,7 @@ import { FEATURES } from "@/lib/features";
 import { createIdleScheduler, type IdleJobStatus, type IdleScheduler } from "@/server/jobs/idle-scheduler";
 import { publishEvent } from "@/server/realtime/hub";
 
-import { resolveSourceMediaBrowse } from "@/server/turn/tg-media";
+import { mediaSources } from "@/server/turn/source-media";
 
 import { runVisionBackfill } from "./backfill";
 import { resolveDescribeDeps } from "./service";
@@ -35,16 +35,25 @@ function scheduler(): IdleScheduler {
       debounceMs: DEBOUNCE_MS,
       onStatusChange: () => publishEvent(FEATURE.realtimeTopic),
       run: async (ctx) => {
-        // The pending rows live with the owning source since the split.
-        const source = resolveSourceMediaBrowse();
-        if (!source) return { summary: "telegram service not configured (TG_API_URL / INTERNAL_API_TOKEN)" };
+        // The pending rows live with the owning source since the split, and
+        // pictures arrive wherever people are — every configured source gets
+        // a pass, in registry order.
+        const sources = mediaSources();
+        if (sources.length === 0) {
+          return { summary: "no source app configured (TG_API_URL / CHAT_API_URL)" };
+        }
         const deps = await resolveDescribeDeps("background").catch(() => null);
         if (!deps) return { summary: "LLM not configured" };
-        const result = await runVisionBackfill(deps, source, {
-          isAborted: ctx.isAborted,
-          onProgress: ctx.reportProgress,
-        });
-        return { summary: result.summary };
+        const summaries: string[] = [];
+        for (const source of sources) {
+          if (ctx.isAborted()) break;
+          const result = await runVisionBackfill(deps, source, {
+            isAborted: ctx.isAborted,
+            onProgress: ctx.reportProgress,
+          });
+          summaries.push(`${source.source}: ${result.summary}`);
+        }
+        return { summary: summaries.join("; ") };
       },
     });
   }

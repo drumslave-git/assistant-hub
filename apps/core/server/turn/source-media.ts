@@ -8,16 +8,22 @@ import {
   type InternalMedia,
 } from "@assistant-hub/contracts";
 
+import { SOURCE_IDS, type SourceId } from "@assistant-hub/contracts";
+
 import type { MediaStorePort } from "@/features/vision/server/service";
 import type { MediaRecord } from "@/features/vision/server/repository";
-import { getEnv, requireEnv } from "@/server/env";
+import { internalRequester, sourceApiConfig } from "@/server/source/internal-client";
 
 /**
- * The tg store's media, reached over its internal API (contract schemas in
+ * A source's media, reached over its internal API (contract schemas in
  * `@assistant-hub/contracts`) — the queue-consumer's {@link MediaStorePort}.
  * The core's describe/transcribe features read a pending row's bytes here
- * and write the text back; the tg app drops the bytes (describe-then-drop,
- * storage owned by the app — user decision, 2026-08-22).
+ * and write the text back; what the source then does with the bytes is its
+ * own business (tg drops them, a web thread keeps them — it is the only
+ * archive its images have).
+ *
+ * Which app answers is resolved from the source id, so the calls below are
+ * written once for every source.
  */
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -42,25 +48,15 @@ function toMediaRecord(media: InternalMedia): MediaRecord {
   };
 }
 
-export function tgApiMediaStore(config?: { baseUrl?: string; token?: string }): MediaStorePort {
-  const baseUrl = (config?.baseUrl ?? requireEnv("TG_API_URL")).replace(/\/$/, "");
-  const token = config?.token ?? requireEnv("INTERNAL_API_TOKEN");
-
-  const request = async (path: string, init?: RequestInit): Promise<unknown> => {
-    const res = await fetch(`${baseUrl}${path}`, {
-      ...init,
-      headers: {
-        "x-internal-token": token,
-        ...(init?.body ? { "content-type": "application/json" } : {}),
-        ...init?.headers,
-      },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      throw new Error(`tg internal API ${path} answered ${res.status}`);
-    }
-    return res.json();
-  };
+/** One source's media store, or null when this deployment does not run it. */
+export function sourceMediaStore(source: SourceId): MediaStorePort | null {
+  const config = sourceApiConfig(source);
+  if (!config) return null;
+  const request = internalRequester({
+    ...config,
+    label: `${source} internal API`,
+    timeoutMs: REQUEST_TIMEOUT_MS,
+  });
 
   return {
     async getByMessage(chatId, telegramMessageId) {
@@ -91,32 +87,34 @@ export function tgApiMediaStore(config?: { baseUrl?: string; token?: string }): 
 }
 
 /**
- * What the vision feature needs of the source's media beyond the per-row
+ * What the vision feature needs of a source's media beyond the per-row
  * store: the backfill's work list and the dashboard gallery's recent rows.
+ * Every source serves it, so the backfill and the gallery fan out rather
+ * than knowing which app has pictures.
  */
 export interface SourceMediaBrowse {
+  /** Which app this surface reads — rows are tagged with it. */
+  source: SourceId;
   store: MediaStorePort;
   listPending(limit: number): Promise<{ id: string; chatId: string; telegramMessageId: number }[]>;
   countPending(): Promise<number>;
   listRecent(limit: number): Promise<MediaRecord[]>;
 }
 
-/** The tg-API-backed browse surface, or null when the source API is unset. */
-export function resolveSourceMediaBrowse(): SourceMediaBrowse | null {
-  const env = getEnv();
-  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
-  const baseUrl = env.TG_API_URL.replace(/\/$/, "");
-  const token = env.INTERNAL_API_TOKEN;
-  const request = async (path: string): Promise<unknown> => {
-    const res = await fetch(`${baseUrl}${path}`, {
-      headers: { "x-internal-token": token },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) throw new Error(`tg internal API ${path} answered ${res.status}`);
-    return res.json();
-  };
+/** One source's browse surface, or null when this deployment does not run it. */
+export function sourceMediaBrowse(source: SourceId): SourceMediaBrowse | null {
+  const config = sourceApiConfig(source);
+  if (!config) return null;
+  const store = sourceMediaStore(source);
+  if (!store) return null;
+  const request = internalRequester({
+    ...config,
+    label: `${source} internal API`,
+    timeoutMs: REQUEST_TIMEOUT_MS,
+  });
   return {
-    store: tgApiMediaStore(),
+    source,
+    store,
     async listPending(limit) {
       const body = internalPendingMediaResponseSchema.parse(
         await request(`/internal/media/pending?limit=${limit}`),
@@ -140,4 +138,15 @@ export function resolveSourceMediaBrowse(): SourceMediaBrowse | null {
       return body.media.map(toMediaRecord);
     },
   };
+}
+
+/**
+ * Every source this deployment runs, in registry order. The backfill and the
+ * dashboard gallery work across all of them: pictures arrive wherever people
+ * are, and neither surface should have to know which app that was.
+ */
+export function mediaSources(): SourceMediaBrowse[] {
+  return SOURCE_IDS.map((source) => sourceMediaBrowse(source)).filter(
+    (browse): browse is SourceMediaBrowse => browse !== null,
+  );
 }

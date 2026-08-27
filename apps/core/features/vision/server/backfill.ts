@@ -6,7 +6,7 @@ import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import type { JobProgress } from "@/server/jobs/progress";
-import type { SourceMediaBrowse } from "@/server/turn/tg-media";
+import type { SourceMediaBrowse } from "@/server/turn/source-media";
 import { startTrace } from "@/server/trace";
 
 import { describeAndStore, type DescribeDeps } from "./service";

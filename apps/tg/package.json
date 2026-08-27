@@ -18,6 +18,7 @@
     "@assistant-hub/bus": "*",
     "@assistant-hub/contracts": "*",
     "@assistant-hub/db": "*",
+    "@assistant-hub/media": "*",
     "@assistant-hub/service": "*",
     "@grammyjs/runner": "^2.0.3",
     "@grammyjs/types": "^3.28.0",

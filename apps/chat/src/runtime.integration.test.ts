@@ -11,6 +11,7 @@ import {
   type InboundMessageEvent,
 } from "@assistant-hub/contracts";
 import { applyMigrations, startTestPostgres, type TestPostgres } from "@assistant-hub/db/testing";
+import sharp from "sharp";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
@@ -380,5 +381,95 @@ describe("chat runtime", () => {
       await publisher.close();
       await consumer.close();
     }
+  });
+
+  it("stores an uploaded image as pending media and hands the core its bytes", async () => {
+    const enqueued: InboundMessageEvent[] = [];
+    const app = apiWith(enqueued);
+    const thread = await newThread(app, "With a picture");
+    // A real (tiny) PNG — the app normalizes whatever the browser sends.
+    const png = await sharp({
+      create: { width: 24, height: 24, channels: 3, background: { r: 10, g: 120, b: 200 } },
+    })
+      .png()
+      .toBuffer();
+
+    const posted = chatPostMessageResponseSchema.parse(
+      await (
+        await app.request(`/internal/threads/${thread.id}/messages`, {
+          method: "POST",
+          headers: HEADERS,
+          body: JSON.stringify({
+            text: "what is this?",
+            image: { dataBase64: png.toString("base64"), mimeType: "image/png" },
+          }),
+        })
+      ).json(),
+    );
+    expect(posted.message.media).toMatchObject({ kind: "image", status: "pending" });
+    const mediaId = posted.message.media!.id;
+
+    // The event references it the way a Telegram photo does.
+    expect(enqueued.at(-1)!.message.media).toEqual([
+      { id: mediaId, kind: "image", status: "pending", description: null },
+    ]);
+
+    // The core's describe pass: the work list, the bytes, the write-back.
+    const pending = (await (
+      await app.request("/internal/media/pending?limit=10", { headers: HEADERS })
+    ).json()) as { media: Array<{ id: string; chatId: string }>; total: number };
+    expect(pending.media.some((row) => row.id === mediaId && row.chatId === thread.id)).toBe(true);
+
+    const withBytes = (await (
+      await app.request(`/internal/media/${mediaId}`, { headers: HEADERS })
+    ).json()) as { media: { frames: string[]; mimeType: string | null } };
+    // Normalized to JPEG regardless of what was uploaded.
+    expect(withBytes.media.mimeType).toBe("image/jpeg");
+    expect(withBytes.media.frames).toHaveLength(1);
+
+    const described = (await (
+      await app.request(`/internal/media/${mediaId}/description`, {
+        method: "PUT",
+        headers: HEADERS,
+        body: JSON.stringify({ description: "a solid blue square" }),
+      })
+    ).json()) as { updated: boolean; media: { status: string; description: string } };
+    expect(described).toMatchObject({
+      updated: true,
+      media: { status: "described", description: "a solid blue square" },
+    });
+
+    // The picture survives being described — a web thread is its only archive.
+    const bytes = await app.request(`/internal/media/${mediaId}/bytes`, { headers: HEADERS });
+    expect(bytes.status).toBe(200);
+    expect(bytes.headers.get("content-type")).toBe("image/jpeg");
+    expect((await bytes.arrayBuffer()).byteLength).toBeGreaterThan(0);
+
+    // …and the transcript carries the description with the line.
+    const body = chatThreadResponseSchema.parse(
+      await (await app.request(`/internal/threads/${thread.id}`, { headers: HEADERS })).json(),
+    );
+    expect(body.messages[0].media).toMatchObject({
+      id: mediaId,
+      status: "described",
+      description: "a solid blue square",
+    });
+  });
+
+  it("answers on the text when an upload cannot be read as an image", async () => {
+    const enqueued: InboundMessageEvent[] = [];
+    const app = apiWith(enqueued);
+    const thread = await newThread(app, "Broken upload");
+    const res = await app.request(`/internal/threads/${thread.id}/messages`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        text: "look at this",
+        image: { dataBase64: Buffer.from("not an image at all").toString("base64") },
+      }),
+    });
+    expect(res.status).toBe(200);
+    // The turn still runs — losing the message would be the worse failure.
+    expect(enqueued.at(-1)!.message).toMatchObject({ content: "look at this", media: [] });
   });
 });

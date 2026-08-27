@@ -1,3 +1,5 @@
+import type { SourceId } from "@assistant-hub/contracts";
+
 /**
  * Shared vision types. Client-safe (no server imports) so both the server
  * services and the dashboard/debug UI can import them.
@@ -15,6 +17,8 @@ export const MEDIA_KINDS = [
   "animation",
   "video",
   "voice",
+  /** A browser upload in a web thread — no platform kind, just a picture. */
+  "image",
 ] as const;
 
 /** The union, derived from the list so a new kind cannot be added to only one. */
@@ -80,13 +84,21 @@ export interface MediaAnnotation {
  */
 export interface MediaView {
   id: string;
+  /** Which source app holds this row (the gallery tags each card with it). */
+  source: SourceId;
   chatId: string;
   telegramMessageId: number;
   kind: MediaKind;
   status: MediaStatus;
   description: string | null;
-  /** `data:<mime>;base64,…` for a pending row with bytes, else null (first frame for a video). */
+  /** `data:<mime>;base64,…` for a row whose bytes came with the listing, else null. */
   preview: string | null;
+  /**
+   * Where the picture can be fetched when the owning source still has it but
+   * did not ship it with the listing (a described web-chat image). Null when
+   * the bytes are gone for good, which is what a described telegram row is.
+   */
+  bytesUrl: string | null;
   /** All sampled frames as data URLs for a pending video/GIF, else null. */
   frames: string[] | null;
   createdAt: string;

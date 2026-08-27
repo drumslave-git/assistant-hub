@@ -1,0 +1,19 @@
+{
+  "name": "@assistant-hub/media",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Media bytes every app handles the same way: normalizing an image to a bounded JPEG the vision endpoints accept. Shared because the core, tg and chat all had to do it — twice identically before this package existed.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5"
+  }
+}

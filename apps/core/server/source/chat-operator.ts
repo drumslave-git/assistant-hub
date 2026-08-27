@@ -14,7 +14,9 @@ import {
 
 import { ApiError } from "@/lib/api-error";
 
+import { sourceApiConfig } from "./internal-client";
 import {
+  OPERATOR_TIMEOUT_MS,
   createDirectoryClient,
   operatorRequester,
   type SourceDirectoryClient,
@@ -39,10 +41,12 @@ export interface ChatOperatorClient extends SourceDirectoryClient {
   ): Promise<{ thread: ChatThread; messages: ChatThreadMessage[]; turn: ChatThreadTurn | null }>;
   renameThread(id: string, name: string): Promise<ChatThread>;
   deleteThread(id: string): Promise<void>;
+  /** The bytes of one stored image, for rendering. Null when it is gone. */
+  mediaBytes(id: string): Promise<{ bytes: ArrayBuffer; mimeType: string } | null>;
   /** Post what the human said; the source stores it and starts the turn. */
   postMessage(
     id: string,
-    text: string,
+    input: { text: string; image?: { dataBase64: string; mimeType?: string | null } },
   ): Promise<{ message: ChatThreadMessage; correlationId: string | null }>;
 }
 
@@ -52,6 +56,19 @@ export function chatOperatorClient(): ChatOperatorClient | null {
   if (!resolved) return null;
   const { request, label } = resolved;
   const threadPath = (id: string) => `/internal/threads/${encodeURIComponent(id)}`;
+  // Bytes do not fit the JSON requester: this one hands back the response so
+  // the caller can stream it, and null for a 404 (a picture that is gone).
+  const requestRaw = async (path: string): Promise<Response | null> => {
+    const config = sourceApiConfig("chat");
+    if (!config) return null;
+    const res = await fetch(`${config.baseUrl}${path}`, {
+      headers: { "x-internal-token": config.token },
+      signal: AbortSignal.timeout(OPERATOR_TIMEOUT_MS),
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw ApiError.serviceUnavailable(`${label} ${path} answered ${res.status}`);
+    return res;
+  };
 
   return {
     ...createDirectoryClient(request, label),
@@ -81,11 +98,22 @@ export function chatOperatorClient(): ChatOperatorClient | null {
     async deleteThread(id) {
       await request(threadPath(id), { method: "DELETE" });
     },
-    async postMessage(id, text) {
+    async mediaBytes(id) {
+      const res = await requestRaw(`/internal/media/${encodeURIComponent(id)}/bytes`);
+      if (!res) return null;
+      return {
+        bytes: await res.arrayBuffer(),
+        mimeType: res.headers.get("content-type") ?? "image/jpeg",
+      };
+    },
+    async postMessage(id, input) {
       return chatPostMessageResponseSchema.parse(
         await request(`${threadPath(id)}/messages`, {
           method: "POST",
-          body: JSON.stringify({ text }),
+          body: JSON.stringify(input),
+          // An upload is bigger and slower than a listing: it carries bytes
+          // and waits on normalization, so it gets the default timeout.
+          timeoutMs: undefined,
         }),
       );
     },
@@ -134,7 +162,14 @@ export async function deleteChatThread(id: string): Promise<void> {
 /** Say something in a thread: the source stores it and starts the turn. */
 export async function postChatMessage(
   id: string,
-  text: string,
+  input: { text: string; image?: { dataBase64: string; mimeType?: string | null } },
 ): Promise<{ message: ChatThreadMessage; correlationId: string | null }> {
-  return requireClient("the message cannot be sent").postMessage(id, text);
+  return requireClient("the message cannot be sent").postMessage(id, input);
+}
+
+/** The bytes of one stored web-chat image, or null when it is gone. */
+export async function chatMediaBytes(
+  id: string,
+): Promise<{ bytes: ArrayBuffer; mimeType: string } | null> {
+  return requireClient("the image cannot be read").mediaBytes(id);
 }

@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { SourceId } from "@assistant-hub/contracts";
 import type { Message } from "@grammyjs/types";
 
 import type { DrizzleDb } from "@/db/drizzle";
@@ -12,7 +13,7 @@ import type {
   LlmCallTrace,
 } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
-import { resolveSourceMediaBrowse } from "@/server/turn/tg-media";
+import { mediaSources, sourceMediaStore } from "@/server/turn/source-media";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 
 import {
@@ -657,24 +658,36 @@ export async function getMediaSuffixesForMessages(
 }
 
 /** Map a stored row to its dashboard view (bytes → preview only while pending). */
-function toView(record: MediaRecord): MediaView {
-  const pending = record.status === "pending";
-  // A video/GIF exposes all its sampled frames; a still image exposes one preview.
+/**
+ * Where a source's stored bytes can be fetched, for the sources that keep
+ * them after describing. A lookup, so a new source app adds a line rather
+ * than a branch — and an absent entry simply means "gone once described",
+ * which is Telegram's lifecycle.
+ */
+const BYTES_URL: Partial<Record<SourceId, (id: string) => string>> = {
+  chat: (id) => `/api/chat/media/${encodeURIComponent(id)}`,
+};
+
+function toView(record: MediaRecord, source: SourceId): MediaView {
+  // Show the picture whenever the source still has it. A described telegram
+  // row has dropped its bytes and shows none; a web thread keeps them, since
+  // it is the only archive its images have.
   const frames =
-    pending && record.frames && record.frames.length > 0
+    record.frames && record.frames.length > 0
       ? record.frames.map((base64) => `data:image/jpeg;base64,${base64}`)
       : null;
   return {
     id: record.id,
+    source,
     chatId: record.chatId,
     telegramMessageId: record.telegramMessageId,
     kind: record.kind,
     status: record.status,
     description: record.description,
-    preview:
-      pending && record.dataBase64
-        ? `data:${record.mimeType ?? "image/jpeg"};base64,${record.dataBase64}`
-        : null,
+    preview: record.dataBase64
+      ? `data:${record.mimeType ?? "image/jpeg"};base64,${record.dataBase64}`
+      : null,
+    bytesUrl: record.dataBase64 ? null : (BYTES_URL[source]?.(record.id) ?? null),
     frames,
     createdAt: record.createdAt,
     describedAt: record.describedAt,
@@ -682,30 +695,51 @@ function toView(record: MediaRecord): MediaView {
 }
 
 /**
- * The media rows live with the owning source since the split; an
- * unconfigured source API throws for the caller (the vision page renders
- * its unavailable state) rather than silently listing nothing.
+ * The media rows live with the owning sources since the split; a deployment
+ * running none of them throws for the caller (the vision page renders its
+ * unavailable state) rather than silently listing nothing.
  */
-function requireSourceMedia() {
-  const source = resolveSourceMediaBrowse();
-  if (!source) {
-    throw new Error("telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
+function requireMediaSources() {
+  const sources = mediaSources();
+  if (sources.length === 0) {
+    throw new Error("no source app is configured (TG_API_URL / CHAT_API_URL)");
   }
-  return source;
+  return sources;
 }
 
-/** Recent media for the dashboard, newest first (from the owning source). */
+/**
+ * Recent media for the dashboard, newest first — merged across every source,
+ * each row tagged with the app that holds it. One source failing is not worth
+ * an empty gallery, so it is skipped and the rest render.
+ */
 export async function listMedia(limit = 100): Promise<MediaView[]> {
-  const rows = await requireSourceMedia().listRecent(limit);
-  return rows.map(toView);
+  const perSource = await Promise.all(
+    requireMediaSources().map(async (source) =>
+      source
+        .listRecent(limit)
+        .then((rows) => rows.map((row) => toView(row, source.source)))
+        .catch(() => [] as MediaView[]),
+    ),
+  );
+  return perSource
+    .flat()
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, limit);
 }
 
-/** One media row by id (dashboard detail), or null. */
+/** One media row by id (dashboard detail), or null. Ids are unique per source. */
 export async function getMediaDetail(id: string): Promise<MediaRecord | null> {
-  return requireSourceMedia().store.getById(id);
+  for (const source of requireMediaSources()) {
+    const found = await source.store.getById(id).catch(() => null);
+    if (found) return found;
+  }
+  return null;
 }
 
 /** Count of media rows still awaiting a description (backfill backlog size). */
 export async function getPendingMediaCount(): Promise<number> {
-  return requireSourceMedia().countPending();
+  const counts = await Promise.all(
+    requireMediaSources().map((source) => source.countPending().catch(() => 0)),
+  );
+  return counts.reduce((total, count) => total + count, 0);
 }

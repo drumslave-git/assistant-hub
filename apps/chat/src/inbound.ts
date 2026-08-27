@@ -6,8 +6,11 @@ import {
   type InboundMessageEvent,
 } from "@assistant-hub/contracts";
 
+import { normalizeImageForChat } from "@assistant-hub/media";
+
 import { buildChatInfo, buildConversationContext, buildSenderInfo, threadOwner } from "./context";
 import type { ChatDb } from "./db";
+import { insertMedia } from "./media";
 import { appendMessage, getThreadById } from "./store";
 import type { ChatMessageRow } from "../store/schema";
 
@@ -28,18 +31,28 @@ import type { ChatMessageRow } from "../store/schema";
  *   `connection`).
  * - **One assistant per message**: the thread's binding is fixed at creation,
  *   so unlike a group there is never a fan-out.
+ *
+ * An uploaded image is normalized here and stored `pending`, then referenced
+ * on the event exactly as a Telegram photo is: the core describes it over the
+ * media API and writes the text back. An image that cannot be normalized does
+ * NOT lose the message — the turn runs on the text, the way a media message
+ * the tg ingest could not store still gets answered.
  */
 
 export interface PostMessageResult {
   message: ChatMessageRow;
   /** The turn's correlation id, or null when nothing was enqueued. */
   correlationId: string | null;
+  /** The stored media row, when the message carried an image. */
+  media: { id: string; kind: string; status: string; description: string | null } | null;
 }
 
 export async function postThreadMessage(input: {
   db: ChatDb;
   threadId: string;
   text: string;
+  /** An uploaded image, as the browser read it. */
+  image?: { dataBase64: string; mimeType?: string | null } | null;
   /** Publish the event as one queue job. A failure surfaces to the caller. */
   enqueue: (event: InboundMessageEvent) => Promise<void>;
   now?: () => Date;
@@ -58,6 +71,10 @@ export async function postThreadMessage(input: {
     content: input.text,
     sentAt: now,
   });
+
+  const stored = input.image
+    ? await insertImage(input.db, message.id, input.image).catch(() => null)
+    : null;
 
   const context = await buildConversationContext(input.db, {
     thread,
@@ -89,11 +106,46 @@ export async function postThreadMessage(input: {
       sentAt: message.sentAt.toISOString(),
       threadId: null,
       replyTo: null,
-      media: [],
+      media: stored
+        ? [
+            {
+              id: stored.id,
+              kind: stored.kind,
+              description: stored.description,
+              status: stored.status as "pending" | "described" | "unavailable",
+            },
+          ]
+        : [],
     },
     context,
   } satisfies InboundMessageEvent);
 
   await input.enqueue(event);
-  return { message, correlationId };
+  return {
+    message,
+    correlationId,
+    media: stored
+      ? {
+          id: stored.id,
+          kind: stored.kind,
+          status: stored.status,
+          description: stored.description,
+        }
+      : null,
+  };
+}
+
+/** Normalize an upload to a bounded JPEG and store it as pending media. */
+async function insertImage(
+  db: ChatDb,
+  messageId: number,
+  image: { dataBase64: string; mimeType?: string | null },
+) {
+  const normalized = await normalizeImageForChat(image.dataBase64);
+  return insertMedia(db, {
+    messageId,
+    kind: "image",
+    mimeType: normalized.mimeHint,
+    frames: [normalized.base64],
+  });
 }
