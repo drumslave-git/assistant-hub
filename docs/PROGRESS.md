@@ -200,6 +200,13 @@ Known pitfalls (in addition to the ones under "Phases" below):
   tg (3210) and chat (3220) — because each app has a `dev` script and
   turbo runs them together. The dev chat store exists (database `chat`,
   migrated, `apps/chat/.env` written, `CHAT_API_URL` in `apps/core/.env`).
+- **A dev server can lose a route it once served.** `/apps/chat` 404ed on
+  a freshly started dev server (2026-08-27) while the same code served it
+  minutes earlier and `next build` lists `/apps/[app]/[[...rest]]` — the
+  route table went stale, and a restart fixed it. The mount page now says
+  "No app is mounted here" for an unknown app, so the two failures are
+  distinguishable: a worded page means the registry, a bare Next 404
+  means the dev server has not compiled the route — restart it.
 - **A code change in the turn consumer, the prompt or a source app is not
   live until the process restarts.** They are boot-time modules: Next's
   hot reload does not reach the consumer the instrumentation started, and
