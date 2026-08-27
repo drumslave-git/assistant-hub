@@ -68,9 +68,26 @@ export const chatThreadsResponseSchema = z.object({ threads: z.array(chatThreadS
 /** One thread on its own — the answer to creating or renaming it. */
 export const chatThreadCreatedResponseSchema = z.object({ thread: chatThreadSchema });
 
+/**
+ * What the core is doing in this thread right now — the source's native
+ * rendering of the turn lifecycle (PLAN.md), which in a browser is live
+ * progress under the transcript rather than a typing indicator. Null when
+ * no turn is running.
+ */
+export const chatThreadTurnSchema = z.object({
+  /** Source-local id of the message being answered. */
+  sourceMessageId: z.string().min(1),
+  /** What the turn is doing right now (a tool's label), or null. */
+  activity: z.string().nullable(),
+  since: z.string().min(1),
+});
+
+export type ChatThreadTurn = z.infer<typeof chatThreadTurnSchema>;
+
 export const chatThreadResponseSchema = z.object({
   thread: chatThreadSchema,
   messages: z.array(chatThreadMessageSchema),
+  turn: chatThreadTurnSchema.nullable().default(null),
 });
 
 /** POST /internal/threads/:id/messages — the human says something. */

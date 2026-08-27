@@ -12,6 +12,7 @@ import { dashboardRefresh, optionalEnv, requireEnv } from "@assistant-hub/servic
 import { createApi } from "./api";
 import { closeChatDb, getChatDb } from "./db";
 import { startDeliveryConsumer } from "./delivery";
+import { ThreadTurns } from "./turns";
 
 /**
  * The chat source app's entry: store + the inbound queue producer + the
@@ -29,11 +30,15 @@ const db = getChatDb();
 
 const queue = openQueue<InboundMessageEvent>(INBOUND_MESSAGES_QUEUE, redisUrl);
 const publisher = openPublisher(redisUrl);
-const delivery = await startDeliveryConsumer({ db, redisUrl });
+// One running-turn state: the consumer writes it from the core's lifecycle
+// events, the API serves it to the thread view.
+const turns = new ThreadTurns();
+const delivery = await startDeliveryConsumer({ db, redisUrl, turns });
 
 const api = createApi({
   db,
   internalToken,
+  turns,
   enqueue: async (event) => {
     await queue.add("message.inbound", event);
   },

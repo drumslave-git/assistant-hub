@@ -110,7 +110,7 @@ export interface TurnBindingsInput {
    * queue consumer's retry gate — a turn that ran a tool must never re-run.
    * Absent on the v1 path (no queue, no retry).
    */
-  onBeforeToolCall?: () => Promise<void>;
+  onBeforeToolCall?: (toolName: string) => Promise<void>;
   /** Test seam: inject a deterministic generator instead of the LLM. */
   overrideGenerateReply?: BotMessagingDeps["generateReply"];
 }
@@ -180,7 +180,10 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
       // begun, the turn has acted and must never be re-run by a retry.
       const callTool: typeof toolset.callTool = input.onBeforeToolCall
         ? async (name, args) => {
-            await input.onBeforeToolCall?.();
+            // The tool's name travels with the hook: the turn marks itself as
+            // having acted, and the owning source hears WHAT it is doing —
+            // a typing indicator ignores it, a web thread shows it.
+            await input.onBeforeToolCall?.(name);
             return toolset.callTool(name, args);
           }
         : toolset.callTool;

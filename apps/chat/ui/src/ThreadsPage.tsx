@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { MessagesSquare, Plus, Send, Trash2 } from "lucide-react";
 
-import type { ChatThread, ChatThreadMessage } from "@assistant-hub/contracts";
+import type { ChatThread, ChatThreadMessage, ChatThreadTurn } from "@assistant-hub/contracts";
 import {
   Button,
   Card,
@@ -263,6 +263,7 @@ function Conversation({
 }) {
   const [thread, setThread] = useState<ChatThread | null>(null);
   const [messages, setMessages] = useState<ChatThreadMessage[]>([]);
+  const [turn, setTurn] = useState<ChatThreadTurn | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -271,11 +272,14 @@ function Conversation({
 
   const load = useCallback(async () => {
     try {
-      const data = await apiFetch<{ thread: ChatThread; messages: ChatThreadMessage[] }>(
-        `/api/chat/threads/${encodeURIComponent(threadId)}`,
-      );
+      const data = await apiFetch<{
+        thread: ChatThread;
+        messages: ChatThreadMessage[];
+        turn: ChatThreadTurn | null;
+      }>(`/api/chat/threads/${encodeURIComponent(threadId)}`);
       setThread(data.thread);
       setMessages(data.messages);
+      setTurn(data.turn);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not read the thread");
@@ -290,7 +294,7 @@ function Conversation({
   // who scrolled up on purpose — `nearest` only scrolls when it must.
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "nearest" });
-  }, [messages.length]);
+  }, [messages.length, turn?.sourceMessageId]);
 
   // Live: the chat app pings this topic when a thread changes, which includes
   // the assistant's reply arriving after the turn ran. The page's own pill
@@ -368,6 +372,15 @@ function Conversation({
             </span>
           </div>
         ))}
+        {turn ? (
+          <p className="flex items-center gap-2 text-xs text-muted">
+            <span
+              className="h-1.5 w-1.5 animate-pulse rounded-full bg-current motion-reduce:animate-none"
+              aria-hidden
+            />
+            {turn.activity ? `Working — ${turn.activity}…` : "Thinking…"}
+          </p>
+        ) : null}
         <div ref={bottom} />
       </div>
 

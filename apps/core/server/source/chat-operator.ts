@@ -8,6 +8,7 @@ import {
   chatUserResponseSchema,
   type ChatThread,
   type ChatThreadMessage,
+  type ChatThreadTurn,
   type ChatUser,
 } from "@assistant-hub/contracts";
 
@@ -33,7 +34,9 @@ export interface ChatOperatorClient extends SourceDirectoryClient {
   operatorUser(): Promise<ChatUser>;
   listThreads(): Promise<ChatThread[]>;
   createThread(input: { assistantId: string; name: string }): Promise<ChatThread>;
-  getThread(id: string): Promise<{ thread: ChatThread; messages: ChatThreadMessage[] }>;
+  getThread(
+    id: string,
+  ): Promise<{ thread: ChatThread; messages: ChatThreadMessage[]; turn: ChatThreadTurn | null }>;
   renameThread(id: string, name: string): Promise<ChatThread>;
   deleteThread(id: string): Promise<void>;
   /** Post what the human said; the source stores it and starts the turn. */
@@ -116,7 +119,7 @@ export async function createChatThread(input: {
 /** One thread with its transcript. */
 export async function getChatThread(
   id: string,
-): Promise<{ thread: ChatThread; messages: ChatThreadMessage[] }> {
+): Promise<{ thread: ChatThread; messages: ChatThreadMessage[]; turn: ChatThreadTurn | null }> {
   return requireClient("the thread cannot be read").getThread(id);
 }
 

@@ -363,7 +363,12 @@ async function buildEventDeps(
       await ctx.publish(deliveryEvent(text, false));
       return { messageId: null };
     },
-    onBeforeToolCall: markActed,
+    onBeforeToolCall: async (toolName) => {
+      await markActed();
+      // Progress, for whoever renders it: the tg app keeps typing, a web
+      // thread names the tool under the transcript (PLAN "Turn lifecycle").
+      void ctx.publish(lifecycleEvent(event, "progress", toolName)).catch(() => undefined);
+    },
     overrideGenerateReply: ctx.overrides?.generateReply,
   });
 

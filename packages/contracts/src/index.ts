@@ -22,12 +22,14 @@ export {
   chatThreadMessageSchema,
   chatThreadResponseSchema,
   chatThreadSchema,
+  chatThreadTurnSchema,
   chatThreadUpdateRequestSchema,
   chatThreadsResponseSchema,
   chatUserResponseSchema,
   chatUserSchema,
   type ChatThread,
   type ChatThreadMessage,
+  type ChatThreadTurn,
   type ChatUser,
 } from "./chat-api";
 export {

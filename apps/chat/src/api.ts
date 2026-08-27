@@ -18,6 +18,7 @@ import { Hono } from "hono";
 
 import type { ChatDb } from "./db";
 import { postThreadMessage } from "./inbound";
+import type { ThreadTurns } from "./turns";
 import {
   appendMessage,
   createThread,
@@ -80,6 +81,12 @@ export function createApi(input: {
   enqueue?: (event: InboundMessageEvent) => Promise<void>;
   /** Ping the dashboard's live topics (the bus publisher, when there is one). */
   onThreadsChanged?: () => void;
+  /**
+   * What the core is doing in each thread right now, kept by the lifecycle
+   * consumer. Absent → threads simply report no running turn, which is the
+   * honest answer for a service with no bus attached.
+   */
+  turns?: ThreadTurns;
 }): Hono {
   const app = new Hono();
 
@@ -303,7 +310,18 @@ export function createApi(input: {
     const listing = await getThreadListing(input.db, threadId);
     if (!listing) return c.json({ error: { message: "thread not found" } }, 404);
     const rows = await listLiveMessages(input.db, threadId);
-    return c.json({ thread: toChatThread(listing), messages: rows.map(toThreadMessage) });
+    const turn = input.turns?.get(threadId) ?? null;
+    return c.json({
+      thread: toChatThread(listing),
+      messages: rows.map(toThreadMessage),
+      turn: turn
+        ? {
+            sourceMessageId: turn.sourceMessageId,
+            activity: turn.activity,
+            since: turn.since.toISOString(),
+          }
+        : null,
+    });
   });
 
   internal.patch("/threads/:threadId", async (c) => {
@@ -319,7 +337,9 @@ export function createApi(input: {
   });
 
   internal.delete("/threads/:threadId", async (c) => {
-    const deleted = await deleteThread(input.db, c.req.param("threadId"));
+    const threadId = c.req.param("threadId");
+    input.turns?.clear(threadId);
+    const deleted = await deleteThread(input.db, threadId);
     if (!deleted) return c.json({ error: { message: "thread not found" } }, 404);
     input.onThreadsChanged?.();
     return c.json({ deleted: true });

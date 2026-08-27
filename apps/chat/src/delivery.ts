@@ -9,6 +9,7 @@ import { busTraceClient, dashboardRefresh } from "@assistant-hub/service";
 
 import type { ChatDb } from "./db";
 import { appendMessage, getThreadById } from "./store";
+import type { ThreadTurns } from "./turns";
 
 /**
  * The outbound half of the source contract: consume the core's
@@ -20,9 +21,11 @@ import { appendMessage, getThreadById } from "./store";
  * the correlation and the refresh ping are identical, which is why the model
  * never has to remember to send its own answer here either.
  *
- * The lifecycle events (typing/progress) are rendered by the thread view in
- * slice C; `settled` already pings the dashboard so the finished turn shows
- * up even if a delivery ping was missed.
+ * The lifecycle events are this app's typing indicator: they update the
+ * running-turn state the thread API serves, and each change pings the
+ * dashboard so the browser re-reads and shows what the turn is doing. A
+ * settle also pings on its own, so a finished turn shows up even if a
+ * delivery ping was missed.
  */
 
 export interface DeliveryConsumer {
@@ -32,6 +35,8 @@ export interface DeliveryConsumer {
 export async function startDeliveryConsumer(input: {
   db: ChatDb;
   redisUrl: string;
+  /** The running-turn state the thread API reads; shared with the API. */
+  turns?: ThreadTurns;
   onError?: (context: string, error: unknown) => void;
 }): Promise<DeliveryConsumer> {
   const onError =
@@ -103,7 +108,12 @@ export async function startDeliveryConsumer(input: {
     if (type === "turn.lifecycle") {
       const parsed = turnLifecycleEventSchema.safeParse(payload);
       if (!parsed.success || parsed.data.source !== "chat") return;
-      if (parsed.data.phase === "settled") pingThreads();
+      const event = parsed.data;
+      const threadId = parseScopedRef(event.chatRef).id;
+      const changed = input.turns?.apply(threadId, event) ?? false;
+      // Ping on a visible change, and always on settle: the last ping is what
+      // clears "thinking…" and shows the finished transcript.
+      if (changed || event.phase === "settled") pingThreads();
     }
   };
 

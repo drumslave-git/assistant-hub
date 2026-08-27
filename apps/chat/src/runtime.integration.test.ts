@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "../store/schema";
 import { createApi } from "./api";
 import { startDeliveryConsumer } from "./delivery";
+import { ThreadTurns } from "./turns";
 
 const MIGRATIONS = fileURLToPath(new URL("../store/migrations", import.meta.url));
 
@@ -331,5 +332,53 @@ describe("chat runtime", () => {
     ).json()) as { messages: Array<{ deletedAt: string | null }> };
     expect(operator.messages).toHaveLength(1);
     expect(operator.messages[0].deletedAt).not.toBeNull();
+  });
+
+  it("shows what the core is doing in the thread, and stops when it settles", async () => {
+    const turns = new ThreadTurns();
+    const app = createApi({ db, internalToken: TOKEN, turns, enqueue: async () => {} });
+    const thread = await newThread(app, "Live progress");
+    const consumer = await startDeliveryConsumer({ db, redisUrl, turns });
+    const publisher = openPublisher(redisUrl);
+
+    const readTurn = async () => {
+      const body = chatThreadResponseSchema.parse(
+        await (await app.request(`/internal/threads/${thread.id}`, { headers: HEADERS })).json(),
+      );
+      return body.turn;
+    };
+    const lifecycle = (phase: "accepted" | "progress" | "settled", activity?: string) => ({
+      v: 1,
+      eventId: `evt-${phase}-${activity ?? "none"}`,
+      occurredAt: new Date().toISOString(),
+      correlationId: `${thread.id}:1:${ASSISTANT_ID}`,
+      type: "turn.lifecycle",
+      source: "chat",
+      assistantId: ASSISTANT_ID,
+      chatRef: `chat:thread:${thread.id}`,
+      sourceMessageId: "1",
+      phase,
+      ...(activity ? { activity } : {}),
+    });
+
+    try {
+      expect(await readTurn()).toBeNull();
+
+      await publisher.publish(BUS_EVENTS_CHANNEL, lifecycle("accepted"));
+      await expect.poll(async () => (await readTurn())?.sourceMessageId, { timeout: 15_000 }).toBe(
+        "1",
+      );
+
+      await publisher.publish(BUS_EVENTS_CHANNEL, lifecycle("progress", "browse_web"));
+      await expect
+        .poll(async () => (await readTurn())?.activity, { timeout: 15_000 })
+        .toBe("browse_web");
+
+      await publisher.publish(BUS_EVENTS_CHANNEL, lifecycle("settled"));
+      await expect.poll(async () => await readTurn(), { timeout: 15_000 }).toBeNull();
+    } finally {
+      await publisher.close();
+      await consumer.close();
+    }
   });
 });
