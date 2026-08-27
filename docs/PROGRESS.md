@@ -18,7 +18,8 @@ end-to-end smoke passed on the operator's real bot (see the swap notes
 under the Phase 2 criteria for the commit-by-commit list, and the smoke
 item below for the dev-environment setup that now exists).
 
-**Phase 3 (Assistants) is in progress.** The sequencing decisions were
+**Phase 3 (Assistants) is DONE (2026-08-27)** — every acceptance
+criterion is met and both operator live checks passed (see below). The sequencing decisions were
 answered by the user (2026-08-24): (1) the assistant-scoped brain reads
 (persona by `event.assistantId`, per-assistant tasks) flip to the v2
 core store in this phase — memory/settings/self-improvement stay v1
@@ -39,31 +40,53 @@ criteria and session log). **Slice F landed (2026-08-27)**: the
 users and groups pages aggregate every source's operator listing
 instead of reading the transitional shadow, curated edits are
 routed by scoped ref, and person links have CRUD with memory
-reading through them. Every Phase 3 acceptance criterion is now
-checked; the two operator live checks below are what remains
-before the phase is called done, and Phase 4 (web chat) is the
-next best task — it is also what turns the source registry, the
-listing contract and person links from one-source machinery into
+reading through them. With the two operator live
+checks passed the same day, Phase 3 is closed. **Next best task:
+Phase 4 (web chat)** — which is also what turns the source registry,
+the listing contract and person links from one-source machinery into
 the thing they were designed for.
 
-Waiting on the operator (both checks need the dev services restarted —
-the tg service and the core dev server, since the queue consumer and
-pollers are boot-bound; migrations are already applied to both dev
-databases):
+**Both operator live checks passed (2026-08-27, after a service
+restart), verified from the traces.** Phase 3 has no open work.
 
-1. The two-bot DM check from slice D: DM each bot and confirm each
-   answers as ITS assistant with only its own conversation history.
-2. The slice-E group check (re-run after the fan-out fix below): in a
-   group holding both bots, confirm that naming EITHER assistant gets
-   that one to answer (the first live test failed here — see the
-   fix note under the criterion), that an assistant's reply reaches the
-   other (the cross-feed), that each reads the other's lines as that
-   assistant's name rather than its own, and that the exchange stops
-   after the configured run of assistant messages (Settings → General →
-   "Assistant replies in a row", default 3) until a person speaks
-   again. Note the presence rule: an assistant joins a chat's audience
-   the first time Telegram delivers that group's traffic to its bot, so
-   a bot added since the last message registers on the next one.
+1. **Two-bot DM check (slice D) — passed.** Each bot was DM'd "tell me
+   about yourself" and each answered as ITS assistant ("I am Igor…" /
+   "I'm a person who's quite certain about who she is…"), on its own
+   correlation, with its own `botDisplayName` in the addressing verdict.
+   The two streams share one chat id (`312973896` — a DM's chat id is
+   the peer's user id) and are numbered per bot (#1003/#1004 vs
+   #620/#621): exactly the collision that used to merge them. Both
+   turns' windows were empty (their historical DM traffic is older than
+   24h), so the scoped read was checked against the live mirror
+   instead — each assistant's window over that shared chat id returns
+   only its own pair.
+2. **Group check (slice E) — passed.** "Igor, ask Anna about her day"
+   in the two-bot group fanned out to BOTH assistants (one inbound
+   trace, `enqueued for 2 assistants`, one event id and correlation
+   each), and each answered on its own name verdict, evidence included
+   (`the assistant's name is spoken: "Igor"` / `… "Anna"`,
+   `matchedText` populated). Igor's reply was cross-fed to Anna and
+   answered; Anna's was cross-fed to Igor and answered. Attribution is
+   per reader and mirror-image: Igor's transcript renders #205/#209 as
+   `Anna` and its own lines as `You`, Anna's renders #202/#204 as
+   `Igor` and its own as `You`. The exchange then stopped on the loop
+   guard — two skipped reply traces carrying `streak`/`limit`/reason
+   ("3 assistant messages in a row (limit 3) — silent until someone
+   speaks", and 4 on the other branch, the documented concurrent-burst
+   overshoot). 24 traces in the window, **zero errors**, and
+   `turn_actions` is empty, so every turn settled — the guard's silent
+   turns included.
+
+**Telegram refuses bot-to-bot reply targets — answered by this run.**
+The question the previous live test could not answer now has data: both
+cross-fed replies asked to attach to the bot-authored message they
+answered (#212, #213) and Telegram delivered them with nothing attached
+(`replyToMessageId: null`, warned as "reply sent — Telegram did not
+attach the reply target"), while every human-authored target (#211,
+#1003, #620) attached fine. The readback instrumentation
+(`0097168`) is what made this visible rather than a mystery, and the
+mirror records what is actually in the chat. No action: the reply still
+lands, and `allow_sending_without_reply` is the behavior we want.
 
 The numbered list below records how the last Phase 2 items closed:
 
@@ -172,7 +195,7 @@ Known pitfalls for whoever starts:
 | 0 | Monorepo scaffold, apps/core + packages carve-out, extension registry, CI, docker | done |
 | 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | done |
 | 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | done |
-| 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | in-progress (all criteria met; two operator live checks open) |
+| 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | done |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
 | 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
