@@ -61,7 +61,7 @@ every consumer of the record — the reply window, the day transcripts, the
 dashboard, search hits — shows it on the line, after any media annotation:
 
 ```
-[#598] drumslave: hello [you reacted: 👍]
+[#598] alice (@alice_example): hello [you reacted: 👍]
 ```
 
 This exists because a reaction that lived only on Telegram's side was

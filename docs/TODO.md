@@ -38,6 +38,75 @@ decisions and target architecture in `docs/PLAN.md`, tracking in
 sanctioned exception to commit-on-main); main stays hotfixable and the branch
 is rebased onto main (rebases, not merges).
 
+## A name in the text is not who the message is for (`todo` — improvement, 2026-08-27)
+
+The deterministic name check answers "does this text contain the assistant's
+display name", and the turn treats that as "this message is for me". Those are
+different questions, and in a chat holding more than one assistant the
+difference shows.
+
+**Live evidence (two-bot group, 2026-08-27).** One human message named both
+assistants and asked one of them to do something *about* the other — the shape
+of "Ada, ask Grace about her day". Both assistants opened a turn and both
+answered: Grace's verdict was `source: "name"`, `matchedText: "Grace"`, matched
+on the word that was the *object* of the request, not its addressee. Her own
+reply said so:
+
+> I'm not sure if you're asking me to ask myself or if you want Ada to do it,
+> but if it's up to me: …
+
+The model spotted an addressing error the regex cannot, because
+`matchBotName` sees presence, never direction. Same mechanism produces the
+other misses of this family: "tell Ada I said hi" (a third party is asked to
+relay), "Ada already answered that" (the name is the subject of a remark),
+"unlike Ada, I think…" (a comparison).
+
+**Why it is not simply a bug.** The check is the v1 rule and it is right far
+more often than it is wrong — a name spoken in a group usually IS a summons.
+It also costs nothing, and it is the reason a summons is never missed to a
+provider failure. The failure is confined to messages that mention an
+assistant without addressing it, which in a single-assistant chat is rare and
+in a multi-assistant chat is routine.
+
+**Decision (user, 2026-08-27): keep the short-circuit.** Asked whether the
+name question should go to the analyzer instead, the answer was no — surface
+the behaviour rather than change it. Shipped that day (`1bdfbbf`): a
+deterministic verdict now carries a note in the Debug timeline naming what
+decided and stating that there is no analyzer request/response to read, so the
+decision is legible even though it is regex-made. **This entry is the
+improvement that was deliberately not taken**, kept because the failure mode
+is real and multi-assistant chats make it common.
+
+If it is taken later, the shape is known:
+
+- Keep every **structural** verdict as-is (`private`, `reply`, `mention`,
+  `command`). Those are facts Telegram hands us — a reply target, a message
+  entity — not readings of prose, and they carry no direction ambiguity.
+- Route only the **name** question to the analyzer, which already answers a
+  harder version of it (which word is the display name, in what spelling) and
+  would gain the easier one (is the message directed at that name).
+- Cost is small and well aimed: the analyzer already runs on every other
+  undecided group message, so this adds calls **only** for messages that
+  contain the name literally — the exact set where the decision matters.
+- Watch the failure direction. The name check fails closed today only in the
+  sense that it over-answers; an analyzer that mis-reads direction would
+  under-answer, and a missed summons is the more expensive error (see the
+  reverted pre-filter, 2026-07-20). Any move here wants the enum + citation +
+  verifier discipline the existing analyzer already has, not a looser prompt.
+
+Acceptance criteria, if picked up:
+
+- A message naming an assistant as the object of a request ("Ada, ask Grace
+  about her day") opens a turn for the addressee only.
+- A message naming an assistant as the addressee still answers, with a verdict
+  carrying the analyzer exchange behind it.
+- Both live shapes above are pinned by tests over recorded messages, not by a
+  new lexical rule anywhere in code.
+- The Debug note keeps working: a verdict with no exchange still says why.
+
+Dependencies: none. Related: the loop guard bounds how far a mis-addressed
+bot-to-bot exchange can run, so this is a quality problem, not a runaway one.
+
 ## The served model leaks its deliberation (`todo` — guarded, model unchanged, 2026-08-24)
 
 The chat model in the operator's dev setup

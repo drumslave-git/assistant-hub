@@ -53,9 +53,9 @@ restart), verified from the traces.** Phase 3 has no open work.
    about yourself" and each answered as ITS assistant ("I am Igor…" /
    "I'm a person who's quite certain about who she is…"), on its own
    correlation, with its own `botDisplayName` in the addressing verdict.
-   The two streams share one chat id (`312973896` — a DM's chat id is
-   the peer's user id) and are numbered per bot (#1003/#1004 vs
-   #620/#621): exactly the collision that used to merge them. Both
+   The two streams share one chat id (a DM's chat id is the peer's
+   user id) and are numbered per bot (four-digit ids on one, three-digit
+   on the other): exactly the collision that used to merge them. Both
    turns' windows were empty (their historical DM traffic is older than
    24h), so the scoped read was checked against the live mirror
    instead — each assistant's window over that shared chat id returns
