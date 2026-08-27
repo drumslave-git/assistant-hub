@@ -574,6 +574,13 @@ assistant converted from the active personality, all counts reconciled).
       `requestedReplyToMessageId` and `replyToMessageId`, warning when
       they differ. Whether Telegram refuses bot-to-bot reply targets is
       then a fact the next live turn reports rather than a guess.
+      **Answered 2026-08-27: it does.** Both cross-fed replies in the
+      live run asked to attach to the bot-authored message they
+      answered and Telegram delivered them unattached
+      (`replyToMessageId: null`, warned), while every human-authored
+      target attached. No action — the reply still lands, and the
+      mirror now records what is in the chat rather than what was
+      asked for.
       **Addressing verdicts now carry their evidence (2026-08-26).**
       Reading the live traces the operator noticed an asymmetry: a turn
       the bot stayed OUT of shows the whole analyzer exchange (request,
@@ -966,6 +973,24 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (live verification, Phase 3 closed)** — The operator
+  restarted the dev services and ran both pending scenarios; verified
+  from the traces, not from the chat. The DM check: two bots DM'd by
+  the same person, one chat id, per-bot message numbering, each
+  answering as its own assistant — and because both 24h windows
+  happened to be empty, the scoped window read was checked against the
+  live mirror instead, where each assistant sees only its own pair. The
+  group check: one human message fanned out to both assistants, both
+  name verdicts carrying their evidence, both cross-feeds answered, and
+  the transcripts rendering mirror-image (each reader's own lines as
+  "You", the other's under its name) — then the loop guard's two
+  skipped traces with streak, limit and reason. 24 traces, zero errors,
+  no orphaned turn markers.
+  One open question closed by the run: Telegram silently refuses a
+  reply target that is another bot's message. The readback added in
+  `0097168` is why that is a recorded fact with a warn on it rather
+  than a mystery about missing reply arrows.
 
 - **2026-08-27 (slice F)** — The last Phase 3 slice, in two commits.
   `70785a3`: the dashboard's people and chats pages stopped reading the
