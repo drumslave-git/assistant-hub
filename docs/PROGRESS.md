@@ -584,6 +584,31 @@ Slices:
       and answered ("That was a silent one."). The voice REPLY half is
       test-covered only: this dev environment has no speech endpoint
       configured, so TTS could not run.
+- [x] **The chat page, reshaped** (`2d9cde6`, user request after the
+      slices landed). The layout everyone already knows: chats down the
+      left with "New chat" at the top, the conversation on the right,
+      the composer at the bottom. The create-a-thread FORM is gone — a
+      new chat is a blank conversation and the thread is created by the
+      first message, so an abandoned one never piles up.
+      **Conversations name themselves.** A source with no name for its
+      conversations says so on the inbound event
+      (`chat.titleProvisional`, chat store migration 0002) and the core
+      names it once, after the first exchange, through that source's own
+      `setChatTitle` — a classification call in
+      `server/turn/name-conversation.ts`, best-effort by construction (a
+      failure leaves the placeholder, which is a worse label, not a worse
+      answer). Telegram never sets the flag: its conversations have real
+      names. Two rules keep it honest — only a thread still wearing its
+      placeholder can be auto-named, and renaming by hand clears the flag,
+      because a name someone chose is not a placeholder. The header title
+      is click-to-rename.
+      Proof: 21 chat integration cases (nameless creation, the flag on
+      the event, a late title that cannot overwrite a chosen name), a
+      core case asserting the naming happens exactly once, all suites
+      green. **Live**: a chat started from an empty composer answered and
+      titled itself "Maintaining sourdough starter while traveling" in
+      the sidebar without a reload; the next message ran no second
+      naming call.
 - [x] **F — memory, traces and person links** (`150b986`, plus the
       trigger work in `267fd80`). The blocker was not the reading —
       Phase 3 built that — but the WRITING: both memory tables keyed
@@ -1245,6 +1270,15 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (chat UI reshaped)** — The operator asked for the chat
+  page to look like a chat app rather than a form: sidebar, "New chat" at
+  the top, auto-generated titles. The layout was the easy half. The
+  interesting half was where a title comes from: not the source (it has
+  no LLM) and not a hardcoded branch in the core, but a flag on the
+  contract — a source declares its name provisional and the core names
+  the conversation through that source's own port. Telegram sets it
+  never; a future source with unnamed conversations gets it free.
 
 - **2026-08-27 (Phase 4 closed)** — Slice F, and with it the phase. The
   last thing standing between the assistant and a person it meets in two
