@@ -443,16 +443,47 @@ Slices:
       variable — **the green listing path is verified after the next
       restart** (`npm run dev -w @assistant-hub/chat` alongside the
       other two processes).
-- [ ] **B — threads and the text turn end to end.** Thread CRUD (create
-      with a name + an assistant chosen at creation, rename, delete;
-      no mid-thread switching), the operator's chat user bound to the
-      operator session, the chat view sending text; inbound events
-      carrying chat's own composed context (history window +
-      participants + a `private`-shaped addressing verdict), the core
-      pipeline running unchanged, `reply.delivery` consumed and
-      persisted, the reply rendered. Proof: an integration test drives a
-      thread turn through the real queue/bus topology, and the operator
-      answers a web thread in the dev environment.
+- [x] **B — threads and the text turn end to end** (`f81e2b8`). Thread
+      CRUD (create with a name + an assistant fixed at creation, rename,
+      delete), the operator's own chat user created on first contact,
+      and the two-pane chat page (`apps/chat/ui`) that starts threads,
+      reads them and sends into them — deep-linked at
+      `/apps/chat/<threadId>`, live on the `threads` topic, message at
+      once. The turn itself: `postThreadMessage` stores what the human
+      said, composes the context from this app's store and enqueues ONE
+      inbound event; the core's pipeline runs unchanged; the delivery
+      consumer stores the reply and pings the dashboard.
+      **What a web thread lacks turned out to be the design work.** It
+      has no bot account → `connection` is now optional on the inbound
+      event, and the assistant's own name is the only name there is. It
+      has nobody else in the room → addressing is settled at the source
+      (`private`) and the analyzer never runs. It is not Telegram → the
+      outbound port resolves by source id (`sourceOutbound(source)`,
+      `server/turn/source-outbound.ts`), so the sends are written once;
+      the three callers that still carry raw telegram ids (the reaction
+      tool's task-fire path, browser runs, task fires) each say so in
+      one comment — no branch — and get refs when their stores are
+      generalized (slice F).
+      **The live check caught a lie the second source made visible**:
+      the base system prompt asserted "a Telegram chat", so the first
+      web thread twice placed itself in Telegram. Fixed where it
+      belongs — the prompt now names no platform, and the chat-context
+      block carries a per-turn surface line derived from
+      `event.source` (`surfaceLine` in `server/turn/render.ts`), with
+      the direct/group context blocks stripped of their own "Telegram".
+      Also: `chat` is a trace trigger kind, so Debug can filter
+      web-thread turns from dashboard button presses (the filter's
+      options come from the schema, so nothing else changed).
+      Proof: 14 chat integration cases (real Postgres + Redis: the
+      queue round-trip, the bus round-trip, the window's exclusions, a
+      reply for a deleted thread, retraction), core 1175 unit + 338
+      integration green, typecheck across 10 workspaces, lint clean.
+      **Live in dev**: thread created, message sent, reply rendered in
+      ~5s over SSE without a reload; the surface fix re-verified after
+      a restart ("a web chat, using a browser to talk to me"). Dev note:
+      the turn consumer is a boot-time module — a prompt edit is not
+      live until the dev server restarts, which is exactly how the wrong
+      answer was diagnosed (the trace showed the old system prompt).
 - [ ] **C — live turn progress.** `turn.lifecycle` (accepted /
       progress / settled) reaches the thread view over the existing SSE
       bridge and renders as live progress with the current tool's label;
@@ -1109,6 +1140,19 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (Phase 4, slice B)** — Web chat answers. The pipeline
+  needed no changes to run a thread turn, which was the point; what
+  needed changing was everything that had quietly assumed Telegram. The
+  inbound contract now admits a source with no bot account, the outbound
+  port is chosen by source id instead of being tg's, and the system
+  prompt stopped claiming to be in Telegram — that last one was found by
+  the live check, not by a test: the first web thread confidently told
+  the operator it was in a Telegram chat, twice. The fix is a per-turn
+  surface line from the event's own source, and the prompt naming no
+  platform at all. Also shared out of the shell: the SSE stream and its
+  hook, so an app-contributed page is live the same way every other page
+  is.
 
 - **2026-08-27 (Phase 4, slice A)** — The chat app became a service.
   Most of the slice was deciding what NOT to write twice: tg already had
