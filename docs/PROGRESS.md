@@ -505,12 +505,33 @@ Slices:
       under a second on this model (the trace shows the `history_search`
       call it belonged to), so the label itself is proven by the bus
       test rather than by a screenshot.
-- [ ] **D — images.** Upload in a thread → chat store media + blobs →
-      the core vision pipeline describes it through the per-source media
-      port → the description reaches the turn as the media note, exactly
-      as a Telegram photo does; the image renders in the thread and in
-      `/vision`. Backfill covers chat media. Proof: media integration
-      suite plus one described upload in dev.
+- [x] **D — images** (`97a6c62`). An upload in a thread is normalized
+      (`@assistant-hub/media`), stored `pending`, and referenced on the
+      inbound event exactly as a Telegram photo is, so the core's vision
+      pipeline describes it through the per-source media port
+      (`sourceMediaStore(source)` — the same lookup shape as the
+      outbound port) and writes the text back. The backfill sweeps every
+      configured source in turn and reports per source; the gallery
+      merges them and tags each card with the app that holds it.
+      **Deliberate divergence, recorded in the code**: Telegram is its
+      own archive so a described photo drops its bytes; a web thread is
+      the only archive its pictures have, so the chat store KEEPS them.
+      Listings ship bytes for pending rows only; the thread and the
+      gallery fetch one picture by id (`/api/chat/media/<id>`,
+      `MediaView.bytesUrl`) when they render it. The operator can
+      reverse this by making chat's `markDescribed` drop blobs like
+      tg's.
+      Also extracted: `normalizeImageForChat` existed twice,
+      byte-identical, in core and tg — it is now
+      `@assistant-hub/media`, imported by all three apps.
+      Proof: the media round trip in the chat integration suite (upload
+      → pending → work list → bytes → write-back → still served
+      afterwards), an unreadable upload that answers on the text instead
+      of losing the message, core 1175 unit + 338 integration green.
+      **Live in dev**: a red square uploaded through the proxy, described
+      by the vision model ("a flat, even shade of red"), answered by the
+      turn ("It's red."), rendered in the thread and in `/vision` under
+      "Web chat".
 - [ ] **E — voice.** Recorded/uploaded audio in a thread is transcribed
       by the core voice pipeline and drives the turn; a voice turn is
       answered with an audio bubble (text fallback intact) when a speech
@@ -1155,6 +1176,16 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (Phase 4, slice D)** — Images. The vision pipeline needed
+  no changes; the media PORT did, and it got the same treatment as the
+  outbound one — resolved by source id, with the backfill and the gallery
+  fanning out instead of knowing about Telegram. The one real design call
+  was whether a web thread drops its bytes after describing, as Telegram
+  does. It does not: Telegram keeps the picture for you, a dashboard
+  thread does not, and erasing what the operator just sent to save a
+  hundred kilobytes is the wrong trade. Listings still ship bytes only
+  for pending rows, so the gallery does not carry a hundred pictures.
 
 - **2026-08-27 (Phase 4, slice C)** — Live progress, which turned out to
   be one missing argument: the hook that marks a turn as having acted
