@@ -4,10 +4,32 @@
  * Present: scoped entity refs, the shared embedding width, the source-app
  * event contract (inbound events with conversation context, reply-delivery,
  * turn lifecycle, feedback completions, queue/channel names), the internal
- * media + outbound-send API, and the operator listing/CRUD API shapes the
- * dashboard aggregates. Landing with later phases: source-status events.
+ * media + outbound-send API, the operator listing/CRUD API shapes the
+ * dashboard aggregates, and the web-chat app's own thread shapes. Landing
+ * with later phases: source-status events.
  */
 export { DEFAULT_ASSISTANT_ID } from "./assistants";
+export {
+  REALTIME_TOPICS,
+  type RealtimeEvent,
+  type RealtimeTopic,
+} from "./realtime";
+export {
+  chatPostMessageRequestSchema,
+  chatPostMessageResponseSchema,
+  chatThreadCreateRequestSchema,
+  chatThreadCreatedResponseSchema,
+  chatThreadMessageSchema,
+  chatThreadResponseSchema,
+  chatThreadSchema,
+  chatThreadUpdateRequestSchema,
+  chatThreadsResponseSchema,
+  chatUserResponseSchema,
+  chatUserSchema,
+  type ChatThread,
+  type ChatThreadMessage,
+  type ChatUser,
+} from "./chat-api";
 export {
   contentBucketUnitSchema,
   contentBucketsResponseSchema,

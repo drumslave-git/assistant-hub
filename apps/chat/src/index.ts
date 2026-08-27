@@ -1,28 +1,50 @@
 import "dotenv/config";
 
 import { serve } from "@hono/node-server";
-import { optionalEnv, requireEnv } from "@assistant-hub/service";
+import { openPublisher, openQueue } from "@assistant-hub/bus";
+import {
+  BUS_EVENTS_CHANNEL,
+  INBOUND_MESSAGES_QUEUE,
+  type InboundMessageEvent,
+} from "@assistant-hub/contracts";
+import { dashboardRefresh, optionalEnv, requireEnv } from "@assistant-hub/service";
 
 import { createApi } from "./api";
 import { closeChatDb, getChatDb } from "./db";
+import { startDeliveryConsumer } from "./delivery";
 
 /**
- * The chat source app's entry: store + the Hono API. A plain long-running
- * Node service (no Next — user decision, 2026-08-27: its dashboard UI renders
+ * The chat source app's entry: store + the inbound queue producer + the
+ * delivery/lifecycle consumer + the Hono API. A plain long-running Node
+ * service (no Next — user decision, 2026-08-27: its dashboard UI renders
  * inside the core's build as `apps/chat/ui`), one of the three per-app
  * processes of the v2 topology (PLAN.md).
- *
- * Slice A boots the store and the operator API. The inbound producer and the
- * delivery/lifecycle consumers — the halves that need Redis — join in slice B,
- * which is why `REDIS_URL` is not required here yet.
  */
 
+const redisUrl = requireEnv("REDIS_URL");
 const internalToken = requireEnv("INTERNAL_API_TOKEN");
 const port = Number(optionalEnv("PORT") ?? "3220");
 
 const db = getChatDb();
 
-const api = createApi({ db, internalToken });
+const queue = openQueue<InboundMessageEvent>(INBOUND_MESSAGES_QUEUE, redisUrl);
+const publisher = openPublisher(redisUrl);
+const delivery = await startDeliveryConsumer({ db, redisUrl });
+
+const api = createApi({
+  db,
+  internalToken,
+  enqueue: async (event) => {
+    await queue.add("message.inbound", event);
+  },
+  // Every thread change the operator makes is also something a dashboard page
+  // is showing — ping the topic rather than make anyone reload.
+  onThreadsChanged: () => {
+    void publisher
+      .publish(BUS_EVENTS_CHANNEL, dashboardRefresh("chat", ["threads"]))
+      .catch(() => undefined);
+  },
+});
 const server = serve({ fetch: api.fetch, port }, (info) => {
   console.log(`chat API listening on :${info.port}`);
 });
@@ -33,6 +55,9 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   console.log(`${signal} — shutting down`);
   server.close();
+  await delivery.close().catch(() => undefined);
+  await publisher.close().catch(() => undefined);
+  await queue.close().catch(() => undefined);
   await closeChatDb().catch(() => undefined);
   process.exit(0);
 }

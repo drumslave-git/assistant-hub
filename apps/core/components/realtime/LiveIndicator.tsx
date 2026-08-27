@@ -1,44 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback } from "react";
+import { useRouter } from "next/navigation";
 
-import { cn } from "@/lib/cn";
+import { LiveIndicator as SharedLiveIndicator } from "@assistant-hub/ui";
 import type { RealtimeTopic } from "@/lib/realtime";
-import { useLiveRefresh } from "./useLiveRefresh";
 
 /**
- * Live-status pill for a Server Component view. Subscribes to the shared SSE
- * stream for `topic` and refreshes the page on matching events; click to pause
- * (e.g. while reading). Shared across every live dashboard surface.
+ * The shell's live pill: the shared indicator wired to a Server Component
+ * refresh, which is how every page in this app holds its data. A page that
+ * fetches on the client uses the shared component directly and hands it a
+ * re-fetch — `router.refresh()` cannot reach state a `fetch` put in the
+ * client.
  */
 export function LiveIndicator({ topic }: { topic: RealtimeTopic | RealtimeTopic[] }) {
-  const [enabled, setEnabled] = useState(true);
-  const { connected } = useLiveRefresh(topic, { enabled });
-  const live = enabled && connected;
-  const label = !enabled ? "Paused" : connected ? "Live" : "Connecting…";
-
-  return (
-    <button
-      type="button"
-      onClick={() => setEnabled((v) => !v)}
-      aria-pressed={enabled}
-      className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-colors",
-        "focus-visible:ring-ring/60 focus-visible:ring-2 focus-visible:outline-none",
-        live
-          ? "border-success/30 bg-success/10 text-success"
-          : "border-border bg-surface-2 text-muted hover:text-foreground",
-      )}
-      title={enabled ? "Live updates on — click to pause" : "Paused — click to resume"}
-    >
-      <span
-        className={cn(
-          "h-1.5 w-1.5 rounded-full bg-current",
-          live && "animate-pulse motion-reduce:animate-none",
-        )}
-        aria-hidden
-      />
-      {label}
-    </button>
-  );
+  const router = useRouter();
+  const refresh = useCallback(() => router.refresh(), [router]);
+  return <SharedLiveIndicator topic={topic} onEvent={refresh} />;
 }

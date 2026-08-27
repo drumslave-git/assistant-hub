@@ -1,4 +1,6 @@
-import { and, asc, count, desc, eq, inArray, isNull, max } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+
+import { and, asc, count, desc, eq, gte, inArray, isNull, max } from "drizzle-orm";
 
 import type { ChatDb } from "./db";
 import {
@@ -205,4 +207,146 @@ export async function getMediaForMessages(
   if (messageIds.length === 0) return new Map();
   const rows = await db.select().from(media).where(inArray(media.messageId, messageIds));
   return new Map(rows.map((row) => [row.messageId, row]));
+}
+
+/**
+ * The operator's own chat user. Single-operator system (PLAN.md): the
+ * dashboard acts as one web identity, created on first use and linkable to
+ * the operator's other identities through core-store person links — which is
+ * where their real name lives. The name here is deliberately a role, not a
+ * guess at who they are.
+ */
+export const OPERATOR_USER_NAME = "Operator";
+
+export async function getOrCreateOperatorUser(db: ChatDb): Promise<ChatUserRow> {
+  const existing = await db.select().from(users).where(eq(users.isOperator, true)).limit(1);
+  if (existing[0]) return existing[0];
+  const inserted = await db
+    .insert(users)
+    .values({ id: randomUUID(), name: OPERATOR_USER_NAME, isOperator: true })
+    .returning();
+  return inserted[0];
+}
+
+/** Start a thread, bound to one assistant for good (PLAN.md). */
+export async function createThread(
+  db: ChatDb,
+  input: { userId: string; assistantId: string; name: string },
+): Promise<ThreadRow> {
+  const rows = await db
+    .insert(threads)
+    .values({
+      id: randomUUID(),
+      userId: input.userId,
+      assistantId: input.assistantId,
+      name: input.name,
+    })
+    .returning();
+  return rows[0];
+}
+
+/** Rename a thread. Null when it is gone. The assistant never changes. */
+export async function renameThread(
+  db: ChatDb,
+  threadId: string,
+  name: string,
+): Promise<ThreadRow | null> {
+  const rows = await db
+    .update(threads)
+    .set({ name, updatedAt: new Date() })
+    .where(eq(threads.id, threadId))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Delete a thread and everything in it (the transcript cascades). */
+export async function deleteThread(db: ChatDb, threadId: string): Promise<boolean> {
+  const rows = await db.delete(threads).where(eq(threads.id, threadId)).returning();
+  return rows.length > 0;
+}
+
+/** Append one line to a thread's transcript; the store assigns the id. */
+export async function appendMessage(
+  db: ChatDb,
+  input: {
+    threadId: string;
+    role: "user" | "assistant";
+    content: string;
+    sentAt?: Date;
+    replyToMessageId?: number | null;
+  },
+): Promise<ChatMessageRow> {
+  const rows = await db
+    .insert(messages)
+    .values({
+      threadId: input.threadId,
+      role: input.role,
+      content: input.content,
+      sentAt: input.sentAt ?? new Date(),
+      replyToMessageId: input.replyToMessageId ?? null,
+    })
+    .returning();
+  return rows[0];
+}
+
+/**
+ * Retract a delivered message (the outbound port's delete — a browsing
+ * acknowledgement replaced by the real answer). Soft: the row stays so ids
+ * never dangle. False when there was nothing to retract.
+ */
+export async function markMessageDeleted(
+  db: ChatDb,
+  threadId: string,
+  messageId: number,
+): Promise<boolean> {
+  const rows = await db
+    .update(messages)
+    .set({ deletedAt: new Date() })
+    .where(
+      and(
+        eq(messages.threadId, threadId),
+        eq(messages.id, messageId),
+        isNull(messages.deletedAt),
+      ),
+    )
+    .returning();
+  return rows.length > 0;
+}
+
+/** A thread's live transcript (deleted rows excluded), oldest first. */
+export async function listLiveMessages(
+  db: ChatDb,
+  threadId: string,
+): Promise<ChatMessageRow[]> {
+  return db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.threadId, threadId), isNull(messages.deletedAt)))
+    .orderBy(asc(messages.id));
+}
+
+/**
+ * The messages of a thread since `since`, for the context window — deleted
+ * rows and the turn's own message excluded, insertion order.
+ */
+export async function getMessagesSince(
+  db: ChatDb,
+  threadId: string,
+  since: Date,
+  options: { excludeMessageId?: number } = {},
+): Promise<ChatMessageRow[]> {
+  const rows = await db
+    .select()
+    .from(messages)
+    .where(
+      and(
+        eq(messages.threadId, threadId),
+        isNull(messages.deletedAt),
+        gte(messages.sentAt, since),
+      ),
+    )
+    .orderBy(asc(messages.id));
+  return options.excludeMessageId == null
+    ? rows
+    : rows.filter((row) => row.id !== options.excludeMessageId);
 }

@@ -4,6 +4,7 @@ import {
   parseScopedRef,
   type InboundMessageEvent,
   type HistoryMessage,
+  type SourceId,
 } from "@assistant-hub/contracts";
 
 import {
@@ -174,9 +175,32 @@ export function renderCurrentTurn(
  * shapes): in a group, the roster of known participants plus operator notes;
  * in a direct chat, who the bot is talking to and their known names.
  */
+/**
+ * Where the conversation is happening, in one sentence. The model used to be
+ * told "a Telegram chat" by the base prompt, which became a lie the moment a
+ * second source existed — a web thread would confidently place itself in
+ * Telegram. One lookup keyed by source id, so a new source app adds a phrase
+ * rather than a branch.
+ */
+const SURFACE: Record<SourceId, { direct: string; group: string }> = {
+  tg: {
+    direct: "a direct Telegram chat with this person",
+    group: "a Telegram group chat",
+  },
+  chat: {
+    direct: "a named thread in this hub's own web chat, typed in a browser",
+    group: "a web chat thread",
+  },
+};
+
+export function surfaceLine(event: InboundMessageEvent): string {
+  return `This conversation is ${SURFACE[event.source][event.chat.kind]}.`;
+}
+
 export function renderChatContext(
   event: InboundMessageEvent,
 ): { content: string; data?: Record<string, unknown> } | null {
+  const where = surfaceLine(event);
   if (event.chat.kind === "group") {
     const members = event.context.participants.map((participant) => ({
       userId: parseScopedRef(participant.ref).id,
@@ -188,11 +212,21 @@ export function renderChatContext(
       notes: event.chat.notes ?? null,
       members,
     });
-    return content ? { content, data: { memberCount: members.length } } : null;
+    return {
+      content: content ? `${where}
+
+${content}` : where,
+      data: { memberCount: members.length, source: event.source },
+    };
   }
   const content = formatUserContext({
     label: event.sender.label,
     aliases: event.sender.aliases,
   });
-  return { content };
+  return {
+    content: content ? `${where}
+
+${content}` : where,
+    data: { source: event.source },
+  };
 }

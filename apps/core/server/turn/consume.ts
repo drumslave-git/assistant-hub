@@ -10,6 +10,7 @@ import {
   parseScopedRef,
   type InboundMessageEvent,
   type ReplyDeliveryEvent,
+  type SourceId,
   type TurnLifecycleEvent,
 } from "@assistant-hub/contracts";
 import type { Queue, Worker } from "bullmq";
@@ -77,7 +78,7 @@ import {
   type TranscriptVoices,
 } from "./render";
 import { tgApiMediaStore } from "./tg-media";
-import { resolveSourceOutbound, type SourceOutboundPort } from "./tg-outbound";
+import { sourceOutbound, type SourceOutboundPort } from "./source-outbound";
 
 /**
  * The queue side of the source split (redesign Phase 2): consume normalized
@@ -150,8 +151,12 @@ function resolveMediaStore(ctx: TurnConsumerContext): MediaStorePort | null {
   return tgApiMediaStore();
 }
 
-function resolveOutbound(ctx: TurnConsumerContext): SourceOutboundPort | null {
-  return ctx.outbound ?? resolveSourceOutbound();
+/** The port of the source this turn belongs to — a lookup, never a branch. */
+function resolveOutbound(
+  ctx: TurnConsumerContext,
+  source: SourceId,
+): SourceOutboundPort | null {
+  return ctx.outbound ?? sourceOutbound(source);
 }
 
 /** What this turn's media resolves to — the v1 `visionAttachment` shape. */
@@ -368,10 +373,13 @@ async function buildEventDeps(
     // display-name slot carries the ASSISTANT's name: it is what the LLM
     // analyzer matches and what addressing exclusions are filed against
     // (the account's profile name only backstops an unknown assistant).
+    // A source with no account identity at all (a web thread) sends no
+    // connection: there the assistant's own name is the only name there is.
     bot: {
       id: 0,
-      username: event.connection.botUsername,
-      displayName: turn.assistantIdentity?.name ?? event.connection.botDisplayName,
+      username: event.connection?.botUsername ?? "",
+      displayName:
+        turn.assistantIdentity?.name ?? event.connection?.botDisplayName ?? "the assistant",
     },
     // Whose turn this is, for the reply trace's Assistant column/filter.
     assistantId: event.assistantId,
@@ -564,7 +572,7 @@ export async function processInboundEvent(
   const media = event.message.media[0] ?? null;
   const isVoice = media?.kind === "voice";
   const store = resolveMediaStore(ctx);
-  const outbound = resolveOutbound(ctx);
+  const outbound = resolveOutbound(ctx, event.source);
 
   // The bot-to-bot loop guard, before anything else this turn would cost:
   // a chat that already holds N assistant messages in a row is closed to

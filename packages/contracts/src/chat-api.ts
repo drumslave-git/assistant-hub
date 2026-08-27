@@ -1,0 +1,89 @@
+import { z } from "zod";
+
+/**
+ * The web-chat app's own API shapes — what a thread is, and what talking in
+ * one looks like. The chat service serves them, the core proxies them, and
+ * `apps/chat/ui` renders them, so they live here rather than in any of the
+ * three (the same reason tg's connection shapes do).
+ *
+ * The source-neutral listing/CRUD contract in `operator-api` still covers
+ * threads as this source's *chats* — that is what the dashboard's aggregated
+ * directory reads. These shapes are the chat experience itself: a thread
+ * bound to an assistant, its transcript, and posting into it.
+ */
+
+/** One named thread, with the aggregates its list row shows. */
+export const chatThreadSchema = z.object({
+  id: z.string().min(1),
+  /** The core-store assistant answering here, fixed at creation (PLAN.md). */
+  assistantId: z.string().min(1),
+  name: z.string().min(1),
+  /** The chat user who owns the thread. */
+  userId: z.string().min(1),
+  messageCount: z.number().int().nonnegative(),
+  lastMessageAt: z.string().nullable(),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+});
+
+export type ChatThread = z.infer<typeof chatThreadSchema>;
+
+/** One line of a thread's transcript. */
+export const chatThreadMessageSchema = z.object({
+  /** Source-local message id, as a string (scoped refs and anchors use it). */
+  id: z.string().min(1),
+  role: z.enum(["user", "assistant"]),
+  content: z.string(),
+  sentAt: z.string().min(1),
+  /** The message this one answers, or null. */
+  replyToId: z.string().nullable(),
+});
+
+export type ChatThreadMessage = z.infer<typeof chatThreadMessageSchema>;
+
+/** The chat user acting in the dashboard — the operator's own web identity. */
+export const chatUserSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+});
+
+export type ChatUser = z.infer<typeof chatUserSchema>;
+
+export const chatUserResponseSchema = z.object({ user: chatUserSchema });
+
+/** Thread name: long enough to be a sentence, short enough to be a label. */
+const threadNameSchema = z.string().trim().min(1).max(120);
+
+/** POST /internal/threads — start a thread with one assistant. */
+export const chatThreadCreateRequestSchema = z.object({
+  assistantId: z.string().min(1),
+  name: threadNameSchema,
+});
+
+/** PATCH /internal/threads/:id — rename (the assistant never changes). */
+export const chatThreadUpdateRequestSchema = z.object({ name: threadNameSchema });
+
+export const chatThreadsResponseSchema = z.object({ threads: z.array(chatThreadSchema) });
+
+/** One thread on its own — the answer to creating or renaming it. */
+export const chatThreadCreatedResponseSchema = z.object({ thread: chatThreadSchema });
+
+export const chatThreadResponseSchema = z.object({
+  thread: chatThreadSchema,
+  messages: z.array(chatThreadMessageSchema),
+});
+
+/** POST /internal/threads/:id/messages — the human says something. */
+export const chatPostMessageRequestSchema = z.object({
+  text: z.string().trim().min(1).max(10_000),
+});
+
+/**
+ * What posting answers with: the stored message and the correlation id of the
+ * turn it started, so the caller can follow that turn's progress.
+ */
+export const chatPostMessageResponseSchema = z.object({
+  message: chatThreadMessageSchema,
+  /** Null when the message was stored but no turn was enqueued. */
+  correlationId: z.string().nullable(),
+});

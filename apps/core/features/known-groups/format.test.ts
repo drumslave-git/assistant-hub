@@ -28,7 +28,7 @@ describe("formatGroupContext", () => {
         { userId: "22", label: "Bob", aliases: [] },
       ],
     });
-    expect(block).toContain('You are chatting in the Telegram group "Family".');
+    expect(block).toContain('You are chatting in the group "Family".');
     expect(block).toContain("- Ada L (@testuser) [user id 11] — also known as: Cap, Chief");
     expect(block).toContain("- Bob [user id 22]");
     // A member without aliases gets no "also known as" suffix.
@@ -56,7 +56,7 @@ describe("formatGroupContext", () => {
       notes: "Keep replies casual.",
       members: [{ userId: "11", label: "Alice", aliases: [] }],
     });
-    expect(block).toContain("You are chatting in a Telegram group.");
+    expect(block).toContain("You are chatting in a group.");
     expect(block).toContain("About this group: Keep replies casual.");
   });
 

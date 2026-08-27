@@ -37,5 +37,7 @@ export interface UserContextParts {
 export function formatUserContext(parts: UserContextParts): string {
   const also =
     parts.aliases.length > 0 ? ` They are also known as: ${parts.aliases.join(", ")}.` : "";
-  return `You are in a private, one-on-one Telegram chat with ${parts.label}.${also}`;
+  // Which platform this is happening on is said once per turn by the chat
+  // context's surface line — this block says WHO, not where.
+  return `You are in a private, one-on-one conversation with ${parts.label}.${also}`;
 }

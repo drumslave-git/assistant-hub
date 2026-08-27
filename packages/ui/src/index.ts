@@ -41,5 +41,8 @@ export { PageHeader } from "./PageHeader";
 export { Input, fieldBase } from "./Input";
 export { Label } from "./Label";
 export { Slot } from "./Slot";
+export { subscribeToRealtime, type RealtimeSubscriber } from "./event-stream";
+export { useLiveEvent } from "./useLiveEvent";
+export { LiveIndicator } from "./LiveIndicator";
 export { formatTime, formatTimestamp } from "./time";
 export { Timestamp, TimezoneProvider, useTimezone } from "./Timestamp";

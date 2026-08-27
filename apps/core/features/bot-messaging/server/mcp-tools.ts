@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { TELEGRAM_REACTION_EMOJI, toTelegramReactionEmoji } from "@/lib/telegram";
 import { getToolContext, tryGetToolContext } from "@/server/mcp/context";
-import { resolveSourceOutbound } from "@/server/turn/tg-outbound";
+import { sourceOutbound } from "@/server/turn/source-outbound";
 
 /**
  * `reply_to_message` — how a **message-triggered task** says something back, and
@@ -217,7 +217,10 @@ export function registerBotMessagingMcpTools(server: McpServer): void {
       const react =
         ctx.reactToMessage ??
         (() => {
-          const port = resolveSourceOutbound();
+          // Raw telegram chat id: reactions are a telegram affordance, and
+          // this fallback path (a task fire with no turn binding) has no ref
+          // to resolve a source from until the tool contexts carry one.
+          const port = sourceOutbound("tg");
           if (!port) return null;
           return (input: { messageId: number; emoji: string | null; big?: boolean }) =>
             port.setReaction(chatId, input.messageId, input.emoji, { big: input.big });

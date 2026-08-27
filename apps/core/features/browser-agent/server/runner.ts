@@ -4,7 +4,7 @@ import { rm } from "node:fs/promises";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
-import { resolveSourceOutbound } from "@/server/turn/tg-outbound";
+import { sourceOutbound } from "@/server/turn/source-outbound";
 import {
   getBrowserDownloadLimitBytes,
   getBotPolicy,
@@ -71,7 +71,9 @@ let active = false;
  * poller did.
  */
 function requireOutbound() {
-  const port = resolveSourceOutbound();
+  // Browser runs still record a raw telegram chat id (v1 shape); they get a
+  // scoped ref — and with it any source — when the run store is generalized.
+  const port = sourceOutbound("tg");
   if (!port) {
     throw new Error("telegram source API is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
   }

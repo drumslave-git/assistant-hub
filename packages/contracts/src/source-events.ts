@@ -155,6 +155,11 @@ export const replyTargetSchema = z.object({
  * The receiving connection's identity — what people call the assistant in this
  * source. The core's addressing analyzer and its bot label in transcripts
  * need it; the source knows it (it owns the connection).
+ *
+ * Optional on an inbound event: a source whose conversations have no account
+ * of their own (a web thread — the assistant IS the thread's binding) omits
+ * it, and the core falls back to the assistant's own identity, which it
+ * already prefers where the two disagree.
  */
 export const connectionIdentitySchema = z.object({
   /** The bot's @username in the source (no leading `@`). */
@@ -191,7 +196,7 @@ export const inboundMessageEventSchema = eventEnvelopeSchema.extend({
   source: sourceIdSchema,
   /** The assistant implied by the receiving connection (bot) or thread. */
   assistantId: z.string().min(1),
-  connection: connectionIdentitySchema,
+  connection: connectionIdentitySchema.optional(),
   chat: chatInfoSchema,
   sender: senderInfoSchema,
   /**

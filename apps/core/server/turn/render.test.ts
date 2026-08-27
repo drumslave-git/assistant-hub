@@ -5,7 +5,12 @@ import {
 } from "@assistant-hub/contracts";
 import { describe, expect, it } from "vitest";
 
-import { botTranscriptLabel, renderCurrentTurn, renderHistoryWindow } from "./render";
+import {
+  botTranscriptLabel,
+  renderChatContext,
+  renderCurrentTurn,
+  renderHistoryWindow,
+} from "./render";
 
 /**
  * Transcript attribution in a chat several assistants share (Phase 3, slice
@@ -123,5 +128,52 @@ describe("renderCurrentTurn attribution", () => {
       voices: { selfAssistantId: "assistant-2", assistantNames: NAMES },
     });
     expect(turn.senderLabel).toBe("First Bot");
+  });
+});
+
+/**
+ * Where the turn is happening. The base system prompt used to assert
+ * "a Telegram chat", so a web thread confidently told the operator it was in
+ * Telegram; the truth is now said per turn, from the event's own source.
+ */
+describe("renderChatContext", () => {
+  const eventIn = (source: "tg" | "chat", kind: "direct" | "group"): InboundMessageEvent =>
+    inboundMessageEventSchema.parse({
+      v: 1,
+      eventId: "evt-surface",
+      occurredAt: new Date().toISOString(),
+      correlationId: "c:1:assistant-1",
+      type: "message.inbound",
+      source,
+      assistantId: "assistant-1",
+      ...(source === "tg"
+        ? { connection: { botUsername: "a_bot", botDisplayName: "Aria" } }
+        : {}),
+      chat: {
+        ref: source === "tg" ? "tg:chat:-300" : "chat:thread:t1",
+        kind,
+        title: "Somewhere",
+      },
+      sender: {
+        ref: source === "tg" ? "tg:user:5001" : "chat:user:u1",
+        isOwner: true,
+        label: "Alice",
+      },
+      addressing: { addressed: true, source: "private", needsAnalyzer: false },
+      message: { sourceMessageId: "1", content: "hi", sentAt: new Date().toISOString() },
+      context: { history: [], participants: [] },
+    });
+
+  it("names the telegram surface", () => {
+    expect(renderChatContext(eventIn("tg", "group"))?.content).toContain(
+      "This conversation is a Telegram group chat.",
+    );
+  });
+
+  it("names the web-chat surface instead of inheriting telegram's", () => {
+    const context = renderChatContext(eventIn("chat", "direct"));
+    expect(context?.content).toContain("web chat");
+    expect(context?.content).not.toContain("Telegram");
+    expect(context?.data).toMatchObject({ source: "chat" });
   });
 });

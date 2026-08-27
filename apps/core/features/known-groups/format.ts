@@ -41,9 +41,9 @@ export function formatGroupContext(parts: GroupContextParts): string | null {
 
   const title = parts.title?.trim();
   const lines: string[] = [];
-  lines.push(
-    title ? `You are chatting in the Telegram group "${title}".` : "You are chatting in a Telegram group.",
-  );
+  // The platform is named once per turn by the chat context's surface line;
+  // this block names the group and who is in it.
+  lines.push(title ? `You are chatting in the group "${title}".` : "You are chatting in a group.");
   if (notes) lines.push(`About this group: ${notes}`);
   if (parts.members.length > 0) {
     lines.push(

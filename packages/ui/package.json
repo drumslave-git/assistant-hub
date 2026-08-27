@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@assistant-hub/contracts": "*",
     "clsx": "^2.1.1",
     "lucide-react": "^1.24.0",
     "tailwind-merge": "^3.6.0"

@@ -25,7 +25,7 @@ describe("formatKnownUserLabel", () => {
 describe("formatUserContext", () => {
   it("names who the bot is talking to, with identity facts only (no tool references)", () => {
     const block = formatUserContext({ label: "Ada L (@testuser)", aliases: [] });
-    expect(block).toContain("private, one-on-one Telegram chat with Ada L (@testuser).");
+    expect(block).toContain("private, one-on-one conversation with Ada L (@testuser).");
     // No aliases → no "also known as" clause.
     expect(block).not.toContain("also known as");
     // Identity context stays tool-agnostic — the prompt must not name tools.

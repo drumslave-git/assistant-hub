@@ -9,16 +9,25 @@ import {
   internalSentVoiceResponseSchema,
 } from "@assistant-hub/contracts";
 
-import { getEnv, requireEnv } from "@/server/env";
+import type { SourceId } from "@assistant-hub/contracts";
+
+import { internalRequester, sourceApiConfig } from "@/server/source/internal-client";
 
 /**
- * Outbound sends to the owning source over its internal API (slice D) —
- * the calls that need something back (a delivered message id, a
- * mirror-checked refusal) or carry bytes, which the fire-and-forget bus
- * events cannot do: browsing acknowledgements (their id is registered for
- * deletion), voice replies (TTS audio), generated images, deletes, and the
- * assistant's reactions. Plain text replies keep travelling as
- * reply-delivery bus events; the source mirrors both kinds itself.
+ * Outbound sends to the owning source over its internal API — the calls that
+ * need something back (a delivered message id, a mirror-checked refusal) or
+ * carry bytes, which the fire-and-forget bus events cannot do: browsing
+ * acknowledgements (their id is registered for deletion), voice replies (TTS
+ * audio), generated images, deletes, and the assistant's reactions. Plain
+ * text replies keep travelling as reply-delivery bus events; the source
+ * persists both kinds itself.
+ *
+ * ONE port, every source: which app answers is resolved from the source id
+ * (Phase 4), so the sends below are written once and a new source app needs
+ * an entry in the env lookup, not a branch here. Where a platform has no
+ * analogue for a call — a web thread cannot be reacted to — the source
+ * answers `unsupported` and the tool reports that, rather than the core
+ * deciding for it.
  */
 
 /** Refusal states the source's mirror check can answer for a reaction. */
@@ -86,14 +95,14 @@ export interface SourceOutboundPort {
 }
 
 /**
- * The tg outbound port from env, or null when the source API is not
- * configured. Callers treat null exactly like v1 treated a stopped poller:
- * the send fails audibly and is recorded on the run/fire — never dropped.
+ * One source's outbound port, or null when this deployment does not run that
+ * app. Callers treat null exactly like v1 treated a stopped poller: the send
+ * fails audibly and is recorded on the run/fire — never dropped.
  */
-export function resolveSourceOutbound(): SourceOutboundPort | null {
-  const env = getEnv();
-  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
-  return tgApiOutbound();
+export function sourceOutbound(source: SourceId): SourceOutboundPort | null {
+  const config = sourceApiConfig(source);
+  if (!config) return null;
+  return sourceApiOutbound(source, config);
 }
 
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -104,33 +113,17 @@ const REQUEST_TIMEOUT_MS = 60_000;
  */
 const FILE_REQUEST_TIMEOUT_MS = 500_000;
 
-export function tgApiOutbound(config?: { baseUrl?: string; token?: string }): SourceOutboundPort {
-  const baseUrl = (config?.baseUrl ?? requireEnv("TG_API_URL")).replace(/\/$/, "");
-  const token = config?.token ?? requireEnv("INTERNAL_API_TOKEN");
-
-  const request = async (
-    path: string,
-    init?: RequestInit & { timeoutMs?: number },
-  ): Promise<unknown> => {
-    const res = await fetch(`${baseUrl}${path}`, {
-      ...init,
-      headers: {
-        "x-internal-token": token,
-        ...(init?.body ? { "content-type": "application/json" } : {}),
-        ...init?.headers,
-      },
-      signal: AbortSignal.timeout(init?.timeoutMs ?? REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      // The source relays platform refusals as a 502 with the platform's
-      // words — surface those; anything else names the failing call.
-      const body = (await res.json().catch(() => null)) as {
-        error?: { message?: string };
-      } | null;
-      throw new Error(body?.error?.message ?? `tg internal API ${path} answered ${res.status}`);
-    }
-    return res.json();
-  };
+export function sourceApiOutbound(
+  source: SourceId,
+  config: { baseUrl: string; token: string },
+): SourceOutboundPort {
+  // The requester keeps the source's own verdict: a platform refusal comes
+  // back as a 502 carrying the platform's words, and the tool relays them.
+  const request = internalRequester({
+    ...config,
+    label: `${source} internal API`,
+    timeoutMs: REQUEST_TIMEOUT_MS,
+  });
 
   const chatPath = (chatId: string, rest: string) =>
     `/internal/chats/${encodeURIComponent(chatId)}${rest}`;

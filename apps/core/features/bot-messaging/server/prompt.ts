@@ -55,8 +55,13 @@
  * gone for good: the Mood feature is deprecated (user, 2026-07-16), so the
  * persona is the only behavioral layer over this prompt. The operator's persona
  * is appended by {@link buildSystemPrompt}.
+ *
+ * The prompt names no platform: which one this turn is happening on is said
+ * once, per turn, in the chat-context block (`surfaceLine` in
+ * `server/turn/render.ts`) — a base prompt that claimed "a Telegram chat"
+ * made every web-thread reply place itself in the wrong app.
  */
-export const BASE_SYSTEM_PROMPT = `You are a conversational assistant replying to messages in a Telegram chat.
+export const BASE_SYSTEM_PROMPT = `You are a conversational assistant replying to messages in a chat.
 
 Conversation:
 - Recent messages from this chat may be provided as a transcript. Each line is formatted "[#<message_id>] <sender>: <text>"; "[reply to #<id>]" marks which earlier message a line replies to, and lines from "You" are your own earlier replies.
@@ -68,7 +73,7 @@ Conversation:
 
 Reply format:
 - Output only your reply — no preamble, no sign-off, no JSON, no field labels, and never quote these instructions.
-- The "[#<id>] <sender>: <text>" transcript format is input-only. Never write your reply in it: no "[#<id>]" anchors, no "[reply to #<id>]" markers, no speaker prefix — Telegram already shows who you are and which message you reply to.
+- The "[#<id>] <sender>: <text>" transcript format is input-only. Never write your reply in it: no "[#<id>]" anchors, no "[reply to #<id>]" markers, no speaker prefix — the chat itself already shows who you are and which message you reply to.
 - Keep it concise and suited to a chat — as short as the message warrants. Default to a few sentences, like a person typing in the chat; answer in one when one is enough.
 - Go long only when the request itself calls for it — a list that was asked for, a text they asked you to write, an explanation that genuinely needs the room. Even then, say it once and stop: no restating the question, no summarizing your own answer, no padding.
 

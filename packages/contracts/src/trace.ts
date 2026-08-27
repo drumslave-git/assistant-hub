@@ -56,7 +56,7 @@ export const sourceTraceSchema = z.object({
   assistantId: z.string().min(1).optional(),
   status: z.enum(["success", "error", "skipped"]),
   trigger: z.object({
-    kind: z.enum(["telegram", "dashboard", "cron", "system", "api", "test"]),
+    kind: z.enum(["telegram", "chat", "dashboard", "cron", "system", "api", "test"]),
     actor: z.string().optional(),
     correlationId: z.string().optional(),
   }),

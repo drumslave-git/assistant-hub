@@ -29,7 +29,7 @@ import { withAdvisoryLock } from "@/server/jobs/lock";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
-import { resolveSourceOutbound } from "@/server/turn/tg-outbound";
+import { sourceOutbound } from "@/server/turn/source-outbound";
 
 import { buildStandingTasksBlock } from "../format";
 import { computeNextTriggerRun } from "../schedule";
@@ -253,7 +253,10 @@ async function buildLiveFireCollaborators(): Promise<Pick<
     // The owning source mirrors what it delivers — no recordReply here. An
     // unconfigured source API fails the send audibly, like v1's stopped bot.
     send: (assistantId, chatId, text, opts) => {
-      const outbound = resolveSourceOutbound();
+      // The task store keeps a scoped ref but the repository still hands out
+      // raw telegram ids (its own note); a fire therefore delivers to tg
+      // until that surface is generalized.
+      const outbound = sourceOutbound("tg");
       if (!outbound) {
         throw new Error("telegram source API is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
       }

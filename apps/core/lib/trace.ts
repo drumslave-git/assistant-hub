@@ -51,9 +51,13 @@ export const traceEventTypeSchema = z.enum([
 ]);
 export type TraceEventType = z.infer<typeof traceEventTypeSchema>;
 
-/** What or who triggered a traced action. */
+/**
+ * What or who triggered a traced action. One kind per way in: a message from
+ * a source app names that source (`telegram`, `chat`), so Debug can filter a
+ * web-thread turn apart from an operator pressing a dashboard button.
+ */
 export const traceTriggerSchema = z.object({
-  kind: z.enum(["telegram", "dashboard", "cron", "system", "api", "test"]),
+  kind: z.enum(["telegram", "chat", "dashboard", "cron", "system", "api", "test"]),
   /** Human-readable actor, e.g. chat id, user, job name. */
   actor: z.string().optional(),
   /** Correlation id linking related traces (e.g. a Telegram update id). */

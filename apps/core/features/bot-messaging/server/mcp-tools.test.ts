@@ -23,10 +23,10 @@ import {
  * paths answer the same refusal states.
  */
 
-vi.mock("@/server/turn/tg-outbound", () => ({ resolveSourceOutbound: vi.fn() }));
+vi.mock("@/server/turn/source-outbound", () => ({ sourceOutbound: vi.fn() }));
 
-const { resolveSourceOutbound } = await import("@/server/turn/tg-outbound");
-const mockedResolve = vi.mocked(resolveSourceOutbound);
+const { sourceOutbound } = await import("@/server/turn/source-outbound");
+const mockedResolve = vi.mocked(sourceOutbound);
 
 interface ToolResult {
   content: { type: string; text: string }[];
