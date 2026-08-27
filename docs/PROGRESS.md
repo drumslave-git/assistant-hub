@@ -41,10 +41,14 @@ users and groups pages aggregate every source's operator listing
 instead of reading the transitional shadow, curated edits are
 routed by scoped ref, and person links have CRUD with memory
 reading through them. With the two operator live
-checks passed the same day, Phase 3 is closed. **Next best task:
-Phase 4 (web chat)** — which is also what turns the source registry,
-the listing contract and person links from one-source machinery into
-the thing they were designed for.
+checks passed the same day, Phase 3 is closed. **Phase 4 (web chat) is
+in-progress** (started 2026-08-27) — the phase that turns the source
+registry, the listing contract and person links from one-source
+machinery into the thing they were designed for. Its four open design
+calls were answered by the user the same day (chat is a Hono service
+with its UI in the shell; parity scoped to memory/traces/vision/voice;
+voice both directions; the full outbound port) and are recorded with
+the acceptance criteria under "Phase 4 — Web chat" below.
 
 **Both operator live checks passed (2026-08-27, after a service
 restart), verified from the traces.** Phase 3 has no open work.
@@ -196,7 +200,7 @@ Known pitfalls for whoever starts:
 | 1 | Per-app databases + schemas, scoped refs, person links, migration scripts + rehearsal | done |
 | 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | done |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | done |
-| 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | todo |
+| 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | in-progress |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
 | 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
 
@@ -341,6 +345,103 @@ non-Next workspaces is a small standalone task). The tg import test
 applies the frozen v1 migration chain via a cross-app path — test-only,
 deleted with `apps/core/db` at cutover. Person links have schema +
 foundations only; no UI/service until the aggregation phases.
+
+## Phase 4 — Web chat (acceptance criteria)
+
+Scope from PLAN.md: `apps/chat` as the second source app plus its
+`apps/chat/ui` extensions — threads UI (create/name/pick assistant),
+text + image upload + voice, live turn progress, message-at-once
+delivery, memory/trace parity with telegram chats.
+
+Decisions (user, 2026-08-27, all four as recommended):
+
+1. **Backend shape — the standing recommendation is confirmed.**
+   `apps/chat` is a plain Node/Hono service, tg's twin (operator API +
+   internal API + inbound producer + delivery/lifecycle consumers); its
+   dashboard UI ships as `apps/chat/ui` and renders inside the core Next
+   build. No second Next app, no second origin.
+2. **Content-plane parity is scoped to memory, traces, vision and
+   voice.** The summarizer, the hybrid search index and the analytics
+   dashboard stay telegram-only; whether web threads join them is a
+   later phase's call. Chat therefore serves the operator listing
+   contract and the media/internal API, not tg's `content/*` surface.
+3. **Voice both directions.** Uploads are transcribed by the core voice
+   pipeline and answered voice-to-voice when a speech endpoint is
+   configured — the turn consumer's voice path is already
+   source-generic, chat implements `sendVoice`.
+4. **Full outbound port.** Chat implements
+   `sendMessage`/`sendVoice`/`sendPhotos`/`sendFile`/`deleteMessage`, so
+   image generation, browser-agent downloads and timed task fires reach
+   a web thread. `setReaction` has no web analogue: it answers
+   `unsupported` so the tool reports it, rather than throwing.
+
+Design notes settled in-session (no user call needed — they follow from
+the decisions above and existing code):
+
+- **The core's source couplings become a registry, not a second copy.**
+  `resolveSourceOutbound()` and `tgApiMediaStore` are tg-hardcoded
+  (`TG_API_URL` from env); Phase 4 turns them into a per-source lookup
+  keyed by `event.source`, the way `DIRECTORY_SOURCES` already is. A
+  feature that grows a second `if (source === "tg")` branch instead is
+  a failed criterion.
+- **Dashboard mount stays app-agnostic.** The shell gains ONE generic
+  route (`/apps/[app]/[[...rest]]`) that renders the registered app's
+  contributed page; nav items come from the app's `AppExtensions`. The
+  shell never names "chat" — the rule from PLAN's dashboard-composition
+  section.
+- **Memory keying becomes source-aware.** `identitiesOf` hardcodes
+  `scopedRef("tg","user",id)` and labels come from the v1 `known_users`
+  table, so a chat user would read as `User <uuid>` and link to
+  nothing. Memory rows stay v1-keyed until Phase 6 (Phase 3 decision),
+  but the read path takes the caller's scoped ref and the label the
+  source already supplies on the inbound event.
+
+Slices:
+
+- [ ] **A — chat service + operator API + registry entry.** `apps/chat`
+      becomes a running Hono service (env, db handle, store repository,
+      `/health`) serving the shared operator listing contract for its
+      users/threads/messages; the core registers it in
+      `DIRECTORY_SOURCES` and proxies `/api/chat/*`; `apps/chat/ui`
+      exists and contributes nav; the shell's generic app mount renders
+      it. Proof: chat rows appear on the aggregated users/chats pages
+      tagged with their source, an unconfigured chat service degrades to
+      the named-unavailable row (never a silent empty list), and the
+      operator-API integration suite runs against the real store.
+- [ ] **B — threads and the text turn end to end.** Thread CRUD (create
+      with a name + an assistant chosen at creation, rename, delete;
+      no mid-thread switching), the operator's chat user bound to the
+      operator session, the chat view sending text; inbound events
+      carrying chat's own composed context (history window +
+      participants + a `private`-shaped addressing verdict), the core
+      pipeline running unchanged, `reply.delivery` consumed and
+      persisted, the reply rendered. Proof: an integration test drives a
+      thread turn through the real queue/bus topology, and the operator
+      answers a web thread in the dev environment.
+- [ ] **C — live turn progress.** `turn.lifecycle` (accepted /
+      progress / settled) reaches the thread view over the existing SSE
+      bridge and renders as live progress with the current tool's label;
+      the thread list live-updates too. No token streaming
+      (message-at-once — PLAN). Proof: the progress phases are asserted
+      in a test and seen in the dev UI.
+- [ ] **D — images.** Upload in a thread → chat store media + blobs →
+      the core vision pipeline describes it through the per-source media
+      port → the description reaches the turn as the media note, exactly
+      as a Telegram photo does; the image renders in the thread and in
+      `/vision`. Backfill covers chat media. Proof: media integration
+      suite plus one described upload in dev.
+- [ ] **E — voice.** Recorded/uploaded audio in a thread is transcribed
+      by the core voice pipeline and drives the turn; a voice turn is
+      answered with an audio bubble (text fallback intact) when a speech
+      endpoint is configured; playback in the thread view.
+- [ ] **F — memory, traces and person links.** Memory reads/writes for
+      chat users through scoped refs and person links (a linked
+      telegram+web pair is one body of knowledge), every chat-side
+      action records through the shared trace client into the one store
+      on the turn's correlation, and `/debug` scopes chat traces like
+      any other feature. Proof: a linked pair answered in both sources
+      from the same memory, and one turn's cross-app trace read in
+      `/debug`.
 
 ## Phase 3 — Assistants (acceptance criteria)
 
@@ -973,6 +1074,20 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+
+- **2026-08-27 (Phase 4 opened)** — Phase 3 closed, Phase 4 started:
+  the four design calls PLAN.md had left for this phase were put to the
+  user and all four came back as the standing recommendation — apps/chat
+  is a Hono service (tg's twin) whose dashboard UI renders inside the
+  core Next build, content-plane parity is scoped to memory/traces/
+  vision/voice (summaries, search index and analytics stay
+  telegram-only), voice works in both directions, and chat implements
+  the full outbound port so image generation, browser downloads and
+  timed task fires can target a web thread. Acceptance criteria and the
+  A–F slice plan written under "Phase 4 — Web chat". Three couplings
+  were named up front as the things this phase must generalize rather
+  than duplicate: the tg-hardcoded outbound/media ports, the shell's
+  route mounting, and memory's tg-only ref keying.
 
 - **2026-08-27 (live verification, Phase 3 closed)** — The operator
   restarted the dev services and ran both pending scenarios; verified
