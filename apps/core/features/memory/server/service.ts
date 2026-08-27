@@ -1,6 +1,6 @@
 import "server-only";
 
-import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
+import { scopedRef, tryParseScopedRef, type SourceId } from "@assistant-hub/contracts";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
@@ -71,21 +71,26 @@ async function tryEmbed(text: string): Promise<number[] | null> {
  * links"). Always includes the id itself, so callers use the result
  * unconditionally and a deployment with no links behaves exactly as before.
  *
- * Memory is still keyed by Telegram user ids (v1 tables until the Phase 6
- * cutover), so a link member from another source has no document to
- * contribute yet and is dropped here rather than looked up under a key that
- * cannot exist. Once memory moves to scoped refs this filter is what goes
- * away, not the resolution.
+ * Ids are resolved in the CALLER's source (a web thread's sender is a
+ * `chat:user:…`, not a telegram one), and a linked identity from any source
+ * contributes its document: the memory tables are one flat keyspace keyed by
+ * whatever id wrote the row, so a telegram user id and a web user's uuid sit
+ * side by side there. That is what makes a linked pair one body of knowledge
+ * across sources. (The keyspace becomes scoped refs at the Phase 6 cutover;
+ * nothing here has to change when it does.)
  */
-async function identitiesOf(userIds: readonly string[]): Promise<Map<string, string[]>> {
-  const refOf = (id: string) => scopedRef("tg", "user", id);
+async function identitiesOf(
+  userIds: readonly string[],
+  source: SourceId,
+): Promise<Map<string, string[]>> {
+  const refOf = (id: string) => scopedRef(source, "user", id);
   const linked = await resolveLinkedRefs(userIds.map(refOf));
   return new Map(
     userIds.map((id) => {
       const refs = linked.get(refOf(id)) ?? [];
       const local = refs.flatMap((ref) => {
         const parsed = tryParseScopedRef(ref);
-        return parsed && parsed.source === "tg" && parsed.kind === "user" ? [parsed.id] : [];
+        return parsed && parsed.kind === "user" ? [parsed.id] : [];
       });
       return [id, [...new Set([id, ...local])]];
     }),
@@ -147,7 +152,19 @@ export interface MemoryContext {
  * contradiction-resolved picture — not a running log of everything ever saved.
  */
 export async function getMemoryContext(
-  params: { chatId: string; senderId: string | null; isGroup: boolean },
+  params: {
+    chatId: string;
+    senderId: string | null;
+    isGroup: boolean;
+    /** Whose ids these are. Defaults to telegram (v1 callers). */
+    source?: SourceId;
+    /**
+     * Display labels the source already resolved, keyed by user id — a web
+     * user has no row in the v1 directory, and "User 3f2b…" is not a name
+     * anyone should read in a prompt.
+     */
+    labels?: Record<string, string>;
+  },
   db: DrizzleDb = getDb(),
 ): Promise<MemoryContext | null> {
   const ids: string[] = [];
@@ -162,7 +179,7 @@ export async function getMemoryContext(
 
   // One human may be here under several identities the operator has linked;
   // read all of them and speak about the person once.
-  const people = peoplePresent(ids, await identitiesOf(ids));
+  const people = peoplePresent(ids, await identitiesOf(ids, params.source ?? "tg"));
   const readIds = people.flatMap((person) => person.identities);
   const presentIds = people.map((person) => person.userId);
 
@@ -184,7 +201,12 @@ export async function getMemoryContext(
     factCount += facts.length;
     return {
       userId: person.userId,
-      label: labelBy.get(person.userId) ?? `User ${person.userId}`,
+      // The source's own label first — it knows the person's name; the v1
+      // directory second; the bare id only when nobody knows anything.
+      label:
+        params.labels?.[person.userId] ??
+        labelBy.get(person.userId) ??
+        `User ${person.userId}`,
       // A linked identity of the sender is still the sender.
       isSender: params.senderId != null && person.identities.includes(params.senderId),
       facts,
@@ -311,7 +333,7 @@ export async function checkGeneralNoteSubject(
  * only until the next nightly run.
  */
 export async function readMemory(
-  params: { userId?: string | null },
+  params: { userId?: string | null; source?: SourceId },
   db: DrizzleDb = getDb(),
 ): Promise<MemoryMatch[]> {
   const userId = params.userId?.trim();
@@ -319,7 +341,8 @@ export async function readMemory(
   // Everything this person knows-of-themself, whichever identity it was
   // stored under; the model only ever saw the id it asked about, so that is
   // the id the facts come back on.
-  const identities = (await identitiesOf([userId])).get(userId) ?? [userId];
+  const identities =
+    (await identitiesOf([userId], params.source ?? "tg")).get(userId) ?? [userId];
   const stored = await getUserMemoriesFor(db, identities);
   return stored.flatMap((document) =>
     splitMemoryFacts(document.content).map((content) => ({

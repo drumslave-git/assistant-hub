@@ -221,12 +221,13 @@ export function registerMemoryMcpTools(server: McpServer): void {
       },
     },
     async ({ person }) => {
-      const { chatId, userId: speakerId } = getToolContext();
+      const { chatId, userId: speakerId, source } = getToolContext();
       const subject = await resolveMemorySubject({ person, chatId, speakerId });
       if (!subject.ok) {
         return { content: [{ type: "text" as const, text: subject.error }], isError: true };
       }
-      const matches = await readMemory({ userId: subject.userId });
+      // The subject id is in the turn's own source, so its links resolve there.
+      const matches = await readMemory({ userId: subject.userId, source });
       return buildResult(matches, "(nothing durable is stored about this person yet)");
     },
   );

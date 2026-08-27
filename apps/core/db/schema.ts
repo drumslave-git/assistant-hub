@@ -945,8 +945,16 @@ export const memoryEntries = pgTable(
     id: text("id").primaryKey(),
     /** `user` (a fact about one person) or `general` (shared cross-chat knowledge). */
     scope: text("scope").notNull(),
-    /** The person the fact is about — set for `user` scope, null for `general`. */
-    userId: text("user_id").references(() => knownUsers.userId, { onDelete: "cascade" }),
+    /**
+     * The person the fact is about — set for `user` scope, null for `general`.
+     * A source-local user id from ANY source (a telegram id, a web user's
+     * uuid): since Phase 4 the assistant is reachable in more than one app,
+     * and the telegram directory is no longer the register of everyone it
+     * knows. The foreign key to `known_users` was dropped for exactly that
+     * reason (migration 0060) — it made memory about a web user impossible
+     * to store.
+     */
+    userId: text("user_id"),
     /** The durable fact, as the model wrote it. */
     content: text("content").notNull(),
     /** Chat the note was saved from (provenance for the operator; not a scope). */
@@ -982,9 +990,8 @@ export type MemoryEntryInsert = typeof memoryEntries.$inferInsert;
 export const userMemories = pgTable(
   "user_memories",
   {
-    userId: text("user_id")
-      .primaryKey()
-      .references(() => knownUsers.userId, { onDelete: "cascade" }),
+    /** The person's source-local id, from any source — see `memory_entries`. */
+    userId: text("user_id").primaryKey(),
     /** The merged memory document — durable facts, one per line. */
     content: text("content").notNull(),
     /** Embedding of `content` for the semantic half of memory search. */

@@ -38,6 +38,8 @@ const GROUP_ID = "-100900";
 const WORK = "701";
 const PERSONAL = "702";
 const STRANGER = "800";
+/** The same person's web identity — a uuid, as the chat app mints them. */
+const WEB = "0b1c2d3e-4f56-4789-8abc-def012345678";
 
 beforeAll(async () => {
   ctx = await startTestDb();
@@ -171,5 +173,50 @@ describe("memory through person links", () => {
       "Works nights.",
     ]);
     expect(new Set(facts.map((fact) => fact.userId))).toEqual(new Set([PERSONAL]));
+  });
+
+  it("carries what telegram taught it into a web thread, and back", async () => {
+    // The pair the whole person-link design exists for: one human reaching
+    // the assistant through two different apps.
+    await seedUser(WORK, "Ada");
+    await remember(WORK, "Lives in Lisbon.");
+    await remember(WEB, "Prefers short answers.");
+    await createLink(
+      { members: [`tg:user:${WORK}`, `chat:user:${WEB}`], note: "same person" },
+      { kind: "dashboard" },
+    );
+
+    // In the web thread: the telegram fact is there, and the person is named
+    // by the label the chat app supplied — there is no v1 directory row for
+    // a web user, and "User 0b1c…" is not a name.
+    const inThread = await getMemoryContext(
+      {
+        chatId: "thread-1",
+        senderId: WEB,
+        isGroup: false,
+        source: "chat",
+        labels: { [WEB]: "Operator" },
+      },
+      ctx.db,
+    );
+    expect(inThread?.content).toContain("Lives in Lisbon.");
+    expect(inThread?.content).toContain("Prefers short answers.");
+    expect(inThread?.content).toContain("Operator");
+    expect(inThread?.content).not.toContain(WEB);
+
+    // And in Telegram: what was learned in the web thread is known there too.
+    const inTelegram = await getMemoryContext(
+      { chatId: CHAT_ID, senderId: WORK, isGroup: false },
+      ctx.db,
+    );
+    expect(inTelegram?.content).toContain("Prefers short answers.");
+    expect(inTelegram?.content).toContain("Ada");
+
+    // The tool answers the same way, asked from either side.
+    const fromWeb = await readMemory({ userId: WEB, source: "chat" }, ctx.db);
+    expect(fromWeb.map((fact) => fact.content).sort()).toEqual([
+      "Lives in Lisbon.",
+      "Prefers short answers.",
+    ]);
   });
 });

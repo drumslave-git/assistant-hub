@@ -497,7 +497,16 @@ async function buildEventDeps(
     // user out of a bot.
     loadMemory: isCrossFed(event)
       ? undefined
-      : () => getMemoryContext({ chatId, senderId, isGroup }).catch(() => null),
+      : () =>
+          getMemoryContext({
+            chatId,
+            senderId,
+            isGroup,
+            source: event.source,
+            // The source resolved these names already; without them a web
+            // user would be read out as "User <uuid>" in the prompt.
+            labels: memoryLabels(event),
+          }).catch(() => null),
     loadSenderPreferences: isCrossFed(event)
       ? undefined
       : () => getPreferencesContext(senderId).catch(() => null),
@@ -554,6 +563,20 @@ async function buildEventDeps(
     // The owning source mirrors what it delivers — nothing to record here.
     recordReply: async () => {},
   };
+}
+
+/**
+ * Display labels for everyone the memory read might name, from what the
+ * source already put on the event: the sender plus the participant roster.
+ */
+function memoryLabels(event: InboundMessageEvent): Record<string, string> {
+  const labels: Record<string, string> = {
+    [parseScopedRef(event.sender.ref).id]: event.sender.label,
+  };
+  for (const participant of event.context.participants) {
+    labels[parseScopedRef(participant.ref).id] = participant.label;
+  }
+  return labels;
 }
 
 /** Whether this event is another assistant's message, handed over by the source. */
