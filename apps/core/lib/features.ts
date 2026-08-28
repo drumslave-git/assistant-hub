@@ -261,6 +261,19 @@ export const FEATURES = {
     path: "/analytics",
   },
 
+  // Operator-managed MCP tool connections: the DB-backed half of the
+  // toolset (PLAN.md, "MCP tool connections"). The in-process feature tools
+  // below keep their own per-tool scopes; this is the connections themselves
+  // — CRUD, discovery and apply.
+  "tool-connections": {
+    id: "tool-connections",
+    label: "Tool connections",
+    group: "tools",
+    realtimeTopic: "tools",
+    relatedIdsKey: "tool_connections",
+    path: "/tools",
+  },
+
   // Per-tool trace scopes. Every MCP tool call is recorded under
   // `mcp-tools-<owning-feature>` (see `server/mcp/tool-trace.ts`), so each tool
   // group has its own Debug scope. The id must equal `mcp-tools-${owner}` where

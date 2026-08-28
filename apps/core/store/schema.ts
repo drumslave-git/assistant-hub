@@ -545,3 +545,109 @@ export const personLinkMembers = pgTable(
 
 export type PersonLinkMemberRow = typeof personLinkMembers.$inferSelect;
 export type PersonLinkMemberInsert = typeof personLinkMembers.$inferInsert;
+
+/**
+ * MCP tool connections (PLAN.md, "MCP tool connections") — the operator's
+ * catalog of remote MCP servers whose tools the model may call, replacing
+ * v1's code-only in-process toolset. Config lives in the DB, not in env.
+ *
+ * Three scope dimensions decide whether a connection's tools reach a turn
+ * (user decision, 2026-08-28): global (the default), app (`app_scope` names
+ * one source app — how each source's own MCP server stays out of the
+ * other's prompt) and assistant (`all_assistants`, else the explicit
+ * selection in `assistant_tool_connections`). Per-chat and per-user scoping
+ * is not part of v2.
+ */
+export const toolConnections = pgTable(
+  "tool_connections",
+  {
+    id: text("id").primaryKey(),
+    /** Tool-name prefix and stable handle (`<slug>__<tool>`); unique. */
+    slug: text("slug").notNull(),
+    /** Display name for the dashboard. */
+    name: text("name").notNull(),
+    /**
+     * Transport discriminator. `http` (Streamable HTTP, legacy SSE fallback)
+     * is the only one v2 executes; `stdio` is modeled so adding it later
+     * needs no schema or UI rework, and is refused by the service.
+     */
+    transport: text("transport").notNull().default("http"),
+    /** Endpoint of the remote MCP server. */
+    endpointUrl: text("endpoint_url").notNull(),
+    /**
+     * Auth headers sent on every request, `{ name: value }`. Secret — the
+     * service never returns the values (the backends `api_key` precedent).
+     */
+    authHeaders: jsonb("auth_headers").$type<Record<string, string>>().notNull().default({}),
+    /** Disabled connections keep their snapshot but are offered to nobody. */
+    enabled: boolean("enabled").notNull().default(true),
+    /** Null = every source; else the source app id whose turns may call it. */
+    appScope: text("app_scope"),
+    /** False = only the assistants listed in `assistant_tool_connections`. */
+    allAssistants: boolean("all_assistants").notNull().default(true),
+    /**
+     * Auto-provisioned by the core (a source app's own MCP server). Managed
+     * connections are reconciled from configuration, so the operator may
+     * enable/scope them but not delete or re-point them.
+     */
+    managed: boolean("managed").notNull().default(false),
+    /** Last successful discovery, and the last failure's message (if any). */
+    lastDiscoveredAt: timestamp("last_discovered_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("tool_connections_slug_idx").on(t.slug),
+    check("tool_connections_transport_check", sql`${t.transport} in ('http', 'stdio')`),
+  ],
+);
+
+export type ToolConnectionRow = typeof toolConnections.$inferSelect;
+export type ToolConnectionInsert = typeof toolConnections.$inferInsert;
+
+/**
+ * The applied tool snapshot of one connection — what the model is actually
+ * offered. Discovery never writes here; only an operator's apply does (user
+ * decision, 2026-08-28), which is what keeps the prompt's tool block stable
+ * across a conversation instead of tracking a remote server's edits.
+ */
+export const toolConnectionTools = pgTable(
+  "tool_connection_tools",
+  {
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => toolConnections.id, { onDelete: "cascade" }),
+    /** Remote tool name, unprefixed as the server reports it. */
+    name: text("name").notNull(),
+    description: text("description"),
+    /** JSON Schema of the tool's arguments, as discovered. */
+    inputSchema: jsonb("input_schema").$type<Record<string, unknown>>().notNull(),
+    appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.connectionId, t.name] })],
+);
+
+export type ToolConnectionToolRow = typeof toolConnectionTools.$inferSelect;
+export type ToolConnectionToolInsert = typeof toolConnectionTools.$inferInsert;
+
+/**
+ * Which assistants may call a connection whose `all_assistants` is false.
+ * Absent rows then mean "no assistant" — an explicit empty selection, not a
+ * fallback to everyone.
+ */
+export const assistantToolConnections = pgTable(
+  "assistant_tool_connections",
+  {
+    assistantId: text("assistant_id")
+      .notNull()
+      .references(() => assistants.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => toolConnections.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.connectionId, t.assistantId] })],
+);
+
+export type AssistantToolConnectionRow = typeof assistantToolConnections.$inferSelect;
+export type AssistantToolConnectionInsert = typeof assistantToolConnections.$inferInsert;
