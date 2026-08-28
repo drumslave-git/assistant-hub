@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import {
   internalFeedbackPatchRequestSchema,
   internalMediaDescribeRequestSchema,
-  internalReactionRequestSchema,
   internalSendFileRequestSchema,
   internalSendMessageRequestSchema,
   internalSendPhotosRequestSchema,
@@ -14,7 +13,6 @@ import {
   operatorSourceSettingsUpdateRequestSchema,
   operatorUserUpdateRequestSchema,
   type InternalMedia,
-  type InternalReactionResponse,
   type InternalSentPhotosResponse,
   type OperatorChat,
   type OperatorChatMember,
@@ -30,12 +28,13 @@ import {
   contentSearchMessagesRequestSchema,
   contentSearchSummariesRequestSchema,
 } from "@assistant-hub/contracts";
-import { internalTokenGuard } from "@assistant-hub/service";
+import { internalTokenGuard, serveMcp } from "@assistant-hub/service";
 import { Hono, type Context } from "hono";
 
 import { recordAssistantMessage, type CrossFeed } from "./cross-feed";
 import type { TgDb } from "./db";
 import type { BotManager, ConnectionStatus } from "./bot-manager";
+import { createTgMcpServer } from "./mcp";
 import {
   clearMessageIndex,
   countEmbeddedMessages,
@@ -94,7 +93,6 @@ import {
   listUsers,
   getMediaForMessages,
   markMessageDeleted,
-  recordBotReaction,
   setOwner,
   updateChatLanguage,
   updateChatNotes,
@@ -1011,53 +1009,16 @@ export function createApi(input: {
     return c.json({ deleted: true });
   });
 
-  internal.post("/chats/:chatId/messages/:messageId/reaction", async (c) => {
-    const parsed = internalReactionRequestSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) {
-      return c.json({ error: { message: "emoji (or null) is required" } }, 400);
-    }
-    const chatId = c.req.param("chatId");
-    const messageId = Number(c.req.param("messageId"));
-    if (!Number.isFinite(messageId)) {
-      return c.json({ error: { message: "messageId must be a number" } }, 400);
-    }
-    // The mirror gates the platform call (v1 tool order): an id the model
-    // guessed, or the bot's own message, is refused without touching
-    // Telegram — the core's tool words these refusals for the model.
-    const target = await getMessageByTelegramId(input.db, chatId, messageId, assistantIdOf(c));
-    if (!target) {
-      return c.json({ status: "not_found", recorded: false } satisfies InternalReactionResponse);
-    }
-    if (target.role === "assistant") {
-      return c.json({ status: "own_message", recorded: false } satisfies InternalReactionResponse);
-    }
-    try {
-      await senderOf(c).setReaction(chatId, messageId, parsed.data.emoji, {
-        big: parsed.data.big,
-      });
-    } catch (err) {
-      // Telegram refused for a reason only it knows (chat-restricted emoji,
-      // message too old) — relayed verbatim, so the tool can tell the model
-      // not to claim it reacted.
-      return c.json({ error: { message: errorText(err) } }, 502);
-    }
-    // Mirror the reaction so the bot remembers reacting; the reaction IS on
-    // the message, so a failed write degrades to `recorded: false` (v1).
-    let recorded = true;
-    try {
-      await recordBotReaction(input.db, {
-        chatId,
-        telegramMessageId: messageId,
-        emoji: parsed.data.emoji,
-        assistantId: assistantIdOf(c),
-      });
-    } catch {
-      recorded = false;
-    }
-    return c.json({ status: "ok", recorded } satisfies InternalReactionResponse);
-  });
+  // This app's own MCP server (Phase 5): the core reaches it as a managed
+  // tool connection, with the same shared secret the internal API takes. The
+  // turn each call belongs to arrives as MCP `_meta`, so a tool never takes a
+  // chat id from the model.
+  const mcp = new Hono();
+  mcp.use("*", internalTokenGuard(input.internalToken));
+  mcp.all("/", (c) => serveMcp(c, () => createTgMcpServer({ db: input.db, manager: input.manager })));
 
   app.route("/internal", internal);
+  app.route("/mcp", mcp);
 
   return app;
 }

@@ -1,0 +1,227 @@
+import { fileURLToPath } from "node:url";
+
+import { serve, type ServerType } from "@hono/node-server";
+import { TURN_META_KEY } from "@assistant-hub/contracts";
+import {
+  applyMigrations,
+  startTestPostgres,
+  type TestPostgres,
+} from "@assistant-hub/db/testing";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import * as schema from "../store/schema";
+import { createApi } from "./api";
+import type { TgOutbound } from "./outbound";
+import { appendMessage, getMessageByTelegramId } from "./store";
+
+const MIGRATIONS = fileURLToPath(new URL("../store/migrations", import.meta.url));
+
+/** A supergroup id with a `-100` prefix, as a real group has. */
+const CHAT_ID = "-1001234567890";
+const TOKEN = "secret-token";
+
+/**
+ * This app's own MCP server, over the real Streamable HTTP transport it
+ * serves (Phase 5). The reaction tool used to live in the core and reach
+ * Telegram through this app's REST API; now the tool IS here, and what the
+ * core sends is the turn — as `_meta`, never as arguments.
+ *
+ * Everything below therefore goes through an actual MCP client: the
+ * Hono-to-Node bridging, the token guard, the turn binding, and the mirror
+ * gate that keeps the bot from reacting to ids it guessed or to itself.
+ */
+
+describe("tg MCP server", () => {
+  let pg: TestPostgres;
+  let pool: Pool;
+  let db: ReturnType<typeof drizzle<typeof schema>>;
+  let server: ServerType;
+  let url: string;
+  const calls: { setReaction: unknown[] } = { setReaction: [] };
+  let reactionError: Error | null = null;
+
+  const sender = {
+    async setReaction(chatId: string, messageId: number, emoji: string | null, opts?: { big?: boolean }) {
+      if (reactionError) throw reactionError;
+      calls.setReaction.push({ chatId, messageId, emoji, opts });
+    },
+  } as unknown as TgOutbound;
+
+  beforeAll(async () => {
+    pg = await startTestPostgres();
+    const dbUrl = await pg.createDatabase("tg_mcp");
+    await applyMigrations(dbUrl, MIGRATIONS);
+    pool = new Pool({ connectionString: dbUrl });
+    db = drizzle(pool, { schema });
+
+    // Prior conversation: a person's message (#21) and the bot's own (#22).
+    await appendMessage(db, {
+      chatId: CHAT_ID,
+      assistantId: null,
+      telegramMessageId: 21,
+      role: "user",
+      userId: "5001",
+      content: "the earlier question",
+      replyToMessageId: null,
+      sentAt: new Date(),
+      processed: true,
+    });
+    await appendMessage(db, {
+      chatId: CHAT_ID,
+      assistantId: null,
+      telegramMessageId: 22,
+      role: "assistant",
+      userId: null,
+      content: "the earlier answer",
+      replyToMessageId: 21,
+      sentAt: new Date(),
+      processed: true,
+    });
+
+    const api = createApi({
+      db,
+      manager: {
+        statuses: () => [],
+        senderFor: () => sender,
+        reconcileConnection: async () => undefined,
+        removeConnection: async () => undefined,
+      },
+      internalToken: TOKEN,
+    });
+    const port = await new Promise<number>((resolve) => {
+      server = serve({ fetch: api.fetch, port: 0, hostname: "127.0.0.1" }, (info) =>
+        resolve(info.port),
+      );
+    });
+    url = `http://127.0.0.1:${port}/mcp`;
+  });
+
+  afterAll(async () => {
+    server?.close();
+    await pool?.end();
+    await pg?.stop();
+  });
+
+  /** An MCP client with the shared secret, as the core connects. */
+  async function connect(headers: Record<string, string> = { "x-internal-token": TOKEN }) {
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
+    return client;
+  }
+
+  /** One reaction call, bound to a turn the way the core binds one. */
+  async function react(
+    client: Client,
+    args: Record<string, unknown>,
+    meta: Record<string, unknown> = { source: "tg", chatId: CHAT_ID, assistantId: null },
+  ) {
+    const result = (await client.callTool({
+      name: "set_message_reaction",
+      arguments: args,
+      _meta: { [TURN_META_KEY]: meta },
+    })) as unknown as {
+      content: { text: string }[];
+      structuredContent: { ok: boolean; emoji: string | null };
+      isError?: boolean;
+    };
+    return result;
+  }
+
+  it("refuses a client without the shared secret", async () => {
+    await expect(connect({})).rejects.toThrow();
+  });
+
+  it("offers the reaction tool with the emoji set in its description", async () => {
+    const client = await connect();
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name)).toEqual(["set_message_reaction"]);
+    // The model picks WHAT to react with; the chat it reacts in is not a field.
+    expect(Object.keys(tools[0].inputSchema.properties ?? {}).sort()).toEqual([
+      "big",
+      "emoji",
+      "message_id",
+    ]);
+    // The allowed set travels in the field's own description, where the model
+    // reads it while choosing a value.
+    const emojiField = (tools[0].inputSchema.properties as Record<string, { description: string }>)
+      .emoji;
+    expect(emojiField.description).toContain("👍");
+    await client.close();
+  });
+
+  it("reacts to a person's message and remembers it on the mirror", async () => {
+    const client = await connect();
+    const result = await react(client, { message_id: 21, emoji: "👍", big: true });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({ ok: true, emoji: "👍" });
+    expect(calls.setReaction[0]).toMatchObject({
+      chatId: CHAT_ID,
+      messageId: 21,
+      emoji: "👍",
+      opts: { big: true },
+    });
+    const row = await getMessageByTelegramId(db, CHAT_ID, 21, null);
+    expect(row!.botReaction).toBe("👍");
+    await client.close();
+  });
+
+  it("gates the platform call on the mirror", async () => {
+    const client = await connect();
+    calls.setReaction.length = 0;
+
+    const guessed = await react(client, { message_id: 9999, emoji: "👍" });
+    expect(guessed.isError).toBe(true);
+    expect(guessed.content[0].text).toContain("No message #9999");
+
+    const own = await react(client, { message_id: 22, emoji: "👍" });
+    expect(own.isError).toBe(true);
+    expect(own.content[0].text).toContain("is your own");
+
+    expect(calls.setReaction).toHaveLength(0);
+    await client.close();
+  });
+
+  it("normalizes a spelling Telegram rejects, and refuses one it has no reaction for", async () => {
+    const client = await connect();
+    calls.setReaction.length = 0;
+
+    // The heart written with a presentation selector, as a model writes it.
+    const heart = await react(client, { message_id: 21, emoji: "❤\u{FE0F}" });
+    expect(heart.isError).toBeFalsy();
+    expect(calls.setReaction[0]).toMatchObject({ emoji: "❤" });
+
+    const nonsense = await react(client, { message_id: 21, emoji: "🦆" });
+    expect(nonsense.isError).toBe(true);
+    expect(nonsense.content[0].text).toContain("no \"🦆\" reaction");
+    await client.close();
+  });
+
+  it("relays a platform refusal instead of claiming it reacted", async () => {
+    const client = await connect();
+    reactionError = new Error("REACTION_INVALID");
+    const result = await react(client, { message_id: 21, emoji: "🕊" });
+    reactionError = null;
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("REACTION_INVALID");
+    expect(result.content[0].text).toContain("Do not claim you reacted");
+    await client.close();
+  });
+
+  it("refuses a call that carries no turn", async () => {
+    const client = await connect();
+    const result = (await client.callTool({
+      name: "set_message_reaction",
+      arguments: { message_id: 21, emoji: "👍" },
+    })) as unknown as { content: { text: string }[]; isError?: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("without a conversation");
+    await client.close();
+  });
+});

@@ -2,7 +2,6 @@ import { fileURLToPath } from "node:url";
 
 import {
   internalDeleteMessageResponseSchema,
-  internalReactionResponseSchema,
   internalSentFileResponseSchema,
   internalSentMessageResponseSchema,
   internalSentPhotosResponseSchema,
@@ -318,56 +317,5 @@ describe("tg outbound API", () => {
     });
     const kept = await getMessageByTelegramId(db, CHAT_ID, 21, null);
     expect(kept!.deletedAt).toBeNull();
-  });
-
-  it("gates reactions on the mirror and records the accepted one", async () => {
-    const { sender, calls } = fakeSender();
-    const app = api(sender);
-
-    // An id the model guessed: refused without touching the platform.
-    const missing = await app.request(`/internal/chats/${CHAT_ID}/messages/9999/reaction`, {
-      method: "POST",
-      headers: HEADERS,
-      body: JSON.stringify({ emoji: "👍" }),
-    });
-    expect(internalReactionResponseSchema.parse(await missing.json()).status).toBe("not_found");
-
-    // The bot's own message: never a valid target.
-    const own = await app.request(`/internal/chats/${CHAT_ID}/messages/22/reaction`, {
-      method: "POST",
-      headers: HEADERS,
-      body: JSON.stringify({ emoji: "👍" }),
-    });
-    expect(internalReactionResponseSchema.parse(await own.json()).status).toBe("own_message");
-    expect(calls.setReaction).toHaveLength(0);
-
-    // A person's message: reacted and remembered on the mirror row.
-    const ok = await app.request(`/internal/chats/${CHAT_ID}/messages/21/reaction`, {
-      method: "POST",
-      headers: HEADERS,
-      body: JSON.stringify({ emoji: "👍", big: true }),
-    });
-    expect(internalReactionResponseSchema.parse(await ok.json())).toEqual({
-      status: "ok",
-      recorded: true,
-    });
-    expect(calls.setReaction[0]).toMatchObject({ messageId: 21, emoji: "👍", opts: { big: true } });
-    const row = await getMessageByTelegramId(db, CHAT_ID, 21, null);
-    expect(row!.botReaction).toBe("👍");
-
-    // A platform refusal is relayed verbatim for the tool to word.
-    const { sender: refusing } = fakeSender({
-      setReaction: async () => {
-        throw new Error("REACTION_INVALID");
-      },
-    });
-    const refused = await api(refusing).request(`/internal/chats/${CHAT_ID}/messages/21/reaction`, {
-      method: "POST",
-      headers: HEADERS,
-      body: JSON.stringify({ emoji: "🕊" }),
-    });
-    expect(refused.status).toBe(502);
-    const body = (await refused.json()) as { error: { message: string } };
-    expect(body.error.message).toContain("REACTION_INVALID");
   });
 });

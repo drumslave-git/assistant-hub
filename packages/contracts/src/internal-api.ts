@@ -250,38 +250,6 @@ export const internalFeedbackPatchRequestSchema = z
   .refine((patch) => Object.keys(patch).length > 0, { message: "empty patch" });
 
 /**
- * POST /internal/chats/:chatId/messages/:messageId/reaction — set (or, with
- * a null emoji, clear) the assistant's reaction badge on a message. The
- * source checks its mirror first: `not_found` (an id the model guessed) and
- * `own_message` (reacting to itself) are refused without touching the
- * platform; the core's tool words the refusals. A platform refusal (an
- * emoji this chat does not allow, a message too old) is a 502 whose error
- * message the tool relays verbatim.
- */
-export const internalReactionRequestSchema = z.object({
-  /** The canonical Telegram reaction emoji, or null to clear. */
-  emoji: z.string().nullable(),
-  big: z.boolean().default(false),
-});
-
-export const internalReactionResponseSchema = z.object({
-  /**
-   * `unsupported` is a source saying this affordance does not exist here —
-   * a web thread has no reactions — so the tool reports that instead of the
-   * core deciding for it.
-   */
-  status: z.enum(["ok", "not_found", "own_message", "unsupported"]),
-  /**
-   * Whether the reaction was also recorded on the mirror row (the bot's
-   * memory of reacting) — false degrades exactly like v1: the reaction IS
-   * on the message, later turns may not remember it.
-   */
-  recorded: z.boolean().default(false),
-});
-
-export type InternalReactionResponse = z.infer<typeof internalReactionResponseSchema>;
-
-/**
  * PUT /internal/chats/:chatId/title — name a conversation whose source asked
  * for one (`chatInfo.titleProvisional`). Served only by sources whose
  * conversations have no name of their own; the answer carries what was

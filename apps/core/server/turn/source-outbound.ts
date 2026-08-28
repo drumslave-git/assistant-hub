@@ -2,7 +2,6 @@ import "server-only";
 
 import {
   internalDeleteMessageResponseSchema,
-  internalReactionResponseSchema,
   internalSentFileResponseSchema,
   internalSentMessageResponseSchema,
   internalSentPhotosResponseSchema,
@@ -19,23 +18,16 @@ import { internalRequester, sourceApiConfig } from "@/server/source/internal-cli
  * need something back (a delivered message id, a mirror-checked refusal) or
  * carry bytes, which the fire-and-forget bus events cannot do: browsing
  * acknowledgements (their id is registered for deletion), voice replies (TTS
- * audio), generated images, deletes, and the assistant's reactions. Plain
+ * audio), generated images, and deletes. Plain
  * text replies keep travelling as reply-delivery bus events; the source
  * persists both kinds itself.
  *
  * ONE port, every source: which app answers is resolved from the source id
  * (Phase 4), so the sends below are written once and a new source app needs
- * an entry in the env lookup, not a branch here. Where a platform has no
- * analogue for a call — a web thread cannot be reacted to — the source
- * answers `unsupported` and the tool reports that, rather than the core
- * deciding for it.
+ * an entry in the env lookup, not a branch here. An action a platform does
+ * not have at all is not a port method with an "unsupported" answer: it is a
+ * tool that app's own MCP server simply does not offer (Phase 5).
  */
-
-/**
- * Refusal states a source can answer for a reaction: the mirror's checks, and
- * `unsupported` for a platform that has no reactions at all.
- */
-export type SourceReactionStatus = "ok" | "not_found" | "own_message" | "unsupported";
 
 export interface SourceOutboundPort {
   sendMessage(
@@ -85,24 +77,12 @@ export interface SourceOutboundPort {
   /** `deleted: false` means the platform refused — cosmetic for every caller. */
   deleteMessage(chatId: string, messageId: number): Promise<{ deleted: boolean }>;
   /**
-   * Set (null: clear) the assistant's reaction badge. Refusals the source's
-   * mirror can decide come back as a status; a platform refusal (an emoji
-   * this chat does not allow, a message too old) throws with the platform's
-   * message for the tool to relay.
-   */
-  /**
    * Name a conversation whose source asked to have it named
    * (`chatInfo.titleProvisional`). Absent on sources whose conversations have
    * real names of their own — Telegram's do — which is why it is optional
    * rather than a call that answers "unsupported".
    */
   setChatTitle?(chatId: string, title: string): Promise<{ title: string }>;
-  setReaction(
-    chatId: string,
-    messageId: number,
-    emoji: string | null,
-    opts?: { big?: boolean },
-  ): Promise<{ status: SourceReactionStatus; recorded: boolean }>;
 }
 
 /**
@@ -220,15 +200,6 @@ export function sourceApiOutbound(
         }),
       );
       return { title: body.title };
-    },
-    async setReaction(chatId, messageId, emoji, opts) {
-      const body = internalReactionResponseSchema.parse(
-        await request(chatPath(chatId, `/messages/${messageId}/reaction`), {
-          method: "POST",
-          body: JSON.stringify({ emoji, big: opts?.big ?? false }),
-        }),
-      );
-      return { status: body.status, recorded: body.recorded };
     },
   };
 }

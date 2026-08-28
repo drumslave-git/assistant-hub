@@ -6,10 +6,7 @@ import {
   HISTORY_RECALL_TOOL,
   HISTORY_SEARCH_TOOL,
 } from "@/features/history/server/mcp-tools";
-import {
-  REPLY_TO_MESSAGE_TOOL,
-  SET_MESSAGE_REACTION_TOOL,
-} from "@/features/bot-messaging/server/mcp-tools";
+import { REPLY_TO_MESSAGE_TOOL } from "@/features/bot-messaging/server/mcp-tools";
 import { BROWSE_WEB_TOOL } from "@/features/browser-agent/server/mcp-tools";
 import { IMAGE_GENERATE_TOOL } from "@/features/image-gen/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
@@ -54,9 +51,6 @@ const COMMON_TOOLS = [
   HISTORY_GET_IN_RANGE_TOOL,
   HISTORY_GET_BY_MESSAGE_IDS_TOOL,
   HISTORY_RECALL_TOOL,
-  // A reaction is not a message, so unlike the delivery tools it is offered in
-  // every turn — the bot can like the thing it is answering.
-  SET_MESSAGE_REACTION_TOOL,
   UPDATE_USER_ALIASES_TOOL,
   ...TASKS_TOOL_NAMES,
   ...MEMORY_TOOL_NAMES,
@@ -83,7 +77,6 @@ describe("getToolsView", () => {
     expect(featureOf(IMAGE_GENERATE_TOOL)).toBe("image-gen");
     expect(featureOf(BROWSE_WEB_TOOL)).toBe("browser-agent");
     expect(featureOf(REPLY_TO_MESSAGE_TOOL)).toBe("bot-messaging");
-    expect(featureOf(SET_MESSAGE_REACTION_TOOL)).toBe("bot-messaging");
     expect(featureOf(ROLL_CHANCE_TOOL)).toBe("randomness");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });

@@ -359,10 +359,6 @@ async function buildEventDeps(
     tasks: taskSets,
     collectImage: (base64) => turn.generatedImages.push(base64),
     onBrowserRunEnqueued: (runId) => turn.enqueuedBrowserRuns.push(runId),
-    reactToMessage: turn.outbound
-      ? async ({ messageId, emoji, big }) =>
-          turn.outbound!.setReaction(chatId, messageId, emoji, { big })
-      : undefined,
     deliverTaskReply: async (text: string) => {
       await markActed();
       await ctx.publish(deliveryEvent(text, false));

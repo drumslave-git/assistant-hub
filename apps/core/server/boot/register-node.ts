@@ -22,6 +22,7 @@ import {
 } from "@/features/history/server/summary-scheduler";
 import { startMemoryScheduler, stopMemoryScheduler } from "@/features/memory/server/scheduler";
 import { startTaskScheduler, stopTaskScheduler } from "@/features/tasks/server/scheduler";
+import { reconcileManagedConnections } from "@/features/tool-connections/server/managed";
 import {
   startSelfImprovementScheduler,
   stopSelfImprovementScheduler,
@@ -106,6 +107,15 @@ export function registerNode(): void {
     .catch((err) => {
       console.error("Source events consumer failed to start:", err);
     });
+
+  // Bring the source apps' own MCP servers in line with configuration and
+  // take their current toolsets. Their tools ship with the release, so the
+  // snapshot follows the code rather than waiting for an operator to apply it
+  // (see `managed.ts`). A source that is still starting keeps the tools it
+  // last offered, and the trace says which app did not answer.
+  void reconcileManagedConnections().catch((err) => {
+    console.error("Source tool connections could not be reconciled:", err);
+  });
 
   // Start the in-process vision-backfill scheduler. It arms an initial run so any
   // media left `pending` from before boot is captioned during the first quiet

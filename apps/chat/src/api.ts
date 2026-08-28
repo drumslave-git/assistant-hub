@@ -544,15 +544,6 @@ export function createApi(input: {
     return c.json({ title: row.name });
   });
 
-  /**
-   * Reactions have no web analogue. Answering `unsupported` (rather than
-   * throwing, or silently pretending) is what lets the tool tell the model
-   * the truth: there is nothing to react with here.
-   */
-  internal.post("/chats/:chatId/messages/:messageId/reaction", async (c) => {
-    return c.json({ status: "unsupported", recorded: false });
-  });
-
   internal.delete("/chats/:chatId/messages/:messageId", async (c) => {
     const messageId = Number(c.req.param("messageId"));
     if (!Number.isFinite(messageId)) {
