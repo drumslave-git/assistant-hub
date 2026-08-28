@@ -218,9 +218,9 @@ double-sends or double-executes.
 
 Personalities convert into assistants, owned by the core store. Many
 assistants, CRUD via dashboard, sharing one brain: LLM backend config,
-settings, memory, and (for v1) MCP tool connections are shared across all
-assistants. Per-assistant: persona, transport connections (stored by the
-owning source app, keyed by assistant id), standing tasks.
+settings and memory are shared across all assistants. Per-assistant:
+persona, transport connections (stored by the owning source app, keyed by
+assistant id), standing tasks, and which tool connections it may call.
 
 One bot token per assistant; `apps/tg` runs one poller per enabled
 connection; the assistant in a Telegram chat is implied by which bot is in
@@ -271,13 +271,20 @@ extensions in the dashboard (views), with the operator API behind the
 ### MCP tool connections
 
 Operator-managed, stored in the core store (config-in-DB direction; no
-end-user accounts), scopable global / per-chat / per-user via scoped refs.
-Shared across assistants in v1; per-assistant toolset selection is planned
-later — the schema leaves room.
+end-user accounts). A connection's tools reach a turn along three scope
+dimensions:
+
+- **global** — offered on every turn (the default for a new connection);
+- **per-app** — offered only on turns from one source app, which is how
+  each source's own MCP server stays out of the other's prompt;
+- **per-assistant** — the operator picks which assistants may call a
+  connection (default: all of them).
+
+Per-chat and per-user scoping is not part of v2.
 
 - `tool_connections` (draft): name/slug, transport discriminator (`http`
   live; `stdio` modeled but disabled in v1), endpoint URL, auth headers
-  (secrets in DB), enabled, scope.
+  (secrets in DB), enabled, app scope, plus the per-assistant selection.
 - Transport v1: Streamable HTTP + legacy SSE with configurable auth
   headers. stdio execution is deferred but designed in via the
   discriminator, so adding it later needs no schema or UI rework.
@@ -367,14 +374,15 @@ Each phase gets detailed acceptance criteria in PROGRESS.md when it starts.
   image upload + voice, live turn progress, message-at-once delivery,
   memory/trace parity with telegram chats.
 - **Phase 5 — MCP connections.** HTTP connections CRUD, discovery +
-  snapshot/apply, scoping, prefixing, tools dashboard rework.
+  snapshot/apply, scoping (global / per-app / per-assistant), prefixing,
+  the source apps' own MCP servers replacing the core's hand-written
+  outbound tool bindings, tools dashboard rework.
 - **Phase 6 — Cutover.** Rehearsed migration, runbook execution, rename to
   assistant-hub, release pipeline for the new shape, docs rewrite
   (AGENTS.md describes v1 and must be updated).
 
-Out of scope for v2 (planned, not built): stdio MCP execution,
-per-assistant toolset selection, end-user accounts / self-serve tools,
-token streaming, Signal, mobile apps.
+Out of scope for v2 (planned, not built): stdio MCP execution, end-user
+accounts / self-serve tools, token streaming, Signal, mobile apps.
 
 ## Working rules
 

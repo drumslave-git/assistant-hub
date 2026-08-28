@@ -53,8 +53,21 @@ in the one store under the turn's own correlation. Everything but the
 voice REPLY (no speech endpoint in this dev environment) and the
 operator's own person-link check was verified live in the dashboard.
 
-**Next best task: Phase 5 (MCP connections)** — HTTP connections CRUD,
-discovery + snapshot/apply, scoping, tools dashboard rework.
+**Phase 5 (MCP connections) is IN PROGRESS (opened 2026-08-28)** — its
+three design calls were answered by the user up front and are recorded
+under "Phase 5 — MCP connections" below, with PLAN.md updated in place
+where they changed the target: scoping is **global / per-app /
+per-assistant** (per-chat/per-user dropped; per-assistant selection
+moved out of the v2 out-of-scope list), the stored snapshot is what the
+prompt carries with drift reported for an explicit Apply, and the source
+apps **do** expose MCP servers — the slice-D "REST + core-side bindings"
+flag is closed the other way, so `reply_to_message`,
+`set_message_reaction` and `send_message` move into `apps/tg` and
+`apps/chat`, while deterministic reply delivery stays on the bus and
+core-internal sends stay on the REST send API.
+
+**Next best task: Phase 5 slice A** — the `tool_connections` store,
+the CRUD feature, and the Streamable-HTTP client.
 
 What Phase 4 deliberately did NOT do, so nobody mistakes it for
 missing: web threads are absent from the summarizer, the hybrid search
@@ -233,7 +246,7 @@ Known pitfalls for whoever starts:
 | 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | done |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | done |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | done |
-| 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | todo |
+| 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | in-progress |
 | 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
 
 ## Phase 0 — Scaffold (acceptance criteria)
@@ -377,6 +390,115 @@ non-Next workspaces is a small standalone task). The tg import test
 applies the frozen v1 migration chain via a cross-app path — test-only,
 deleted with `apps/core/db` at cutover. Person links have schema +
 foundations only; no UI/service until the aggregation phases.
+
+## Phase 5 — MCP connections (acceptance criteria)
+
+Scope from PLAN.md: HTTP tool connections CRUD, discovery +
+snapshot/apply, scoping (global / per-app / per-assistant), slug
+prefixing, the source apps' own MCP servers, tools dashboard rework.
+
+Decisions (user, 2026-08-28):
+
+1. **Scope dimensions are global / per-app / per-assistant.** A new
+   connection is global (offered on every turn); an app-scoped one is
+   offered only on turns from that source app — which is how each
+   source's own MCP server stays out of the other's prompt — and the
+   operator picks which assistants may call a connection (default: all).
+   **Per-chat and per-user scoping is dropped from v2**; PLAN.md is
+   updated accordingly, and per-assistant selection moved out of the
+   out-of-scope list into this phase.
+2. **The snapshot wins, drift is shown, a bad call is a tool error.**
+   The prompt only ever carries the stored snapshot, so the offered
+   toolset changes on operator command and never mid-conversation
+   (prefix-cache stability, no strict-provider 400s on schema drift).
+   Re-discovery diffs against the snapshot and the dashboard reports
+   added / changed / removed with an explicit Apply. A server that is
+   unreachable, or a tool that has vanished, returns a normal tool error
+   the model can react to — the toolset is not edited by a remote
+   server's uptime.
+3. **Sources expose real MCP servers** — PLAN's architecture stands.
+   The slice-D note ("REST send API + core-side tool bindings; Phase 5
+   may wrap the same handlers in an MCP endpoint if still wanted") is
+   answered: `apps/tg` and `apps/chat` each serve `/mcp`, and the core
+   consumes them as connections like any other.
+4. **Only model-facing outbound moves onto MCP.** Deterministic reply
+   delivery keeps travelling the bus, and core-internal sends that are
+   not tool calls (image-generation results, browser-agent downloads,
+   media fetches) keep using the REST send API. What moves is the set of
+   tools the model itself calls: `reply_to_message`,
+   `set_message_reaction`, `send_message`.
+
+Design notes settled in-session (they follow from the decisions and the
+code, no user call needed):
+
+- **Turn context travels in `_meta`, never in the tool schema.** An
+  app-hosted tool has no ambient turn state, but the model must not be
+  handed a chat ref to choose either. The core's connection client
+  attaches the turn's binding (source, chat ref, reply target,
+  assistant id, correlation id) as MCP request `_meta`; the app's
+  handler reads it from the request extra. Verified against the
+  installed SDK (1.29.0): `RequestHandlerExtra._meta` carries the
+  originating request's metadata. A source tool that takes a chat id as
+  a model-visible argument is a failed criterion — that is the
+  authority hole the current bindings close.
+- **Built-in feature tools keep bare names; only connection tools are
+  prefixed** `<slug>__<tool>`. The prefix exists to stop collisions
+  between connections; renaming `memory_save` and friends would
+  invalidate stored traces, task rows and the prompt text that names
+  them.
+- **One resolution path.** `getToolset` returns built-ins plus every
+  snapshot tool whose connection matches the turn's source and
+  assistant. A second `if (source === "tg")` branch anywhere in the
+  resolution is a failed criterion (the Phase 4 rule).
+- **Secrets follow the backends precedent**: header values live in the
+  core DB and are never returned in plaintext by the API or rendered in
+  the dashboard.
+- **The registry's staleness check has to survive DB-backed tools.**
+  `isCurrent()` compares the cached registry's tool names against the
+  names the loaded code registers; connection tools are not code, so
+  the cached-toolset identity becomes (code tool names + a connections
+  revision the store bumps on apply/CRUD). Without that, an applied
+  snapshot would be invisible until restart — the same silent staleness
+  the hot-reload check was written for.
+
+Criteria:
+
+- [ ] **A — connections store, CRUD, HTTP client.** Core migration adds
+      `tool_connections` (slug, name, transport discriminator with
+      `http` live and `stdio` modeled-but-refused, endpoint, auth
+      headers, enabled, app scope), the snapshot table, and the
+      per-assistant selection table. A `tool-connections` feature
+      follows the feature contract: schemas, service, Route Handlers on
+      the shared wrappers, traces for every mutation, registration in
+      `lib/features.ts` with `featureDebugHref`. The client speaks
+      Streamable HTTP with the legacy SSE fallback and configurable
+      auth headers, with a connect timeout.
+- [ ] **B — discovery, snapshot, apply, drift.** Connecting lists tools
+      and stores a snapshot; re-discovery diffs and reports
+      added/changed/removed without touching what the model is offered;
+      Apply is the only thing that moves the snapshot forward, and it
+      bumps the connections revision. Discovery failures are recorded
+      and surfaced (never console-only).
+- [ ] **C — scoped toolset resolution + prefixing.** A turn's toolset is
+      built-ins plus the snapshot tools of enabled connections matching
+      its source and assistant, prefixed by slug; calls route to the
+      owning connection, are traced like in-process tool calls, and a
+      dead endpoint or unknown tool comes back as a tool error. The
+      delivery-tool carve-out (`reply` vs `send`) keeps working across
+      the rename.
+- [ ] **D — source MCP servers.** `apps/tg` and `apps/chat` each serve
+      `/mcp` behind the internal-token guard, exposing their
+      model-facing outbound tools over the outbound port they already
+      implement; the core auto-provisions one managed, app-scoped
+      connection per source app (not operator-deletable) and its
+      hand-written `bot-messaging` / tasks-outbound registrars are
+      deleted. `set_message_reaction` still answers `unsupported` on
+      chat rather than throwing.
+- [ ] **E — tools dashboard rework.** `/tools` gains the shared Tabs:
+      the offered toolset (grouped by owner, showing scope) and
+      Connections (CRUD, discovery/apply with the drift summary, health,
+      per-assistant selection). Live over the shared SSE layer, times
+      through `<Timestamp>`, and a downloadable JSON bundle.
 
 ## Phase 4 — Web chat (acceptance criteria)
 
@@ -1277,7 +1399,21 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
-
+- **2026-08-28 (Phase 5 opens)** — Acceptance criteria written and the
+  three design calls answered by the user: scope dimensions global /
+  per-app / per-assistant (per-chat and per-user dropped), snapshot-wins
+  with reported drift and an explicit Apply, and source apps exposing
+  real MCP servers instead of the core's hand-written outbound bindings
+  — only the model-facing tools move, the bus and the REST send API keep
+  their jobs. PLAN.md updated in place: the assistants section, the MCP
+  tool-connections section, the Phase 5 bullet, and the out-of-scope list
+  (per-assistant toolset selection is now in scope). Design notes fixed
+  in the criteria: turn context travels in MCP `_meta` (verified against
+  SDK 1.29.0, whose `RequestHandlerExtra` carries it) and never as a
+  model-visible chat argument; built-ins keep bare names while connection
+  tools are slug-prefixed; the registry's staleness identity gains a
+  connections revision so an applied snapshot is not invisible until
+  restart.
 - **2026-08-27 (chat UI reshaped)** — The operator asked for the chat
   page to look like a chat app rather than a form: sidebar, "New chat" at
   the top, auto-generated titles. The layout was the easy half. The
