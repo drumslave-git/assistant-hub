@@ -53,7 +53,7 @@ in the one store under the turn's own correlation. Everything but the
 voice REPLY (no speech endpoint in this dev environment) and the
 operator's own person-link check was verified live in the dashboard.
 
-**Phase 5 (MCP connections) is IN PROGRESS (opened 2026-08-28)** — its
+**Phase 5 (MCP connections) is DONE (2026-08-28)** — its
 three design calls were answered by the user up front and are recorded
 under "Phase 5 — MCP connections" below, with PLAN.md updated in place
 where they changed the target: scoping is **global / per-app /
@@ -66,13 +66,39 @@ flag is closed the other way, so `reply_to_message`,
 `apps/chat`, while deterministic reply delivery stays on the bus and
 core-internal sends stay on the REST send API.
 
-Slices A (store + CRUD + HTTP client), B (discovery / apply / drift)
-and C (scoped resolution + prefixing) are done — details under the
-Phase 5 criteria. **Next best task: Phase 5 slice D** — `/mcp` on
-apps/tg and apps/chat, the managed app-scoped connection the core
-auto-provisions per source, and deleting the core's hand-written
-`reply_to_message` / `set_message_reaction` / `send_message`
-registrars. Then slice E (the `/tools` rework).
+Every acceptance criterion is met (slices A–E under the Phase 5
+criteria below). The toolset is no longer compiled in: connections live
+in the core store, their tools are offered along the three scope
+dimensions, and the source apps host their own outbound tools on their
+own MCP servers.
+
+Verified live where a live check was possible: both running source apps
+answer `/mcp` (401 without the shared secret, `assistant-hub-tg` /
+`assistant-hub-chat` on a tokened `initialize`), and the whole
+connection lifecycle — create, discover, apply, delete — was driven
+through the running dashboard against a throwaway MCP server, with all
+four actions landing as `tool-connections` traces.
+
+**Two things the operator has to do**, neither blocking:
+
+1. **Restart the core** (`npm run dev`, or the container). The managed
+   connections for tg and chat are provisioned at boot, so until the
+   running process restarts, `/tools` shows no connections and a turn
+   is offered no delivery or reaction tool. Nothing else needs doing:
+   the reconcile creates both rows, applies their toolsets, and says in
+   its trace which app did not answer.
+2. **One live turn afterwards**, to see a source tool called inside a
+   real turn — the one thing no test can prove, since it needs the
+   model to choose the call. The reply path is otherwise unchanged.
+
+`npm run build` was NOT run: all three dev servers were live on
+3200/3210/3220 throughout, and a production build wipes `.next` under
+the running core (the standing rule). Typecheck, lint and every suite
+were run instead.
+
+**Next best task: Phase 6 (cutover)** — the rehearsed migration, the
+runbook, the repo rename to assistant-hub, the release pipeline for the
+new shape, and the docs rewrite (AGENTS.md still describes v1).
 
 What Phase 4 deliberately did NOT do, so nobody mistakes it for
 missing: web threads are absent from the summarizer, the hybrid search
@@ -251,7 +277,7 @@ Known pitfalls for whoever starts:
 | 2 | Source split: telegram runtime out of core into apps/tg, source contract, Redis bus + queue | done |
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | done |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | done |
-| 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | in-progress |
+| 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | done |
 | 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
 
 ## Phase 0 — Scaffold (acceptance criteria)
@@ -533,8 +559,57 @@ Slice notes:
   error, never a failed turn. Proof: 6 integration cases (scoping,
   prefixing, `_meta` arrival, error paths), core unit 1190 green,
   typecheck + lint clean.
+- **D-1 (`82a46ff`)** — `apps/tg` serves `/mcp` (shared
+  `serveMcp` glue in `@assistant-hub/service`, behind the same
+  internal-token guard as `/internal`), and `set_message_reaction`
+  moved into it with the Telegram knowledge that came with it: the 73
+  emoji, the presentation-selector normalization, the mirror gate. The
+  core auto-provisions one managed, app-scoped connection per configured
+  source at boot (`managed.ts`) — **the one exception to
+  discover-then-apply**, argued in the file: these tools ship with the
+  release, so their snapshot follows the code, and a source that has not
+  finished starting keeps the tools it last offered. Deleted with the
+  tool: the port's `setReaction`, the tool context's reaction binding,
+  both apps' REST reaction endpoints and the contract schemas. Chat now
+  offers no reaction tool at all rather than one that answers
+  `unsupported` (a change from the Phase 4 decision, and a better answer
+  to it — the model never sees an action it cannot take).
+- **D-2 (`2161a88`)** — `reply_to_message` and `send_message` follow,
+  into both source apps. The core keeps the bookkeeping that was never
+  about Telegram (a task stamping its wording, a fire counting what
+  reached the chat) and learns what happened from the tool RESULT — a
+  `delivery` any source can report (`toolDeliveryResult` in contracts),
+  not a hook keyed on a tool name. `McpToolContext.deliver` became
+  `onDelivered`; `deliveryKind` and `replyToMessageId` travel in
+  `_meta`, so the double boundary that kept a fire from claiming it
+  replied now spans two processes. tg's REST send and its MCP tools share
+  one `sendChatMessage` (link mirroring, the send, the mirror row,
+  cross-feed).
+  Proof for both: tg integration 72 green (12 in a new MCP suite driving
+  a real client over the served transport — token guard, `_meta`,
+  mirror gate, delivery kinds, refused sends), chat 27 green (6 new),
+  core unit 1172 + integration 362 green, typecheck across 11 workspaces,
+  lint clean. **Live on the operator's running services**: an untokened
+  POST to `/mcp` is 401 on both apps, and a tokened `initialize`
+  answers `assistant-hub-tg` / `assistant-hub-chat`.
+- **E (`f0f6b9c`)** — `/tools` is two tabs: the catalog (feature tools
+  and connection tools under their prefixes, each group stating where it
+  is offered) and Connections (CRUD, Discover, Apply with the drift
+  badge, health, app scope, per-assistant selection), live over the new
+  `tools` realtime topic, times through `<Timestamp>`. Header values are
+  write-only in the editor. **Verified live in the running dashboard**:
+  a connection created through the form against a throwaway MCP server →
+  Discover showed "2 new" while the page still said the assistants keep
+  the applied set → Apply moved the catalog 16 → 18 tools with
+  `probe__coin_flip` / `probe__echo` under "offered on tg turns, for
+  every assistant" → Delete returned it to 16/0. All four actions landed
+  as `tool-connections` traces (create / discover / apply / delete, all
+  success) in Debug. One fix came out of that check: the cached drizzle
+  store handle now notices a schema change, because a handle built before
+  migration 0004 kept answering `db.query.toolConnections === undefined`
+  after hot reload.
 
-- [ ] **D — source MCP servers.** `apps/tg` and `apps/chat` each serve
+- [x] **D — source MCP servers** (`82a46ff`, `2161a88`). `apps/tg` and `apps/chat` each serve
       `/mcp` behind the internal-token guard, exposing their
       model-facing outbound tools over the outbound port they already
       implement; the core auto-provisions one managed, app-scoped
@@ -542,7 +617,7 @@ Slice notes:
       hand-written `bot-messaging` / tasks-outbound registrars are
       deleted. `set_message_reaction` still answers `unsupported` on
       chat rather than throwing.
-- [ ] **E — tools dashboard rework.** `/tools` gains the shared Tabs:
+- [x] **E — tools dashboard rework** (`f0f6b9c`). `/tools` gains the shared Tabs:
       the offered toolset (grouped by owner, showing scope) and
       Connections (CRUD, discovery/apply with the drift summary, health,
       per-assistant selection). Live over the shared SSE layer, times
@@ -1447,6 +1522,19 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+- **2026-08-28 (Phase 5 closes)** — Five slices, seven commits. The
+  toolset moved out of the code: connections are rows, their tools are a
+  snapshot an operator applies, and the source apps host the outbound
+  tools whose whole content was a platform's affordances. Two design
+  notes reversed themselves along the way and are recorded as reversals
+  rather than tidied away: the registry-revision cache key (dropped in
+  slice C for reading per turn, which cannot go stale) and chat's
+  `unsupported` reaction answer (dropped in D-1 for simply not offering
+  the tool). One bug the live check caught and the code now guards: a
+  cached drizzle handle that survived hot reload kept answering
+  `db.query.<newTable> === undefined` after a migration added a table.
+  Left for the operator: a core restart (the managed connections are
+  provisioned at boot) and one live turn.
 - **2026-08-28 (Phase 5 opens)** — Acceptance criteria written and the
   three design calls answered by the user: scope dimensions global /
   per-app / per-assistant (per-chat and per-user dropped), snapshot-wins
