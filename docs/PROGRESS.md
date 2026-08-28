@@ -66,8 +66,13 @@ flag is closed the other way, so `reply_to_message`,
 `apps/chat`, while deterministic reply delivery stays on the bus and
 core-internal sends stay on the REST send API.
 
-**Next best task: Phase 5 slice A** — the `tool_connections` store,
-the CRUD feature, and the Streamable-HTTP client.
+Slices A (store + CRUD + HTTP client), B (discovery / apply / drift)
+and C (scoped resolution + prefixing) are done — details under the
+Phase 5 criteria. **Next best task: Phase 5 slice D** — `/mcp` on
+apps/tg and apps/chat, the managed app-scoped connection the core
+auto-provisions per source, and deleting the core's hand-written
+`reply_to_message` / `set_message_reaction` / `send_message`
+registrars. Then slice E (the `/tools` rework).
 
 What Phase 4 deliberately did NOT do, so nobody mistakes it for
 missing: web threads are absent from the summarizer, the hybrid search
@@ -455,15 +460,18 @@ code, no user call needed):
   the dashboard.
 - **The registry's staleness check has to survive DB-backed tools.**
   `isCurrent()` compares the cached registry's tool names against the
-  names the loaded code registers; connection tools are not code, so
-  the cached-toolset identity becomes (code tool names + a connections
-  revision the store bumps on apply/CRUD). Without that, an applied
-  snapshot would be invisible until restart — the same silent staleness
-  the hot-reload check was written for.
+  names the loaded code registers; connection tools are not code, so an
+  applied snapshot could stay invisible until restart — the same silent
+  staleness the hot-reload check was written for. Planned as a
+  connections revision in the cache key; **reversed in slice C** and
+  replaced by not caching at all: the connection half is read from the
+  store on every turn (two small queries next to an inference), so there
+  is no cached copy to go stale and no bump for a writer to forget. The
+  in-process registry keeps its own code-identity check unchanged.
 
 Criteria:
 
-- [ ] **A — connections store, CRUD, HTTP client.** Core migration adds
+- [x] **A — connections store, CRUD, HTTP client** (`21d5a2b`). Core migration adds
       `tool_connections` (slug, name, transport discriminator with
       `http` live and `stdio` modeled-but-refused, endpoint, auth
       headers, enabled, app scope), the snapshot table, and the
@@ -473,19 +481,59 @@ Criteria:
       `lib/features.ts` with `featureDebugHref`. The client speaks
       Streamable HTTP with the legacy SSE fallback and configurable
       auth headers, with a connect timeout.
-- [ ] **B — discovery, snapshot, apply, drift.** Connecting lists tools
+- [x] **B — discovery, snapshot, apply, drift** (`71bbb87`). Connecting lists tools
       and stores a snapshot; re-discovery diffs and reports
       added/changed/removed without touching what the model is offered;
       Apply is the only thing that moves the snapshot forward, and it
       bumps the connections revision. Discovery failures are recorded
       and surfaced (never console-only).
-- [ ] **C — scoped toolset resolution + prefixing.** A turn's toolset is
+- [x] **C — scoped toolset resolution + prefixing** (`54ac7b1`). A turn's toolset is
       built-ins plus the snapshot tools of enabled connections matching
       its source and assistant, prefixed by slug; calls route to the
       owning connection, are traced like in-process tool calls, and a
       dead endpoint or unknown tool comes back as a tool error. The
       delivery-tool carve-out (`reply` vs `send`) keeps working across
       the rename.
+Slice notes:
+
+- **A (`21d5a2b`)** — core migration 0004: `tool_connections`
+  (slug/name/transport/endpoint/auth headers/enabled/app scope/
+  all-assistants/managed + discovery outcome), `tool_connection_tools`
+  (the applied snapshot), `assistant_tool_connections` (the explicit
+  selection). Feature `tool-connections` follows the contract —
+  zod schemas, repository, service with traces and `publishEvent`,
+  thin Route Handlers, registry entry with the new `tools` realtime
+  topic. `server/mcp/http-client.ts` speaks Streamable HTTP with the
+  legacy SSE fallback on a failed CONNECT only (never on a failed call —
+  that would replay work), short-lived sessions, 20s timeout. Header
+  values never leave the server: not to a client, not into a trace body.
+  Proof: 8 unit + 6 integration cases green, migration applied to the
+  dev store, typecheck across 11 workspaces, lint clean.
+- **B (`71bbb87`)** — migration 0005 adds `last_discovered_tools`:
+  discovery stores what it SAW beside what is applied, and the drift is
+  computed on read (two columns compared, so no stored summary can
+  disagree with either). Apply writes the reviewed discovery rather than
+  a fresh fetch, so the operator confirms what was on screen. Canonical
+  JSON compare means a reordered schema is not drift. A failed discovery
+  records its reason on the row and settles a failed trace while the
+  applied toolset keeps working. Proof: 5 integration cases against a
+  REAL MCP server over Streamable HTTP (`test/fake-mcp-server.ts`) —
+  the wire parts are the ones worth doubting, and one of them (auth
+  headers actually arriving) is asserted directly.
+- **C (`54ac7b1`)** — `resolveConnectionToolset` is the one scope
+  resolver: enabled + app scope + assistant selection, no per-source
+  branch anywhere. Connection tools are offered as `<slug>__<tool>`;
+  built-ins keep bare names. The turn binding travels as MCP `_meta`
+  (`packages/contracts/src/tool-meta.ts`, namespaced `assistant-hub/turn`)
+  — a hosted tool receives the chat, never a model-chosen argument for
+  it. `getToolset` composes both halves and dispatches by owner; the
+  reply path states its scope explicitly, the fire path resolves per
+  fire inside the tool context it already binds (so a fire's toolset is
+  its task's assistant's). A dead endpoint or unknown name is a tool
+  error, never a failed turn. Proof: 6 integration cases (scoping,
+  prefixing, `_meta` arrival, error paths), core unit 1190 green,
+  typecheck + lint clean.
+
 - [ ] **D — source MCP servers.** `apps/tg` and `apps/chat` each serve
       `/mcp` behind the internal-token guard, exposing their
       model-facing outbound tools over the outbound port they already
