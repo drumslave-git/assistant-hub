@@ -3,7 +3,11 @@ import "server-only";
 import type { SourceId } from "@assistant-hub/contracts";
 import type { ChatCompletionFunctionTool } from "openai/resources/chat/completions";
 
-import { parsePrefixedToolName } from "@/features/tool-connections/server/schema";
+import {
+  parsePrefixedToolName,
+  prefixedToolName,
+} from "@/features/tool-connections/server/schema";
+import { getToolConnections } from "@/features/tool-connections/server/service";
 import { resolveConnectionToolset } from "@/features/tool-connections/server/toolset";
 import { tryGetToolContext } from "@/server/mcp/context";
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
@@ -21,13 +25,48 @@ import type { ToolsView, ToolView } from "./schema";
  * `search` without colliding.
  */
 
-/** Build the dashboard view: every registered tool. */
-export async function getToolsView(): Promise<ToolsView> {
+/**
+ * Build the dashboard view: every tool either half of the toolset offers,
+ * under the name the model sees.
+ *
+ * Deliberately unscoped — this is the catalog, not one turn's toolset. A
+ * connection's own scope travels with each of its tools, so the page can say
+ * "offered on Telegram turns" without the operator having to imagine a turn
+ * to find out.
+ */
+export async function getToolsView(db?: StoreDb): Promise<ToolsView> {
   const registry = await loadMcpRegistry();
   const registered = await registry.listTools();
-  const tools: ToolView[] = registered
-    .map((tool) => ({ name: tool.name, description: tool.description, feature: tool.feature }))
-    .sort((a, b) => a.feature.localeCompare(b.feature) || a.name.localeCompare(b.name));
+  const inProcess: ToolView[] = registered.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    feature: tool.feature,
+  }));
+
+  const connections = await getToolConnections(db);
+  const hosted: ToolView[] = connections.flatMap((connection) =>
+    connection.tools.map((tool) => ({
+      name: prefixedToolName(connection.slug, tool.name),
+      description: tool.description,
+      feature: "connections",
+      connection: {
+        id: connection.id,
+        slug: connection.slug,
+        name: connection.name,
+        managed: connection.managed,
+        enabled: connection.enabled,
+        scope: {
+          appScope: connection.appScope,
+          allAssistants: connection.allAssistants,
+          assistantCount: connection.assistantIds.length,
+        },
+      },
+    })),
+  );
+
+  const tools = [...inProcess, ...hosted].sort(
+    (a, b) => a.feature.localeCompare(b.feature) || a.name.localeCompare(b.name),
+  );
   return { tools };
 }
 

@@ -28,11 +28,29 @@ export function getStorePool(): Pool {
 export type StoreDb = ReturnType<typeof drizzle<typeof storeSchema>>;
 
 const DB_KEY = Symbol.for("assistant-hub.core.store.drizzle");
+const SCHEMA_KEY = Symbol.for("assistant-hub.core.store.drizzle.schema");
+
+/**
+ * Which tables the loaded schema defines. A drizzle handle binds its query
+ * builders at construction, and this one is cached on `globalThis` so it
+ * survives module re-evaluation — which in dev means a handle built before a
+ * new table existed keeps serving `db.query.<newTable> === undefined`, and
+ * the page that reads it dies on "cannot read properties of undefined". Same
+ * class of staleness as the MCP registry's (`server/mcp/runtime.ts`), same
+ * answer: notice and rebuild rather than require a restart.
+ */
+const schemaFingerprint = Object.keys(storeSchema).sort().join(",");
 
 /** The typed drizzle handle over the store schema (feature repositories). */
 export function getStoreDb(): StoreDb {
-  const g = globalThis as typeof globalThis & { [DB_KEY]?: StoreDb };
-  if (!g[DB_KEY]) g[DB_KEY] = drizzle(getStorePool(), { schema: storeSchema });
+  const g = globalThis as typeof globalThis & {
+    [DB_KEY]?: StoreDb;
+    [SCHEMA_KEY]?: string;
+  };
+  if (!g[DB_KEY] || g[SCHEMA_KEY] !== schemaFingerprint) {
+    g[DB_KEY] = drizzle(getStorePool(), { schema: storeSchema });
+    g[SCHEMA_KEY] = schemaFingerprint;
+  }
   return g[DB_KEY];
 }
 
@@ -42,7 +60,11 @@ export function getStoreDb(): StoreDb {
  * it before its Testcontainer stops, or the dying clients fail the run).
  */
 export async function closeStorePool(): Promise<void> {
-  const g = globalThis as typeof globalThis & { [DB_KEY]?: StoreDb };
+  const g = globalThis as typeof globalThis & {
+    [DB_KEY]?: StoreDb;
+    [SCHEMA_KEY]?: string;
+  };
   delete g[DB_KEY];
+  delete g[SCHEMA_KEY];
   await closeProcessPool(POOL_KEY);
 }

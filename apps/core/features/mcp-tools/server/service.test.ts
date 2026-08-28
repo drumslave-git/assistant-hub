@@ -17,8 +17,8 @@ import { getToolset, getToolsView } from "./service";
 /**
  * The connection half of the toolset needs the core store; these tests are
  * about the code-defined half and the delivery carve-out, so it is stubbed
- * empty here and driven for real in
- * `features/tool-connections/server/toolset.integration.test.ts`.
+ * empty here and driven for real against a live MCP server in
+ * `features/tool-connections/server/tool-connections.integration.test.ts`.
  */
 vi.mock("@/features/tool-connections/server/toolset", () => ({
   resolveConnectionToolset: async () => ({
@@ -26,6 +26,10 @@ vi.mock("@/features/tool-connections/server/toolset", () => ({
     owns: () => false,
     callTool: async () => ({ text: "", isError: true }),
   }),
+}));
+
+vi.mock("@/features/tool-connections/server/service", () => ({
+  getToolConnections: async () => [],
 }));
 
 /**

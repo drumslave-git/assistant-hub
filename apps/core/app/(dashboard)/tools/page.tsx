@@ -1,24 +1,33 @@
 import { Database } from "lucide-react";
 
 import { EmptyState, PageHeader } from "@/components/ui";
+import { getAssistants } from "@/features/assistants/server/service";
 import { getToolsView } from "@/features/mcp-tools/server/service";
 import type { ToolsView } from "@/features/mcp-tools/server/schema";
 import { ToolsManager } from "@/features/mcp-tools/ui/ToolsManager";
+import { getToolConnections } from "@/features/tool-connections/server/service";
+import type { ToolConnection } from "@/features/tool-connections/server/schema";
 
-// The tool registry is code, but rendered at request time for consistency.
+// Connections are DB-backed and a discovery can change them at any moment.
 export const dynamic = "force-dynamic";
 
 /**
- * Tools dashboard page. Server Component: lists every registered MCP tool the bot
- * can call while replying. All registered tools are always available to the model
- * (they run in a bounded tool-call loop and every call is traced on the reply
- * trace under Debug) — this page is read-only visibility.
+ * Tools dashboard page. Server Component: what the assistants can call, and
+ * the connections those tools come from. Feature tools are code and always
+ * offered; a connection's tools are offered where its scope says, and change
+ * only when an operator applies a discovery.
  */
 export default async function ToolsPage() {
   let view: ToolsView | null = null;
+  let connections: ToolConnection[] = [];
+  let assistants: { id: string; name: string }[] = [];
   let error: string | null = null;
   try {
-    view = await getToolsView();
+    [view, connections, assistants] = await Promise.all([
+      getToolsView(),
+      getToolConnections(),
+      getAssistants(),
+    ]);
   } catch (err) {
     error = err instanceof Error ? err.message : "Could not load tools";
   }
@@ -27,11 +36,18 @@ export default async function ToolsPage() {
     <>
       <PageHeader
         title="Tools"
-        description="MCP tools the bot can call while replying. All registered tools are always available to the model; each call runs in a bounded tool-call loop and is traced on the reply."
+        description="What the assistants can call while replying: the tools this hub ships with, and the MCP servers you connect. Every call runs in a bounded tool-call loop and is traced on the reply."
       />
 
       {view ? (
-        <ToolsManager tools={view.tools} />
+        <ToolsManager
+          tools={view.tools}
+          connections={connections}
+          assistants={assistants.map((assistant) => ({
+            id: assistant.id,
+            name: assistant.name,
+          }))}
+        />
       ) : (
         <EmptyState
           icon={Database}
