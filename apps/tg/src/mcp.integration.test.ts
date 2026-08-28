@@ -41,13 +41,27 @@ describe("tg MCP server", () => {
   let db: ReturnType<typeof drizzle<typeof schema>>;
   let server: ServerType;
   let url: string;
-  const calls: { setReaction: unknown[] } = { setReaction: [] };
+  const calls: { setReaction: unknown[]; sendMessage: { chatId: string; text: string; opts?: { replyToMessageId?: number | null } }[] } = {
+    setReaction: [],
+    sendMessage: [],
+  };
   let reactionError: Error | null = null;
+  let sendError: Error | null = null;
+  let nextMessageId = 900;
 
   const sender = {
     async setReaction(chatId: string, messageId: number, emoji: string | null, opts?: { big?: boolean }) {
       if (reactionError) throw reactionError;
       calls.setReaction.push({ chatId, messageId, emoji, opts });
+    },
+    async sendMessage(
+      chatId: string,
+      text: string,
+      opts?: { replyToMessageId?: number | null; threadId?: number | null },
+    ) {
+      if (sendError) throw sendError;
+      calls.sendMessage.push({ chatId, text, opts });
+      return { messageId: ++nextMessageId, replyToMessageId: opts?.replyToMessageId ?? null };
     },
   } as unknown as TgOutbound;
 
@@ -131,6 +145,24 @@ describe("tg MCP server", () => {
     return result;
   }
 
+  /** One tool call, bound to a turn the way the core binds one. */
+  async function call(
+    client: Client,
+    name: string,
+    args: Record<string, unknown>,
+    meta: Record<string, unknown>,
+  ) {
+    return (await client.callTool({
+      name,
+      arguments: args,
+      _meta: { [TURN_META_KEY]: meta },
+    })) as unknown as {
+      content: { text: string }[];
+      structuredContent?: { delivery?: { ok: boolean; messageId: number | null; text: string } };
+      isError?: boolean;
+    };
+  }
+
   it("refuses a client without the shared secret", async () => {
     await expect(connect({})).rejects.toThrow();
   });
@@ -138,18 +170,28 @@ describe("tg MCP server", () => {
   it("offers the reaction tool with the emoji set in its description", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual(["set_message_reaction"]);
+    expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "reply_to_message",
+      "send_message",
+      "set_message_reaction",
+    ]);
+    const reaction = tools.find((tool) => tool.name === "set_message_reaction")!;
     // The model picks WHAT to react with; the chat it reacts in is not a field.
-    expect(Object.keys(tools[0].inputSchema.properties ?? {}).sort()).toEqual([
+    expect(Object.keys(reaction.inputSchema.properties ?? {}).sort()).toEqual([
       "big",
       "emoji",
       "message_id",
     ]);
     // The allowed set travels in the field's own description, where the model
     // reads it while choosing a value.
-    const emojiField = (tools[0].inputSchema.properties as Record<string, { description: string }>)
+    const emojiField = (reaction.inputSchema.properties as Record<string, { description: string }>)
       .emoji;
     expect(emojiField.description).toContain("👍");
+    // A delivery tool takes words and nothing else: no chat, no target.
+    for (const name of ["reply_to_message", "send_message"]) {
+      const tool = tools.find((t) => t.name === name)!;
+      expect(Object.keys(tool.inputSchema.properties ?? {})).toEqual(["text"]);
+    }
     await client.close();
   });
 
@@ -211,6 +253,102 @@ describe("tg MCP server", () => {
     expect(result.content[0].text).toContain("REACTION_INVALID");
     expect(result.content[0].text).toContain("Do not claim you reacted");
     await client.close();
+  });
+
+
+  describe("delivery tools", () => {
+    const replyTurn = {
+      source: "tg",
+      chatId: CHAT_ID,
+      assistantId: null,
+      deliveryKind: "reply",
+      replyToMessageId: 21,
+    };
+    const fireTurn = { source: "tg", chatId: CHAT_ID, assistantId: null, deliveryKind: "send" };
+
+    it("attaches a reply to the message the turn is answering", async () => {
+      const client = await connect();
+      calls.sendMessage.length = 0;
+
+      const result = await call(client, "reply_to_message", { text: "here you go" }, replyTurn);
+
+      expect(result.isError).toBeFalsy();
+      expect(calls.sendMessage[0]).toMatchObject({
+        chatId: CHAT_ID,
+        text: "here you go",
+        opts: { replyToMessageId: 21 },
+      });
+      // The core learns what was delivered from the result, not from the name.
+      expect(result.structuredContent?.delivery).toMatchObject({
+        ok: true,
+        text: "here you go",
+      });
+      await client.close();
+    });
+
+    it("sends a fire standalone, with nothing to attach to", async () => {
+      const client = await connect();
+      calls.sendMessage.length = 0;
+
+      const result = await call(client, "send_message", { text: "the daily nudge" }, fireTurn);
+
+      expect(result.isError).toBeFalsy();
+      expect(calls.sendMessage[0]).toMatchObject({ opts: { replyToMessageId: null } });
+      await client.close();
+    });
+
+    it("refuses the delivery the turn is not for", async () => {
+      const client = await connect();
+      calls.sendMessage.length = 0;
+
+      // A stale offer cannot smuggle a send into the wrong kind of turn: the
+      // turn kind travels with the call and is checked here too.
+      const wrongSend = await call(client, "send_message", { text: "hello" }, replyTurn);
+      expect(wrongSend.isError).toBe(true);
+      expect(wrongSend.content[0].text).toContain("timed task");
+
+      const wrongReply = await call(client, "reply_to_message", { text: "hello" }, fireTurn);
+      expect(wrongReply.isError).toBe(true);
+      expect(wrongReply.content[0].text).toContain("triggered by a message");
+
+      // An ordinary reply turn delivers its own text and may do neither.
+      const ordinary = await call(client, "send_message", { text: "hello" }, {
+        source: "tg",
+        chatId: CHAT_ID,
+        assistantId: null,
+      });
+      expect(ordinary.isError).toBe(true);
+
+      expect(calls.sendMessage).toHaveLength(0);
+      await client.close();
+    });
+
+    it("reports a refused send as a delivery that did not happen", async () => {
+      const client = await connect();
+      sendError = new Error("bot was blocked by the user");
+      const result = await call(client, "send_message", { text: "anyone there?" }, fireTurn);
+      sendError = null;
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("blocked");
+      // Reported, not silent: the fire counts an attempt that reached nobody.
+      expect(result.structuredContent?.delivery).toMatchObject({
+        ok: false,
+        messageId: null,
+        text: "anyone there?",
+      });
+      await client.close();
+    });
+
+    it("mirrors what it delivered, so the next turn remembers saying it", async () => {
+      const client = await connect();
+      const result = await call(client, "send_message", { text: "remembered" }, fireTurn);
+      const messageId = result.structuredContent!.delivery!.messageId!;
+
+      const row = await getMessageByTelegramId(db, CHAT_ID, messageId, null);
+      expect(row).toMatchObject({ role: "assistant", content: "remembered" });
+      await client.close();
+    });
   });
 
   it("refuses a call that carries no turn", async () => {

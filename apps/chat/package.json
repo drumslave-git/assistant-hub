@@ -20,6 +20,7 @@
     "@assistant-hub/media": "*",
     "@assistant-hub/service": "*",
     "@hono/node-server": "^1.14.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^17.2.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.7.0",

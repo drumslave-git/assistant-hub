@@ -1,6 +1,11 @@
 import "server-only";
 
-import { turnMetaEnvelope, type SourceId, type TurnToolMeta } from "@assistant-hub/contracts";
+import {
+  readToolDelivery,
+  turnMetaEnvelope,
+  type SourceId,
+  type TurnToolMeta,
+} from "@assistant-hub/contracts";
 import type { ChatCompletionFunctionTool } from "openai/resources/chat/completions";
 
 import { tryGetToolContext } from "@/server/mcp/context";
@@ -67,6 +72,10 @@ function turnMeta(scope: ToolScope): TurnToolMeta | null {
     ...(ctx.correlationId ? { correlationId: ctx.correlationId } : {}),
     userId: ctx.userId ?? null,
     senderIsOwner: ctx.senderIsOwner ?? false,
+    // What this turn may deliver, and what it would be answering. Both are
+    // facts about the turn: the model picks the words and nothing else.
+    deliveryKind: ctx.deliveryKind ?? null,
+    replyToMessageId: ctx.replyToMessageId ?? null,
   };
 }
 
@@ -104,14 +113,27 @@ export async function resolveConnectionToolset(
         return { text: `Unknown tool: ${name}`, isError: true };
       }
       const meta = turnMeta(scope);
+      const onDelivered = tryGetToolContext()?.onDelivered;
       return tracedToolCall("connections", name, args, async () => {
         try {
-          return await callRemoteTool(
+          const result = await callRemoteTool(
             entry.connection,
             entry.toolName,
             args,
             meta ? turnMetaEnvelope(meta) : undefined,
           );
+          // A hosted tool that delivered a message says so in its result, and
+          // the turn's bookkeeping runs off that rather than off the tool's
+          // name — so a source may call its send tool whatever it likes.
+          const delivered = readToolDelivery(result.structuredContent);
+          if (delivered && onDelivered) {
+            await onDelivered({
+              ok: delivered.ok,
+              messageId: delivered.messageId ?? null,
+              text: delivered.text,
+            });
+          }
+          return result;
         } catch (err) {
           // A dead endpoint is a failed tool call, not a failed turn: the
           // model gets the reason and can answer without it (user decision,

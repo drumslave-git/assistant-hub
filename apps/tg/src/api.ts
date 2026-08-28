@@ -35,6 +35,7 @@ import { recordAssistantMessage, type CrossFeed } from "./cross-feed";
 import type { TgDb } from "./db";
 import type { BotManager, ConnectionStatus } from "./bot-manager";
 import { createTgMcpServer } from "./mcp";
+import { sendChatMessage } from "./send";
 import {
   clearMessageIndex,
   countEmbeddedMessages,
@@ -74,11 +75,10 @@ import {
   markDescribed,
 } from "./media/store";
 import type { StoredMedia } from "./media/types";
-import type { SentMessage, TgOutbound } from "./outbound";
+import type { TgOutbound } from "./outbound";
 import {
   appendMessagesBulk,
   deleteConnection,
-  filterMirroredMessageIds,
   getConnection,
   getMessageByTelegramId,
   getMessagesByTelegramIds,
@@ -103,7 +103,6 @@ import {
   type ChatMemberListing,
 } from "./store";
 import type { ConnectionRow, MessageRow, UserRow } from "../store/schema";
-import { findMessageRefs } from "./telegram";
 
 /**
  * This app's HTTP surface (Hono — user decision, 2026-08-23). Two zones:
@@ -816,38 +815,22 @@ export function createApi(input: {
     const body = parsed.data;
     const replyToMessageId =
       body.replyToSourceMessageId != null ? Number(body.replyToSourceMessageId) : null;
-    const linkableMessageIds = await filterMirroredMessageIds(
-      input.db,
-      chatId,
-      findMessageRefs(body.text),
-      assistantIdOf(c),
-    ).catch(() => []);
-    let sent: SentMessage;
+    let sent;
     try {
-      sent = await senderOf(c).sendMessage(chatId, body.text, {
+      sent = await sendChatMessage({
+        db: input.db,
+        sender: senderOf(c),
+        crossFeed: input.crossFeed,
+        chatId,
+        assistantId: assistantIdOf(c),
+        text: body.text,
         replyToMessageId,
         threadId: body.threadId != null ? Number(body.threadId) : null,
         silent: body.silent,
-        linkableMessageIds,
       });
     } catch (err) {
       return c.json({ error: { message: errorText(err) } }, 502);
     }
-    await recordAssistantMessage(
-      input.db,
-      {
-        chatId,
-        assistantId: assistantIdOf(c),
-        telegramMessageId: sent.messageId,
-        content: body.text,
-        // What Telegram actually attached, not what was asked for.
-        replyToMessageId: sent.replyToMessageId,
-        sentAt: new Date(),
-        threadId: body.threadId != null ? Number(body.threadId) : null,
-        silent: body.silent,
-      },
-      input.crossFeed,
-    ).catch(() => null);
     return c.json({ sourceMessageId: String(sent.messageId) });
   });
 
@@ -1015,7 +998,7 @@ export function createApi(input: {
   // chat id from the model.
   const mcp = new Hono();
   mcp.use("*", internalTokenGuard(input.internalToken));
-  mcp.all("/", (c) => serveMcp(c, () => createTgMcpServer({ db: input.db, manager: input.manager })));
+  mcp.all("/", (c) => serveMcp(c, () => createTgMcpServer({ db: input.db, manager: input.manager, crossFeed: input.crossFeed })));
 
   app.route("/internal", internal);
   app.route("/mcp", mcp);

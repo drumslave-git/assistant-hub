@@ -46,7 +46,6 @@ function deps(over: Partial<FireDeps> = {}): FireDeps {
   return {
     personalityPrompt: null,
     complete: vi.fn().mockResolvedValue({ content: "done", model: "m", latencyMs: 1 }),
-    send: vi.fn().mockResolvedValue({ messageId: 42 }),
     ...over,
   };
 }
@@ -86,45 +85,25 @@ describe("buildTaskDirectiveMessage", () => {
 });
 
 describe("fireTask", () => {
-  it("binds deliver on the tool context and records what was sent", async () => {
-    const send = vi.fn().mockResolvedValue({ messageId: 7 });
-    const recordReply = vi.fn().mockResolvedValue(undefined);
-    // A complete() that behaves like the model calling send_message once.
+  it("records what the source reported delivering", async () => {
+    // Since Phase 5 the sending is the source app's `send_message` tool; the
+    // fire hears about it through the context's delivery hook and that report
+    // is its ground truth.
     const complete = vi.fn().mockImplementation(async () => {
       const ctx = tryGetToolContext();
       expect(ctx?.chatId).toBe("-1001");
-      await ctx!.deliver!("Hey, the feed has something new.");
+      expect(ctx?.source).toBe("tg");
+      await ctx!.onDelivered!({
+        ok: true,
+        messageId: 7,
+        text: "Hey, the feed has something new.",
+      });
       return { content: "sent one message", model: "m", latencyMs: 1 };
     });
 
-    const result = await fireTask(task(), deps({ complete, send, recordReply }));
+    const result = await fireTask(task(), deps({ complete }));
 
     expect(result).toEqual({ ok: true, sent: ["Hey, the feed has something new."] });
-    expect(send).toHaveBeenCalledWith("Hey, the feed has something new.", {
-      threadId: null,
-      replyToMessageId: undefined,
-    });
-    // Every delivered message is mirrored into history.
-    expect(recordReply).toHaveBeenCalledWith({
-      chatId: "-1001",
-      telegramMessageId: 7,
-      content: "Hey, the feed has something new.",
-    });
-  });
-
-  it("sends standalone, with no reply target for the model to choose", async () => {
-    // A fire has no triggering message, so there is nothing to attach to. The
-    // model names no target and the binding offers none — which is what keeps a
-    // fire from claiming it replied to something that never existed.
-    const send = vi.fn().mockResolvedValue({ messageId: 9 });
-    const complete = vi.fn().mockImplementation(async () => {
-      await tryGetToolContext()!.deliver!("about that");
-      return { content: "ok", model: "m", latencyMs: 1 };
-    });
-
-    await fireTask(task(), deps({ complete, send }));
-
-    expect(send).toHaveBeenCalledWith("about that", { threadId: null });
   });
 
   it("binds the send delivery kind, so the reply tool refuses in a fire", async () => {
@@ -176,32 +155,25 @@ describe("fireTask", () => {
   });
 
   it("fails the fire when delivery was attempted and nothing got through", async () => {
-    const send = vi.fn().mockRejectedValue(new Error("bot is not running"));
     const complete = vi.fn().mockImplementation(async () => {
-      await tryGetToolContext()!
-        .deliver!("hello")
-        .catch(() => undefined);
+      await tryGetToolContext()!.onDelivered!({ ok: false, messageId: null, text: "hello" });
       return { content: "could not send", model: "m", latencyMs: 1 };
     });
 
-    const result = await fireTask(task(), deps({ complete, send }));
+    const result = await fireTask(task(), deps({ complete }));
 
     expect(result.ok).toBe(false);
   });
 
   it("stays ok when at least one message got through despite a failed attempt", async () => {
-    const send = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("flood control"))
-      .mockResolvedValueOnce({ messageId: 8 });
     const complete = vi.fn().mockImplementation(async () => {
       const ctx = tryGetToolContext()!;
-      await ctx.deliver!("first").catch(() => undefined);
-      await ctx.deliver!("second");
+      await ctx.onDelivered!({ ok: false, messageId: null, text: "first" });
+      await ctx.onDelivered!({ ok: true, messageId: 8, text: "second" });
       return { content: "ok", model: "m", latencyMs: 1 };
     });
 
-    const result = await fireTask(task(), deps({ complete, send }));
+    const result = await fireTask(task(), deps({ complete }));
 
     expect(result).toEqual({ ok: true, sent: ["second"] });
   });

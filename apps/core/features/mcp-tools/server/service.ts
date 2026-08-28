@@ -3,8 +3,7 @@ import "server-only";
 import type { SourceId } from "@assistant-hub/contracts";
 import type { ChatCompletionFunctionTool } from "openai/resources/chat/completions";
 
-import { REPLY_TO_MESSAGE_TOOL } from "@/features/bot-messaging/server/mcp-tools";
-import { SEND_MESSAGE_TOOL } from "@/features/tasks/server/outbound-tools";
+import { parsePrefixedToolName } from "@/features/tool-connections/server/schema";
 import { resolveConnectionToolset } from "@/features/tool-connections/server/toolset";
 import { tryGetToolContext } from "@/server/mcp/context";
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
@@ -41,13 +40,26 @@ export interface Toolset {
 /** How a turn delivers, which decides which delivery tool it is offered. */
 export type DeliveryKind = "reply" | "send";
 
-/** The two delivery tools, keyed by the turn kind that may use one. */
+/**
+ * The two delivery tools, keyed by the turn kind that may use one. These are
+ * the names a SOURCE APP gives them on its own MCP server (Phase 5), matched
+ * against the unprefixed half of a connection tool — so every source calls
+ * them the same thing, and a source that offers neither simply cannot deliver
+ * from a task.
+ */
 const DELIVERY_TOOLS: Record<DeliveryKind, string> = {
-  reply: REPLY_TO_MESSAGE_TOOL,
-  send: SEND_MESSAGE_TOOL,
+  reply: "reply_to_message",
+  send: "send_message",
 };
 
 const ALL_DELIVERY_TOOLS = Object.values(DELIVERY_TOOLS);
+
+/** The delivery tool a connection tool is, or null when it is not one. */
+function deliveryToolOf(prefixedName: string): string | null {
+  const parsed = parsePrefixedToolName(prefixedName);
+  if (!parsed) return null;
+  return ALL_DELIVERY_TOOLS.includes(parsed.tool) ? parsed.tool : null;
+}
 
 /**
  * Server-only: the tools available for a turn, or null when none are registered
@@ -63,8 +75,9 @@ const ALL_DELIVERY_TOOLS = Object.values(DELIVERY_TOOLS);
  * | `message`-triggered task | `reply_to_message` | It is acting on a message somebody posted, so the answer belongs under it |
  * | Timed fire | `send_message` | Nothing triggered it, so there is nothing to reply to |
  *
- * The handlers refuse without the matching context binding too, so this filter
- * is what the model *sees*, not the boundary that holds.
+ * The source app's handler checks the turn kind too — it arrives in the call's
+ * `_meta` — so this filter is what the model *sees*, not the boundary that
+ * holds.
  */
 export async function getToolset(options?: {
   delivery?: DeliveryKind;
@@ -79,12 +92,7 @@ export async function getToolset(options?: {
   db?: StoreDb;
 }): Promise<Toolset | null> {
   const registry = await loadMcpRegistry();
-  const all = await registry.listOpenAiTools();
-  const offered = options?.delivery ? DELIVERY_TOOLS[options.delivery] : null;
-  const builtins = all.filter(
-    (tool) =>
-      !ALL_DELIVERY_TOOLS.includes(tool.function.name) || tool.function.name === offered,
-  );
+  const builtins = await registry.listOpenAiTools();
 
   const ctx = tryGetToolContext();
   const connections = await resolveConnectionToolset(
@@ -94,8 +102,13 @@ export async function getToolset(options?: {
     },
     options?.db,
   );
+  const offered = options?.delivery ? DELIVERY_TOOLS[options.delivery] : null;
+  const hosted = connections.tools.filter((tool) => {
+    const delivery = deliveryToolOf(tool.function.name);
+    return delivery === null || delivery === offered;
+  });
 
-  const tools = [...builtins, ...connections.tools];
+  const tools = [...builtins, ...hosted];
   if (tools.length === 0) return null;
   return {
     tools,

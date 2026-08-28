@@ -23,6 +23,7 @@
     "@grammyjs/runner": "^2.0.3",
     "@grammyjs/types": "^3.28.0",
     "@hono/node-server": "^1.14.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^17.2.0",
     "drizzle-orm": "^0.45.2",
     "grammy": "^1.44.0",

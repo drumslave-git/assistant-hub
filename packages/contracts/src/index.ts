@@ -10,10 +10,15 @@
  */
 export { DEFAULT_ASSISTANT_ID } from "./assistants";
 export {
+  TOOL_DELIVERY_KEY,
   TURN_META_KEY,
+  readToolDelivery,
   readTurnMeta,
+  toolDeliveryResult,
+  toolDeliverySchema,
   turnMetaEnvelope,
   turnToolMetaSchema,
+  type ToolDelivery,
   type TurnToolMeta,
 } from "./tool-meta";
 export {

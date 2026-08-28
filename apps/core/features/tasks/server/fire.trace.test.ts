@@ -57,7 +57,6 @@ function deps(): FireDeps {
   return {
     personalityPrompt: null,
     complete: vi.fn().mockResolvedValue({ content: "ok", model: "m", latencyMs: 1 }),
-    send: vi.fn().mockResolvedValue({ messageId: 42 }),
   };
 }
 

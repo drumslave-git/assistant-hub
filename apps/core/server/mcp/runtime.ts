@@ -1,10 +1,6 @@
 import "server-only";
 
 import {
-  BOT_MESSAGING_TOOL_NAMES,
-  registerBotMessagingMcpTools,
-} from "@/features/bot-messaging/server/mcp-tools";
-import {
   BROWSER_AGENT_TOOL_NAMES,
   registerBrowserAgentMcpTools,
 } from "@/features/browser-agent/server/mcp-tools";
@@ -29,10 +25,6 @@ import {
   registerRandomnessMcpTools,
 } from "@/features/randomness/server/mcp-tools";
 import { registerTasksMcpTools, TASKS_TOOL_NAMES } from "@/features/tasks/server/mcp-tools";
-import {
-  registerTasksOutboundMcpTools,
-  TASKS_OUTBOUND_TOOL_NAMES,
-} from "@/features/tasks/server/outbound-tools";
 import { BotMcpRegistry, type McpToolRegistrar } from "./registry";
 
 /**
@@ -42,7 +34,11 @@ import { BotMcpRegistry, type McpToolRegistrar } from "./registry";
  * the bot manager — so it survives module re-evaluation across Next bundles and
  * dev hot-reload, and the MCP server is never connected twice.
  *
- * New tool-owning features add their registrar here.
+ * New tool-owning features add their registrar here. What is NOT here: the
+ * outbound tools (delivering a message, reacting to one). Those are the
+ * source apps' own, served from their MCP servers and reached as connections
+ * (Phase 5) — the core stopped hosting tools whose whole content is a
+ * platform's affordances.
  */
 
 interface RegistryStore {
@@ -67,24 +63,11 @@ function store(): RegistryStore {
 const REGISTRARS: { feature: string; registrar: McpToolRegistrar; toolNames: string[] }[] = [
   { feature: "history", registrar: registerHistoryMcpTools, toolNames: HISTORY_TOOL_NAMES },
   {
-    feature: "bot-messaging",
-    registrar: registerBotMessagingMcpTools,
-    toolNames: BOT_MESSAGING_TOOL_NAMES,
-  },
-  {
     feature: "known-users",
     registrar: registerKnownUsersMcpTools,
     toolNames: KNOWN_USERS_TOOL_NAMES,
   },
   { feature: "tasks", registrar: registerTasksMcpTools, toolNames: TASKS_TOOL_NAMES },
-  // The outbound delivery tools are the tasks feature's second registrar: same
-  // trace scope, but a separate name list so `getToolset` can withhold them
-  // from reply turns (only a task fire delivers through tools).
-  {
-    feature: "tasks",
-    registrar: registerTasksOutboundMcpTools,
-    toolNames: TASKS_OUTBOUND_TOOL_NAMES,
-  },
   { feature: "memory", registrar: registerMemoryMcpTools, toolNames: MEMORY_TOOL_NAMES },
   {
     feature: "randomness",

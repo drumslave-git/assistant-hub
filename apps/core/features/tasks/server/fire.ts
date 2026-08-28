@@ -72,19 +72,6 @@ export interface FireDeps {
    * recorded on the fire trace by the shared LLM tracing layer via `trace`.
    */
   complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
-  /**
-   * Raw delivery to the task's chat (real: the bot's `sendChatMessage`);
-   * resolves the delivered message id. The fire wraps it as the tool context's
-   * `deliver` binding, records each send on the trace, and mirrors it into
-   * history — the outbound tools call the wrapper, never this directly.
-   */
-  send: (text: string, opts: { threadId?: number | null }) => Promise<{ messageId: number }>;
-  /** Mirror a delivered message into history (best-effort). */
-  recordReply?: (input: {
-    chatId: string;
-    telegramMessageId: number;
-    content: string;
-  }) => Promise<void>;
   db?: StoreDb;
 }
 
@@ -235,52 +222,46 @@ export async function fireTask(
       },
     });
 
-    // What actually went out, recorded by the deliver binding as it happens —
-    // the fire's ground truth, independent of anything the model writes.
+    // What actually went out, as the source app reports each delivery — the
+    // fire's ground truth, independent of anything the model writes. The
+    // sending itself belongs to the source's own `send_message` tool (Phase
+    // 5); what stays here is the accounting, because "did this fire reach
+    // anyone" is a question about the task, not about Telegram.
     const sent: string[] = [];
     const sentIds: number[] = [];
     let deliveryFailures = 0;
-    // A fire sends standalone: nothing triggered it, so there is no message to
-    // attach to (user decision, 2026-08-14 — a `message` task replies, a timed
-    // one sends). The model never names a target, so it can never aim one wrong.
-    const deliver = async (text: string) => {
-      try {
-        const { messageId } = await deps.send(text, { threadId: task.threadId });
-        sent.push(text);
-        sentIds.push(messageId);
-        await trace.event({
-          type: "output",
-          level: "success",
-          message: "send message",
-          data: { content: text, messageId },
-        });
-        // Mirror into history so the sent message is part of the conversation
-        // and future context. Best-effort — never fail a delivered message.
-        try {
-          await deps.recordReply?.({
-            chatId: task.chatId!,
-            telegramMessageId: messageId,
-            content: text,
-          });
-        } catch {
-          // swallow — the message was delivered; the mirror is a side record
-        }
-        return { messageId };
-      } catch (err) {
+    const onDelivered = async (delivery: {
+      ok: boolean;
+      messageId: number | null;
+      text: string;
+    }) => {
+      if (!delivery.ok) {
         deliveryFailures += 1;
-        throw err;
+        return;
       }
+      sent.push(delivery.text);
+      if (delivery.messageId != null) sentIds.push(delivery.messageId);
+      await trace.event({
+        type: "output",
+        level: "success",
+        message: "send message",
+        data: { content: delivery.text, messageId: delivery.messageId },
+      });
     };
 
     let reply: ChatCompletionResult;
     try {
       // The completion runs with the task's chat bound as the tool context —
       // like the live reply path — so every tool the model calls is scoped to
-      // the firing chat, and `deliver` is what arms the outbound tools. No
-      // `collectImage` sink: image-producing tools must refuse rather than
-      // generate into a void.
+      // the firing chat, and `deliveryKind` is what arms the source's send
+      // tool. No `collectImage` sink: image-producing tools must refuse
+      // rather than generate into a void.
       reply = await runWithToolContext(
         {
+          // The task store still hands out raw telegram ids (its own note), so
+          // a fire delivers through tg until that surface is generalized —
+          // named here because the source decides which tools are offered.
+          source: "tg",
           chatId: task.chatId!,
           // The fire's tool calls act as the task's assistant (Phase 3).
           assistantId: task.assistantId,
@@ -295,7 +276,7 @@ export async function fireTask(
           correlationId: task.id,
           threadId: task.threadId ?? null,
           deliveryKind: "send",
-          deliver,
+          onDelivered,
         },
         () =>
           deps.complete(messages, {

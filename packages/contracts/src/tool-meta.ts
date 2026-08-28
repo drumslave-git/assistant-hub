@@ -34,6 +34,15 @@ export const turnToolMetaSchema = z.object({
   userId: z.string().nullable().optional(),
   /** Owner rights as the source stamped them on the inbound event. */
   senderIsOwner: z.boolean().optional(),
+  /**
+   * Which delivery this turn may perform, when it may perform one at all: a
+   * turn opened by a message answers it (`reply`), a timed fire speaks
+   * unprompted (`send`), and an ordinary reply turn delivers its own text and
+   * so carries neither. The core withholds the tool that does not match, and
+   * the hosting app refuses it as well — the same double boundary the
+   * core-hosted delivery tools had, now spanning two processes.
+   */
+  deliveryKind: z.enum(["reply", "send"]).nullable().optional(),
 });
 
 export type TurnToolMeta = z.infer<typeof turnToolMetaSchema>;
@@ -52,5 +61,42 @@ export function readTurnMeta(meta: unknown): TurnToolMeta | null {
   if (!meta || typeof meta !== "object") return null;
   const raw = (meta as Record<string, unknown>)[TURN_META_KEY];
   const parsed = turnToolMetaSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * What a hosted tool reports when it delivered (or tried to deliver) a
+ * message, carried in the call's `structuredContent`.
+ *
+ * The core needs to know a send happened — a task stamps its wording, a fire
+ * counts what actually reached the chat — and it must learn that from the
+ * call's RESULT rather than by recognizing a tool name. A name-based hook
+ * would break the moment a source called its tool something else; a result
+ * shape any source can report keeps the bookkeeping general.
+ */
+export const toolDeliverySchema = z.object({
+  /** False = the platform refused the send; the tool reports the reason. */
+  ok: z.boolean(),
+  /** The delivered message's own id, when it landed. */
+  messageId: z.number().nullable().optional(),
+  /** Exactly what was sent, as the chat reads it. */
+  text: z.string(),
+});
+
+export type ToolDelivery = z.infer<typeof toolDeliverySchema>;
+
+/** The key a delivery rides under in a tool result's structured content. */
+export const TOOL_DELIVERY_KEY = "delivery";
+
+/** Wrap a delivery for a tool result's `structuredContent`. */
+export function toolDeliveryResult(delivery: ToolDelivery): Record<string, unknown> {
+  return { [TOOL_DELIVERY_KEY]: delivery };
+}
+
+/** The delivery a tool result reports, or null when it reports none. */
+export function readToolDelivery(structuredContent: unknown): ToolDelivery | null {
+  if (!structuredContent || typeof structuredContent !== "object") return null;
+  const raw = (structuredContent as Record<string, unknown>)[TOOL_DELIVERY_KEY];
+  const parsed = toolDeliverySchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }

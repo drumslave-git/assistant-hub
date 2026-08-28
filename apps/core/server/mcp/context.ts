@@ -94,23 +94,31 @@ export interface McpToolContext {
    */
   onBrowserRunEnqueued?: (runId: string) => void;
   /**
-   * Outbound delivery for a **task-driven turn** — the turns where the model's
-   * own text is never sent and a delivery tool is the only way anything reaches
-   * the chat (user decision, 2026-08-13: the model decides what a task sends,
-   * not a hardcoded delivery). Its absence is what makes those tools refuse in
-   * an ordinary reply turn, whose reply already delivers itself.
-   *
-   * How the message lands is the **binding's** decision, not the model's, which
-   * is why this takes only the text. A turn opened by a `message` task replies
-   * to the message that triggered it; a timed fire has no such message and sends
-   * standalone. The model never picks a target, so it can never aim one wrong.
-   *
-   * Resolves the delivered Telegram message id.
+   * The message this turn is answering, when it is answering one. Travels to
+   * the source app with a delivery tool call, which is how a reply lands under
+   * the right message without the model ever naming a target.
    */
-  deliver?: (text: string) => Promise<{ messageId: number }>;
+  replyToMessageId?: number | null;
   /**
-   * Which delivery tool this turn offers, so the tool that is *not* offered can
-   * still refuse coherently if a stale registry hands it to the model anyway.
+   * What the turn does about a message its source delivered — a task stamps
+   * the wording it used, a fire counts what actually reached the chat.
+   *
+   * The sending itself belongs to the source app (Phase 5): its MCP server
+   * hosts the delivery tools, so the core no longer holds a send closure. It
+   * holds the bookkeeping, which is the part that is about the turn rather
+   * than about the platform. Called for a delivery that failed too — `ok`
+   * says which — because an attempt that reached nobody is exactly what a
+   * fire has to notice.
+   */
+  onDelivered?: (delivery: {
+    ok: boolean;
+    messageId: number | null;
+    text: string;
+  }) => Promise<void> | void;
+  /**
+   * Which delivery this turn may perform, so the tool that is *not* offered
+   * can still refuse coherently if it is called anyway (the source app checks
+   * it as well — it arrives in the call's `_meta`).
    * `reply` — a `message`-triggered turn, answering the message that opened it.
    * `send` — a timed fire, speaking into the chat unprompted.
    */

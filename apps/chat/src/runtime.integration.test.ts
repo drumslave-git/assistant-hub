@@ -533,7 +533,7 @@ describe("chat runtime", () => {
     expect(audio.headers.get("content-type")).toBe("audio/ogg");
   });
 
-  it("serves the rest of the outbound port: images, files, and an honest refusal", async () => {
+  it("serves the rest of the outbound port: images and files", async () => {
     const app = apiWith([]);
     const thread = await newThread(app, "Tools at work");
 
@@ -560,17 +560,6 @@ describe("chat runtime", () => {
       })
     ).json()) as { sourceMessageId: string };
     expect(file.sourceMessageId).toBeTruthy();
-
-    // Reactions do not exist here, and the source says so rather than
-    // throwing — the tool then tells the model the truth.
-    const reaction = (await (
-      await app.request(`/internal/chats/${thread.id}/messages/${file.sourceMessageId}/reaction`, {
-        method: "POST",
-        headers: HEADERS,
-        body: JSON.stringify({ emoji: "👍" }),
-      })
-    ).json()) as { status: string };
-    expect(reaction.status).toBe("unsupported");
 
     const body = chatThreadResponseSchema.parse(
       await (await app.request(`/internal/threads/${thread.id}`, { headers: HEADERS })).json(),

@@ -29,7 +29,6 @@ import { withAdvisoryLock } from "@/server/jobs/lock";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
-import { sourceOutbound } from "@/server/turn/source-outbound";
 
 import { buildStandingTasksBlock } from "../format";
 import { computeNextTriggerRun } from "../schedule";
@@ -59,8 +58,8 @@ import { getActiveTasksForChat } from "./service";
  * one-shot that has fired). Firing is paused while maintenance mode is on. The
  * LLM connection is read fresh per tick.
  *
- * A fire delivers only through the outbound tools, so this is the one caller
- * that asks {@link getToolset} for them (`outbound: true`).
+ * A fire delivers only through the source app's own `send_message` tool, so
+ * this is the one caller that asks {@link getToolset} for a `send` delivery.
  */
 
 /** Poll period. A code constant, not a setting. */
@@ -89,22 +88,6 @@ export interface DueRunDeps {
    * itself on the fire trace via the shared LLM tracing layer (`trace`).
    */
   complete: (messages: ChatMessage[], trace?: LlmCallTrace) => Promise<ChatCompletionResult>;
-  /**
-   * Raw delivery (real: the source's internal send API, which mirrors what
-   * it delivers); resolves the message id.
-   */
-  send: (
-    assistantId: string,
-    chatId: string,
-    text: string,
-    opts: { threadId?: number | null; replyToMessageId?: number },
-  ) => Promise<{ messageId: number }>;
-  /** Mirror a delivered message into history (tests only — the source mirrors). */
-  recordReply?: (input: {
-    chatId: string;
-    telegramMessageId: number;
-    content: string;
-  }) => Promise<void>;
   /** Now, for the due scan + schedule advance. Defaults to the wall clock. */
   now?: Date;
   /** Publish live per-task progress to the scheduler (drives the Jobs dashboard). */
@@ -176,8 +159,6 @@ export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; fa
       personalityPrompt,
       ...scoped,
       complete: deps.complete,
-      send: (text, opts) => deps.send(task.assistantId, chatId, text, opts),
-      recordReply: deps.recordReply,
       db,
     }).catch(() => ({ ok: false as const, sent: [] as string[] }));
     if (result.ok) fired += 1;
@@ -224,7 +205,7 @@ export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; fa
  */
 async function buildLiveFireCollaborators(): Promise<Pick<
   DueRunDeps,
-  "personaFor" | "complete" | "send" | "recordReply"
+  "personaFor" | "complete"
 > | null> {
   const runtime = await getLlmRuntime().catch(() => null);
   if (!runtime) return null;
@@ -255,23 +236,6 @@ async function buildLiveFireCollaborators(): Promise<Pick<
             messages,
             ...(trace ? { trace } : {}),
           });
-    },
-    // The owning source mirrors what it delivers — no recordReply here. An
-    // unconfigured source API fails the send audibly, like v1's stopped bot.
-    send: (assistantId, chatId, text, opts) => {
-      // The task store keeps a scoped ref but the repository still hands out
-      // raw telegram ids (its own note); a fire therefore delivers to tg
-      // until that surface is generalized.
-      const outbound = sourceOutbound("tg");
-      if (!outbound) {
-        throw new Error("telegram source API is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
-      }
-      return outbound.sendMessage(chatId, {
-        text,
-        assistantId,
-        threadId: opts.threadId ?? null,
-        replyToMessageId: opts.replyToMessageId ?? null,
-      });
     },
   };
 }
@@ -315,7 +279,7 @@ export async function manualFireTask(
   trigger: TraceTrigger,
   db: StoreDb = getStoreDb(),
   // Injectable like DueRunDeps, so tests drive a capturing sink + fake LLM.
-  liveOverride?: Pick<DueRunDeps, "personaFor" | "complete" | "send" | "recordReply">,
+  liveOverride?: Pick<DueRunDeps, "personaFor" | "complete">,
 ): Promise<FireResult> {
   const task = await getTaskById(db, id);
   if (!task) throw ApiError.notFound("Unknown task");
@@ -342,8 +306,6 @@ export async function manualFireTask(
       personalityPrompt,
       ...scoped,
       complete: live.complete,
-      send: (text, opts) => live.send(task.assistantId, chatId, text, opts),
-      recordReply: live.recordReply,
       db,
     },
     { action: "manual-fire", trigger },

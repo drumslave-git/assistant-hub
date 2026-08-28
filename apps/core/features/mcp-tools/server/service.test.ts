@@ -6,17 +6,12 @@ import {
   HISTORY_RECALL_TOOL,
   HISTORY_SEARCH_TOOL,
 } from "@/features/history/server/mcp-tools";
-import { REPLY_TO_MESSAGE_TOOL } from "@/features/bot-messaging/server/mcp-tools";
 import { BROWSE_WEB_TOOL } from "@/features/browser-agent/server/mcp-tools";
 import { IMAGE_GENERATE_TOOL } from "@/features/image-gen/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
 import { MEMORY_TOOL_NAMES } from "@/features/memory/server/mcp-tools";
 import { RANDOMNESS_TOOL_NAMES, ROLL_CHANCE_TOOL } from "@/features/randomness/server/mcp-tools";
 import { TASKS_TOOL_NAMES } from "@/features/tasks/server/mcp-tools";
-import {
-  SEND_MESSAGE_TOOL,
-  TASKS_OUTBOUND_TOOL_NAMES,
-} from "@/features/tasks/server/outbound-tools";
 import { getToolset, getToolsView } from "./service";
 
 /**
@@ -61,7 +56,14 @@ const COMMON_TOOLS = [
   BROWSE_WEB_TOOL,
 ].sort();
 
-const ALL_TOOLS = [...COMMON_TOOLS, REPLY_TO_MESSAGE_TOOL, ...TASKS_OUTBOUND_TOOL_NAMES].sort();
+/**
+ * Since Phase 5 the delivery tools are the SOURCE apps' — hosted on their own
+ * MCP servers and offered as connection tools — so the in-process registry
+ * this file covers has none of them, and `getToolset`'s carve-out is
+ * exercised against real connections in
+ * `features/tool-connections/server/toolset.integration.test.ts`.
+ */
+const ALL_TOOLS = [...COMMON_TOOLS].sort();
 
 describe("getToolsView", () => {
   it("lists every registered tool with its owning feature and a description", async () => {
@@ -71,12 +73,10 @@ describe("getToolsView", () => {
     expect(featureOf(HISTORY_SEARCH_TOOL)).toBe("history");
     expect(featureOf(UPDATE_USER_ALIASES_TOOL)).toBe("known-users");
     expect(featureOf(TASKS_TOOL_NAMES[0])).toBe("tasks");
-    expect(featureOf(SEND_MESSAGE_TOOL)).toBe("tasks");
     expect(featureOf(MEMORY_TOOL_NAMES[0])).toBe("memory");
     // The owning feature is what gives the tool its `mcp-tools-image-gen` Debug scope.
     expect(featureOf(IMAGE_GENERATE_TOOL)).toBe("image-gen");
     expect(featureOf(BROWSE_WEB_TOOL)).toBe("browser-agent");
-    expect(featureOf(REPLY_TO_MESSAGE_TOOL)).toBe("bot-messaging");
     expect(featureOf(ROLL_CHANCE_TOOL)).toBe("randomness");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });
@@ -96,24 +96,11 @@ describe("getToolset", () => {
     expect(typeof (await getToolset())!.callTool).toBe("function");
   });
 
-  it("offers a message-triggered turn the reply tool, and only that one", async () => {
-    expect(await namesOf({ delivery: "reply" })).toEqual(
-      [...COMMON_TOOLS, REPLY_TO_MESSAGE_TOOL].sort(),
-    );
-  });
-
-  it("offers a timed fire the send tool, and only that one", async () => {
-    // A fire has no triggering message, so being able to "reply" to one would be
-    // an offer it could only fulfil by inventing a target.
-    expect(await namesOf({ delivery: "send" })).toEqual(
-      [...COMMON_TOOLS, SEND_MESSAGE_TOOL].sort(),
-    );
-  });
-
-  it("never offers both at once, whichever kind is asked for", async () => {
+  it("offers the same in-process tools whatever the turn delivers", async () => {
+    // The delivery carve-out now applies to the source apps' hosted tools; the
+    // code-defined half of the toolset is the same either way.
     for (const delivery of ["reply", "send"] as const) {
-      const names = await namesOf({ delivery });
-      expect(names.filter((n) => n === REPLY_TO_MESSAGE_TOOL || n === SEND_MESSAGE_TOOL)).toHaveLength(1);
+      expect(await namesOf({ delivery })).toEqual(COMMON_TOOLS);
     }
   });
 });

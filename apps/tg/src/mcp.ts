@@ -1,14 +1,20 @@
-import { readTurnMeta, type TurnToolMeta } from "@assistant-hub/contracts";
+import {
+  readTurnMeta,
+  toolDeliveryResult,
+  type TurnToolMeta,
+} from "@assistant-hub/contracts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BotManager } from "./bot-manager";
+import type { CrossFeed } from "./cross-feed";
 import type { TgDb } from "./db";
 import {
   reactToMessage,
   TELEGRAM_REACTION_EMOJI,
   toTelegramReactionEmoji,
 } from "./reactions";
+import { sendChatMessage } from "./send";
 
 /**
  * This app's own MCP server (PLAN.md: "it exposes an MCP server for its
@@ -22,7 +28,39 @@ import {
  * turn, not a parameter it could aim somewhere else.
  */
 
-export const TG_MCP_TOOLS = ["set_message_reaction"] as const;
+export const TG_MCP_TOOLS = [
+  "reply_to_message",
+  "send_message",
+  "set_message_reaction",
+] as const;
+
+/** Telegram's own per-message cap. */
+const MAX_MESSAGE_LENGTH = 4000;
+
+const REPLY_TO_MESSAGE_DESCRIPTION =
+  "Reply to the message that triggered this rule. Text you merely write in your answer is NOT " +
+  "sent anywhere — this call is what delivers it, as a Telegram reply attached to that message, " +
+  "so the chat sees what you are responding to and there is no need to quote or describe it. " +
+  "Call it once per message you want to appear; several calls send several replies. If the rule " +
+  "turns out to require nothing this time, simply do not call it — saying nothing is a valid " +
+  "outcome and never an error.";
+
+const SEND_MESSAGE_DESCRIPTION =
+  "Send a message to this chat, as yourself. This is how anything you want the people " +
+  "here to see is actually delivered while you execute a task — text you merely write " +
+  "in your answer is NOT sent anywhere. Call it once per message you want to appear; " +
+  "several calls send several messages. If the task turns out to need no message this " +
+  "time (nothing to report, condition not met), simply do not call it — saying nothing " +
+  "is a valid outcome and never an error.";
+
+const NOT_A_REPLY_TURN =
+  "Replying to a message is only available while a rule triggered by a message is running. " +
+  "In this turn your own answer is the message — just write it.";
+
+const NOT_A_SEND_TURN =
+  "Sending a standalone message is only available while a timed task is firing. If you are " +
+  "acting on a message somebody posted, reply to it instead; in an ordinary turn your own " +
+  "answer is the message — just write it.";
 
 const SET_MESSAGE_REACTION_DESCRIPTION =
   "Put one of Telegram's reaction emoji on a specific message in this chat — the small emoji " +
@@ -36,12 +74,33 @@ const SET_MESSAGE_REACTION_DESCRIPTION =
   "there. React only to messages other people sent — never to your own. Only use an id you " +
   "actually saw in this conversation or got back from a lookup — never a guessed number.";
 
+const NO_TURN = "This call arrived without a conversation to act in, so nothing was done.";
+
 /** Refusal shape: the model is told what went wrong, in words it can act on. */
 function refusal(text: string) {
   return {
     content: [{ type: "text" as const, text }],
     structuredContent: { ok: false, message_id: null, emoji: null },
     isError: true,
+  };
+}
+
+/**
+ * A send Telegram refused. Reported as a delivery that did NOT happen rather
+ * than as a bare error: the turn's bookkeeping counts attempts that failed,
+ * and the model must not be left thinking its words reached anyone.
+ */
+function deliveryFailure(text: string, err: unknown) {
+  const reason = err instanceof Error ? err.message : String(err);
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `Telegram did not accept the message: ${reason}. Nothing was delivered — do not claim it was.`,
+      },
+    ],
+    structuredContent: toolDeliveryResult({ ok: false, messageId: null, text }),
+    isError: true as const,
   };
 }
 
@@ -54,11 +113,107 @@ function requireTurn(meta: unknown): TurnToolMeta | null {
 export interface TgMcpDeps {
   db: TgDb;
   manager: Pick<BotManager, "senderFor">;
+  /** Hands a delivered message to the chat's other assistants, as sends do. */
+  crossFeed?: CrossFeed;
 }
 
 /** Build this app's MCP server, with every tool bound to the request's turn. */
 export function createTgMcpServer(deps: TgMcpDeps): McpServer {
   const server = new McpServer({ name: "assistant-hub-tg", version: "1.0.0" });
+
+  /**
+   * The two delivery tools. Which one a turn may use is a fact about the turn,
+   * not a choice for the model (user decision, 2026-08-14): a rule triggered
+   * by a message answers that message, a timed fire speaks unprompted, and an
+   * ordinary reply turn delivers its own text and is offered neither. The core
+   * withholds the tool that does not match; this checks the turn as well, so
+   * a call that arrives anyway cannot smuggle a send into the wrong turn.
+   */
+  const deliver = (turn: TurnToolMeta, text: string, replyToMessageId: number | null) =>
+    sendChatMessage({
+      db: deps.db,
+      sender: deps.manager.senderFor(turn.assistantId ?? null),
+      crossFeed: deps.crossFeed,
+      chatId: turn.chatId,
+      assistantId: turn.assistantId ?? null,
+      text,
+      replyToMessageId,
+      threadId: turn.threadId ?? null,
+    });
+
+  server.registerTool(
+    "reply_to_message",
+    {
+      title: "Reply to an earlier message",
+      description: REPLY_TO_MESSAGE_DESCRIPTION,
+      inputSchema: {
+        text: z
+          .string()
+          .min(1)
+          .max(MAX_MESSAGE_LENGTH)
+          .describe("The reply text, exactly as the chat should read it"),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ text }, extra) => {
+      const turn = requireTurn(extra?._meta);
+      if (!turn) return refusal(NO_TURN);
+      if (turn.deliveryKind !== "reply") return refusal(NOT_A_REPLY_TURN);
+      try {
+        // Which message it lands under is the turn's, never the model's: it
+        // replies to the message that opened the turn or to nothing at all.
+        const sent = await deliver(turn, text, turn.replyToMessageId ?? null);
+        return {
+          content: [{ type: "text" as const, text: `Reply sent (id ${sent.messageId}).` }],
+          structuredContent: toolDeliveryResult({ ok: true, messageId: sent.messageId, text }),
+        };
+      } catch (err) {
+        return deliveryFailure(text, err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "send_message",
+    {
+      title: "Send a message to the chat",
+      description: SEND_MESSAGE_DESCRIPTION,
+      inputSchema: {
+        text: z
+          .string()
+          .min(1)
+          .max(MAX_MESSAGE_LENGTH)
+          .describe("The message text, exactly as the chat should read it"),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ text }, extra) => {
+      const turn = requireTurn(extra?._meta);
+      if (!turn) return refusal(NO_TURN);
+      if (turn.deliveryKind !== "send") return refusal(NOT_A_SEND_TURN);
+      try {
+        // A fire sends standalone: nothing triggered it, so there is nothing
+        // to attach to and no target for the model to aim wrong.
+        const sent = await deliver(turn, text, null);
+        return {
+          content: [{ type: "text" as const, text: `Message sent (id ${sent.messageId}).` }],
+          structuredContent: toolDeliveryResult({ ok: true, messageId: sent.messageId, text }),
+        };
+      } catch (err) {
+        return deliveryFailure(text, err);
+      }
+    },
+  );
 
   server.registerTool(
     "set_message_reaction",
@@ -107,11 +262,7 @@ export function createTgMcpServer(deps: TgMcpDeps): McpServer {
     },
     async ({ message_id, emoji, big }, extra) => {
       const turn = requireTurn(extra?._meta);
-      if (!turn) {
-        return refusal(
-          "This call arrived without a conversation to act in, so nothing was done.",
-        );
-      }
+      if (!turn) return refusal(NO_TURN);
 
       const requested = emoji.trim();
       const reaction = requested ? toTelegramReactionEmoji(requested) : null;

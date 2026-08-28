@@ -98,11 +98,11 @@ export interface TurnBindingsInput {
   /** Runs `browse_web` enqueued this turn (ack handling is the caller's). */
   onBrowserRunEnqueued: (runId: string) => void;
   /**
-   * Deliver a task-opened turn's message (the `reply_to_message` tool): the
-   * telegram runtime sends + mirrors; the queue consumer publishes a
-   * reply-delivery event. The binding stamps task deliveries either way.
+   * The message this turn is answering, so a task-opened turn's reply lands
+   * under it. Travels to the source app with the delivery call; the model
+   * never names a target.
    */
-  deliverTaskReply: (text: string) => Promise<{ messageId: number | null }>;
+  replyToMessageId?: number | null;
   /**
    * Actions-started hook, run before ANY tool executes (and awaited): the
    * queue consumer's retry gate — a turn that ran a tool must never re-run.
@@ -209,19 +209,18 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
           // never from the goal text (the model has corrupted re-typed URLs).
           messageUrls: extractMessageUrls(messageText),
           threadId: threadId ?? undefined,
+          replyToMessageId: input.replyToMessageId ?? null,
           collectImage: input.collectImage,
-          // A task-opened turn sends nothing of its own; this binding is the
-          // only way it reaches the chat, under the triggering message.
+          // A task-opened turn sends nothing of its own: the source app's
+          // `reply_to_message` tool is the only way it reaches the chat, and
+          // it lands under the message that opened the turn. What stays here
+          // is the stamping — the wording-variation block a task's next match
+          // composes is about the task, not about the platform.
           ...(taskOpenedTurn
             ? {
                 deliveryKind: "reply" as const,
-                deliver: async (text: string) => {
-                  const sent = await input.deliverTaskReply(text);
-                  // Stamp the delivery onto the tasks that opened this turn,
-                  // feeding the wording-variation block their next match
-                  // composes. Best-effort inside — the message is out.
-                  await recordTaskDeliveries(openingTaskIds, text);
-                  return { messageId: sent.messageId ?? 0 };
+                onDelivered: async ({ ok, text }) => {
+                  if (ok) await recordTaskDeliveries(openingTaskIds, text);
                 },
               }
             : {}),

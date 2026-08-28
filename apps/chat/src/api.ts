@@ -18,11 +18,12 @@ import {
   type OperatorMessage,
   type OperatorUser,
 } from "@assistant-hub/contracts";
-import { internalTokenGuard } from "@assistant-hub/service";
+import { internalTokenGuard, serveMcp } from "@assistant-hub/service";
 import { Hono } from "hono";
 
 import type { ChatDb } from "./db";
 import { postThreadMessage } from "./inbound";
+import { createChatMcpServer } from "./mcp";
 import {
   countPendingMedia,
   describeOnInsert,
@@ -651,6 +652,19 @@ export function createApi(input: {
     return c.json({ updated: false, media: toInternalMedia(current) });
   });
 
+  // This app's own MCP server (Phase 5): the core reaches it as a managed
+  // tool connection, with the same shared secret the internal API takes. The
+  // turn each call belongs to arrives as MCP `_meta`, so a tool never takes a
+  // thread id from the model.
+  const mcp = new Hono();
+  mcp.use("*", internalTokenGuard(input.internalToken));
+  mcp.all("/", (c) =>
+    serveMcp(c, () =>
+      createChatMcpServer({ db: input.db, onThreadsChanged: input.onThreadsChanged }),
+    ),
+  );
+
   app.route("/internal", internal);
+  app.route("/mcp", mcp);
   return app;
 }

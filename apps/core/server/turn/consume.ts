@@ -359,11 +359,10 @@ async function buildEventDeps(
     tasks: taskSets,
     collectImage: (base64) => turn.generatedImages.push(base64),
     onBrowserRunEnqueued: (runId) => turn.enqueuedBrowserRuns.push(runId),
-    deliverTaskReply: async (text: string) => {
-      await markActed();
-      await ctx.publish(deliveryEvent(text, false));
-      return { messageId: null };
-    },
+    // A task-opened turn answers the message that opened it; the source app's
+    // delivery tool attaches it there (Phase 5), so the core only says which
+    // message that is.
+    replyToMessageId: Number(event.message.sourceMessageId),
     onBeforeToolCall: async (toolName) => {
       await markActed();
       // Progress, for whoever renders it: the tg app keeps typing, a web

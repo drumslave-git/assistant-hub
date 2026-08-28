@@ -64,11 +64,18 @@ const trigger = { kind: "dashboard" } as const;
 const CHAT = "-1001";
 const ASSISTANT = "assistant-1";
 
-/** A `complete` that sends the given texts through the fire's deliver binding. */
-function sendingComplete(texts: string[]) {
+/**
+ * A `complete` that behaves like the model calling the source app's
+ * `send_message` tool once per text: since Phase 5 the sending is the source's
+ * and what reaches the fire is the delivery report.
+ */
+function sendingComplete(texts: string[], deliveries?: { texts: string[] }) {
   return vi.fn().mockImplementation(async () => {
     const toolCtx = tryGetToolContext();
-    for (const text of texts) await toolCtx!.deliver!(text);
+    for (const [index, text] of texts.entries()) {
+      deliveries?.texts.push(text);
+      await toolCtx!.onDelivered!({ ok: true, messageId: 100 + index, text });
+    }
     return { content: "done", model: "m", latencyMs: 1 };
   });
 }
@@ -78,7 +85,6 @@ function deps(over: Partial<DueRunDeps> = {}): DueRunDeps {
     timezone: "UTC",
     personaFor: async () => null,
     complete: sendingComplete(["fired!"]),
-    send: vi.fn().mockResolvedValue({ messageId: 1 }),
     db: ctx.db,
     ...over,
   };
@@ -109,18 +115,15 @@ function later(task: { nextRunAt: string | null }): Date {
 }
 
 describe("runDueTasks", () => {
-  it("fires a due interval task, delivers through the sink, and advances the schedule", async () => {
+  it("fires a due interval task, records what was delivered, and advances the schedule", async () => {
     const task = await dueTask();
-    const send = vi.fn().mockResolvedValue({ messageId: 5 });
+    const delivered = { texts: [] as string[] };
     const now = later(task);
 
-    const result = await runDueTasks(deps({ send, now }));
+    const result = await runDueTasks(deps({ complete: sendingComplete(["fired!"], delivered), now }));
 
     expect(result).toEqual({ fired: 1, failed: 0 });
-    expect(send).toHaveBeenCalledWith(ASSISTANT, CHAT, "fired!", {
-      threadId: null,
-      replyToMessageId: undefined,
-    });
+    expect(delivered.texts).toEqual(["fired!"]);
     const settled = await getTask(task.id, ctx.db);
     // Advanced from the settle instant, and the delivery recorded for variation.
     expect(Date.parse(settled!.nextRunAt!)).toBe(now.getTime() + 10 * 60_000);
@@ -175,39 +178,41 @@ describe("runDueTasks", () => {
 
   it("fires nothing when nothing is due", async () => {
     await dueTask();
-    const send = vi.fn();
+    const delivered = { texts: [] as string[] };
 
-    const result = await runDueTasks(deps({ send, now: new Date(Date.now() - 60_000) }));
+    const result = await runDueTasks(
+      deps({
+        complete: sendingComplete(["fired!"], delivered),
+        now: new Date(Date.now() - 60_000),
+      }),
+    );
 
     expect(result).toEqual({ fired: 0, failed: 0 });
-    expect(send).not.toHaveBeenCalled();
+    expect(delivered.texts).toEqual([]);
   });
 });
 
 describe("manualFireTask", () => {
   /** The injectable collaborators, standing in for the live LLM + bot. */
   function live(
-    over: Partial<Pick<DueRunDeps, "personaFor" | "complete" | "send" | "recordReply">> = {},
+    over: Partial<Pick<DueRunDeps, "personaFor" | "complete">> = {},
+    delivered?: { texts: string[] },
   ) {
     return {
       personaFor: async () => null,
-      complete: sendingComplete(["manual!"]),
-      send: vi.fn().mockResolvedValue({ messageId: 5 }),
+      complete: sendingComplete(["manual!"], delivered),
       ...over,
     };
   }
 
   it("fires without consuming the schedule — a one-shot survives untouched", async () => {
     const task = await dueTask({ triggerKind: "timeout", delayMinutes: 5, everyMinutes: null });
-    const collaborators = live();
+    const delivered = { texts: [] as string[] };
 
-    const result = await manualFireTask(task.id, trigger, ctx.db, collaborators);
+    const result = await manualFireTask(task.id, trigger, ctx.db, live({}, delivered));
 
     expect(result).toEqual({ ok: true, sent: ["manual!"] });
-    expect(collaborators.send).toHaveBeenCalledWith(ASSISTANT, CHAT, "manual!", {
-      threadId: null,
-      replyToMessageId: undefined,
-    });
+    expect(delivered.texts).toEqual(["manual!"]);
     // The row is exactly as it was: not deleted (a regular fire would have
     // spent this one-shot), schedule and counters untouched.
     const after = await getTaskById(ctx.db, task.id);
