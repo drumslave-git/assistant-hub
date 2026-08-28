@@ -11,6 +11,7 @@ import {
   type ToolConnectionToolRow,
 } from "../../../store/schema";
 import type { StoreDb } from "@/server/store/db";
+import type { ComparableTool } from "./diff";
 import type { ToolTransport } from "./schema";
 
 /**
@@ -43,6 +44,9 @@ export interface ToolConnectionRecord {
   managed: boolean;
   lastDiscoveredAt: string | null;
   lastError: string | null;
+  /** What the last discovery saw — not what the model is offered. */
+  discoveredTools: ComparableTool[] | null;
+  /** The applied snapshot: exactly what the model is offered. */
   tools: ConnectionToolRecord[];
   createdAt: string;
   updatedAt: string;
@@ -89,6 +93,7 @@ function mapRow(
     managed: row.managed,
     lastDiscoveredAt: row.lastDiscoveredAt?.toISOString() ?? null,
     lastError: row.lastError,
+    discoveredTools: row.lastDiscoveredTools ?? null,
     tools: tools.filter((tool) => tool.connectionId === row.id).map(mapTool),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -185,15 +190,24 @@ export async function updateToolConnection(
   return getToolConnectionById(db, id);
 }
 
-/** Record a discovery outcome without touching the applied snapshot. */
+/**
+ * Record a discovery outcome. Never touches the applied snapshot — that is
+ * the whole rule (user decision, 2026-08-28). A failed discovery leaves the
+ * previously seen toolset in place and only records why it failed, so the
+ * dashboard keeps showing the last thing that was true.
+ */
 export async function recordDiscovery(
   db: StoreDb,
   id: string,
-  outcome: { at: Date | null; error: string | null },
+  outcome: { at: Date | null; error: string | null; tools?: readonly ComparableTool[] },
 ): Promise<void> {
   await db
     .update(toolConnections)
-    .set({ lastDiscoveredAt: outcome.at, lastError: outcome.error })
+    .set({
+      lastDiscoveredAt: outcome.at,
+      lastError: outcome.error,
+      ...(outcome.tools ? { lastDiscoveredTools: [...outcome.tools] } : {}),
+    })
     .where(eq(toolConnections.id, id));
 }
 

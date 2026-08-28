@@ -8,6 +8,7 @@ import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { withTrace } from "@/server/trace";
+import { diffToolsets, type ComparableTool, type ToolsetDiff } from "./diff";
 import {
   countToolConnections,
   deleteToolConnection,
@@ -41,10 +42,33 @@ import {
 
 const FEATURE = FEATURES["tool-connections"];
 
+/** The applied snapshot in the shape the diff compares. */
+export function appliedTools(record: ToolConnectionRecord): ComparableTool[] {
+  return record.tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+  }));
+}
+
+/**
+ * A connection's stored discovery against its applied snapshot, or null when
+ * nothing has been discovered yet. Computed on read rather than stored: it is
+ * a comparison of two columns, and a stored copy could disagree with both.
+ */
+export function driftOf(record: ToolConnectionRecord): ToolsetDiff | null {
+  if (!record.discoveredTools) return null;
+  return diffToolsets(appliedTools(record), record.discoveredTools);
+}
+
 /** Strip secrets: header names survive, values never leave the server. */
 export function toClient(record: ToolConnectionRecord): ToolConnection {
   const { authHeaders, ...rest } = record;
-  return { ...rest, authHeaderNames: Object.keys(authHeaders).sort() };
+  return {
+    ...rest,
+    authHeaderNames: Object.keys(authHeaders).sort(),
+    drift: driftOf(record),
+  };
 }
 
 /** Every connection, oldest first, without secrets. */

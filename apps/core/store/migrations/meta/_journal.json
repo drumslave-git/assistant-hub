@@ -36,6 +36,13 @@
       "when": 1787928681922,
       "tag": "0004_tool-connections",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787929041338,
+      "tag": "0005_discovered-tools",
+      "breakpoints": true
     }
   ]
 }

@@ -76,6 +76,19 @@ export const connectionToolSchema = z.object({
 
 export type ConnectionTool = z.infer<typeof connectionToolSchema>;
 
+/** A tool as the last discovery saw it (not necessarily applied). */
+export const discoveredToolSchema = connectionToolSchema.omit({ appliedAt: true });
+
+export type DiscoveredToolView = z.infer<typeof discoveredToolSchema>;
+
+/** What a discovery found against what is applied, by tool name. */
+export const toolsetDiffSchema = z.object({
+  added: z.array(z.string()),
+  changed: z.array(z.string()),
+  removed: z.array(z.string()),
+  unchanged: z.array(z.string()),
+});
+
 /**
  * A connection as returned to clients. Header VALUES never leave the server
  * (the `backends.api_key` precedent); the operator sees which headers are
@@ -98,6 +111,11 @@ export const toolConnectionSchema = z.object({
   managed: z.boolean(),
   lastDiscoveredAt: z.string().datetime().nullable(),
   lastError: z.string().nullable(),
+  /** What the last discovery saw, or null before the first one. */
+  discoveredTools: z.array(discoveredToolSchema).nullable(),
+  /** That discovery against the applied snapshot; null before the first one. */
+  drift: toolsetDiffSchema.nullable(),
+  /** The applied snapshot — exactly the tools the model is offered. */
   tools: z.array(connectionToolSchema),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

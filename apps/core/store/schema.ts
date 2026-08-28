@@ -594,6 +594,14 @@ export const toolConnections = pgTable(
     /** Last successful discovery, and the last failure's message (if any). */
     lastDiscoveredAt: timestamp("last_discovered_at", { withTimezone: true }),
     lastError: text("last_error"),
+    /**
+     * What the last discovery SAW, which is not what the model is offered:
+     * the operator reviews this against the applied snapshot and applies
+     * exactly the set they reviewed. Null until a first discovery runs.
+     */
+    lastDiscoveredTools: jsonb("last_discovered_tools").$type<
+      { name: string; description: string; inputSchema: Record<string, unknown> }[]
+    >(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

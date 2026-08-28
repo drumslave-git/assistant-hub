@@ -1,0 +1,1 @@
+ALTER TABLE "tool_connections" ADD COLUMN "last_discovered_tools" jsonb;
