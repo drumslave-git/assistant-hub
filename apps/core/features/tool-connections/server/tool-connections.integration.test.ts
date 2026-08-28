@@ -14,11 +14,7 @@ import { createAssistant } from "@/features/assistants/server/service";
 import { listTraces } from "@/server/trace";
 import { getTraceDetail } from "@/server/trace/service";
 import type { StoreDb } from "@/server/store/db";
-import {
-  getToolConnectionBySlug,
-  replaceSnapshot,
-  toolRegistryRevision,
-} from "./repository";
+import { getToolConnectionBySlug, replaceSnapshot } from "./repository";
 import {
   createToolConnection,
   editToolConnection,
@@ -31,8 +27,7 @@ const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", impo
 /**
  * Tool-connections CRUD over the v2 core store: slug uniqueness, the
  * transports v2 executes, secret masking (values never leave the server, not
- * even into a trace body), the assistant selection, and the revision token
- * the registry's staleness check hangs on.
+ * even into a trace body), and the assistant selection.
  */
 
 describe("tool connections service", () => {
@@ -157,21 +152,5 @@ describe("tool connections service", () => {
     expect(await getToolConnections(db)).toEqual([]);
     const { rows } = await pool.query(`select count(*)::int as n from tool_connection_tools`);
     expect(rows[0].n).toBe(0);
-  });
-
-  it("moves the registry revision on every change that alters the toolset", async () => {
-    const before = await toolRegistryRevision(db);
-    const created = await createToolConnection(input, trigger, db);
-    const afterCreate = await toolRegistryRevision(db);
-    expect(afterCreate).not.toBe(before);
-
-    await replaceSnapshot(db, created.id, [
-      { name: "forecast", description: "Tomorrow", inputSchema: { type: "object" } },
-    ]);
-    const afterApply = await toolRegistryRevision(db);
-    expect(afterApply).not.toBe(afterCreate);
-
-    await removeToolConnection(created.id, trigger, db);
-    expect(await toolRegistryRevision(db)).not.toBe(afterApply);
   });
 });

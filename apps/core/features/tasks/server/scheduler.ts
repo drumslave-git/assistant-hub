@@ -229,15 +229,20 @@ async function buildLiveFireCollaborators(): Promise<Pick<
   const runtime = await getLlmRuntime().catch(() => null);
   if (!runtime) return null;
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
-  // A fire delivers only through `send_message`: nothing triggered it, so
-  // there is no message to reply to. No tools registered on the toolset means
-  // a plain completion (the fire then simply cannot send — a quiet fire).
-  const toolset = await getToolset({ delivery: "send" }).catch(() => null);
   return {
     // Every fire runs as ITS task's assistant (Phase 3).
     personaFor: (assistantId) => getAssistantPersona(assistantId),
-    complete: (messages, trace) =>
-      toolset
+    // A fire delivers only through `send_message`: nothing triggered it, so
+    // there is no message to reply to. No tools on the toolset means a plain
+    // completion (the fire then simply cannot send — a quiet fire).
+    //
+    // Resolved per fire rather than per tick, because which tool connections
+    // are offered depends on the firing task's assistant — and the fire has
+    // already bound its tool context by the time this runs, so the scope is
+    // read from there.
+    complete: async (messages, trace) => {
+      const toolset = await getToolset({ delivery: "send" }).catch(() => null);
+      return toolset
         ? chatCompletionWithTools(conn, {
             model: runtime.model,
             messages,
@@ -249,7 +254,8 @@ async function buildLiveFireCollaborators(): Promise<Pick<
             model: runtime.model,
             messages,
             ...(trace ? { trace } : {}),
-          }),
+          });
+    },
     // The owning source mirrors what it delivers — no recordReply here. An
     // unconfigured source API fails the send audibly, like v1's stopped bot.
     send: (assistantId, chatId, text, opts) => {

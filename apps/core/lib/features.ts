@@ -315,6 +315,15 @@ export const FEATURES = {
     group: "tools",
     path: "/tools",
   },
+  // Every remote connection's tool calls share one scope: the connections
+  // are operator data, not features, so their trace ids cannot be a static
+  // table. The connection slug rides on each trace instead.
+  "mcp-tools-connections": {
+    id: "mcp-tools-connections",
+    label: "Connection tools",
+    group: "tools",
+    path: "/tools",
+  },
   "mcp-tools-browser-agent": {
     id: "mcp-tools-browser-agent",
     label: "Browser agent tool",

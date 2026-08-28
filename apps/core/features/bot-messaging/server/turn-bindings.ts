@@ -170,8 +170,14 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
       const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey, backend: runtime.backend };
       // No tools registered → a single inference (cache-friendly path). A turn
       // a `message` task opened delivers through `reply_to_message`; an
-      // ordinary reply turn is offered no delivery tool at all.
-      const toolset = await getToolset(taskOpenedTurn ? { delivery: "reply" } : undefined);
+      // ordinary reply turn is offered no delivery tool at all. The turn's
+      // source and assistant come along: they decide which tool connections
+      // this turn may call (Phase 5 scoping).
+      const toolset = await getToolset({
+        ...(taskOpenedTurn ? { delivery: "reply" as const } : {}),
+        source,
+        assistantId,
+      });
       if (!toolset) {
         return chatCompletion(conn, {
           model: runtime.model,

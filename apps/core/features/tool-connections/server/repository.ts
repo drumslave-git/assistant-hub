@@ -259,36 +259,3 @@ export async function replaceSnapshot(
     })),
   );
 }
-
-/**
- * An opaque token that changes whenever the DB-backed toolset does. The
- * process-wide registry caches the toolset it built; connection tools are
- * not code, so the cached-toolset identity has to include this or an applied
- * snapshot stays invisible until restart — the same silent staleness the
- * hot-reload check exists for. Derived rather than a counter column: there
- * is no bump for a writer to forget.
- */
-export async function toolRegistryRevision(db: StoreDb): Promise<string> {
-  const [connections, tools, members] = await Promise.all([
-    db
-      .select({
-        n: sql<number>`count(*)::int`,
-        at: sql<string | null>`max(${toolConnections.updatedAt})`,
-      })
-      .from(toolConnections),
-    db
-      .select({
-        n: sql<number>`count(*)::int`,
-        at: sql<string | null>`max(${toolConnectionTools.appliedAt})`,
-      })
-      .from(toolConnectionTools),
-    db.select({ n: sql<number>`count(*)::int` }).from(assistantToolConnections),
-  ]);
-  return [
-    connections[0]?.n ?? 0,
-    connections[0]?.at ?? "-",
-    tools[0]?.n ?? 0,
-    tools[0]?.at ?? "-",
-    members[0]?.n ?? 0,
-  ].join("|");
-}

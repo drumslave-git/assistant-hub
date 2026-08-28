@@ -10,6 +10,13 @@
  */
 export { DEFAULT_ASSISTANT_ID } from "./assistants";
 export {
+  TURN_META_KEY,
+  readTurnMeta,
+  turnMetaEnvelope,
+  turnToolMetaSchema,
+  type TurnToolMeta,
+} from "./tool-meta";
+export {
   REALTIME_TOPICS,
   type RealtimeEvent,
   type RealtimeTopic,

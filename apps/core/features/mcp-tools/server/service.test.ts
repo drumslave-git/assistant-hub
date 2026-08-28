@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   HISTORY_GET_BY_MESSAGE_IDS_TOOL,
@@ -21,6 +21,20 @@ import {
   TASKS_OUTBOUND_TOOL_NAMES,
 } from "@/features/tasks/server/outbound-tools";
 import { getToolset, getToolsView } from "./service";
+
+/**
+ * The connection half of the toolset needs the core store; these tests are
+ * about the code-defined half and the delivery carve-out, so it is stubbed
+ * empty here and driven for real in
+ * `features/tool-connections/server/toolset.integration.test.ts`.
+ */
+vi.mock("@/features/tool-connections/server/toolset", () => ({
+  resolveConnectionToolset: async () => ({
+    tools: [],
+    owns: () => false,
+    callTool: async () => ({ text: "", isError: true }),
+  }),
+}));
 
 /**
  * MCP-tools service. The tool registry is shared, in-process, code-defined infra

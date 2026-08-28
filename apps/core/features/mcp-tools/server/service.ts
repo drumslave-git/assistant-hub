@@ -1,19 +1,25 @@
 import "server-only";
 
+import type { SourceId } from "@assistant-hub/contracts";
 import type { ChatCompletionFunctionTool } from "openai/resources/chat/completions";
 
 import { REPLY_TO_MESSAGE_TOOL } from "@/features/bot-messaging/server/mcp-tools";
 import { SEND_MESSAGE_TOOL } from "@/features/tasks/server/outbound-tools";
+import { resolveConnectionToolset } from "@/features/tool-connections/server/toolset";
+import { tryGetToolContext } from "@/server/mcp/context";
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
 import { loadMcpRegistry } from "@/server/mcp/runtime";
+import type { StoreDb } from "@/server/store/db";
 import type { ToolsView, ToolView } from "./schema";
 
 /**
  * MCP-tools domain service — the boundary the Tools dashboard, its Route Handler,
- * and the reply runtime call. Every registered tool is always available to the
- * model; this service exposes the operator-facing list and resolves the toolset
- * for a reply turn. The registry itself is shared infra (`server/mcp`) and is
- * code-defined, not DB-backed — so these reads take no db handle.
+ * and the reply runtime call. It composes the two halves of the toolset: the
+ * in-process feature tools (code-defined, shared infra in `server/mcp`) and
+ * the operator's tool connections (DB-backed, scoped per turn — Phase 5).
+ * Feature tools keep their bare names; connection tools are offered under
+ * their connection's slug prefix, so two connections can both have a
+ * `search` without colliding.
  */
 
 /** Build the dashboard view: every registered tool. */
@@ -62,17 +68,40 @@ const ALL_DELIVERY_TOOLS = Object.values(DELIVERY_TOOLS);
  */
 export async function getToolset(options?: {
   delivery?: DeliveryKind;
+  /**
+   * The turn's scope, deciding which connections are offered. Defaults to the
+   * bound tool context — a fire resolves its toolset inside the context it
+   * already runs in, so it needs no plumbing of its own — and callers that
+   * build the toolset before binding (the reply path) state it explicitly.
+   */
+  source?: SourceId;
+  assistantId?: string | null;
+  db?: StoreDb;
 }): Promise<Toolset | null> {
   const registry = await loadMcpRegistry();
   const all = await registry.listOpenAiTools();
   const offered = options?.delivery ? DELIVERY_TOOLS[options.delivery] : null;
-  const tools = all.filter(
+  const builtins = all.filter(
     (tool) =>
       !ALL_DELIVERY_TOOLS.includes(tool.function.name) || tool.function.name === offered,
   );
+
+  const ctx = tryGetToolContext();
+  const connections = await resolveConnectionToolset(
+    {
+      source: options?.source ?? ctx?.source,
+      assistantId: options?.assistantId ?? ctx?.assistantId ?? null,
+    },
+    options?.db,
+  );
+
+  const tools = [...builtins, ...connections.tools];
   if (tools.length === 0) return null;
   return {
     tools,
-    callTool: (name, args) => registry.callTool(name, args),
+    callTool: (name, args) =>
+      connections.owns(name)
+        ? connections.callTool(name, args)
+        : registry.callTool(name, args),
   };
 }
