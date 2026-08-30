@@ -40,7 +40,7 @@ function scheduler(): IdleScheduler {
         // a pass, in registry order.
         const sources = mediaSources();
         if (sources.length === 0) {
-          return { summary: "no source app configured (TG_API_URL / CHAT_API_URL)" };
+          return { summary: "no media source configured (TG_API_URL)" };
         }
         const deps = await resolveDescribeDeps("background").catch(() => null);
         if (!deps) return { summary: "LLM not configured" };

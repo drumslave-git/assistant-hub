@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { SOURCE_IDS, type SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub/contracts";
 
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
@@ -26,9 +26,14 @@ import {
 import { appliedTools } from "./service";
 
 /**
- * The source apps' own MCP servers, as tool connections (PLAN.md: each source
- * "exposes an MCP server for its outbound actions", which "the core registers
- * as a built-in connection").
+ * The transport apps' own MCP servers, as tool connections (PLAN.md: each
+ * transport "hosts an MCP server" for its platform's outbound actions, which
+ * the core registers as a managed connection).
+ *
+ * Only sources served by a separate app are reconciled. The web chat left
+ * this list with the dissolve (Phase 6): its delivery tools are in-process
+ * registry tools now, and its old managed row is deleted by store migration
+ * 0006.
  *
  * They are reconciled from configuration rather than typed in by an operator:
  * their endpoint is the app's own URL, their scope is the app itself, and
@@ -44,6 +49,9 @@ import { appliedTools } from "./service";
  */
 
 const FEATURE = FEATURES["tool-connections"];
+
+/** The sources whose MCP server lives in a separate transport app. */
+const TRANSPORT_SOURCE_IDS: readonly SourceId[] = ["tg"];
 
 /** What a source app's connection looks like when configuration is complete. */
 interface ManagedDesired {
@@ -144,7 +152,7 @@ export async function reconcileManagedConnections(
     { feature: FEATURE.id, action: "reconcile-managed", trigger, inputSummary: "source apps" },
     async (trace) => {
       const summary: string[] = [];
-      for (const source of SOURCE_IDS) {
+      for (const source of TRANSPORT_SOURCE_IDS) {
         const record = await reconcileOne(db, source, trace);
         if (!record) {
           summary.push(`${source}: not deployed`);

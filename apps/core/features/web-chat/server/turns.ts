@@ -1,17 +1,20 @@
+import "server-only";
+
 import type { TurnLifecycleEvent } from "@assistant-hub/contracts";
 
 /**
- * What the core is doing in a thread right now, as this app renders it.
+ * What the pipeline is doing in a web thread right now, as the thread view
+ * renders it.
  *
- * The core publishes a turn's lifecycle (accepted → progress → settled) and
- * each source renders it natively (PLAN.md): Telegram turns it into the
+ * The pipeline publishes a turn's lifecycle (accepted → progress → settled)
+ * and each source renders it natively (PLAN.md): Telegram turns it into the
  * typing indicator, a web thread into live progress under the transcript.
  * The state is per running turn and worth nothing after a restart — the
- * transcript is the durable record — so it lives in this instance's memory,
- * the same shape tg's typing loops take.
+ * transcript is the durable record — so it lives in this process's memory.
  *
  * A turn that never settles must not leave a thread "thinking" forever, so an
- * entry expires on its own; the core's own settle is the normal way one goes.
+ * entry expires on its own; the pipeline's own settle is the normal way one
+ * goes.
  */
 
 /** How long an unsettled turn keeps showing progress before it is ignored. */
@@ -50,9 +53,7 @@ export class ThreadTurns {
       updatedAt: at,
     };
     this.active.set(threadId, next);
-    return (
-      existing?.sourceMessageId !== next.sourceMessageId || existing?.activity !== activity
-    );
+    return existing?.sourceMessageId !== next.sourceMessageId || existing?.activity !== activity;
   }
 
   /** Forget a thread's turn (it settled, or the thread is gone). */
@@ -70,4 +71,19 @@ export class ThreadTurns {
     }
     return turn;
   }
+}
+
+const STORE_KEY = Symbol.for("assistant-hub.web-chat.thread-turns");
+
+/**
+ * The one running-turn state for this process, pinned to `globalThis` like
+ * every other cross-bundle singleton (`server/mcp/context.ts` documents the
+ * failure mode): the lifecycle consumer writes it from the instrumentation
+ * bundle, the thread API reads it from the Route Handler bundle, and a
+ * module-level instance would be a different object in each.
+ */
+export function threadTurns(): ThreadTurns {
+  const g = globalThis as typeof globalThis & { [STORE_KEY]?: ThreadTurns };
+  if (!g[STORE_KEY]) g[STORE_KEY] = new ThreadTurns();
+  return g[STORE_KEY];
 }

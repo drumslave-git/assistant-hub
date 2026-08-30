@@ -10,6 +10,7 @@ import {
   Image,
   LayoutDashboard,
   MessageSquare,
+  MessagesSquare,
   Server,
   Settings,
   Sparkles,
@@ -73,6 +74,12 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
       { href: "/settings", label: "Settings", icon: Settings },
       { href: "/debug", label: "Debug", icon: Bug },
     ],
+  },
+  {
+    // The shell's own since the chat dissolve (Phase 6); kept in the spot
+    // the chat app's extension used to render it.
+    label: "Web chat",
+    items: [{ href: "/chat", label: "Chat", icon: MessagesSquare }],
   },
 ];
 

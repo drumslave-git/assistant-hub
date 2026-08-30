@@ -11,7 +11,8 @@ import {
 
 import { ApiError, isApiError } from "@/lib/api-error";
 
-import { chatOperatorClient } from "./chat-operator";
+import { webChatDirectoryClient } from "@/features/web-chat/server/directory";
+
 import type { SourceDirectoryClient } from "./operator-client";
 import { tgOperatorClient } from "./tg-operator";
 
@@ -20,10 +21,10 @@ import { tgOperatorClient } from "./tg-operator";
  * this hub, and where" (PLAN.md: "The dashboard aggregates users/chats via a
  * shared listing/CRUD contract each source app's operator API implements").
  *
- * Every source app serves the same operator listing contract, so aggregating
- * is a fan-out plus a scoped ref per row: nothing here knows what Telegram is.
- * `apps/chat` joined in Phase 4 as the second entry — one line, which is the
- * whole point of the contract.
+ * Every source serves the same operator listing contract, so aggregating is a
+ * fan-out plus a scoped ref per row: nothing here knows what Telegram is. The
+ * web chat's entry answers in-process since the Phase 6 dissolve; tg's is
+ * still the HTTP client — the contract doesn't care.
  *
  * A source that is unconfigured or unreachable does NOT fail the read: it
  * comes back under `unavailable` with its reason, so the page renders the
@@ -38,10 +39,14 @@ export interface DirectorySource {
   client: () => SourceDirectoryClient | null;
 }
 
-/** Registered sources, in the order the dashboard lists them. */
+/**
+ * Registered sources, in the order the dashboard lists them. The web chat's
+ * client answers from the core's own tables since the dissolve (Phase 6) —
+ * same contract, no HTTP, never unconfigured.
+ */
 export const DIRECTORY_SOURCES: readonly DirectorySource[] = [
   { id: "tg", label: "Telegram", client: tgOperatorClient },
-  { id: "chat", label: "Web chat", client: chatOperatorClient },
+  { id: "chat", label: "Web chat", client: webChatDirectoryClient },
 ];
 
 /** Where a directory row came from, carried on every entry. */

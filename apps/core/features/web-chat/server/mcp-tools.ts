@@ -1,27 +1,45 @@
-import {
-  readTurnMeta,
-  toolDeliveryResult,
-  type TurnToolMeta,
-} from "@assistant-hub/contracts";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import "server-only";
+
+import { toolDeliveryResult } from "@assistant-hub/contracts";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import type { ChatDb } from "./db";
-import { appendMessage, getThreadById } from "./store";
+import { tryGetToolContext, type McpToolContext } from "@/server/mcp/context";
+import type { ToolOfferScope } from "@/server/mcp/registry";
+
+import { appendMessage, getThreadById } from "./repository";
+import { pingThreads } from "./service";
 
 /**
- * This app's own MCP server (PLAN.md: "it exposes an MCP server for its
- * outbound actions") — tg's twin, minus what a web thread does not have.
+ * The web chat's delivery tools — what used to be the chat app's own MCP
+ * server (Phase 5), as in-process registry tools since the dissolve. tg's
+ * twin still lives in `apps/tg`; a web thread's tools have nowhere to travel
+ * to, so they went back in-process — under the same `chat_`-prefixed names
+ * their connection era gave them, so task instructions and traces that name
+ * them keep meaning the same call.
  *
  * There is no reaction tool here, and that is the whole answer to "what does
- * a source do about an affordance it lacks": it does not offer the tool. The
- * model then never sees an action it would be told afterwards it cannot take.
+ * a source do about an affordance it lacks": it does not offer the tool.
  *
- * Every call carries its turn as MCP `_meta`, so a thread is a fact of the
- * turn rather than an argument a model could aim at somebody else's.
+ * Offering follows the same rules a source connection's delivery tools get
+ * (`mcp-tools/server/service.ts`): only on web-chat turns, and each tool only
+ * for its own delivery kind — enforced at offer time through the registry's
+ * offer predicate, and re-checked here because the filter is what the model
+ * *sees*, not the boundary that holds.
  */
 
-export const CHAT_MCP_TOOLS = ["reply_to_message", "send_message"] as const;
+export const CHAT_REPLY_TOOL = "chat_reply_to_message";
+export const CHAT_SEND_TOOL = "chat_send_message";
+
+export const WEB_CHAT_TOOL_NAMES = [CHAT_REPLY_TOOL, CHAT_SEND_TOOL];
+
+/** Which turns each tool is offered on — the registry's offer predicate. */
+export function webChatToolOffered(toolName: string, scope: ToolOfferScope): boolean {
+  if (scope.source !== "chat") return false;
+  if (toolName === CHAT_REPLY_TOOL) return scope.delivery === "reply";
+  if (toolName === CHAT_SEND_TOOL) return scope.delivery === "send";
+  return false;
+}
 
 /** Generous next to Telegram's 4000: a browser renders whatever it is given. */
 const MAX_MESSAGE_LENGTH = 8000;
@@ -58,40 +76,31 @@ function refusal(text: string) {
   };
 }
 
-/** The binding a hosted tool refuses to work without. */
-function requireTurn(meta: unknown): TurnToolMeta | null {
-  const turn = readTurnMeta(meta);
-  return turn && turn.source === "chat" ? turn : null;
+/** The bound web-chat turn, or null when this is not one. */
+function requireChatTurn(): McpToolContext | null {
+  const ctx = tryGetToolContext();
+  return ctx && ctx.source === "chat" ? ctx : null;
 }
 
-export interface ChatMcpDeps {
-  db: ChatDb;
-  /** Wakes the dashboard's thread views, exactly as an inbound message does. */
-  onThreadsChanged?: () => void;
+async function deliver(
+  ctx: McpToolContext,
+  text: string,
+  replyToMessageId: number | null,
+): Promise<{ messageId: number }> {
+  const thread = await getThreadById(ctx.chatId);
+  if (!thread) throw new Error(`thread ${ctx.chatId} no longer exists`);
+  const stored = await appendMessage({
+    threadId: ctx.chatId,
+    role: "assistant",
+    content: text,
+    replyToMessageId,
+  });
+  pingThreads();
+  return { messageId: stored.id };
 }
 
-/** Build this app's MCP server, with every tool bound to the request's turn. */
-export function createChatMcpServer(deps: ChatMcpDeps): McpServer {
-  const server = new McpServer({ name: "assistant-hub-chat", version: "1.0.0" });
-
-  const deliver = async (
-    turn: TurnToolMeta,
-    text: string,
-    replyToMessageId: number | null,
-  ): Promise<{ messageId: number }> => {
-    const thread = await getThreadById(deps.db, turn.chatId);
-    if (!thread) throw new Error(`thread ${turn.chatId} no longer exists`);
-    const stored = await appendMessage(deps.db, {
-      threadId: turn.chatId,
-      role: "assistant",
-      content: text,
-      replyToMessageId,
-    });
-    deps.onThreadsChanged?.();
-    return { messageId: stored.id };
-  };
-
-  const failure = (text: string, err: unknown) => ({
+function failure(text: string, err: unknown) {
+  return {
     content: [
       {
         type: "text" as const,
@@ -100,10 +109,21 @@ export function createChatMcpServer(deps: ChatMcpDeps): McpServer {
     ],
     structuredContent: toolDeliveryResult({ ok: false, messageId: null, text }),
     isError: true as const,
-  });
+  };
+}
 
+/** Delivered-or-not, into the turn's own bookkeeping (a fire counts these). */
+async function recordDelivery(delivery: {
+  ok: boolean;
+  messageId: number | null;
+  text: string;
+}): Promise<void> {
+  await tryGetToolContext()?.onDelivered?.(delivery);
+}
+
+export function registerWebChatMcpTools(server: McpServer): void {
   server.registerTool(
-    "reply_to_message",
+    CHAT_REPLY_TOOL,
     {
       title: "Reply to an earlier message",
       description: REPLY_TO_MESSAGE_DESCRIPTION,
@@ -121,24 +141,26 @@ export function createChatMcpServer(deps: ChatMcpDeps): McpServer {
         openWorldHint: false,
       },
     },
-    async ({ text }, extra) => {
-      const turn = requireTurn(extra?._meta);
-      if (!turn) return refusal(NO_TURN);
-      if (turn.deliveryKind !== "reply") return refusal(NOT_A_REPLY_TURN);
+    async ({ text }) => {
+      const ctx = requireChatTurn();
+      if (!ctx) return refusal(NO_TURN);
+      if (ctx.deliveryKind !== "reply") return refusal(NOT_A_REPLY_TURN);
       try {
-        const sent = await deliver(turn, text, turn.replyToMessageId ?? null);
+        const sent = await deliver(ctx, text, ctx.replyToMessageId ?? null);
+        await recordDelivery({ ok: true, messageId: sent.messageId, text });
         return {
           content: [{ type: "text" as const, text: `Reply sent (id ${sent.messageId}).` }],
           structuredContent: toolDeliveryResult({ ok: true, messageId: sent.messageId, text }),
         };
       } catch (err) {
+        await recordDelivery({ ok: false, messageId: null, text });
         return failure(text, err);
       }
     },
   );
 
   server.registerTool(
-    "send_message",
+    CHAT_SEND_TOOL,
     {
       title: "Send a message to the conversation",
       description: SEND_MESSAGE_DESCRIPTION,
@@ -156,21 +178,21 @@ export function createChatMcpServer(deps: ChatMcpDeps): McpServer {
         openWorldHint: false,
       },
     },
-    async ({ text }, extra) => {
-      const turn = requireTurn(extra?._meta);
-      if (!turn) return refusal(NO_TURN);
-      if (turn.deliveryKind !== "send") return refusal(NOT_A_SEND_TURN);
+    async ({ text }) => {
+      const ctx = requireChatTurn();
+      if (!ctx) return refusal(NO_TURN);
+      if (ctx.deliveryKind !== "send") return refusal(NOT_A_SEND_TURN);
       try {
-        const sent = await deliver(turn, text, null);
+        const sent = await deliver(ctx, text, null);
+        await recordDelivery({ ok: true, messageId: sent.messageId, text });
         return {
           content: [{ type: "text" as const, text: `Message sent (id ${sent.messageId}).` }],
           structuredContent: toolDeliveryResult({ ok: true, messageId: sent.messageId, text }),
         };
       } catch (err) {
+        await recordDelivery({ ok: false, messageId: null, text });
         return failure(text, err);
       }
     },
   );
-
-  return server;
 }

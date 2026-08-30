@@ -106,8 +106,29 @@ they built (per-app stores, the source contract, the build-time UI
 extensions) are deliberately superseded by phases 6–9. The cutover moved
 to Phase 10.
 
-**Next best task: Phase 6 (chat dissolve)** — merge `apps/chat` into the
-core (store, backend, tools, pages), delete the app and its queue hop.
+**Phase 6 (chat dissolve) is DONE (2026-08-30, same session).** All six
+slices landed: the web chat is a core feature
+(`apps/core/features/web-chat`) on the core store's `web_*` tables,
+`apps/chat` is deleted, and the seams did what they were built for —
+`consume.ts` was not touched. Proof: repo typecheck and lint green; core
+unit suite 1178 passed (the mcp-tools catalog/offering tests updated for
+the in-process chat delivery tools); core integration suite 375 passed
+including the new 13-test web-chat suite (store shape, posting +
+enqueued event, context window, delivery handler, outbound port,
+directory client, offer predicate); store migration 0006 applied to the
+dev DB and the dev chat DB's rows ported (1 user, 4 threads, 35
+messages, 2 media); both remaining apps boot clean under `npm run dev`
+(consumers up, tg pollers running). `npm run build` was NOT run — the
+dev server was live on 3200 throughout (the standing rule). Left for
+the operator: one live web-chat turn in the dashboard (the dev restart
+dropped the preview session, and there is no sign-in bypass by
+decision), and one look at `/tools` to see `chat_reply_to_message` /
+`chat_send_message` listed under "Web chat tools".
+
+**Next best task: Phase 7 (one store, stateless transports)** — move the
+tg store into the core's generalized conversation tables, tg forwards
+everything, context composition in core, config as opaque sections on
+assistants with schema-driven forms, transport self-registration.
 Write its acceptance criteria here when it starts.
 
 What Phase 4 deliberately did NOT do, so nobody mistakes it for
@@ -288,7 +309,7 @@ Known pitfalls for whoever starts:
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | done |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | done |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | done |
-| 6 | Chat dissolve: apps/chat merges into core (store, backend, tools, pages) | todo |
+| 6 | Chat dissolve: apps/chat merges into core (store, backend, tools, pages) | done |
 | 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | todo |
 | 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | todo |
 | 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | todo |
@@ -297,6 +318,59 @@ Known pitfalls for whoever starts:
 Phases 0–5 describe the as-built per-app architecture that phases 6–9
 deliberately supersede (2026-08-30 revision); their criteria below are
 history, not the current target.
+
+## Phase 6 — Chat dissolve (acceptance criteria)
+
+Scope from PLAN.md: `apps/chat` merges into the core — its store into the
+core schema, its backend in-process, its outbound MCP tools become
+in-process core tools, its dashboard views become plain core pages; the
+app and its queue hop are deleted. The design lever: every seam the chat
+app plugged into (`sourceOutbound`, `sourceMediaStore`, the directory
+client, the managed-connection reconcile, the events channel) is already
+a per-source lookup, so the merge swaps the chat resolution from an HTTP
+client to a local implementation and leaves the pipeline (`consume.ts`)
+untouched.
+
+- [x] **A — the store moves.** `web_users`, `web_threads`,
+      `web_messages`, `web_media`, `web_media_blobs` in the core store
+      schema (`apps/core/store/schema.ts`) with a migration;
+      repositories ported from `apps/chat/src/{store,media}.ts` into the
+      core web-chat feature; the migration also deletes the managed
+      `chat` tool-connection row; a one-shot script ports the dev chat
+      DB's rows into the core store; migration applied to the dev DB.
+- [x] **B — local source adapters.** `sourceOutbound("chat")`,
+      `sourceMediaStore("chat")` / `sourceMediaBrowse("chat")`, and the
+      chat directory/operator client become in-process DB-backed
+      implementations; `sourceApiConfig("chat")` resolves null (the env
+      lookup keeps only tg); the aggregated users/groups pages, vision
+      backfill + gallery, and conversation naming keep working through
+      the local adapters.
+- [x] **C — inbound in-process, delivery consumed in core.** Posting a
+      thread message stores + enqueues from core server code (no HTTP
+      hop; same normalized event, same queue, so ordering/retry/settle
+      semantics are unchanged); the core's source-events consumer
+      handles `reply.delivery` and `turn.lifecycle` for source `chat`
+      (reply stored via the repository, running-turn state in a
+      globalThis-pinned ThreadTurns singleton, SSE pinged in-process).
+- [x] **D — delivery tools in-process.** `chat_reply_to_message` /
+      `chat_send_message` become in-process registry tools offered only
+      on chat-source turns and filtered by delivery kind through a
+      shared offering predicate (one mechanism, no per-feature
+      special-casing in the toolset service); the managed-connection
+      reconcile covers only external transport sources; no stale chat
+      connection row remains.
+- [x] **E — UI and API local.** The `/api/chat/*` Route Handlers call
+      the local service; media bytes served from the store; the threads
+      page moves into the core as a plain component; the nav entry is
+      native to the shell; `@assistant-hub/chat-ui` leaves the extension
+      registry; chat-only DTO schemas move from `packages/contracts`
+      into the core feature (cross-app event/send schemas stay).
+- [x] **F — the app is deleted.** `apps/chat` removed entirely;
+      `CHAT_API_URL` gone from env schema, `.env`s, and compose; root
+      dev scripts / turbo / CI / docs updated (two apps now); chat's
+      tests ported into the core (store integration, post-message +
+      runtime integration, MCP tool behavior, operator listing,
+      ThreadTurns unit); lint, typecheck, and the suites green.
 
 ## Phase 0 — Scaffold (acceptance criteria)
 
@@ -1540,6 +1614,29 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+- **2026-08-30 (Phase 6 closes: the chat app dissolves)** — Six slices,
+  one session, and the pipeline never noticed: every seam the chat app
+  plugged into was already a per-source lookup, so the merge swapped the
+  chat resolution from an HTTP client to a local implementation and
+  `consume.ts` kept publishing the same events — the core just became
+  their consumer for its own source. What moved: the store (five `web_*`
+  tables in the core store, migration 0006, dev rows ported), the
+  inbound half (postChatMessage stores + enqueues in-process to the SAME
+  queue — the "no queue hop" decision is about topology, not about
+  forking the pipeline's ordering/retry/settle semantics), the delivery
+  and lifecycle consumers (into the events consumer, with ThreadTurns as
+  a globalThis-pinned singleton per the documented cross-bundle failure
+  mode), the delivery tools (in-process under their old
+  `chat_`-prefixed names, gated by a new generic offer predicate on the
+  registry rather than a special case in the toolset service), the page
+  (a plain `/chat` route; the extension registry keeps only tg), and
+  the DTO schemas (out of contracts, into the feature). One rule the
+  move surfaced: the page was never linted in its `ui`-package life and
+  carried three `set-state-in-effect` violations — fixed by structure
+  (effect-local loaders, a derived default instead of a
+  synchronizing effect), not by disabling. The managed-connection
+  reconcile now covers only transport sources, and the migration deletes
+  the stale managed chat row.
 - **2026-08-30 (target revised: one store, transports, accounts)** — The
   user changed the architecture before cutover, and the whole decision
   set was settled in one Q&A session; PLAN.md is rewritten in place and

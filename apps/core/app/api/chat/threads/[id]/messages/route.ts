@@ -1,19 +1,18 @@
 import { z } from "zod";
 
 import { defineRoute, ok, parseJson } from "@/server/http";
-import { postChatMessage } from "@/server/source/chat-operator";
+import { postChatMessage } from "@/features/web-chat/server/service";
 
 /**
- * Saying something in a thread. The core does not run the turn here: the
- * chat app stores the message and enqueues it, and the answer arrives the
- * same way every other source's does — through the pipeline and back over
- * the bus.
+ * Saying something in a thread. The route does not run the turn: the service
+ * stores the message and enqueues it, and the answer arrives the same way
+ * every other source's does — through the pipeline and back over the bus.
  */
 
 /**
  * Text, an image, or both. The image arrives base64 from the browser and is
- * capped here: the chat app normalizes it down to a bounded JPEG, but the
- * proxy should refuse an upload nobody could want before it is buffered.
+ * capped here: the service normalizes it down to a bounded JPEG, but the
+ * route should refuse an upload nobody could want before it is buffered.
  */
 const MAX_IMAGE_BASE64 = 16 * 1024 * 1024;
 

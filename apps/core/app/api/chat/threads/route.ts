@@ -1,12 +1,13 @@
 import { z } from "zod";
 
 import { defineRoute, ok, parseJson } from "@/server/http";
-import { createChatThread, listChatThreads } from "@/server/source/chat-operator";
+import { createChatThread, listChatThreads } from "@/features/web-chat/server/service";
 
 /**
- * Web-chat threads proxy: the dashboard surface over the chat source app's
- * thread API. Thin by design — the source owns its store and its validation;
- * this layer adds the operator session and relays the source's verdicts.
+ * Web-chat threads: the dashboard surface over the web-chat feature service
+ * (in-process since the chat dissolve, Phase 6). Thin by design — the
+ * service owns the store and the business rules; this layer adds the
+ * operator session and the request shapes.
  */
 
 /**

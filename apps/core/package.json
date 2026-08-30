@@ -22,7 +22,6 @@
     "@ai-sdk/anthropic": "^4.0.38",
     "@ai-sdk/google": "^4.0.44",
     "@ai-sdk/openai-compatible": "^3.0.25",
-    "@assistant-hub/chat-ui": "*",
     "@assistant-hub/contracts": "*",
     "@assistant-hub/db": "*",
     "@assistant-hub/media": "*",

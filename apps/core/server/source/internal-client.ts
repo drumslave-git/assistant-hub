@@ -12,12 +12,16 @@ import { getEnv, type Env } from "@/server/env";
  *
  * Which app answers is a lookup, not a branch: a source's base URL is an env
  * key derived from its id, so adding a source means adding an env var, never
- * an `if (source === …)` (PLAN.md, "The source-app contract").
+ * an `if (source === …)` (PLAN.md, "The transport contract").
+ *
+ * Only sources served by a separate app appear here. `chat` is deliberately
+ * absent since the dissolve (Phase 6): the web chat is a core feature, its
+ * per-source ports resolve to in-process implementations, and asking for its
+ * "API config" correctly answers null.
  */
 
-const API_URL_ENV: Record<SourceId, keyof Env> = {
+const API_URL_ENV: Partial<Record<SourceId, keyof Env>> = {
   tg: "TG_API_URL",
-  chat: "CHAT_API_URL",
 };
 
 export interface InternalApiConfig {
@@ -31,10 +35,12 @@ export interface InternalApiConfig {
  * unavailable rather than failing the whole read.
  */
 export function sourceApiConfig(source: SourceId): InternalApiConfig | null {
+  const envKey = API_URL_ENV[source];
+  if (!envKey) return null;
   const env = getEnv();
-  const baseUrl = env[API_URL_ENV[source]];
+  const baseUrl = env[envKey];
   if (!baseUrl || !env.INTERNAL_API_TOKEN) return null;
-  return { baseUrl: baseUrl.replace(/\/$/, ""), token: env.INTERNAL_API_TOKEN };
+  return { baseUrl: String(baseUrl).replace(/\/$/, ""), token: env.INTERNAL_API_TOKEN };
 }
 
 export type InternalRequest = (

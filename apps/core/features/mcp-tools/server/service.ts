@@ -131,16 +131,21 @@ export async function getToolset(options?: {
   db?: StoreDb;
 }): Promise<Toolset | null> {
   const registry = await loadMcpRegistry();
-  const builtins = await registry.listOpenAiTools();
 
   const ctx = tryGetToolContext();
-  const connections = await resolveConnectionToolset(
-    {
-      source: options?.source ?? ctx?.source,
-      assistantId: options?.assistantId ?? ctx?.assistantId ?? null,
-    },
-    options?.db,
+  const source = options?.source ?? ctx?.source;
+  const assistantId = options?.assistantId ?? ctx?.assistantId ?? null;
+  // In-process tools that declared an offer predicate are scoped like a
+  // connection's are — the web chat's delivery tools ride this (Phase 6).
+  const builtins = (await registry.listOpenAiTools()).filter((tool) =>
+    registry.isOffered(tool.function.name, {
+      source,
+      assistantId,
+      delivery: options?.delivery ?? null,
+    }),
   );
+
+  const connections = await resolveConnectionToolset({ source, assistantId }, options?.db);
   const offered = options?.delivery ? DELIVERY_TOOLS[options.delivery] : null;
   const hosted = connections.tools.filter((tool) => {
     const delivery = deliveryToolOf(tool.function.name);

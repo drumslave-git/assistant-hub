@@ -13,8 +13,6 @@ services:
       # The core boots (degraded) without its source apps; started is enough.
       tg:
         condition: service_started
-      chat:
-        condition: service_started
     environment:
       NODE_ENV: production
       PORT: 3200
@@ -26,7 +24,6 @@ services:
       # match the source services' — set a real one in .env.
       REDIS_URL: redis://redis:6379
       TG_API_URL: http://tg:3210
-      CHAT_API_URL: http://chat:3220
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-change-me}
       TZ: ${TZ:-UTC}
     volumes:
@@ -79,38 +76,6 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  chat:
-    # The web-chat source app: threads store and the internal API the core
-    # delivers replies through. Its dashboard UI is part of the core image
-    # (apps/chat/ui composes into the core's build), so this service is
-    # backend-only.
-    build:
-      context: .
-      dockerfile: apps/chat/Dockerfile
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      NODE_ENV: production
-      PORT: 3220
-      # The chat store — its OWN database on the bundled Postgres server
-      # (created on first init by docker/initdb; see the db service).
-      DATABASE_URL: ${CHAT_DATABASE_URL:-postgres://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@db:5432/${CHAT_POSTGRES_DB:-chat}}
-      REDIS_URL: redis://redis:6379
-      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-change-me}
-      TZ: ${TZ:-UTC}
-    # No published port: the internal API is for the core service only.
-    healthcheck:
-      test:
-        ["CMD-SHELL", "wget -qO- http://127.0.0.1:3220/health >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    restart: unless-stopped
-
   redis:
     # The cross-app bus + inbound queue (v2 redesign; unused by the v1 app).
     # AOF persistence: queued inbound messages must survive a restart — the
@@ -136,11 +101,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-bot}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bot}
       POSTGRES_DB: ${POSTGRES_DB:-bot}
-      # One database per source app, created by the initdb hook below on
+      # The transport app's database, created by the initdb hook below on
       # FIRST init only — an existing data directory upgrading to the split
-      # topology creates them by hand (see docker/initdb).
+      # topology creates it by hand (see docker/initdb).
       TG_POSTGRES_DB: ${TG_POSTGRES_DB:-tg}
-      CHAT_POSTGRES_DB: ${CHAT_POSTGRES_DB:-chat}
       TZ: ${TZ:-UTC}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"

@@ -12,6 +12,7 @@ import { SOURCE_IDS, type SourceId } from "@assistant-hub/contracts";
 
 import type { MediaStorePort } from "@/features/vision/server/service";
 import type { MediaRecord } from "@/features/vision/server/repository";
+import { webChatMediaBrowse, webChatMediaStore } from "@/features/web-chat/server/media-store";
 import { internalRequester, sourceApiConfig } from "@/server/source/internal-client";
 
 /**
@@ -48,8 +49,12 @@ function toMediaRecord(media: InternalMedia): MediaRecord {
   };
 }
 
-/** One source's media store, or null when this deployment does not run it. */
+/**
+ * One source's media store, or null when this deployment does not run it.
+ * The web chat resolves in-process since the dissolve (Phase 6).
+ */
 export function sourceMediaStore(source: SourceId): MediaStorePort | null {
+  if (source === "chat") return webChatMediaStore();
   const config = sourceApiConfig(source);
   if (!config) return null;
   const request = internalRequester({
@@ -103,6 +108,9 @@ export interface SourceMediaBrowse {
 
 /** One source's browse surface, or null when this deployment does not run it. */
 export function sourceMediaBrowse(source: SourceId): SourceMediaBrowse | null {
+  if (source === "chat") {
+    return { source, store: webChatMediaStore(), ...webChatMediaBrowse };
+  }
   const config = sourceApiConfig(source);
   if (!config) return null;
   const store = sourceMediaStore(source);

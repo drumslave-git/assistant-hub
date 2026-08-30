@@ -330,6 +330,15 @@ export const FEATURES = {
     group: "tools",
     path: "/tools",
   },
+  // The web chat's delivery tools, in-process since the chat dissolve
+  // (Phase 6) — before it they traced as `mcp-tools-connections` calls on the
+  // chat app's managed connection.
+  "mcp-tools-web-chat": {
+    id: "mcp-tools-web-chat",
+    label: "Web chat tools",
+    group: "tools",
+    path: "/tools",
+  },
 } as const satisfies Record<string, FeatureDescriptor>;
 
 /** A registered feature id (the trace `feature` string). */

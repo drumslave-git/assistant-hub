@@ -1,15 +1,15 @@
 import { z } from "zod";
 
 /**
- * The web-chat app's own API shapes — what a thread is, and what talking in
- * one looks like. The chat service serves them, the core proxies them, and
- * `apps/chat/ui` renders them, so they live here rather than in any of the
- * three (the same reason tg's connection shapes do).
+ * The web-chat feature's API shapes — what a thread is, and what talking in
+ * one looks like. Moved out of `packages/contracts` with the chat dissolve
+ * (redesign Phase 6): nothing outside the core reads them any more, so they
+ * live with the feature like every other feature's schemas.
  *
- * The source-neutral listing/CRUD contract in `operator-api` still covers
- * threads as this source's *chats* — that is what the dashboard's aggregated
- * directory reads. These shapes are the chat experience itself: a thread
- * bound to an assistant, its transcript, and posting into it.
+ * The source-neutral listing/CRUD contract in `contracts/operator-api` still
+ * covers threads as this source's *chats* — that is what the dashboard's
+ * aggregated directory reads. These shapes are the chat experience itself: a
+ * thread bound to an assistant, its transcript, and posting into it.
  */
 
 /** One named thread, with the aggregates its list row shows. */

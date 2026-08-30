@@ -5,7 +5,7 @@ import {
   deleteChatThread,
   getChatThread,
   renameChatThread,
-} from "@/server/source/chat-operator";
+} from "@/features/web-chat/server/service";
 
 /** One web-chat thread: its transcript, its name, or its removal. */
 

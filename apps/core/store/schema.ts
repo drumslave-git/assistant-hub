@@ -4,6 +4,7 @@ import {
   bigint,
   boolean,
   check,
+  customType,
   index,
   integer,
   jsonb,
@@ -659,3 +660,168 @@ export const assistantToolConnections = pgTable(
 
 export type AssistantToolConnectionRow = typeof assistantToolConnections.$inferSelect;
 export type AssistantToolConnectionInsert = typeof assistantToolConnections.$inferInsert;
+
+/** Raw binary column. node-postgres maps `bytea` to/from `Buffer` natively. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
+/**
+ * Web chat, a core feature since the chat dissolve (redesign Phase 6): the
+ * former `apps/chat` store, table for table, under `web_*` names. The chat
+ * app owned these rows as a source app; with the dissolve the core is the
+ * web chat, so its users, threads, transcripts and uploads live here beside
+ * everything else the brain owns. Scoped refs (`chat:thread:<id>`,
+ * `chat:user:<id>`) keep naming these rows on events, memory and traces —
+ * `chat` stays a source id even though no separate app serves it.
+ */
+
+/**
+ * Web-chat users: the operator gets one bound to their operator session,
+ * linkable to other identities via person links like any other pair.
+ */
+export const webUsers = pgTable("web_users", {
+  id: text("id").primaryKey(),
+  /** Display name shown in threads. */
+  name: text("name").notNull(),
+  /** True for the operator's own chat user (single-operator system). */
+  isOperator: boolean("is_operator").notNull().default(false),
+  /** Operator-curated alternate names, as in every source's directory. */
+  aliases: text("aliases").array().notNull().default(sql`'{}'::text[]`),
+  /** Operator-configured reply language for this person, or null (default). */
+  language: text("language"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type WebUserRow = typeof webUsers.$inferSelect;
+export type WebUserInsert = typeof webUsers.$inferInsert;
+
+/**
+ * Named threads. Each belongs to one web user and is bound to one assistant
+ * **at creation** (no mid-thread switching — PLAN.md).
+ */
+export const webThreads = pgTable(
+  "web_threads",
+  {
+    id: text("id").primaryKey(),
+    /** The web user who owns the thread; threads die with their user. */
+    userId: text("user_id")
+      .notNull()
+      .references(() => webUsers.id, { onDelete: "cascade" }),
+    /** The assistant answering in this thread, fixed at creation. */
+    assistantId: text("assistant_id").notNull(),
+    /** Thread name — auto-generated from the first exchange, or renamed by hand. */
+    name: text("name").notNull(),
+    /**
+     * True while `name` is the placeholder a new thread starts with. The
+     * pipeline names the thread from its first exchange and clears this;
+     * renaming by hand clears it too — an operator's name is not a placeholder.
+     */
+    titleProvisional: boolean("title_provisional").notNull().default(false),
+    /** Operator-curated free-text description of the thread, or null. */
+    notes: text("notes"),
+    /** Operator-configured reply language for this thread, or null (default). */
+    language: text("language"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("web_threads_user_idx").on(t.userId)],
+);
+
+export type WebThreadRow = typeof webThreads.$inferSelect;
+export type WebThreadInsert = typeof webThreads.$inferInsert;
+
+/**
+ * The thread transcript: every user message and every assistant reply.
+ * Append-only log — identity id gives natural insertion order.
+ */
+export const webMessages = pgTable(
+  "web_messages",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    /** The thread this message belongs to; the transcript dies with it. */
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => webThreads.id, { onDelete: "cascade" }),
+    /** `user` (the thread's human) or `assistant` (the bound assistant's reply). */
+    role: text("role").notNull(),
+    /** Full message text. */
+    content: text("content").notNull(),
+    /** When the message was sent. */
+    sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+    /** The message this one answers, or null (unprompted / a fresh turn). */
+    replyToMessageId: bigint("reply_to_message_id", { mode: "number" }),
+    /**
+     * Soft delete: the outbound port can retract what it sent (a browsing
+     * acknowledgement it replaces with the real answer). Rows stay so ids
+     * never dangle — the thread view and the listings skip them.
+     */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("web_messages_thread_sent_idx").on(t.threadId, t.sentAt),
+    check("web_messages_role_check", sql`${t.role} in ('user', 'assistant')`),
+  ],
+);
+
+export type WebMessageRow = typeof webMessages.$inferSelect;
+export type WebMessageInsert = typeof webMessages.$inferInsert;
+
+/**
+ * Uploaded media attached to one message (image upload / voice note / a
+ * produced file). Same describe lifecycle as the tg store's media, with one
+ * deliberate difference: **the bytes stay after describing** — a web thread
+ * is the only archive its pictures have (see `web-chat/server/media-repository.ts`).
+ */
+export const webMedia = pgTable(
+  "web_media",
+  {
+    id: text("id").primaryKey(),
+    /** The message the media is attached to; media dies with it. */
+    messageId: bigint("message_id", { mode: "number" })
+      .notNull()
+      .references(() => webMessages.id, { onDelete: "cascade" }),
+    /** Media kind: `image` | `voice` | `file`. */
+    kind: text("kind").notNull(),
+    /** Mime hint of the stored payload. */
+    mimeType: text("mime_type"),
+    /** The vision model's text description / the voice transcript; null until made. */
+    description: text("description"),
+    /** `pending` | `described` | `unavailable`. */
+    status: text("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Set when a description was produced. */
+    describedAt: timestamp("described_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("web_media_message_idx").on(t.messageId),
+    index("web_media_status_idx").on(t.status, t.createdAt),
+    check("web_media_status_check", sql`${t.status} in ('pending', 'described', 'unavailable')`),
+  ],
+);
+
+export type WebMediaRow = typeof webMedia.$inferSelect;
+export type WebMediaInsert = typeof webMedia.$inferInsert;
+
+/** The binary payload of a {@link webMedia} row, one row per frame. */
+export const webMediaBlobs = pgTable(
+  "web_media_blobs",
+  {
+    /** Owning media row; blobs vanish with it. */
+    mediaId: text("media_id")
+      .notNull()
+      .references(() => webMedia.id, { onDelete: "cascade" }),
+    /** Position in the frame sequence (0 for a still image / the preview frame). */
+    frameIndex: integer("frame_index").notNull(),
+    /** Payload bytes (normalized JPEG for images; original container for voice). */
+    data: bytea("data").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.mediaId, t.frameIndex] })],
+);
+
+export type WebMediaBlobRow = typeof webMediaBlobs.$inferSelect;
+export type WebMediaBlobInsert = typeof webMediaBlobs.$inferInsert;

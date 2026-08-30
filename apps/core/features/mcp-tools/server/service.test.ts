@@ -12,6 +12,11 @@ import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tool
 import { MEMORY_TOOL_NAMES } from "@/features/memory/server/mcp-tools";
 import { RANDOMNESS_TOOL_NAMES, ROLL_CHANCE_TOOL } from "@/features/randomness/server/mcp-tools";
 import { TASKS_TOOL_NAMES } from "@/features/tasks/server/mcp-tools";
+import {
+  CHAT_REPLY_TOOL,
+  CHAT_SEND_TOOL,
+  WEB_CHAT_TOOL_NAMES,
+} from "@/features/web-chat/server/mcp-tools";
 import { getToolset, getToolsView } from "./service";
 
 /**
@@ -61,13 +66,15 @@ const COMMON_TOOLS = [
 ].sort();
 
 /**
- * Since Phase 5 the delivery tools are the SOURCE apps' — hosted on their own
- * MCP servers and offered as connection tools — so the in-process registry
- * this file covers has none of them, and `getToolset`'s carve-out is
- * exercised against real connections in
- * `features/tool-connections/server/toolset.integration.test.ts`.
+ * Since Phase 5 Telegram's delivery tools are the tg app's — hosted on its
+ * own MCP server and offered as connection tools — and `getToolset`'s
+ * carve-out for them is exercised against real connections in
+ * `features/tool-connections/server/tool-connections.integration.test.ts`.
+ * The web chat's came back in-process with the Phase 6 dissolve: they are in
+ * the catalog, but offered only on web-chat turns through their offer
+ * predicate (asserted below).
  */
-const ALL_TOOLS = [...COMMON_TOOLS].sort();
+const ALL_TOOLS = [...COMMON_TOOLS, ...WEB_CHAT_TOOL_NAMES].sort();
 
 describe("getToolsView", () => {
   it("lists every registered tool with its owning feature and a description", async () => {
@@ -82,6 +89,7 @@ describe("getToolsView", () => {
     expect(featureOf(IMAGE_GENERATE_TOOL)).toBe("image-gen");
     expect(featureOf(BROWSE_WEB_TOOL)).toBe("browser-agent");
     expect(featureOf(ROLL_CHANCE_TOOL)).toBe("randomness");
+    expect(featureOf(CHAT_REPLY_TOOL)).toBe("web-chat");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });
 });
@@ -97,14 +105,25 @@ describe("getToolset", () => {
     // Its own text is already on its way to the chat; a delivery tool here would
     // post the answer twice.
     expect(await namesOf()).toEqual(COMMON_TOOLS);
+    expect(await namesOf({ source: "chat" })).toEqual(COMMON_TOOLS);
     expect(typeof (await getToolset())!.callTool).toBe("function");
   });
 
-  it("offers the same in-process tools whatever the turn delivers", async () => {
-    // The delivery carve-out now applies to the source apps' hosted tools; the
-    // code-defined half of the toolset is the same either way.
+  it("offers a web-chat task turn exactly its own delivery tool", async () => {
+    // The offer predicate: only web-chat turns, each tool for its own kind.
+    expect(await namesOf({ source: "chat", delivery: "reply" })).toEqual(
+      [...COMMON_TOOLS, CHAT_REPLY_TOOL].sort(),
+    );
+    expect(await namesOf({ source: "chat", delivery: "send" })).toEqual(
+      [...COMMON_TOOLS, CHAT_SEND_TOOL].sort(),
+    );
+  });
+
+  it("keeps the web-chat delivery tools off other sources' turns", async () => {
+    // Telegram's delivery tools arrive as its connection's; the web chat's
+    // in-process pair must not ride along.
     for (const delivery of ["reply", "send"] as const) {
-      expect(await namesOf({ delivery })).toEqual(COMMON_TOOLS);
+      expect(await namesOf({ source: "tg", delivery })).toEqual(COMMON_TOOLS);
     }
   });
 });

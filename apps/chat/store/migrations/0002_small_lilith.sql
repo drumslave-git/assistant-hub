@@ -1,1 +1,0 @@
-ALTER TABLE "threads" ADD COLUMN "title_provisional" boolean DEFAULT false NOT NULL;

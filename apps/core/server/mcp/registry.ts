@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { SourceId } from "@assistant-hub/contracts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ChatCompletionFunctionTool } from "openai/resources/chat/completions";
@@ -15,6 +16,24 @@ import type { McpToolCallResult } from "./tool-result";
  * from {@link import("./context").getToolContext} and their own persistence.
  */
 export type McpToolRegistrar = (server: McpServer) => void;
+
+/** The turn facts an offer predicate may gate a tool on. */
+export interface ToolOfferScope {
+  source?: SourceId;
+  assistantId?: string | null;
+  /** Which delivery this turn may perform, or null for an ordinary reply. */
+  delivery?: "reply" | "send" | null;
+}
+
+/**
+ * Whether one of a feature's tools is offered on a turn with this scope —
+ * the in-process half of the scoping the connection toolset already does
+ * (`tool-connections/server/toolset.ts`). Absent → offered on every turn,
+ * which is what almost every feature tool wants; a tool that belongs to one
+ * source (the web chat's delivery tools) declares itself instead of the
+ * toolset service special-casing it.
+ */
+export type ToolOfferPredicate = (toolName: string, scope: ToolOfferScope) => boolean;
 
 /** Registered tool metadata for the dashboard (name/description + owning feature). */
 export interface RegisteredTool {
@@ -36,6 +55,8 @@ export class BotMcpRegistry {
   private connectPromise: Promise<Client> | null = null;
   /** name -> owning feature, for dashboard grouping. */
   private toolFeatures = new Map<string, string>();
+  /** name -> offer predicate, for tools not offered on every turn. */
+  private toolOffers = new Map<string, ToolOfferPredicate>();
   /**
    * OpenAI-shaped tool list, built once. The registry is append-only and frozen
    * after boot, but every reply turn asks for this list — without the cache each
@@ -48,10 +69,24 @@ export class BotMcpRegistry {
   }
 
   /** Register one feature's tools. Call before {@link finishRegistration}. */
-  registerTools(feature: string, registrar: McpToolRegistrar, toolNames: string[]): void {
+  registerTools(
+    feature: string,
+    registrar: McpToolRegistrar,
+    toolNames: string[],
+    offered?: ToolOfferPredicate,
+  ): void {
     registrar(this.server);
-    for (const name of toolNames) this.toolFeatures.set(name, feature);
+    for (const name of toolNames) {
+      this.toolFeatures.set(name, feature);
+      if (offered) this.toolOffers.set(name, offered);
+    }
     this.openAiTools = null;
+  }
+
+  /** Whether a registered tool is offered on a turn with this scope. */
+  isOffered(name: string, scope: ToolOfferScope): boolean {
+    const offered = this.toolOffers.get(name);
+    return offered ? offered(name, scope) : true;
   }
 
   /** Connect the in-process client/server pair. Idempotent. */

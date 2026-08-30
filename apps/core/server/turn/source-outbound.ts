@@ -11,6 +11,7 @@ import {
 
 import type { SourceId } from "@assistant-hub/contracts";
 
+import { webChatOutbound } from "@/features/web-chat/server/outbound";
 import { internalRequester, sourceApiConfig } from "@/server/source/internal-client";
 
 /**
@@ -89,8 +90,12 @@ export interface SourceOutboundPort {
  * One source's outbound port, or null when this deployment does not run that
  * app. Callers treat null exactly like v1 treated a stopped poller: the send
  * fails audibly and is recorded on the run/fire — never dropped.
+ *
+ * The web chat resolves to its in-process port since the dissolve (Phase 6):
+ * same shape, no HTTP — the thread store lives in this process.
  */
 export function sourceOutbound(source: SourceId): SourceOutboundPort | null {
+  if (source === "chat") return webChatOutbound();
   const config = sourceApiConfig(source);
   if (!config) return null;
   return sourceApiOutbound(source, config);

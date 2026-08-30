@@ -702,7 +702,7 @@ function toView(record: MediaRecord, source: SourceId): MediaView {
 function requireMediaSources() {
   const sources = mediaSources();
   if (sources.length === 0) {
-    throw new Error("no source app is configured (TG_API_URL / CHAT_API_URL)");
+    throw new Error("no media source is configured (TG_API_URL)");
   }
   return sources;
 }

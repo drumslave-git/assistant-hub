@@ -52,7 +52,6 @@ Run everything against a local Postgres (the dev compose `db` service works).
    ```bash
    node packages/db/scripts/create-database.mjs "postgres://bot:bot@localhost:5432/core"
    node packages/db/scripts/create-database.mjs "postgres://bot:bot@localhost:5432/tg"
-   node packages/db/scripts/create-database.mjs "postgres://bot:bot@localhost:5432/chat"
    ```
 
 4. **Migrate the stores** (each app's own chain, each app's own env — see
@@ -61,8 +60,10 @@ Run everything against a local Postgres (the dev compose `db` service works).
    ```bash
    npm run store:migrate -w @assistant-hub/core   # STORE_DATABASE_URL
    npm run db:migrate -w @assistant-hub/tg        # DATABASE_URL (apps/tg/.env)
-   npm run db:migrate -w @assistant-hub/chat      # DATABASE_URL (apps/chat/.env)
    ```
+
+   (The web chat lives in the core store since the Phase 6 chat dissolve —
+   its tables ride the core's `store:migrate` chain.)
 
 5. **Run the imports**, pointing `V1_DATABASE_URL` at the rehearsal copy:
 

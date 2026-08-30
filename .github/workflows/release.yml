@@ -109,8 +109,6 @@ jobs:
             dockerfile: apps/core/Dockerfile
           - image: assistant-hub-tg
             dockerfile: apps/tg/Dockerfile
-          - image: assistant-hub-chat
-            dockerfile: apps/chat/Dockerfile
     env:
       VERSION: ${{ needs.version.outputs.version }}
       IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}

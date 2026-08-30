@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ImagePlus, MessagesSquare, Mic, PenSquare, Send, Square, Trash2, X } from "lucide-react";
 
-import type { ChatThread, ChatThreadMessage, ChatThreadTurn } from "@assistant-hub/contracts";
 import {
   Button,
   Card,
@@ -14,17 +13,17 @@ import {
   PageHeader,
   Timestamp,
   apiFetch,
-  appPageHref,
   cn,
   useLiveEvent,
-  type AppPageProps,
 } from "@assistant-hub/ui";
 
+import type { ChatThread, ChatThreadMessage, ChatThreadTurn } from "@/features/web-chat/schema";
+
 /**
- * The web-chat page the shell mounts at `/apps/chat` — this app's own view,
- * built from the shared dashboard primitives so it reads like every other
- * page, and fed only through the core proxy (`/api/chat/*`), never by
- * importing this app's server code (PLAN.md, "Dashboard composition").
+ * The web-chat page at `/chat` — a plain core page since the chat dissolve
+ * (Phase 6; it used to be the chat app's `ui` extension mounted at
+ * `/apps/chat`), built from the shared dashboard primitives so it reads like
+ * every other page and fed through its own API routes (`/api/chat/*`).
  *
  * The shape is the one everybody already knows from a chat app: chats down the
  * left with "New chat" at the top, the conversation on the right, the composer
@@ -43,7 +42,7 @@ interface Assistant {
   name: string;
 }
 
-export function ChatThreadsPage({ segments }: AppPageProps) {
+export function ChatThreadsPage({ segments }: { segments: string[] }) {
   const router = useRouter();
   const selectedId = segments[0] ?? null;
 
@@ -63,10 +62,13 @@ export function ChatThreadsPage({ segments }: AppPageProps) {
   }, []);
 
   useEffect(() => {
-    void loadThreads();
-    void apiFetch<{ assistants: Assistant[] }>("/api/assistants")
-      .then((data) => setAssistants(data.assistants))
-      .catch(() => setAssistants([]));
+    const load = async () => {
+      await loadThreads();
+      await apiFetch<{ assistants: Assistant[] }>("/api/assistants")
+        .then((data) => setAssistants(data.assistants))
+        .catch(() => setAssistants([]));
+    };
+    void load();
   }, [loadThreads]);
 
   return (
@@ -94,7 +96,7 @@ export function ChatThreadsPage({ segments }: AppPageProps) {
               onChanged={loadThreads}
               onDeleted={async () => {
                 await loadThreads();
-                router.push(appPageHref("chat"));
+                router.push("/chat");
               }}
             />
           ) : (
@@ -102,7 +104,7 @@ export function ChatThreadsPage({ segments }: AppPageProps) {
               assistants={assistants}
               onStarted={async (thread) => {
                 await loadThreads();
-                router.push(appPageHref("chat", thread.id));
+                router.push(`/chat/${encodeURIComponent(thread.id)}`);
               }}
             />
           )}
@@ -123,7 +125,7 @@ function ChatSidebar({
   return (
     <div className="flex max-h-[calc(100vh-13rem)] flex-col gap-2">
       <Button asChild variant="outline" className="w-full justify-start">
-        <Link href={appPageHref("chat")}>
+        <Link href="/chat">
           <PenSquare className="h-4 w-4" />
           New chat
         </Link>
@@ -140,7 +142,7 @@ function ChatSidebar({
           {threads?.map((thread) => (
             <li key={thread.id}>
               <Link
-                href={appPageHref("chat", thread.id)}
+                href={`/chat/${encodeURIComponent(thread.id)}`}
                 className={cn(
                   "block truncate rounded-lg px-3 py-2 text-sm transition-colors",
                   thread.id === selectedId
@@ -192,13 +194,12 @@ function NewConversation({
   assistants: Assistant[];
   onStarted: (thread: ChatThread) => void | Promise<void>;
 }) {
-  const [assistantId, setAssistantId] = useState("");
+  // Derived default rather than an effect: until the person picks, the first
+  // assistant is the one a new chat talks to.
+  const [assistantChoice, setAssistantChoice] = useState<string | null>(null);
+  const assistantId = assistantChoice ?? assistants[0]?.id ?? "";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!assistantId && assistants.length > 0) setAssistantId(assistants[0].id);
-  }, [assistants, assistantId]);
 
   const start = async (draft: Draft) => {
     if (!assistantId) return;
@@ -231,7 +232,7 @@ function NewConversation({
             Talking to
             <select
               value={assistantId}
-              onChange={(e) => setAssistantId(e.target.value)}
+              onChange={(e) => setAssistantChoice(e.target.value)}
               className="h-8 rounded-lg border border-border bg-surface-2 px-2 text-sm text-foreground"
             >
               {assistants.map((assistant) => (
@@ -307,7 +308,10 @@ function Conversation({
   }, [threadId]);
 
   useEffect(() => {
-    void load();
+    const initial = async () => {
+      await load();
+    };
+    void initial();
   }, [load]);
 
   // The reply lands at the bottom; follow it there, but never fight a reader
@@ -316,7 +320,7 @@ function Conversation({
     bottom.current?.scrollIntoView({ block: "nearest" });
   }, [messages.length, turn?.sourceMessageId]);
 
-  // Live: the chat app pings this topic when a thread changes — the reply
+  // Live: the service pings this topic when a thread changes — the reply
   // arriving, and the generated title landing a moment after it.
   useLiveEvent("threads", load);
 
@@ -536,7 +540,7 @@ function Composer({
 
   /**
    * Recording uses whatever container the browser gives us (webm/opus in
-   * Chrome): the chat app stores the bytes as they are and the core converts
+   * Chrome): the service stores the bytes as they are and the pipeline converts
    * before transcribing, exactly as it does for a Telegram voice message.
    */
   const startRecording = async () => {
@@ -668,7 +672,7 @@ function Attachment({
   );
 }
 
-/** Read a picked file as base64 (the payload the chat app normalizes). */
+/** Read a picked file as base64 (the payload the service normalizes). */
 function readAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -682,7 +686,7 @@ function readAsBase64(file: File): Promise<string> {
   });
 }
 
-/** A recorded blob as base64 (the payload the chat app stores). */
+/** A recorded blob as base64 (the payload the service stores). */
 async function blobToBase64(blob: Blob): Promise<string> {
   const buffer = await blob.arrayBuffer();
   let binary = "";

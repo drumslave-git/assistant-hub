@@ -1,3 +1,5 @@
+import "server-only";
+
 import {
   scopedRef,
   type ChatInfo,
@@ -7,15 +9,16 @@ import {
   type SenderInfo,
 } from "@assistant-hub/contracts";
 
-import type { ChatDb } from "./db";
-import { getMessagesSince, getUserById } from "./store";
-import type { ChatUserRow, ThreadRow } from "../store/schema";
+import type { StoreDb } from "@/server/store/db";
+
+import type { WebThreadRow, WebUserRow } from "../../../store/schema";
+import { getMessagesSince, getUserById } from "./repository";
 
 /**
- * The source contract's "context provider" duty (PLAN.md): compose the
- * conversation context — history window + participant roster + chat/sender
- * metadata — from this app's own store, carried on the inbound event. The
- * core composes prompts from this; it never queries this database.
+ * The conversation context for a web-thread turn — history window +
+ * participant roster + chat/sender metadata, composed from the web-chat
+ * tables and carried on the inbound event, exactly as the chat app did
+ * before the dissolve. The pipeline composes prompts from this.
  *
  * A thread is simpler than a Telegram chat by construction: one human, one
  * assistant, one stream. The window semantics still match tg's so the same
@@ -26,21 +29,25 @@ import type { ChatUserRow, ThreadRow } from "../store/schema";
 const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export async function buildHistoryWindow(
-  db: ChatDb,
   input: {
-    thread: ThreadRow;
-    user: ChatUserRow;
+    thread: WebThreadRow;
+    user: WebUserRow;
     excludeMessageId: number;
     now?: Date;
   },
+  db?: StoreDb,
 ): Promise<HistoryMessage[]> {
   const since = new Date((input.now ?? new Date()).getTime() - HISTORY_WINDOW_MS);
-  const rows = await getMessagesSince(db, input.thread.id, since, {
-    excludeMessageId: input.excludeMessageId,
-  });
+  // Passing `undefined` lets the repository's default handle pick up.
+  const rows = await getMessagesSince(
+    input.thread.id,
+    since,
+    { excludeMessageId: input.excludeMessageId },
+    db,
+  );
   return rows.map((row) => ({
     sourceMessageId: String(row.id),
-    role: row.role === "assistant" ? "assistant" : "user",
+    role: row.role === "assistant" ? ("assistant" as const) : ("user" as const),
     // Every assistant line in a thread is the thread's own assistant: the
     // binding is fixed at creation, so no other one can have spoken here.
     assistantId: row.role === "assistant" ? input.thread.assistantId : null,
@@ -55,7 +62,7 @@ export async function buildHistoryWindow(
 }
 
 /** The roster of a thread: its owner, and nobody else. */
-export function buildParticipants(user: ChatUserRow): Participant[] {
+export function buildParticipants(user: WebUserRow): Participant[] {
   return [
     {
       ref: scopedRef("chat", "user", user.id),
@@ -70,7 +77,7 @@ export function buildParticipants(user: ChatUserRow): Participant[] {
  * The thread as a conversation. Always `direct`: one human talking to one
  * assistant, which is also why every message in it is addressed.
  */
-export function buildChatInfo(thread: ThreadRow): ChatInfo {
+export function buildChatInfo(thread: WebThreadRow): ChatInfo {
   return {
     ref: scopedRef("chat", "thread", thread.id),
     kind: "direct",
@@ -78,19 +85,19 @@ export function buildChatInfo(thread: ThreadRow): ChatInfo {
     type: null,
     notes: thread.notes,
     language: thread.language,
-    // Ask the core to name this thread once there is something to name it
-    // from; it does that through `setChatTitle` on its outbound port.
+    // Ask the pipeline to name this thread once there is something to name it
+    // from; it does that through `setChatTitle` on the outbound port.
     titleProvisional: thread.titleProvisional,
   };
 }
 
 /**
  * The sender. `isOwner` is resolved here, as the contract requires (owner
- * logic lives on the app side): this app's operator user IS the operator, so
- * the flag follows the row's own `is_operator`, with no username matching to
- * do.
+ * logic lives on the source side): the operator's own web user IS the
+ * operator, so the flag follows the row's `is_operator`, with no username
+ * matching to do.
  */
-export function buildSenderInfo(user: ChatUserRow): SenderInfo {
+export function buildSenderInfo(user: WebUserRow): SenderInfo {
   return {
     ref: scopedRef("chat", "user", user.id),
     isOwner: user.isOperator,
@@ -104,16 +111,19 @@ export function buildSenderInfo(user: ChatUserRow): SenderInfo {
 }
 
 export async function buildConversationContext(
-  db: ChatDb,
-  input: { thread: ThreadRow; user: ChatUserRow; excludeMessageId: number; now?: Date },
+  input: { thread: WebThreadRow; user: WebUserRow; excludeMessageId: number; now?: Date },
+  db?: StoreDb,
 ): Promise<ConversationContext> {
   return {
-    history: await buildHistoryWindow(db, input),
+    history: await buildHistoryWindow(input, db),
     participants: buildParticipants(input.user),
   };
 }
 
 /** The thread's owner, or null when the thread points at nobody (never, in practice). */
-export async function threadOwner(db: ChatDb, thread: ThreadRow): Promise<ChatUserRow | null> {
-  return getUserById(db, thread.userId);
+export async function threadOwner(
+  thread: WebThreadRow,
+  db?: StoreDb,
+): Promise<WebUserRow | null> {
+  return getUserById(thread.userId, db);
 }

@@ -1,15 +1,17 @@
+import "server-only";
+
 import { randomUUID } from "node:crypto";
 
 import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 
-import type { ChatDb } from "./db";
-import { media, mediaBlobs, messages } from "../store/schema";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
+
+import { webMedia, webMediaBlobs, webMessages } from "../../../store/schema";
 
 /**
- * Media in this app's store: an image (later a voice note) attached to one
- * message, stored as ordered frames the way the tg store does, so the core's
- * vision pipeline treats both sources alike — it reads a pending row's bytes
- * over the internal API and writes the description back.
+ * Media in the web-chat tables: an image, a voice note, or a produced file
+ * attached to one message, stored as ordered frames the way the tg store
+ * does, so the vision pipeline treats both sources alike.
  *
  * **One deliberate difference from tg: the bytes stay.** Telegram is its own
  * archive — a described photo can be dropped there because the chat still
@@ -20,7 +22,7 @@ import { media, mediaBlobs, messages } from "../store/schema";
  */
 
 /** A stored media row with its payload assembled from the frames. */
-export interface StoredChatMedia {
+export interface StoredWebMedia {
   id: string;
   /** The thread the owning message belongs to (the contract's `chatId`). */
   threadId: string;
@@ -34,18 +36,14 @@ export interface StoredChatMedia {
   describedAt: Date | null;
 }
 
-type MediaRow = typeof media.$inferSelect;
+type MediaRow = typeof webMedia.$inferSelect;
 
-async function withFrames(
-  db: ChatDb,
-  row: MediaRow,
-  threadId: string,
-): Promise<StoredChatMedia> {
+async function withFrames(db: StoreDb, row: MediaRow, threadId: string): Promise<StoredWebMedia> {
   const blobs = await db
     .select()
-    .from(mediaBlobs)
-    .where(eq(mediaBlobs.mediaId, row.id))
-    .orderBy(asc(mediaBlobs.frameIndex));
+    .from(webMediaBlobs)
+    .where(eq(webMediaBlobs.mediaId, row.id))
+    .orderBy(asc(webMediaBlobs.frameIndex));
   return {
     id: row.id,
     threadId,
@@ -61,18 +59,17 @@ async function withFrames(
 }
 
 /** The thread a message belongs to, or null when the message is unknown. */
-async function threadOf(db: ChatDb, messageId: number): Promise<string | null> {
+async function threadOf(db: StoreDb, messageId: number): Promise<string | null> {
   const rows = await db
-    .select({ threadId: messages.threadId })
-    .from(messages)
-    .where(eq(messages.id, messageId))
+    .select({ threadId: webMessages.threadId })
+    .from(webMessages)
+    .where(eq(webMessages.id, messageId))
     .limit(1);
   return rows[0]?.threadId ?? null;
 }
 
 /** Attach media to a message. One row per message (the store's unique index). */
 export async function insertMedia(
-  db: ChatDb,
   values: {
     messageId: number;
     kind: string;
@@ -80,10 +77,11 @@ export async function insertMedia(
     /** Ordered base64 payload — one image today, a frame sequence later. */
     frames: string[];
   },
-): Promise<StoredChatMedia | null> {
+  db: StoreDb = getStoreDb(),
+): Promise<StoredWebMedia | null> {
   const id = randomUUID();
   const inserted = await db
-    .insert(media)
+    .insert(webMedia)
     .values({
       id,
       messageId: values.messageId,
@@ -96,7 +94,7 @@ export async function insertMedia(
   const row = inserted[0];
   if (!row) return null;
   if (values.frames.length > 0) {
-    await db.insert(mediaBlobs).values(
+    await db.insert(webMediaBlobs).values(
       values.frames.map((frame, frameIndex) => ({
         mediaId: id,
         frameIndex,
@@ -108,23 +106,26 @@ export async function insertMedia(
   return withFrames(db, row, threadId);
 }
 
-export async function getMediaById(db: ChatDb, id: string): Promise<StoredChatMedia | null> {
-  const rows = await db.select().from(media).where(eq(media.id, id)).limit(1);
+export async function getMediaById(
+  id: string,
+  db: StoreDb = getStoreDb(),
+): Promise<StoredWebMedia | null> {
+  const rows = await db.select().from(webMedia).where(eq(webMedia.id, id)).limit(1);
   const row = rows[0];
   if (!row) return null;
   return withFrames(db, row, (await threadOf(db, row.messageId)) ?? "");
 }
 
 export async function getMediaByMessage(
-  db: ChatDb,
   threadId: string,
   messageId: number,
-): Promise<StoredChatMedia | null> {
+  db: StoreDb = getStoreDb(),
+): Promise<StoredWebMedia | null> {
   const rows = await db
-    .select({ media, threadId: messages.threadId })
-    .from(media)
-    .innerJoin(messages, eq(media.messageId, messages.id))
-    .where(and(eq(media.messageId, messageId), eq(messages.threadId, threadId)))
+    .select({ media: webMedia, threadId: webMessages.threadId })
+    .from(webMedia)
+    .innerJoin(webMessages, eq(webMedia.messageId, webMessages.id))
+    .where(and(eq(webMedia.messageId, messageId), eq(webMessages.threadId, threadId)))
     .limit(1);
   const row = rows[0];
   if (!row) return null;
@@ -137,14 +138,14 @@ export async function getMediaByMessage(
  * same contract the tg store serves).
  */
 export async function markDescribed(
-  db: ChatDb,
   id: string,
   description: string,
-): Promise<StoredChatMedia | null> {
+  db: StoreDb = getStoreDb(),
+): Promise<StoredWebMedia | null> {
   const updated = await db
-    .update(media)
+    .update(webMedia)
     .set({ description, status: "described", describedAt: new Date() })
-    .where(and(eq(media.id, id), eq(media.status, "pending")))
+    .where(and(eq(webMedia.id, id), eq(webMedia.status, "pending")))
     .returning();
   const row = updated[0];
   if (!row) return null;
@@ -154,35 +155,38 @@ export async function markDescribed(
 
 /** The backfill's work list: pending rows, oldest first. */
 export async function listPendingMediaRefs(
-  db: ChatDb,
   limit: number,
+  db: StoreDb = getStoreDb(),
 ): Promise<Array<{ id: string; threadId: string; messageId: number }>> {
   if (limit <= 0) return [];
   const rows = await db
-    .select({ id: media.id, messageId: media.messageId, threadId: messages.threadId })
-    .from(media)
-    .innerJoin(messages, eq(media.messageId, messages.id))
-    .where(eq(media.status, "pending"))
-    .orderBy(asc(media.createdAt))
+    .select({ id: webMedia.id, messageId: webMedia.messageId, threadId: webMessages.threadId })
+    .from(webMedia)
+    .innerJoin(webMessages, eq(webMedia.messageId, webMessages.id))
+    .where(eq(webMedia.status, "pending"))
+    .orderBy(asc(webMedia.createdAt))
     .limit(limit);
   return rows;
 }
 
-export async function countPendingMedia(db: ChatDb): Promise<number> {
+export async function countPendingMedia(db: StoreDb = getStoreDb()): Promise<number> {
   const [row] = await db
     .select({ total: count() })
-    .from(media)
-    .where(eq(media.status, "pending"));
+    .from(webMedia)
+    .where(eq(webMedia.status, "pending"));
   return Number(row?.total ?? 0);
 }
 
 /** The newest media rows (the dashboard gallery), newest first. */
-export async function listRecentMedia(db: ChatDb, limit: number): Promise<StoredChatMedia[]> {
+export async function listRecentMedia(
+  limit: number,
+  db: StoreDb = getStoreDb(),
+): Promise<StoredWebMedia[]> {
   const rows = await db
-    .select({ media, threadId: messages.threadId })
-    .from(media)
-    .innerJoin(messages, eq(media.messageId, messages.id))
-    .orderBy(desc(media.createdAt))
+    .select({ media: webMedia, threadId: webMessages.threadId })
+    .from(webMedia)
+    .innerJoin(webMessages, eq(webMedia.messageId, webMessages.id))
+    .orderBy(desc(webMedia.createdAt))
     .limit(limit);
   return Promise.all(rows.map((row) => withFrames(db, row.media, row.threadId)));
 }
@@ -193,20 +197,20 @@ export async function listRecentMedia(db: ChatDb, limit: number): Promise<Stored
  * picture itself is fetched by id when it is actually rendered.
  */
 export async function getMediaForMessages(
-  db: ChatDb,
   messageIds: number[],
+  db: StoreDb = getStoreDb(),
 ): Promise<Map<number, { id: string; kind: string; status: string; description: string | null }>> {
   if (messageIds.length === 0) return new Map();
   const rows = await db
     .select({
-      id: media.id,
-      messageId: media.messageId,
-      kind: media.kind,
-      status: media.status,
-      description: media.description,
+      id: webMedia.id,
+      messageId: webMedia.messageId,
+      kind: webMedia.kind,
+      status: webMedia.status,
+      description: webMedia.description,
     })
-    .from(media)
-    .where(inArray(media.messageId, messageIds));
+    .from(webMedia)
+    .where(inArray(webMedia.messageId, messageIds));
   return new Map(rows.map((row) => [row.messageId, row]));
 }
 
@@ -216,7 +220,6 @@ export async function getMediaForMessages(
  * backfill never goes looking at something nobody needs read.
  */
 export async function describeOnInsert(
-  db: ChatDb,
   values: {
     messageId: number;
     kind: string;
@@ -224,9 +227,10 @@ export async function describeOnInsert(
     frames: string[];
     description: string;
   },
-): Promise<StoredChatMedia | null> {
-  const stored = await insertMedia(db, values);
+  db: StoreDb = getStoreDb(),
+): Promise<StoredWebMedia | null> {
+  const stored = await insertMedia(values, db);
   if (!stored) return null;
-  const updated = await markDescribed(db, stored.id, values.description);
+  const updated = await markDescribed(stored.id, values.description, db);
   return updated ?? stored;
 }

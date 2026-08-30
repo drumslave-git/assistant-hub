@@ -5,10 +5,16 @@ import {
   BUS_EVENTS_CHANNEL,
   dashboardRefreshEventSchema,
   feedbackRecordedEventSchema,
+  replyDeliveryEventSchema,
   traceRecordedEventSchema,
+  turnLifecycleEventSchema,
 } from "@assistant-hub/contracts";
 
 import { handleFeedbackRecorded } from "@/features/self-improvement/server/recorded-consumer";
+import {
+  handleChatReplyDelivery,
+  handleChatTurnLifecycle,
+} from "@/features/web-chat/server/delivery";
 import { REALTIME_TOPICS, type RealtimeTopic } from "@/lib/realtime";
 import { getEnv } from "@/server/env";
 import { publishEvent } from "@/server/realtime/hub";
@@ -21,8 +27,12 @@ import { ingestSourceTrace } from "@/server/trace/ingest";
  * see `recorded-consumer.ts`), `dashboard.refresh` (the SSE bridge), and
  * `trace.recorded` (the unified trace store's ingest half).
  *
- * Reply-delivery and turn-lifecycle events on the same channel are the
- * sources' to consume — ignored here by type.
+ * Reply-delivery and turn-lifecycle events are each source's to consume, and
+ * since the chat dissolve (Phase 6) the core IS the web chat's source side:
+ * the pipeline still publishes every turn's events to the bus, tg's app
+ * consumes its own, and the web chat's are consumed right here — the reply
+ * stored in the thread, the lifecycle rendered as live progress. Other
+ * sources' stay ignored by type.
  */
 
 export interface SourceEventsConsumer {
@@ -51,6 +61,25 @@ export async function startSourceEventsConsumer(input: {
             }
           }
         }
+        return;
+      }
+      if (type === "reply.delivery") {
+        const parsed = replyDeliveryEventSchema.safeParse(payload);
+        if (!parsed.success || parsed.data.source !== "chat") return;
+        // Detached: one bad delivery must not kill the subscriber; the
+        // failure lands in its own deliver trace.
+        void handleChatReplyDelivery(parsed.data).catch((err) => {
+          console.error(
+            "web-chat reply delivery failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+        return;
+      }
+      if (type === "turn.lifecycle") {
+        const parsed = turnLifecycleEventSchema.safeParse(payload);
+        if (!parsed.success || parsed.data.source !== "chat") return;
+        handleChatTurnLifecycle(parsed.data);
         return;
       }
       if (type === "trace.recorded") {

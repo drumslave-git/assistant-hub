@@ -25,7 +25,12 @@ import {
   registerRandomnessMcpTools,
 } from "@/features/randomness/server/mcp-tools";
 import { registerTasksMcpTools, TASKS_TOOL_NAMES } from "@/features/tasks/server/mcp-tools";
-import { BotMcpRegistry, type McpToolRegistrar } from "./registry";
+import {
+  registerWebChatMcpTools,
+  webChatToolOffered,
+  WEB_CHAT_TOOL_NAMES,
+} from "@/features/web-chat/server/mcp-tools";
+import { BotMcpRegistry, type McpToolRegistrar, type ToolOfferPredicate } from "./registry";
 
 /**
  * Process-wide MCP registry. Tools are registered once and the in-process
@@ -34,11 +39,12 @@ import { BotMcpRegistry, type McpToolRegistrar } from "./registry";
  * the bot manager — so it survives module re-evaluation across Next bundles and
  * dev hot-reload, and the MCP server is never connected twice.
  *
- * New tool-owning features add their registrar here. What is NOT here: the
- * outbound tools (delivering a message, reacting to one). Those are the
- * source apps' own, served from their MCP servers and reached as connections
- * (Phase 5) — the core stopped hosting tools whose whole content is a
- * platform's affordances.
+ * New tool-owning features add their registrar here. Telegram's outbound
+ * tools (delivering a message, reacting to one) are NOT here: they are the
+ * tg app's own, served from its MCP server and reached as a managed
+ * connection (Phase 5). The web chat's delivery tools ARE here since the
+ * chat dissolve (Phase 6) — the web chat is a core feature now — offered
+ * only on web-chat turns through their offer predicate.
  */
 
 interface RegistryStore {
@@ -60,7 +66,13 @@ function store(): RegistryStore {
  * registry — which is what lets {@link loadMcpRegistry} notice that the cached
  * one predates the code now loaded.
  */
-const REGISTRARS: { feature: string; registrar: McpToolRegistrar; toolNames: string[] }[] = [
+const REGISTRARS: {
+  feature: string;
+  registrar: McpToolRegistrar;
+  toolNames: string[];
+  /** When present, gates which turns the feature's tools are offered on. */
+  offered?: ToolOfferPredicate;
+}[] = [
   { feature: "history", registrar: registerHistoryMcpTools, toolNames: HISTORY_TOOL_NAMES },
   {
     feature: "known-users",
@@ -80,6 +92,12 @@ const REGISTRARS: { feature: string; registrar: McpToolRegistrar; toolNames: str
     registrar: registerBrowserAgentMcpTools,
     toolNames: BROWSER_AGENT_TOOL_NAMES,
   },
+  {
+    feature: "web-chat",
+    registrar: registerWebChatMcpTools,
+    toolNames: WEB_CHAT_TOOL_NAMES,
+    offered: webChatToolOffered,
+  },
 ];
 
 /** The tool names the currently loaded code registers. */
@@ -90,8 +108,8 @@ export function expectedToolNames(): string[] {
 /** Build the registry, register every feature's tools, and connect. */
 async function build(): Promise<BotMcpRegistry> {
   const registry = new BotMcpRegistry();
-  for (const { feature, registrar, toolNames } of REGISTRARS) {
-    registry.registerTools(feature, registrar, toolNames);
+  for (const { feature, registrar, toolNames, offered } of REGISTRARS) {
+    registry.registerTools(feature, registrar, toolNames, offered);
   }
   await registry.finishRegistration();
   return registry;
