@@ -16,7 +16,8 @@
     "db:studio": "drizzle-kit studio",
     "store:generate": "drizzle-kit generate --config drizzle.store.config.ts",
     "store:migrate": "drizzle-kit migrate --config drizzle.store.config.ts",
-    "import:v1": "tsx store/import-v1.ts"
+    "import:v1": "tsx store/import-v1.ts",
+    "import:tg-v1": "tsx store/import-tg-v1.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.38",

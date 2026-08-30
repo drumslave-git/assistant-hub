@@ -310,7 +310,7 @@ Known pitfalls for whoever starts:
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | done |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | done |
 | 6 | Chat dissolve: apps/chat merges into core (store, backend, tools, pages) | done |
-| 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | todo |
+| 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | in-progress |
 | 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | todo |
 | 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | todo |
 | 10 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
@@ -318,6 +318,84 @@ Known pitfalls for whoever starts:
 Phases 0–5 describe the as-built per-app architecture that phases 6–9
 deliberately supersede (2026-08-30 revision); their criteria below are
 history, not the current target.
+
+## Phase 7 — One store, stateless transports (acceptance criteria)
+
+Scope from PLAN.md: the tg store moves into the core's generalized
+conversation tables; tg forwards everything and hands media bytes to the
+core; context composition moves into the core; connection config becomes
+opaque sections on assistants with schema-driven forms replacing
+`apps/tg/ui`; transport self-registration + reconcile; the transport
+contract replaces the source-app contract; tg's database is deleted.
+
+Design fixed at open (mechanical consequences of the 2026-08-30 Q&A, no
+new user decisions):
+
+- **Generalized tables** in the core store, prefixed `source_*`
+  (`source_users`, `source_chats`, `source_chat_members`,
+  `source_chat_assistants`, `source_messages`, `source_message_search`,
+  `source_media`, `source_media_blobs`, `source_feedbacks`,
+  `source_summaries`), every row keyed by `source` + source-local
+  **text** ids (contract-aligned; ordering stays on the identity `id`).
+  Platform stream semantics (telegram's shared group stream vs per-bot
+  DM streams) reach the core as a transport-computed `dedupe_key` —
+  never as a `chat_id like '-%'` in core code. The web chat's `web_*`
+  tables stay as they are (unification is a later phase).
+- **Ingest inversion**: the queue carries a new transport-update
+  contract (message / edit / delivery / reaction / callback events, all
+  media bytes attached, per-running-connection structural verdicts
+  computed in tg); a core ingest stage persists, resolves the audience
+  from core-owned presence, composes context, and hands the existing
+  turn-event shape to the existing pipeline — `processInboundEvent`
+  stays untouched. Cross-feed and the `#id` link whitelist move to the
+  core (they are mirror reads); tg publishes a `message.delivered`
+  event for every send and the core writes the mirror + cross-feeds.
+- **Feedback machine** (flows/menus) moves into the core; tg forwards
+  reaction/callback updates and serves menu send/edit/answer endpoints.
+- **Registration**: a `transports` table (base URL, MCP path, config
+  schemas, enabled, transport config blob) fed by tg's boot-time
+  self-registration over the internal API; `TG_API_URL` in the core
+  dies (the base URL comes from registration); desired state (transport
+  config + per-assistant connections from the new
+  `assistant_transports` table) is fetched by tg at boot and on bus
+  change events. Owner identity lives in tg's transport config blob.
+
+- [ ] **A — conversation store lands in core.** The `source_*` tables +
+      `transports` + `assistant_transports` in the core store schema
+      with a migration; repositories ported from tg's `store.ts`,
+      `media/store.ts`, `content/*`, `feedback/store.ts`; the v1 import
+      (tg's `import-v1.ts`) retargeted to the core tables.
+- [ ] **B — core reads locally.** The per-source lookups resolve `tg`
+      to core-store implementations for the directory, media
+      store/browse, the content plane (messages, summaries, search,
+      index, analytics), and feedbacks; `tg-content.ts` and the
+      listing half of `tg-operator.ts` are deleted; a one-shot script
+      ports the dev tg DB into the core store.
+- [ ] **C — ingest inversion.** The transport-update contract in
+      `packages/contracts`; tg's inbound/cross-feed/delivery stop
+      writing any store and publish updates + delivered events; the
+      core ingest consumer persists, fans out (audience from core
+      presence), composes context, and feeds the pipeline; reply
+      deliveries carry the core-resolved link whitelist; the
+      processed-hold releases core-side.
+- [ ] **D — feedback machine in core.** Reaction/callback/menu-reply
+      updates forwarded by tg; the flow state machine ported into the
+      core; menu send/edit/answer served by tg's API; the learning
+      jobs read core rows directly.
+- [ ] **E — registration + config.** tg self-registers (id, name, base
+      URL, MCP path, config schemas) against the core's internal
+      transport API; connections live in `assistant_transports` with a
+      schema-driven section in the assistant editor; owner identity in
+      the transport config blob (with tg's resolved-id writeback);
+      `apps/tg/ui` and the extension registry deleted; `TG_API_URL`
+      gone; the managed MCP reconcile and every core→tg call resolve
+      the base URL from the registration row.
+- [ ] **F — tg is stateless.** tg's database, schema, migrations, and
+      drizzle config deleted; its `.env` keeps only REDIS_URL, the
+      internal token, PORT, and the core's URL; compose/initdb drop the
+      tg database; tests re-homed (store/content/feedback suites into
+      the core; tg keeps normalization/addressing/send tests); lint,
+      typecheck, suites green; both apps boot and a live tg turn works.
 
 ## Phase 6 — Chat dissolve (acceptance criteria)
 

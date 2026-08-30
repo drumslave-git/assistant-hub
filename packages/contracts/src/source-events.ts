@@ -372,6 +372,25 @@ export function turnCorrelationId(
   return `${chatId}:${sourceMessageId}:${assistantId}`;
 }
 
+/**
+ * The stream-identity key a stored message deduplicates on (redesign
+ * Phase 7): the owning transport computes it, the core's conversation store
+ * enforces uniqueness on `(source, dedupe_key)` and never has to know a
+ * platform's stream rules. Pass `assistantId` when the message belongs to
+ * ONE assistant's stream (telegram DM rows — message ids are per bot there);
+ * omit it for a shared stream (a telegram group, which every poller mirrors
+ * idempotently).
+ */
+export function messageDedupeKey(input: {
+  chatId: string;
+  sourceMessageId: string;
+  assistantId?: string | null;
+}): string {
+  return input.assistantId
+    ? `${input.chatId}:${input.assistantId}:${input.sourceMessageId}`
+    : `${input.chatId}:${input.sourceMessageId}`;
+}
+
 /** The queue the core pipeline consumes: one job per inbound message. */
 export const INBOUND_MESSAGES_QUEUE = "inbound-messages";
 

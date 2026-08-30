@@ -50,6 +50,13 @@
       "when": 1788096420591,
       "tag": "0006_great_swarm",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788104359013,
+      "tag": "0007_early_the_stranger",
+      "breakpoints": true
     }
   ]
 }

@@ -137,6 +137,7 @@ export {
   replyTargetSchema,
   senderInfoSchema,
   sourceIdSchema,
+  messageDedupeKey,
   turnCorrelationId,
   turnLifecycleEventSchema,
   type Addressing,

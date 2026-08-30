@@ -825,3 +825,435 @@ export const webMediaBlobs = pgTable(
 
 export type WebMediaBlobRow = typeof webMediaBlobs.$inferSelect;
 export type WebMediaBlobInsert = typeof webMediaBlobs.$inferInsert;
+
+/**
+ * The generalized conversation store (redesign Phase 7, PLAN.md "Data
+ * ownership"): every transport's users, chats, messages, media, search
+ * index, summaries and feedbacks in ONE set of tables, keyed by a `source`
+ * discriminator plus **source-local text ids**. The former tg store, table
+ * for table, with the telegram-shaped columns generalized:
+ *
+ * - `telegram_message_id bigint` → `source_message_id text` — ordering
+ *   always comes from the identity `id`, never from the source id, so a
+ *   transport with non-numeric ids costs nothing.
+ * - platform stream semantics (telegram's "a group is one shared stream,
+ *   a DM is per-bot") arrive as a transport-computed `dedupe_key`; core
+ *   code never inspects a chat id's sign.
+ *
+ * The web chat's `web_*` tables stay separate (it is a core feature, not a
+ * transport); unifying them here is a later phase.
+ */
+
+/** Every person a transport has seen (the former tg `users`). */
+export const sourceUsers = pgTable(
+  "source_users",
+  {
+    /** Which transport knows them. */
+    source: text("source").notNull(),
+    /** Source-local user id (numeric for telegram, but never assumed so). */
+    userId: text("user_id").notNull(),
+    /** Platform handle (telegram @username, normalized lowercase), or null. */
+    username: text("username"),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
+    /** Operator-curated alternate names/nicknames. */
+    aliases: text("aliases").array().notNull().default(sql`ARRAY[]::text[]`),
+    /** Operator-configured reply language for this user's direct chat. */
+    language: text("language"),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.source, t.userId] }),
+    index("source_users_username_idx").on(t.source, t.username),
+  ],
+);
+
+export type SourceUserRow = typeof sourceUsers.$inferSelect;
+export type SourceUserInsert = typeof sourceUsers.$inferInsert;
+
+/** Every group conversation a transport participates in (the former tg `chats`). */
+export const sourceChats = pgTable(
+  "source_chats",
+  {
+    source: text("source").notNull(),
+    /** Source-local chat id. */
+    chatId: text("chat_id").notNull(),
+    /** Group title, refreshed on every message. */
+    title: text("title"),
+    /** The platform's own chat type string (`group` / `supergroup` / …). */
+    type: text("type"),
+    /** Operator-curated free-text description of the group. */
+    notes: text("notes"),
+    /** Operator-configured reply language for this group. */
+    language: text("language"),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.source, t.chatId] })],
+);
+
+export type SourceChatRow = typeof sourceChats.$inferSelect;
+export type SourceChatInsert = typeof sourceChats.$inferInsert;
+
+/** Chat ↔ user membership (the former tg `chat_members`). */
+export const sourceChatMembers = pgTable(
+  "source_chat_members",
+  {
+    source: text("source").notNull(),
+    chatId: text("chat_id").notNull(),
+    userId: text("user_id").notNull(),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.source, t.chatId, t.userId] }),
+    index("source_chat_members_user_idx").on(t.source, t.userId),
+  ],
+);
+
+export type SourceChatMemberRow = typeof sourceChatMembers.$inferSelect;
+
+/**
+ * Which assistants are present in a chat, stamped from what the transport
+ * actually delivered to each connection (the former tg `chat_assistants`).
+ * The cross-feed and the group fan-out read it.
+ */
+export const sourceChatAssistants = pgTable(
+  "source_chat_assistants",
+  {
+    source: text("source").notNull(),
+    chatId: text("chat_id").notNull(),
+    assistantId: text("assistant_id").notNull(),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.source, t.chatId, t.assistantId] })],
+);
+
+export type SourceChatAssistantRow = typeof sourceChatAssistants.$inferSelect;
+
+/**
+ * The 1:1 mirror of every transport conversation (the former tg `messages`):
+ * every human message and every assistant reply, keyed by chat. Append-only
+ * log — identity id preserves insertion order; `dedupe_key` (computed by the
+ * owning transport — for telegram `g:<chat>:<msg>` for the shared group
+ * stream, `d:<chat>:<assistant>:<msg>` for per-bot DM streams) makes
+ * re-deliveries no-ops without the core knowing the platform's stream rules.
+ */
+export const sourceMessages = pgTable(
+  "source_messages",
+  {
+    /** Monotonic insertion order + PK. Preserved verbatim by the v1 import. */
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    source: text("source").notNull(),
+    chatId: text("chat_id").notNull(),
+    /**
+     * The assistant whose conversation the row belongs to: set on every
+     * assistant-authored row and on direct-chat user rows (per-assistant DM
+     * streams); null on group user rows — the shared stream.
+     */
+    assistantId: text("assistant_id"),
+    /** Source-local message id within the chat. */
+    sourceMessageId: text("source_message_id").notNull(),
+    /** Transport-computed stream identity — the idempotence key. */
+    dedupeKey: text("dedupe_key").notNull(),
+    /** `user` (a human) or `assistant` (a bot reply). */
+    role: text("role").notNull(),
+    /** Sender's source-local user id for `user` rows; null for `assistant`. */
+    userId: text("user_id"),
+    /** Full message text (or media caption). */
+    content: text("content").notNull(),
+    /** Source-local id this message replied to, or null. */
+    replyToSourceMessageId: text("reply_to_source_message_id"),
+    /** When the message existed on the platform. */
+    sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+    /** Set when a later edit rewrote the content. */
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    /** Set when the message is known deleted (the bot's own deletions only). */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    /** The bot's own reaction badge on this message (current state, or null). */
+    botReaction: text("bot_reaction"),
+    /** When the current `bot_reaction` was set. */
+    botReactedAt: timestamp("bot_reacted_at", { withTimezone: true }),
+    /** Live-processing semaphore — released when the turn settles. */
+    processed: boolean("processed").notNull().default(true),
+    /** When we captured the row (may differ from `sent_at`). */
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("source_messages_dedupe_idx").on(t.source, t.dedupeKey),
+    index("source_messages_chat_sent_idx").on(t.source, t.chatId, t.sentAt),
+    index("source_messages_chat_msg_idx").on(t.source, t.chatId, t.sourceMessageId),
+    // Serves history_search's arbitrary-substring ILIKE (pg_trgm).
+    index("source_messages_content_trgm_idx").using("gin", sql`${t.content} gin_trgm_ops`),
+    check("source_messages_role_check", sql`${t.role} in ('user', 'assistant')`),
+  ],
+);
+
+export type SourceMessageRow = typeof sourceMessages.$inferSelect;
+export type SourceMessageInsert = typeof sourceMessages.$inferInsert;
+
+/**
+ * The searchable projection of one mirrored message (the former tg
+ * `message_search`): message text + rendered media annotation, plus its
+ * embedding.
+ */
+export const sourceMessageSearch = pgTable(
+  "source_message_search",
+  {
+    source: text("source").notNull(),
+    chatId: text("chat_id").notNull(),
+    sourceMessageId: text("source_message_id").notNull(),
+    /** Message text + media annotation — the string that was embedded. */
+    content: text("content").notNull(),
+    /** Embedding of `content`. Null when no embedding model is configured. */
+    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
+    /** When this row was last (re)built. */
+    indexedAt: timestamp("indexed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.source, t.chatId, t.sourceMessageId] }),
+    // FTS + trgm GIN expression indexes are added by hand in the migration.
+    index("source_message_search_embedding_idx").using(
+      "hnsw",
+      t.embedding.op("vector_cosine_ops"),
+    ),
+  ],
+);
+
+export type SourceMessageSearchRow = typeof sourceMessageSearch.$inferSelect;
+
+/**
+ * Media attached to a transport message (the former tg `media`). One row per
+ * media-bearing message; bytes live in {@link sourceMediaBlobs} while the
+ * row is `pending` and are dropped once described — the platform is its own
+ * archive.
+ */
+export const sourceMedia = pgTable(
+  "source_media",
+  {
+    id: text("id").primaryKey(),
+    source: text("source").notNull(),
+    chatId: text("chat_id").notNull(),
+    sourceMessageId: text("source_message_id").notNull(),
+    /** Media kind: `photo` | `sticker` | `image_document` | `animation` | `video` | `voice`. */
+    kind: text("kind").notNull(),
+    /** Source-local file handle (telegram `file_id`), for re-downloads. */
+    fileId: text("file_id").notNull(),
+    /** Source-local stable file identity, or null. */
+    fileUniqueId: text("file_unique_id"),
+    /** Mime hint of the stored payload. */
+    mimeType: text("mime_type"),
+    /** Extra hint for the describer (a sticker's emoji), or null. */
+    visionHint: text("vision_hint"),
+    /** The vision model's text description / the voice transcript; null until made. */
+    description: text("description"),
+    /** `pending` | `described` | `unavailable`. */
+    status: text("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Set when a description was produced and the bytes were dropped. */
+    describedAt: timestamp("described_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("source_media_chat_msg_idx").on(t.source, t.chatId, t.sourceMessageId),
+    index("source_media_status_idx").on(t.status, t.createdAt),
+    check(
+      "source_media_status_check",
+      sql`${t.status} in ('pending', 'described', 'unavailable')`,
+    ),
+  ],
+);
+
+export type SourceMediaRow = typeof sourceMedia.$inferSelect;
+
+/** The binary payload of a pending {@link sourceMedia} row, one row per frame. */
+export const sourceMediaBlobs = pgTable(
+  "source_media_blobs",
+  {
+    /** Owning media row; blobs vanish with it. */
+    mediaId: text("media_id")
+      .notNull()
+      .references(() => sourceMedia.id, { onDelete: "cascade" }),
+    /** Position in the frame sequence (0 for a still image / the preview frame). */
+    frameIndex: integer("frame_index").notNull(),
+    /** Normalized payload bytes of this frame. */
+    data: bytea("data").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.mediaId, t.frameIndex] })],
+);
+
+export type SourceMediaBlobRow = typeof sourceMediaBlobs.$inferSelect;
+
+/**
+ * One piece of user feedback on a bot reply, collected via a reaction and
+ * the follow-up menu (the former tg `feedbacks`). Raw material; the
+ * distilled outputs (preferences, corrections) live in their own tables.
+ */
+export const sourceFeedbacks = pgTable(
+  "source_feedbacks",
+  {
+    id: text("id").primaryKey(),
+    source: text("source").notNull(),
+    chatId: text("chat_id").notNull(),
+    /** Source-local id of the reacted bot reply. */
+    sourceMessageId: text("source_message_id").notNull(),
+    /** Who reacted (source-local user id). */
+    userId: text("user_id").notNull(),
+    /** `up` (👍) or `down` (👎). */
+    reaction: text("reaction").notNull(),
+    /** The chosen option text or the user's own words; null until answered. */
+    feedback: text("feedback"),
+    /** `pending` | `awaiting_text` | `completed`. */
+    status: text("status").notNull().default("pending"),
+    /** `quality` or `addressing`. */
+    topic: text("topic").notNull().default("quality"),
+    /** Source-local id of the menu message sent (for edits + reply capture). */
+    menuMessageId: text("menu_message_id"),
+    /** Clean model name that generated the reacted reply (informational). */
+    model: text("model"),
+    /** The bot's self-reflection on the reacted reply; null until written. */
+    reflection: text("reflection"),
+    /** Clean model name that wrote `reflection`, or null. */
+    reflectionModel: text("reflection_model"),
+    /** Preferences version that incorporated this feedback, or null. */
+    prefsVersion: integer("prefs_version"),
+    /** Self-corrections version that incorporated this feedback, or null. */
+    correctionsVersion: integer("corrections_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("source_feedbacks_msg_user_idx").on(
+      t.source,
+      t.chatId,
+      t.sourceMessageId,
+      t.userId,
+    ),
+    index("source_feedbacks_status_idx").on(t.status),
+    index("source_feedbacks_prefs_idx").on(t.userId, t.prefsVersion),
+    check("source_feedbacks_reaction_check", sql`${t.reaction} in ('up', 'down')`),
+    check(
+      "source_feedbacks_status_check",
+      sql`${t.status} in ('pending', 'awaiting_text', 'completed')`,
+    ),
+    check("source_feedbacks_topic_check", sql`${t.topic} in ('quality', 'addressing')`),
+  ],
+);
+
+export type SourceFeedbackRow = typeof sourceFeedbacks.$inferSelect;
+
+/**
+ * One topic discussed in one chat on one day, distilled by the
+ * summarization job (the former tg `summaries`). `message_ids` are
+ * source-local message ids (the `#<id>` transcript anchors) — no FK,
+ * deliberately.
+ */
+export const sourceSummaries = pgTable(
+  "source_summaries",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    source: text("source").notNull(),
+    chatId: text("chat_id").notNull(),
+    /** The summarized day (`YYYY-MM-DD`) in the operator timezone. */
+    summaryDate: text("summary_date").notNull(),
+    /** Self-contained summary of the topic. */
+    content: text("content").notNull(),
+    /** Source-local message ids belonging to this topic. */
+    messageIds: text("message_ids").array().notNull().default([]),
+    /** Embedding of `content` for semantic recall. Null when embedding failed. */
+    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("source_summaries_chat_date_idx").on(t.source, t.chatId, t.summaryDate),
+    // The full-text half of the hybrid search is a hand-written expression
+    // index in the migration.
+    index("source_summaries_embedding_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+  ],
+);
+
+export type SourceSummaryRow = typeof sourceSummaries.$inferSelect;
+
+/**
+ * Registered transports (redesign Phase 7, PLAN.md "The transport
+ * contract"): a transport announces itself at boot — id, name, base URL,
+ * MCP path, config schemas — and the row is what every core→transport call
+ * resolves against (no more per-transport env vars). `config` is the
+ * transport-level opaque blob (telegram's owner identity lives there);
+ * `enabled` is the admin's switch.
+ */
+export const transports = pgTable("transports", {
+  /** The source id ("tg"). */
+  id: text("id").primaryKey(),
+  /** Human name ("Telegram"). */
+  name: text("name").notNull(),
+  /** The transport's announced internal API base URL. */
+  baseUrl: text("base_url").notNull(),
+  /** Path of the transport's MCP server on that base, or null when none. */
+  mcpPath: text("mcp_path"),
+  /**
+   * Field descriptors for the per-assistant connection section the dashboard
+   * renders (schema-driven forms — no build-time UI package).
+   */
+  connectionConfigSchema: jsonb("connection_config_schema")
+    .$type<TransportConfigField[]>()
+    .notNull()
+    .default([]),
+  /** Field descriptors for the transport-level settings section. */
+  transportConfigSchema: jsonb("transport_config_schema")
+    .$type<TransportConfigField[]>()
+    .notNull()
+    .default([]),
+  /** The transport-level opaque config blob; the core never interprets it. */
+  config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
+  /** Admin switch: a disabled transport's events are ignored and it gets no state. */
+  enabled: boolean("enabled").notNull().default(true),
+  registeredAt: timestamp("registered_at", { withTimezone: true }).notNull().defaultNow(),
+  /** Stamped on every registration/heartbeat — the reachability signal. */
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** One field a transport's config form renders — the schema-driven UI unit. */
+export interface TransportConfigField {
+  key: string;
+  label: string;
+  /** `text` | `secret` | `boolean` — what control the dashboard renders. */
+  kind: "text" | "secret" | "boolean";
+  /** Help line under the field, or absent. */
+  help?: string;
+  required?: boolean;
+}
+
+export type TransportRow = typeof transports.$inferSelect;
+export type TransportInsert = typeof transports.$inferInsert;
+
+/**
+ * Per-assistant transport connections (the former tg `connections`,
+ * generalized): the assistant's record carries one opaque config section per
+ * transport (a telegram section holds the bot token). Desired state — the
+ * transport fetches it at boot and on change events and reconciles; actual
+ * state is published on the bus, not stored.
+ */
+export const assistantTransports = pgTable(
+  "assistant_transports",
+  {
+    id: text("id").primaryKey(),
+    assistantId: text("assistant_id")
+      .notNull()
+      .references(() => assistants.id, { onDelete: "cascade" }),
+    /** The owning transport's id (`transports.id` as a plain string). */
+    transport: text("transport").notNull(),
+    /** The opaque connection config blob (validated only by the transport's schema). */
+    config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
+    /** Desired state: whether this connection should run. */
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("assistant_transports_idx").on(t.assistantId, t.transport)],
+);
+
+export type AssistantTransportRow = typeof assistantTransports.$inferSelect;
+export type AssistantTransportInsert = typeof assistantTransports.$inferInsert;
