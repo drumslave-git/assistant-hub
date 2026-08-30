@@ -96,9 +96,19 @@ four actions landing as `tool-connections` traces.
 the running core (the standing rule). Typecheck, lint and every suite
 were run instead.
 
-**Next best task: Phase 6 (cutover)** — the rehearsed migration, the
-runbook, the repo rename to assistant-hub, the release pipeline for the
-new shape, and the docs rewrite (AGENTS.md still describes v1).
+**The target was revised (2026-08-30, user decision)** before any
+cutover ran: core and chat merge, all storage moves into one core-owned
+store, tg becomes a stateless transport, and the platform gains
+multi-user accounts (admin/user). PLAN.md is rewritten in place to the
+new target; the full decision set is in the session log under
+2026-08-30. Phases 0–5 stay `done` as as-built history — parts of what
+they built (per-app stores, the source contract, the build-time UI
+extensions) are deliberately superseded by phases 6–9. The cutover moved
+to Phase 10.
+
+**Next best task: Phase 6 (chat dissolve)** — merge `apps/chat` into the
+core (store, backend, tools, pages), delete the app and its queue hop.
+Write its acceptance criteria here when it starts.
 
 What Phase 4 deliberately did NOT do, so nobody mistakes it for
 missing: web threads are absent from the summarizer, the hybrid search
@@ -278,7 +288,15 @@ Known pitfalls for whoever starts:
 | 3 | Assistants CRUD, per-assistant bots, tasks, addressing rules | done |
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | done |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | done |
-| 6 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
+| 6 | Chat dissolve: apps/chat merges into core (store, backend, tools, pages) | todo |
+| 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | todo |
+| 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | todo |
+| 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | todo |
+| 10 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
+
+Phases 0–5 describe the as-built per-app architecture that phases 6–9
+deliberately supersede (2026-08-30 revision); their criteria below are
+history, not the current target.
 
 ## Phase 0 — Scaffold (acceptance criteria)
 
@@ -1522,6 +1540,46 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+- **2026-08-30 (target revised: one store, transports, accounts)** — The
+  user changed the architecture before cutover, and the whole decision
+  set was settled in one Q&A session; PLAN.md is rewritten in place and
+  the old Phase 6 (cutover) became Phase 10 behind four new phases.
+  The decisions, as answered by the user:
+  - **Core+chat merge — full dissolve.** apps/chat disappears: store into
+    the core schema, turns in-process (no queue hop), its MCP outbound
+    tools become in-process core tools, its views become core pages.
+  - **Stateless tg.** All conversation data (users, chats, messages,
+    media) moves to core-owned generalized tables; tg forwards
+    EVERYTHING (unaddressed chatter, edits, deletions, membership) and
+    fetches media bytes itself, core stores them; the core composes
+    context from its own store. Bot tokens live in the core DB as opaque
+    per-transport config sections on assistants; tg holds no database.
+  - **Zero-core-change transports.** The stated goal: "add Signal and
+    connect it to core without any changes of core." Transports
+    self-register at boot (id, name, config schema, MCP endpoint);
+    dashboard sections are schema-driven forms (the build-time UI
+    extension packages and registry are retired); no capability flags —
+    typing is lifecycle rendering, media kinds are universally supported
+    by core, platform actions are the transport's MCP tools (tg keeps
+    the Phase 5 MCP server), and a transport degrades unsupported
+    outbound kinds itself.
+  - **Multi-user.** Username+password accounts, roles admin/user; first
+    admin from /setup; admins create accounts, no open registration.
+    Users get web chat + own data (own memory view+delete, profile,
+    identity links) and create their own assistants with FULL parity
+    (own bot tokens, tasks, tools); every assistant has an owning
+    account and owner-rights = sender's linked account is the owner
+    (admins everywhere) — replaces the global owner. Self-link via a
+    one-time code sent to a bot. Users see their own assistants' full
+    activity including telegram chats and those turns' traces. Users may
+    register their own HTTP MCP connections (their own infra), public
+    addresses only (private ranges blocked at connect and call time).
+    Memory becomes global pool + per-person injected by chat membership.
+    Offboarding: deactivate keeps data (reversible), hard delete
+    cascades behind a confirm. No per-user quotas.
+  - **Sequencing.** Rework first on the redesign branch, ONE cutover at
+    the end; migration retargets to the single core store, the operator
+    password becomes the first admin, and tg receives no data at all.
 - **2026-08-28 (Phase 5 closes)** — Five slices, seven commits. The
   toolset moved out of the code: connections are rows, their tools are a
   snapshot an operator applies, and the source apps host the outbound
