@@ -16,7 +16,7 @@ import {
   type RowError,
 } from "../csv";
 import { requireSourceContent } from "@/server/source/tg-content";
-import { tgOperatorClient } from "@/server/source/tg-operator";
+import { sourceDirectoryClient } from "@/server/source-store/directory-client";
 import type { ImportHistoryInput } from "./schema";
 
 /**
@@ -40,10 +40,7 @@ const IMPORT_CHUNK_SIZE = 500;
 export async function exportHistoryCsv(chatId?: string): Promise<string> {
   const content = requireSourceContent();
   if (chatId) return rowsToCsv(await content.allMessages(chatId));
-  const operator = tgOperatorClient();
-  if (!operator) {
-    throw new Error("telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
-  }
+  const operator = sourceDirectoryClient("tg");
   const chats = await operator.listChats();
   const records = [];
   // Ordered by chat then insertion, like the v1 export.

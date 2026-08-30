@@ -4,8 +4,6 @@ import { Bot, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
-import { composeAssistantSections } from "@assistant-hub/ui";
-
 import {
   Button,
   Card,
@@ -22,7 +20,7 @@ import {
   Textarea,
   useConfirm,
 } from "@/components/ui";
-import { APP_EXTENSIONS } from "@/components/layout/extensions";
+import { TransportSections } from "@/components/transports/TransportSections";
 import { useLiveEvent } from "@/components/realtime/useLiveEvent";
 import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
 import type { ApiErrorBody } from "@/lib/api-error";
@@ -39,9 +37,6 @@ import type { Assistant } from "../server/schema";
  * layer; the persona form lives in a modal (the same one-form-for-both
  * decision as personalities, 2026-08-14).
  */
-
-/** Every source app's assistant-editor sections, fixed at build time. */
-const ASSISTANT_SECTIONS = composeAssistantSections(APP_EXTENSIONS);
 
 async function readError(res: Response): Promise<string> {
   try {
@@ -150,17 +145,13 @@ function AssistantDialog({
           )}
         </Field>
 
-        {/* Source-app sections (the registry's assistantSections): each app's
-            piece of this assistant — tg's bot connection first. They act on
-            the stored assistant, so they mount only when editing one. */}
-        {editing
-          ? ASSISTANT_SECTIONS.map(({ id, title, Section }) => (
-              <div key={id} className="space-y-3 border-t border-border pt-4">
-                <h3 className="text-sm font-semibold tracking-tight">{title}</h3>
-                <Section assistantId={assistant.id} refreshSignal={refreshSignal} />
-              </div>
-            ))
-          : null}
+        {/* Transport connection sections, schema-driven from the transport
+            registry (Phase 7): each registered transport's piece of this
+            assistant. They act on the stored assistant, so they mount only
+            when editing one. */}
+        {editing ? (
+          <TransportSections assistantId={assistant.id} refreshSignal={refreshSignal} />
+        ) : null}
       </div>
     </Modal>
   );

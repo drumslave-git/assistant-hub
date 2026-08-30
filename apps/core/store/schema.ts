@@ -1,4 +1,4 @@
-import { EMBEDDING_DIMENSIONS } from "@assistant-hub/contracts";
+import { EMBEDDING_DIMENSIONS, type TransportConfigField } from "@assistant-hub/contracts";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -1214,17 +1214,6 @@ export const transports = pgTable("transports", {
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
-
-/** One field a transport's config form renders — the schema-driven UI unit. */
-export interface TransportConfigField {
-  key: string;
-  label: string;
-  /** `text` | `secret` | `boolean` — what control the dashboard renders. */
-  kind: "text" | "secret" | "boolean";
-  /** Help line under the field, or absent. */
-  help?: string;
-  required?: boolean;
-}
 
 export type TransportRow = typeof transports.$inferSelect;
 export type TransportInsert = typeof transports.$inferInsert;

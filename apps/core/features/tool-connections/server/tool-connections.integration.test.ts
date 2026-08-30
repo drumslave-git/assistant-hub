@@ -45,12 +45,15 @@ const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", impo
 /** Where the managed reconciler believes the tg app lives, per test. */
 const { config } = vi.hoisted(() => ({ config: { url: null as string | null } }));
 
-vi.mock("@/server/source/internal-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/server/source/internal-client")>();
+process.env.INTERNAL_API_TOKEN = "secret-token";
+vi.mock("@/server/transports/service", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/transports/service")>();
   return {
     ...actual,
-    sourceApiConfig: (source: string) =>
-      source === "tg" && config.url ? { baseUrl: config.url, token: "secret-token" } : null,
+    getTransport: async (source: string) =>
+      source === "tg" && config.url
+        ? { id: "tg", name: "Telegram", baseUrl: config.url, mcpPath: "/mcp", enabled: true }
+        : null,
   };
 });
 

@@ -26,8 +26,8 @@ vi.mock("@/server/source/tg-content", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/server/source/tg-content")>();
   return { ...actual, requireSourceContent: () => content, resolveSourceContent: () => content };
 });
-vi.mock("@/server/source/tg-operator", () => ({
-  tgOperatorClient: () => ({
+vi.mock("@/server/source-store/directory-client", () => ({
+  sourceDirectoryClient: () => ({
     listChats: async () => {
       const ids = [...new Set(content.rows.map((row) => row.chatId))];
       return ids.map((id) => ({

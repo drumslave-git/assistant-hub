@@ -61,12 +61,9 @@ const envSchema = z.object({
   // Redis (bus + inbound queue). Unset → the queue consumer stays off.
   REDIS_URL: optionalString,
 
-  // The transport apps' internal APIs (redesign transition): one base URL per
-  // transport app plus the shared secret every side presents. An unset base
-  // URL means this deployment does not run that app — its listings report as
-  // unavailable rather than failing the page. The web chat has no entry: it
-  // is a core feature since the chat dissolve (Phase 6).
-  TG_API_URL: optionalString,
+  // The shared secret the transports and the core present to each other
+  // (registration, sends, menu operations). Base URLs are NOT env: a
+  // transport announces its own at registration (Phase 7).
   INTERNAL_API_TOKEN: optionalString,
 
   // Runtime

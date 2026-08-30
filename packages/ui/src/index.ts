@@ -1,16 +1,3 @@
-export {
-  appPageHref,
-  composeAssistantSections,
-  composeNavGroups,
-  findAppPage,
-  type AppExtensions,
-  type AppPage,
-  type AppPageProps,
-  type AssistantSection,
-  type AssistantSectionProps,
-  type NavGroup,
-  type NavItem,
-} from "./extensions";
 
 export {
   apiFetch,

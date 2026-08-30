@@ -1,12 +1,11 @@
 import "server-only";
 
 import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { renderMediaSuffix, type MediaAnnotation } from "@/features/vision/format";
 import { requireSourceContent, type SourceChatMessage } from "@/server/source/tg-content";
-import { tgOperatorClient } from "@/server/source/tg-operator";
+import { sourceDirectoryClient } from "@/server/source-store/directory-client";
 import { getLatestTraceIdsByCorrelation } from "@/server/trace";
 import {
   botReactionSuffix,
@@ -102,10 +101,7 @@ export function mediaSuffixOf(record: SourceChatMessage): string {
 
 /** Per-chat rollups for the History dashboard. */
 export async function getHistoryOverview(): Promise<ChatSummary[]> {
-  const operator = tgOperatorClient();
-  if (!operator) {
-    throw new Error("telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
-  }
+  const operator = sourceDirectoryClient("tg");
   const chats = await operator.listChats();
   return chats
     .filter((chat) => chat.messageCount > 0 && chat.lastMessageAt != null)

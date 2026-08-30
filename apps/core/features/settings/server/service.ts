@@ -37,9 +37,7 @@ import { probeSpeech, type SpeechRuntime } from "@/server/llm/speech";
 import { probeTranscription, type TranscriptionRuntime } from "@/server/llm/transcription";
 import { tinySilenceWav } from "@/server/media/audio";
 import { tinyProbePng } from "@/server/media/image";
-import {
-  saveSourceOwner,
-} from "@/server/source/tg-operator";
+import { saveSourceOwner } from "@/server/transports/status";
 import { withTrace, type TraceRecorder } from "@/server/trace";
 import { getEnv } from "@/server/env";
 import {

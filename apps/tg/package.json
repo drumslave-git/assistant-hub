@@ -3,13 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Telegram source app. Phase 1 ships its store (schema + migrations) and the v1 import; the runtime (pollers, inbound events, media ingestion, MCP server) arrives with Phase 2.",
+  "description": "Telegram transport: stateless pollers that register with the core, forward every update as transport events, perform sends, and host the platform's MCP tools.",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "import:v1": "tsx store/import-v1.ts",
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run"
@@ -17,7 +13,6 @@
   "dependencies": {
     "@assistant-hub/bus": "*",
     "@assistant-hub/contracts": "*",
-    "@assistant-hub/db": "*",
     "@assistant-hub/media": "*",
     "@assistant-hub/service": "*",
     "@grammyjs/runner": "^2.0.3",
@@ -25,21 +20,15 @@
     "@hono/node-server": "^1.14.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^17.2.0",
-    "drizzle-orm": "^0.45.2",
     "grammy": "^1.44.0",
     "hono": "^4.7.0",
-    "pg": "^8.22.0",
     "sharp": "^0.34.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@testcontainers/postgresql": "^12.0.4",
     "@types/node": "^20",
-    "@types/pg": "^8.20.0",
-    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.2",
     "typescript": "^5",
-    "vitest": "^4.1.10",
-    "testcontainers": "^12.0.4"
+    "vitest": "^4.1.10"
   }
 }

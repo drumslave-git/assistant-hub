@@ -42,7 +42,7 @@ import { buildInfo } from "@/lib/build-info";
 import type { RealtimeTopic } from "@/lib/realtime";
 import { getOverviewActivity, OVERVIEW_WINDOW_HOURS } from "@/server/overview";
 import { getSystemStatus, type EndpointStatus } from "@/server/status";
-import { listSourceConnections, summarizeConnections } from "@/server/source/tg-operator";
+import { listSourceConnections, summarizeConnections } from "@/server/transports/status";
 
 // Probe real state at request time (DB query + LLM endpoint call + trace reads),
 // so the overview reflects what actually works, not build-time or env-presence

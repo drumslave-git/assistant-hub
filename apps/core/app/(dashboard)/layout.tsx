@@ -8,7 +8,7 @@ import { getTimezone } from "@/features/settings/server/service";
 import { SESSION_COOKIE } from "@/lib/auth";
 import { judgeSessionToken } from "@/server/auth";
 import { getConfigReadiness } from "@/server/status";
-import { getSourceBotStatus } from "@/server/source/tg-operator";
+import { getSourceBotStatus } from "@/server/transports/status";
 
 /**
  * The authenticated dashboard shell. This layout is the *real* page-side auth

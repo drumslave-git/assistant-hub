@@ -1,6 +1,5 @@
 import "server-only";
 
-import { getDb } from "@/db/drizzle";
 import type { AnalyticsJobInfo } from "@/features/analytics/types";
 import { getAnalyticsJobInfo } from "@/features/analytics/server/scheduler";
 import {

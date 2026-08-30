@@ -26,7 +26,6 @@
     "@assistant-hub/contracts": "*",
     "@assistant-hub/db": "*",
     "@assistant-hub/media": "*",
-    "@assistant-hub/tg-ui": "*",
     "@assistant-hub/ui": "*",
     "@ghostery/adblocker-playwright": "^2.18.1",
     "@grammyjs/runner": "^2.0.3",

@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import {
   internalEditMenuRequestSchema,
   internalSendFileRequestSchema,
@@ -7,154 +5,47 @@ import {
   internalSendMessageRequestSchema,
   internalSendPhotosRequestSchema,
   internalSendVoiceRequestSchema,
-  operatorConnectionCreateRequestSchema,
-  operatorConnectionUpdateRequestSchema,
-  operatorSourceSettingsUpdateRequestSchema,
   type InternalSentPhotosResponse,
-  type OperatorConnection,
 } from "@assistant-hub/contracts";
 import { internalTokenGuard, serveMcp } from "@assistant-hub/service";
 import { Hono } from "hono";
 
 import type { AssistantConnection } from "./connections";
-import type { TgDb } from "./db";
-import type { BotManager, ConnectionStatus } from "./bot-manager";
+import type { BotManager } from "./bot-manager";
 import { createTgMcpServer } from "./mcp";
 import type { TgOutbound } from "./outbound";
 import { publishDelivered, sendChatMessage } from "./send";
-import {
-  deleteConnection,
-  getTgSettings,
-  insertConnection,
-  listConnections,
-  setOwner,
-  updateConnection,
-} from "./store";
 import type { UpdatePublisher } from "./updates";
-import type { ConnectionRow } from "../store/schema";
 
 /**
  * This app's HTTP surface, slimmed to what a stateless transport serves
  * (redesign Phase 7):
  *
- * - `/health` — liveness/readiness plus the poller statuses.
+ * - `/health` — liveness plus the poller statuses the dashboard's status
+ *   surfaces read (unauthenticated; it carries no secrets).
  * - `/internal/*` — the sends the core drives (the calls that need a
- *   delivered id back or carry bytes: voice, photos, files, deletes), the
- *   feedback-menu operations the core-owned flow calls, and — until the
- *   registration slice moves them — the connection rows and owner settings
- *   this app still keeps.
+ *   delivered id back or carry bytes: voice, photos, files, deletes) and
+ *   the feedback-menu operations the core-owned flow calls.
  * - `/mcp` — this app's own MCP server (delivery + reaction tools).
  *
  * Every performed send is reported to the core as a `message.delivered`
- * event; nothing here writes a conversation row anywhere.
+ * event; nothing here reads or writes any storage at all.
  */
 
 export function createApi(input: {
-  db: TgDb;
-  manager: Pick<
-    BotManager,
-    "statuses" | "senderFor" | "reconcileConnection" | "removeConnection"
-  >;
+  manager: Pick<BotManager, "statuses" | "senderFor">;
   internalToken: string;
   updates: UpdatePublisher;
   running: () => AssistantConnection[];
 }): Hono {
   const app = new Hono();
 
-  app.get("/health", async (c) => {
-    try {
-      await input.db.execute("select 1");
-    } catch {
-      return c.json({ ok: false, error: "database unreachable" }, 503);
-    }
+  app.get("/health", (c) => {
     return c.json({ ok: true, connections: input.manager.statuses() });
   });
 
   const internal = new Hono();
   internal.use("*", internalTokenGuard(input.internalToken));
-
-  const toOperatorConnection = (
-    row: ConnectionRow,
-    statuses: ConnectionStatus[],
-  ): OperatorConnection => {
-    const status = statuses.find((s) => s.connectionId === row.id) ?? null;
-    return {
-      id: row.id,
-      assistantId: row.assistantId,
-      enabled: row.enabled,
-      // Enough to tell tokens apart, never the token (schema: secret).
-      botTokenHint: row.botToken.slice(-4),
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-      status: status
-        ? {
-            state: status.state,
-            username: status.username,
-            since: status.since,
-            error: status.error,
-          }
-        : null,
-    };
-  };
-
-  internal.get("/connections", async (c) => {
-    const rows = await listConnections(input.db);
-    const statuses = input.manager.statuses();
-    return c.json({ connections: rows.map((row) => toOperatorConnection(row, statuses)) });
-  });
-
-  internal.post("/connections", async (c) => {
-    const parsed = operatorConnectionCreateRequestSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
-    if (!parsed.success) {
-      return c.json({ error: { message: "assistantId and botToken are required" } }, 400);
-    }
-    let row: ConnectionRow;
-    try {
-      row = await insertConnection(input.db, { id: randomUUID(), ...parsed.data });
-    } catch {
-      // The unique index: one bot per assistant.
-      return c.json({ error: { message: "this assistant already has a connection" } }, 409);
-    }
-    await input.manager.reconcileConnection(row);
-    return c.json({ connection: toOperatorConnection(row, input.manager.statuses()) });
-  });
-
-  internal.patch("/connections/:id", async (c) => {
-    const parsed = operatorConnectionUpdateRequestSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
-    if (!parsed.success) {
-      return c.json({ error: { message: "botToken or enabled is required" } }, 400);
-    }
-    const row = await updateConnection(input.db, c.req.param("id"), parsed.data);
-    if (!row) return c.json({ error: { message: "connection not found" } }, 404);
-    await input.manager.reconcileConnection(row);
-    return c.json({ connection: toOperatorConnection(row, input.manager.statuses()) });
-  });
-
-  internal.delete("/connections/:id", async (c) => {
-    const row = await deleteConnection(input.db, c.req.param("id"));
-    if (!row) return c.json({ error: { message: "connection not found" } }, 404);
-    await input.manager.removeConnection(row.id);
-    return c.json({ connection: toOperatorConnection(row, []) });
-  });
-
-  internal.get("/settings", async (c) => {
-    return c.json({ settings: await getTgSettings(input.db) });
-  });
-
-  internal.put("/settings", async (c) => {
-    const parsed = operatorSourceSettingsUpdateRequestSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
-    if (!parsed.success) {
-      return c.json({ error: { message: "ownerUsername is required (or null)" } }, 400);
-    }
-    await setOwner(input.db, parsed.data);
-    return c.json({ settings: await getTgSettings(input.db) });
-  });
 
   // ---- Outbound sends -------------------------------------------------------
   // The calls that need something back (a delivered id, a mirror-checked

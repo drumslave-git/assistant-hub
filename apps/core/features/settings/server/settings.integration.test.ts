@@ -55,7 +55,7 @@ vi.mock("@/server/llm/client", async (importOriginal) => {
 
 // Owner identity routes to the tg source app since the split; the operator
 // client is mocked so the write is asserted, not performed.
-vi.mock("@/server/source/tg-operator", () => ({
+vi.mock("@/server/transports/status", () => ({
   saveSourceOwner: vi.fn(),
 }));
 

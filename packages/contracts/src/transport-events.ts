@@ -286,3 +286,71 @@ export const transportMessageLookupResponseSchema = z.object({
 export type TransportCallbackRequest = z.infer<typeof transportCallbackRequestSchema>;
 export type TransportCallbackResponse = z.infer<typeof transportCallbackResponseSchema>;
 export type TransportMessageLookupResponse = z.infer<typeof transportMessageLookupResponseSchema>;
+
+/**
+ * One field a transport's config form renders — the schema-driven UI unit
+ * (PLAN.md "Dashboard"): the dashboard renders a transport's connection and
+ * settings sections from these descriptors, so a new transport needs no UI
+ * code in the core.
+ */
+export const transportConfigFieldSchema = z.object({
+  key: z.string().min(1),
+  label: z.string().min(1),
+  /** What control the dashboard renders. Secrets are write-only. */
+  kind: z.enum(["text", "secret", "boolean"]),
+  /** Help line under the field, or absent. */
+  help: z.string().optional(),
+  required: z.boolean().optional(),
+});
+
+/**
+ * POST /api/internal/transports/register — a transport announces itself at
+ * boot (PLAN.md "The transport contract"): its id, name, base URL, MCP path
+ * and config schemas. The core upserts the registration (preserving the
+ * admin's enabled flag and the stored config blobs) and answers with the
+ * transport's desired state, so registration doubles as the boot-time fetch.
+ */
+export const transportRegistrationRequestSchema = z.object({
+  id: sourceIdSchema,
+  name: z.string().min(1),
+  /** The transport's internal API base URL, reachable from the core. */
+  baseUrl: z.string().min(1),
+  /** Path of the transport's MCP server on that base, or null. */
+  mcpPath: z.string().nullable(),
+  connectionConfigSchema: z.array(transportConfigFieldSchema),
+  transportConfigSchema: z.array(transportConfigFieldSchema),
+});
+
+/** One desired connection: run this assistant on this opaque config. */
+export const transportDesiredConnectionSchema = z.object({
+  id: z.string().min(1),
+  assistantId: z.string().min(1),
+  config: z.record(z.string(), z.unknown()),
+  enabled: z.boolean(),
+});
+
+/** The transport's desired state, served on registration and on refetch. */
+export const transportDesiredStateSchema = z.object({
+  transport: z.object({
+    enabled: z.boolean(),
+    /** The transport-level opaque config blob (telegram: the owner identity). */
+    config: z.record(z.string(), z.unknown()),
+  }),
+  connections: z.array(transportDesiredConnectionSchema),
+});
+
+/**
+ * `transport.config.changed` — the core changed a transport's desired state
+ * (a connection edit, a settings write, an assistant deletion's cascade).
+ * The transport refetches its desired state and reconciles.
+ */
+export const transportConfigChangedEventSchema = eventEnvelopeSchema.extend({
+  type: z.literal("transport.config.changed"),
+  transport: sourceIdSchema,
+});
+
+export type TransportConfigField = z.infer<typeof transportConfigFieldSchema>;
+export type TransportRegistrationRequest = z.infer<typeof transportRegistrationRequestSchema>;
+export type TransportDesiredConnection = z.infer<typeof transportDesiredConnectionSchema>;
+export type TransportDesiredState = z.infer<typeof transportDesiredStateSchema>;
+export type TransportConfigChangedEvent = z.infer<typeof transportConfigChangedEventSchema>;

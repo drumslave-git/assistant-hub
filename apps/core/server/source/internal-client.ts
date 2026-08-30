@@ -3,26 +3,20 @@ import "server-only";
 import type { SourceId } from "@assistant-hub/contracts";
 
 import { ApiError } from "@/lib/api-error";
-import { getEnv, type Env } from "@/server/env";
+import { getEnv } from "@/server/env";
+import { getTransport } from "@/server/transports/service";
 
 /**
- * How the core talks to a source app's `/internal/*` surface — one requester
- * for every source and every call (the operator listing, the media API, the
- * outbound sends).
+ * How the core talks to a transport's `/internal/*` surface — one requester
+ * for every transport and every call (menu operations, the outbound sends).
  *
- * Which app answers is a lookup, not a branch: a source's base URL is an env
- * key derived from its id, so adding a source means adding an env var, never
- * an `if (source === …)` (PLAN.md, "The transport contract").
- *
- * Only sources served by a separate app appear here. `chat` is deliberately
- * absent since the dissolve (Phase 6): the web chat is a core feature, its
- * per-source ports resolve to in-process implementations, and asking for its
- * "API config" correctly answers null.
+ * Which app answers is a REGISTRATION lookup since Phase 7 (PLAN.md "The
+ * transport contract"): the base URL comes from the transport's
+ * self-registration row, never from an env var — adding a transport to a
+ * running core is deploying one container, not configuring the core. The
+ * web chat has no entry: it is a core feature, and its per-source ports
+ * resolve to in-process implementations.
  */
-
-const API_URL_ENV: Partial<Record<SourceId, keyof Env>> = {
-  tg: "TG_API_URL",
-};
 
 export interface InternalApiConfig {
   baseUrl: string;
@@ -30,17 +24,17 @@ export interface InternalApiConfig {
 }
 
 /**
- * The source's internal API config, or null when this deployment does not run
- * that app. Null is a normal state — callers report the source as
- * unavailable rather than failing the whole read.
+ * The transport's internal API config, or null when it has never registered
+ * (or the shared token is unset). Null is a normal state — callers report
+ * the transport as unavailable rather than failing the whole read.
  */
-export function sourceApiConfig(source: SourceId): InternalApiConfig | null {
-  const envKey = API_URL_ENV[source];
-  if (!envKey) return null;
-  const env = getEnv();
-  const baseUrl = env[envKey];
-  if (!baseUrl || !env.INTERNAL_API_TOKEN) return null;
-  return { baseUrl: String(baseUrl).replace(/\/$/, ""), token: env.INTERNAL_API_TOKEN };
+export async function sourceApiConfig(source: SourceId): Promise<InternalApiConfig | null> {
+  if (source === "chat") return null;
+  const token = getEnv().INTERNAL_API_TOKEN;
+  if (!token) return null;
+  const row = await getTransport(source).catch(() => null);
+  if (!row || !row.baseUrl) return null;
+  return { baseUrl: row.baseUrl.replace(/\/$/, ""), token };
 }
 
 export type InternalRequest = (
@@ -48,8 +42,10 @@ export type InternalRequest = (
   init?: RequestInit & { timeoutMs?: number },
 ) => Promise<unknown>;
 
-export interface InternalRequesterOptions extends InternalApiConfig {
-  /** Named in error messages, e.g. `tg operator API`. */
+export interface InternalRequesterOptions {
+  /** Resolve the transport's config per call — registration can change. */
+  config: () => Promise<InternalApiConfig | null>;
+  /** Named in error messages, e.g. `tg internal API`. */
   label: string;
   timeoutMs?: number;
 }
@@ -57,20 +53,24 @@ export interface InternalRequesterOptions extends InternalApiConfig {
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
- * Build the requester for one source API. Failures keep the source's own
- * verdict where it has one — a 409 "already has a connection" must reach the
- * dashboard as a conflict, not as a generic 500 — and anything unclassified
- * becomes `service_unavailable`, which is what an unreachable app is.
+ * Build the requester for one transport API. Failures keep the transport's
+ * own verdict where it has one — a 409 must reach the dashboard as a
+ * conflict, not a generic 500 — and anything unclassified becomes
+ * `service_unavailable`, which is what an unreachable app is.
  */
 export function internalRequester(options: InternalRequesterOptions): InternalRequest {
-  const { baseUrl, token, label } = options;
+  const { label } = options;
   const defaultTimeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   return async (path, init) => {
-    const res = await fetch(`${baseUrl}${path}`, {
+    const config = await options.config();
+    if (!config) {
+      throw ApiError.serviceUnavailable(`${label} is not registered with this core`);
+    }
+    const res = await fetch(`${config.baseUrl}${path}`, {
       ...init,
       headers: {
-        "x-internal-token": token,
+        "x-internal-token": config.token,
         ...(init?.body ? { "content-type": "application/json" } : {}),
         ...init?.headers,
       },

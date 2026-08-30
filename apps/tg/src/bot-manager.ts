@@ -5,17 +5,14 @@ import { run, sequentialize, type RunnerHandle } from "@grammyjs/runner";
 import type { MessageReactionUpdated } from "@grammyjs/types";
 import { Bot, HttpError, type Context } from "grammy";
 
+import type { TransportDesiredState } from "@assistant-hub/contracts";
+
 import type { AssistantConnection } from "./connections";
 import { forwardCallbackPress } from "./core-client";
-import type { TgDb } from "./db";
 import { presenceEvent, processIncomingMessage } from "./inbound";
 import { createBotOutbound, type TgOutbound } from "./outbound";
-import { resolveIsOwner } from "./owner";
+import type { OwnerConfig } from "./owner";
 import { isGroupChat } from "./send";
-import {
-  deleteConnectionsByAssistant,
-  listEnabledConnections,
-} from "./store";
 import { SeenCache, updateEnvelope, type UpdatePublisher } from "./updates";
 
 /**
@@ -46,6 +43,8 @@ export interface ConnectionStatus {
 interface Poller {
   connectionId: string;
   assistantId: string;
+  /** The token the current run was started with (reconcile compares it). */
+  startedWithToken: string | null;
   bot: Bot | null;
   runner: RunnerHandle | null;
   status: ConnectionStatus;
@@ -122,9 +121,9 @@ export class BotManager {
 
   constructor(
     private readonly deps: {
-      db: TgDb;
       redisUrl: string;
       updates: UpdatePublisher;
+      owner: OwnerConfig;
       onStatusChange?: (status: ConnectionStatus) => void;
     },
   ) {
@@ -153,14 +152,40 @@ export class BotManager {
     );
   }
 
-  /** Start a poller for every enabled connection. Boot entry. */
-  async startEnabled(): Promise<ConnectionStatus[]> {
-    const rows = await listEnabledConnections(this.deps.db);
-    for (const row of rows) {
+  /**
+   * Reconcile the pollers to the core's desired state (boot, and every
+   * `transport.config.changed`): start what should run, restart what
+   * changed (start is idempotent and always replaces the running bot),
+   * stop and drop what is gone or disabled. The transport-level config
+   * (owner identity) lands in the owner holder on the same pass.
+   */
+  async applyDesiredState(state: TransportDesiredState): Promise<ConnectionStatus[]> {
+    this.deps.owner.apply(state.transport.config);
+    const desired = new Map(
+      state.connections.map((connection) => [connection.id, connection]),
+    );
+    for (const [connectionId] of this.pollers) {
+      const want = desired.get(connectionId);
+      if (!want || !want.enabled) await this.removeConnection(connectionId);
+    }
+    for (const connection of state.connections) {
+      if (!connection.enabled) continue;
+      const botToken = connection.config.botToken;
+      if (typeof botToken !== "string" || !botToken) {
+        console.warn(
+          `connection ${connection.id} (assistant ${connection.assistantId}) has no bot token — skipped`,
+        );
+        continue;
+      }
+      const running = this.pollers.get(connection.id);
+      // Idempotence: an unchanged running connection is left alone; a token
+      // change restarts it (tokens are not readable off a running poller, so
+      // the desired blob is compared to what this poller was started with).
+      if (running?.bot && running.startedWithToken === botToken) continue;
       await this.startConnection({
-        connectionId: row.id,
-        assistantId: row.assistantId,
-        botToken: row.botToken,
+        connectionId: connection.id,
+        assistantId: connection.assistantId,
+        botToken,
       });
     }
     return this.statuses();
@@ -257,6 +282,7 @@ export class BotManager {
       poller = {
         connectionId: input.connectionId,
         assistantId: input.assistantId,
+        startedWithToken: null,
         bot: null,
         runner: null,
         status: {
@@ -273,6 +299,7 @@ export class BotManager {
       this.pollers.set(input.connectionId, poller);
     }
     poller.desired = true;
+    poller.startedWithToken = input.botToken;
     this.cancelReconnect(poller);
     if (poller.bot || poller.runner) await this.stopPoller(poller);
 
@@ -339,7 +366,7 @@ export class BotManager {
         botToken,
         running: () => this.runningConnections(),
         seen: this.seen,
-        isOwner: (sender) => resolveIsOwner(this.deps.db, sender),
+        isOwner: (sender) => this.deps.owner.resolveIsOwner(sender),
       });
       if (result.status === "forwarded") {
         await this.deps.updates.publish(result.event);
@@ -461,50 +488,6 @@ export class BotManager {
       .catch((err) => {
         console.error("Failed to forward edited message:", errorMessage(err));
       });
-  }
-
-  /**
-   * Reconcile one connection to its desired state (operator API writes):
-   * enabled starts/restarts its poller, disabled stops it.
-   */
-  async reconcileConnection(row: {
-    id: string;
-    assistantId: string;
-    botToken: string;
-    enabled: boolean;
-  }): Promise<void> {
-    if (row.enabled) {
-      await this.startConnection({
-        connectionId: row.id,
-        assistantId: row.assistantId,
-        botToken: row.botToken,
-      });
-      return;
-    }
-    const poller = this.pollers.get(row.id);
-    if (poller) {
-      poller.desired = false;
-      await this.stopPoller(poller);
-    }
-  }
-
-  /**
-   * The `assistant.deleted` reaction: drop every connection keyed on the
-   * assistant — rows deleted, pollers stopped — and ping the status pages.
-   */
-  async removeAssistant(assistantId: string): Promise<void> {
-    const rows = await deleteConnectionsByAssistant(this.deps.db, assistantId);
-    for (const row of rows) {
-      await this.removeConnection(row.id);
-    }
-    if (rows.length > 0) {
-      console.log(
-        `assistant ${assistantId} deleted — dropped ${rows.length} connection(s) and stopped polling`,
-      );
-      void this.publisher
-        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh("tg", ["status"]))
-        .catch(() => undefined);
-    }
   }
 
   /** Stop a deleted connection's poller and drop it from the status listing. */

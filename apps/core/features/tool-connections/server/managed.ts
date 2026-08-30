@@ -8,7 +8,8 @@ import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { INTERNAL_TOKEN_HEADER } from "@assistant-hub/service";
 import { publishEvent } from "@/server/realtime/hub";
-import { sourceApiConfig } from "@/server/source/internal-client";
+import { getEnv } from "@/server/env";
+import { getTransport } from "@/server/transports/service";
 import { directorySourceLabel } from "@/server/source/directory";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { withTrace } from "@/server/trace";
@@ -62,16 +63,24 @@ interface ManagedDesired {
   authHeaders: Record<string, string>;
 }
 
-/** The desired connection for one source, or null when it is not deployed. */
-export function desiredManagedConnection(source: SourceId): ManagedDesired | null {
-  const config = sourceApiConfig(source);
-  if (!config) return null;
+/**
+ * The desired connection for one source, or null when it has not registered
+ * (or announces no MCP server). Resolved from the transport's registration
+ * row since Phase 7 — the endpoint is `baseUrl + mcpPath` as announced.
+ */
+export async function desiredManagedConnection(
+  source: SourceId,
+): Promise<ManagedDesired | null> {
+  const token = getEnv().INTERNAL_API_TOKEN;
+  if (!token) return null;
+  const row = await getTransport(source).catch(() => null);
+  if (!row || !row.baseUrl || !row.mcpPath) return null;
   return {
     source,
     slug: source,
     name: `${directorySourceLabel(source)} tools`,
-    endpointUrl: `${config.baseUrl}/mcp`,
-    authHeaders: { [INTERNAL_TOKEN_HEADER]: config.token },
+    endpointUrl: `${row.baseUrl.replace(/[/]$/, "")}${row.mcpPath}`,
+    authHeaders: { [INTERNAL_TOKEN_HEADER]: token },
   };
 }
 
@@ -81,7 +90,7 @@ async function reconcileOne(
   source: SourceId,
   trace: Pick<TraceRecorder, "event">,
 ): Promise<ToolConnectionRecord | null> {
-  const desired = desiredManagedConnection(source);
+  const desired = await desiredManagedConnection(source);
   const existing = await getToolConnectionBySlug(db, source);
 
   if (!desired) {

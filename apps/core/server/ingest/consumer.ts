@@ -6,7 +6,6 @@ import { openWorker } from "@assistant-hub/bus";
 import {
   TRANSPORT_UPDATES_QUEUE,
   inboundMessageEventSchema,
-  messageDedupeKey,
   scopedRef,
   transportUpdateEventSchema,
   turnCorrelationId,
@@ -20,7 +19,6 @@ import {
   type TransportPresenceEvent,
   type TransportReactionEvent,
   type TransportReceiver,
-  type TransportUser,
 } from "@assistant-hub/contracts";
 import { normalizeImageForChat } from "@assistant-hub/media";
 import type { Worker } from "bullmq";

@@ -1,7 +1,5 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
 import { ApiError } from "@/lib/api-error";
 import type { TraceTrigger } from "@/lib/trace";
 import { getGroupContext, getGroupLanguage } from "@/features/known-groups/server/service";

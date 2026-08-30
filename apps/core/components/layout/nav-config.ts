@@ -1,4 +1,3 @@
-import { composeNavGroups, type NavGroup } from "@assistant-hub/ui";
 import {
   Activity,
   BarChart3,
@@ -16,19 +15,31 @@ import {
   Sparkles,
   Users,
   UsersRound,
-  VenetianMask,
   Wrench,
 } from "lucide-react";
 
-import { APP_EXTENSIONS } from "./extensions";
+import type { LucideIcon } from "lucide-react";
 
-export type { NavGroup, NavItem } from "@assistant-hub/ui";
+/** One sidebar entry. */
+export interface NavItem {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  /** Planned-but-not-built routes render disabled with a "soon" hint. */
+  soon?: boolean;
+}
+
+/** One sidebar group (label optional for the landing group). */
+export interface NavGroup {
+  label?: string;
+  items: NavItem[];
+}
 
 /**
- * The shell's own navigation. Feature pages register here as they land; `soon`
- * marks planned v1 routes so the shell shows intended shape without dead links.
- * Source apps contribute their groups through the extension registry, composed
- * into {@link NAV_GROUPS} below.
+ * The shell's own navigation — the whole navigation since the extension
+ * registry retired (Phase 7): the web chat is a core page (Phase 6) and
+ * transport UI is schema-driven, so nothing composes into the shell at
+ * build time any more.
  */
 const SHELL_NAV_GROUPS: NavGroup[] = [
   {
@@ -83,11 +94,5 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
   },
 ];
 
-/**
- * What the sidebar renders: the shell's groups plus every registered source
- * app's contributions (none yet — the registry is empty until Phase 2).
- */
-export const NAV_GROUPS: NavGroup[] = composeNavGroups(
-  SHELL_NAV_GROUPS,
-  APP_EXTENSIONS,
-);
+/** What the sidebar renders. */
+export const NAV_GROUPS: NavGroup[] = SHELL_NAV_GROUPS;

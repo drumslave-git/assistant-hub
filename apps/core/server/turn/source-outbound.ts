@@ -107,9 +107,7 @@ export interface SourceOutboundPort {
  */
 export function sourceOutbound(source: SourceId): SourceOutboundPort | null {
   if (source === "chat") return webChatOutbound();
-  const config = sourceApiConfig(source);
-  if (!config) return null;
-  const port = sourceApiOutbound(source, config);
+  const port = sourceApiOutbound(source);
   return {
     ...port,
     async sendMessage(chatId, opts) {
@@ -143,14 +141,12 @@ const REQUEST_TIMEOUT_MS = 60_000;
  */
 const FILE_REQUEST_TIMEOUT_MS = 500_000;
 
-export function sourceApiOutbound(
-  source: SourceId,
-  config: { baseUrl: string; token: string },
-): SourceOutboundPort {
+export function sourceApiOutbound(source: SourceId): SourceOutboundPort {
   // The requester keeps the source's own verdict: a platform refusal comes
   // back as a 502 carrying the platform's words, and the tool relays them.
+  // Config resolves per call from the transport's registration row.
   const request = internalRequester({
-    ...config,
+    config: () => sourceApiConfig(source),
     label: `${source} internal API`,
     timeoutMs: REQUEST_TIMEOUT_MS,
   });

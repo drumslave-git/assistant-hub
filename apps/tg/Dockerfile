@@ -46,13 +46,6 @@ COPY packages/db packages/db
 COPY packages/service packages/service
 COPY apps/tg apps/tg
 
-# Isolated migration runner (same shape as the core image): drizzle's
-# programmatic migrator + THIS app's SQL chain (the tg store owns its own
-# schema and migrations), with its two small deps kept out of the app tree.
-COPY packages/db/migrate/package.json ./migrate/package.json
-COPY packages/db/migrate/migrate.mjs ./migrate/migrate.mjs
-COPY apps/tg/store/migrations ./migrate/db/migrations
-RUN cd migrate && npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 
 # Run as non-root.
 RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
@@ -60,7 +53,6 @@ USER app
 
 EXPOSE 3210
 
-# Apply pending store migrations, then serve. Migrations complete before the
-# app accepts traffic; a failed migration fails the start.
+# Stateless (Phase 7): no database, no migrations — register with the core and go.
 WORKDIR /app/apps/tg
-CMD ["sh", "-c", "node /app/migrate/migrate.mjs && npx tsx src/index.ts"]
+CMD ["npx", "tsx", "src/index.ts"]

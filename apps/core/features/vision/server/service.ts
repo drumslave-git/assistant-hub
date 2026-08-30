@@ -13,7 +13,7 @@ import type {
   LlmCallTrace,
 } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
-import { mediaSources, sourceMediaStore } from "@/server/turn/source-media";
+import { mediaSources } from "@/server/turn/source-media";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 
 import {
@@ -33,13 +33,11 @@ import { buildDescribeMessages } from "./describe";
 import { VIDEO_FRAME_COUNT, extractVideoFrames } from "./frames";
 import { normalizeImageForChat } from "./normalize";
 import {
-  countPendingMedia,
   getMediaAnnotations,
   getMediaByMessage,
   getMediaById,
   insertMedia,
   insertUnavailableMedia,
-  listRecentMedia,
   markDescribed,
   type MediaRecord,
 } from "./repository";

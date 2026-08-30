@@ -125,11 +125,30 @@ dropped the preview session, and there is no sign-in bypass by
 decision), and one look at `/tools` to see `chat_reply_to_message` /
 `chat_send_message` listed under "Web chat tools".
 
-**Next best task: Phase 7 (one store, stateless transports)** — move the
-tg store into the core's generalized conversation tables, tg forwards
-everything, context composition in core, config as opaque sections on
-assistants with schema-driven forms, transport self-registration.
-Write its acceptance criteria here when it starts.
+**Phase 7 (one store, stateless transports) is DONE (2026-08-30, same
+session).** All six slices landed: the tg conversation store lives in
+the core's generalized `source_*` tables (migration 0007), tg holds no
+database at all — it registers with the core at boot, forwards every
+update as transport events, performs sends, and hosts its MCP tools.
+Ingest inverted (core persists, fans out from its own presence, composes
+context, and feeds the untouched pipeline), the feedback machine is
+core-owned, and connection config is opaque `assistant_transports` rows
+rendered by schema-driven forms — `apps/tg/ui` and the whole build-time
+extension registry are deleted, `TG_API_URL` is gone (base URLs come
+from the registration row). Proof: repo typecheck 8/8, lint clean, core
+unit 1171 + integration 396 + tg 36 all green; dev data ported (1426
+messages, 13 media, 5 feedbacks, 125 summaries, 2 connections + owner
+config); live boot verified — core logs "transport 'tg' registered from
+http://localhost:3210", tg logs "registered with the core — 2
+connection(s) desired", both pollers running. `npm run build` was NOT
+run (dev server live on 3200, standing rule). Left for the operator:
+one live tg turn (message a bot) — the one check that needs Telegram.
+
+**Next best task: Phase 8 (accounts)** — users table, admin/user roles,
+role gates on every route, assistant ownership + owner rights, identity
+self-link via bot code, memory rescope (global pool + per-person
+injection), the operator password becomes the first admin. Write its
+acceptance criteria here when it starts.
 
 What Phase 4 deliberately did NOT do, so nobody mistakes it for
 missing: web threads are absent from the summarizer, the hybrid search
@@ -310,7 +329,7 @@ Known pitfalls for whoever starts:
 | 4 | Web chat: apps/chat + chat-ui, threads, text/image/voice, live progress | done |
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | done |
 | 6 | Chat dissolve: apps/chat merges into core (store, backend, tools, pages) | done |
-| 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | in-progress |
+| 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | done |
 | 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | todo |
 | 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | todo |
 | 10 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
@@ -382,7 +401,7 @@ new user decisions):
       updates forwarded by tg; the flow state machine ported into the
       core; menu send/edit/answer served by tg's API; the learning
       jobs read core rows directly.
-- [ ] **E — registration + config.** tg self-registers (id, name, base
+- [x] **E — registration + config.** tg self-registers (id, name, base
       URL, MCP path, config schemas) against the core's internal
       transport API; connections live in `assistant_transports` with a
       schema-driven section in the assistant editor; owner identity in
@@ -390,7 +409,7 @@ new user decisions):
       `apps/tg/ui` and the extension registry deleted; `TG_API_URL`
       gone; the managed MCP reconcile and every core→tg call resolve
       the base URL from the registration row.
-- [ ] **F — tg is stateless.** tg's database, schema, migrations, and
+- [x] **F — tg is stateless.** tg's database, schema, migrations, and
       drizzle config deleted; its `.env` keeps only REDIS_URL, the
       internal token, PORT, and the core's URL; compose/initdb drop the
       tg database; tests re-homed (store/content/feedback suites into
@@ -1692,6 +1711,33 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+- **2026-08-30 (Phase 7 closes: one store, stateless transports)** — Six
+  slices in one session, and the design bet paid twice: the same
+  per-source lookup seams that absorbed the chat dissolve absorbed the
+  tg de-store, and `processInboundEvent` still has not changed. The big
+  inversion is ingest: tg computes only what needs platform knowledge
+  (structural addressing verdicts per running connection, the
+  stream-shaped `dedupe_key`) and publishes transport updates with media
+  bytes attached; a core ingest stage persists into the `source_*`
+  tables, resolves the audience from presence ∩ running receivers,
+  composes the context window from its own store, and enqueues the
+  classic inbound event. Deliveries return as `message.delivered` events
+  the core turns into mirror rows and cross-feeds; the `#id` link
+  whitelist is resolved core-side and travels on the reply-delivery
+  event. Registration replaces configuration: the `transports` row
+  (base URL, MCP path, config field schemas) is written by tg's boot
+  self-registration — which doubles as the desired-state fetch, retried
+  until the core answers — and `transport.config.changed` /
+  `assistant.deleted` bus events drive tg's serialized reconcile.
+  The assistant editor renders every registered transport's section
+  from its announced field schema, so a future transport gets its
+  dashboard surface for free. What died: tg's database (compose,
+  initdb, Dockerfile migration runner included), `apps/tg/ui`, the
+  extension registry in `packages/ui`, `TG_API_URL`, `tg-content.ts`
+  as an HTTP client, `tg-operator.ts`. Four integration suites needed
+  their mocks re-pointed from deleted modules to the new seams —
+  mechanical, no behavior changes. Live boot verified end to end:
+  register → desired state → two pollers up.
 - **2026-08-30 (Phase 6 closes: the chat app dissolves)** — Six slices,
   one session, and the pipeline never noticed: every seam the chat app
   plugged into was already a per-source lookup, so the merge swapped the

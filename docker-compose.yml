@@ -19,11 +19,11 @@ services:
       # Built from the bundled db service; override DATABASE_URL to use an
       # external database.
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@db:5432/${POSTGRES_DB:-bot}}
-      # The cross-app bus + inbound queue, and the source apps' internal APIs
-      # (the split topology). The token authenticates every direction and must
-      # match the source services' — set a real one in .env.
+      # The cross-app bus + transport queues. The token authenticates every
+      # direction and must match the transport services' — set a real one in
+      # .env. Transport base URLs are announced at registration, not
+      # configured here.
       REDIS_URL: redis://redis:6379
-      TG_API_URL: http://tg:3210
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-change-me}
       TZ: ${TZ:-UTC}
     volumes:
@@ -47,22 +47,20 @@ services:
     restart: unless-stopped
 
   tg:
-    # The Telegram source app: pollers, mirror/media store, feedback flows,
-    # and the internal API the core reads conversation content through.
+    # The Telegram transport: stateless pollers that register with the core,
+    # forward every update as transport events, and perform the sends.
     build:
       context: .
       dockerfile: apps/tg/Dockerfile
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: 3210
-      # The tg store — its OWN database on the bundled Postgres server
-      # (created on first init by docker/initdb; see the db service).
-      DATABASE_URL: ${TG_DATABASE_URL:-postgres://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@db:5432/${TG_POSTGRES_DB:-tg}}
+      # Stateless (Phase 7): no database. The service registers itself with
+      # the core under this URL.
+      SELF_URL: http://tg:3210
       REDIS_URL: redis://redis:6379
       # The core's internal transport API (menu presses, mirror lookups).
       CORE_API_URL: http://app:3200
@@ -103,17 +101,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-bot}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bot}
       POSTGRES_DB: ${POSTGRES_DB:-bot}
-      # The transport app's database, created by the initdb hook below on
-      # FIRST init only — an existing data directory upgrading to the split
-      # topology creates it by hand (see docker/initdb).
-      TG_POSTGRES_DB: ${TG_POSTGRES_DB:-tg}
       TZ: ${TZ:-UTC}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       # Bind-mounted host directory for persistence.
       - "./data/pg:/var/lib/postgresql/data"
-      - "./docker/initdb:/docker-entrypoint-initdb.d:ro"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-bot}"]
       interval: 5s
