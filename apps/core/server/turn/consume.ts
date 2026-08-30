@@ -64,6 +64,8 @@ import {
   HONESTY_GATE_MAX_TOKENS,
   HONESTY_GATE_TIMEOUT_MS,
 } from "@/server/llm/classifier";
+import { findMessageRefs } from "@/lib/message-refs";
+import { filterMirroredMessageIds } from "@/server/source-store/repository";
 import { getEnv } from "@/server/env";
 import type { TraceRecorder } from "@/server/trace";
 
@@ -292,7 +294,7 @@ async function buildEventDeps(
 
   const markActed = () => ctx.markers.mark(event.correlationId);
 
-  const deliveryEvent = (text: string, silent: boolean): ReplyDeliveryEvent => ({
+  const deliveryEvent = async (text: string, silent: boolean): Promise<ReplyDeliveryEvent> => ({
     v: 1,
     eventId: randomUUID(),
     occurredAt: new Date().toISOString(),
@@ -305,6 +307,22 @@ async function buildEventDeps(
     replyToSourceMessageId: event.message.sourceMessageId,
     text,
     silent,
+    // Which `#<id>` citations really exist here decides what links (the
+    // whitelist keeps invented ids as plain text) — resolved core-side since
+    // Phase 7, because the mirror lives here now. A failed check drops the
+    // links, never the reply. The web chat renders no message links.
+    linkableSourceMessageIds:
+      event.source === "chat"
+        ? []
+        : await filterMirroredMessageIds(
+            {
+              source: event.source,
+              chatId,
+              assistantId: event.assistantId,
+              direct: event.chat.kind !== "group",
+            },
+            findMessageRefs(text),
+          ).catch(() => []),
   });
 
   /**
@@ -342,7 +360,7 @@ async function buildEventDeps(
       await registerBrowserRunAck(sent.messageId);
       return { messageId: sent.messageId };
     }
-    await ctx.publish(deliveryEvent(text, silent));
+    await ctx.publish(await deliveryEvent(text, silent));
     return { messageId: null };
   };
 

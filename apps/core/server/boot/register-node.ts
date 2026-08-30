@@ -29,6 +29,10 @@ import {
 } from "@/features/self-improvement/server/scheduler";
 import { startVisionBackfill, stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import {
+  startTransportIngestFromEnv,
+  type TransportIngest,
+} from "@/server/ingest/consumer";
+import {
   startSourceEventsConsumerFromEnv,
   type SourceEventsConsumer,
 } from "@/server/source/events-consumer";
@@ -51,9 +55,11 @@ export function registerNode(): void {
   let shuttingDown = false;
   let turnConsumer: TurnConsumer | null = null;
   let eventsConsumer: SourceEventsConsumer | null = null;
+  let transportIngest: TransportIngest | null = null;
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    await transportIngest?.close().catch(() => undefined);
     await turnConsumer?.close().catch(() => undefined);
     await eventsConsumer?.close().catch(() => undefined);
     stopVisionBackfill();
@@ -95,6 +101,18 @@ export function registerNode(): void {
     })
     .catch((err) => {
       console.error("Inbound turn consumer failed to start:", err);
+    });
+
+  // Start the transport-update ingest (Phase 7): every transport's messages,
+  // deliveries, edits and reactions land in the conversation store here, and
+  // the turns they open are enqueued for the pipeline. Same env gate.
+  void startTransportIngestFromEnv()
+    .then((ingest) => {
+      transportIngest = ingest;
+      if (ingest) console.log("Transport ingest started (queue: transport-updates)");
+    })
+    .catch((err) => {
+      console.error("Transport ingest failed to start:", err);
     });
 
   // Start the cross-app event subscriber (feedback.recorded → the learning

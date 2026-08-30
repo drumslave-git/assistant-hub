@@ -66,6 +66,17 @@ export interface TgOutbound {
   ): Promise<{ messageId: number }>;
   /** Delete one of the bot's own messages. Telegram refuses deletes older than 48h. */
   deleteMessage(chatId: string, messageId: number): Promise<void>;
+  /** Post an inline-keyboard menu (the feedback flow's options menu). */
+  sendMenu(
+    chatId: string,
+    menu: { text: string; keyboard: MenuGrid; replyToMessageId: number },
+  ): Promise<{ messageId: number }>;
+  /** Rewrite a previously sent menu (`null` keyboard removes the buttons). */
+  editMenu(
+    chatId: string,
+    messageId: number,
+    menu: { text: string; keyboard: MenuGrid | null },
+  ): Promise<void>;
   /**
    * Set (or, with null, clear) the bot's one reaction badge on a message.
    * Throws on refusal (an emoji this chat does not allow, a message too old)
@@ -80,6 +91,17 @@ export interface TgOutbound {
   ): Promise<void>;
   /** Show the "typing…" chat action once (the caller owns the refresh loop). */
   sendTyping(chatId: string, threadId?: number | null): void;
+}
+
+/** A plain button grid the adapter converts to a Telegram inline keyboard. */
+export type MenuGrid = { text: string; callbackData: string }[][];
+
+function toInlineKeyboard(keyboard: MenuGrid) {
+  return {
+    inline_keyboard: keyboard.map((row) =>
+      row.map((button) => ({ text: button.text, callback_data: button.callbackData })),
+    ),
+  };
 }
 
 /**
@@ -230,6 +252,19 @@ export function createBotOutbound(requireBot: () => Bot): TgOutbound {
     },
     async deleteMessage(chatId, messageId) {
       await requireBot().api.deleteMessage(chatId, messageId);
+    },
+    async sendMenu(chatId, menu) {
+      const sent = await requireBot().api.sendMessage(chatId, menu.text, {
+        reply_parameters: { message_id: menu.replyToMessageId },
+        reply_markup: toInlineKeyboard(menu.keyboard),
+      });
+      return { messageId: sent.message_id };
+    },
+    async editMenu(chatId, messageId, menu) {
+      await requireBot().api.editMessageText(chatId, messageId, menu.text, {
+        // Editing without `reply_markup` drops the inline keyboard.
+        ...(menu.keyboard ? { reply_markup: toInlineKeyboard(menu.keyboard) } : {}),
+      });
     },
     async setReaction(chatId, messageId, emoji, opts) {
       // The canonical-emoji check is the core tool's job (it words the

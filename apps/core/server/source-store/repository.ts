@@ -18,6 +18,8 @@ import {
   type SourceUserRow,
 } from "../../store/schema";
 
+export type { SourceChatRow, SourceMessageRow, SourceUserRow };
+
 /**
  * The generalized conversation store's repositories (redesign Phase 7) —
  * the former tg-app store layer, source-parameterized and living beside the

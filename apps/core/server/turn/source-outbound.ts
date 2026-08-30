@@ -12,7 +12,12 @@ import {
 import type { SourceId } from "@assistant-hub/contracts";
 
 import { webChatOutbound } from "@/features/web-chat/server/outbound";
+import { findMessageRefs } from "@/lib/message-refs";
 import { internalRequester, sourceApiConfig } from "@/server/source/internal-client";
+import {
+  filterMirroredMessageIds,
+  markSourceMessageDeleted,
+} from "@/server/source-store/repository";
 
 /**
  * Outbound sends to the owning source over its internal API — the calls that
@@ -44,6 +49,8 @@ export interface SourceOutboundPort {
        * single-bot convention.
        */
       assistantId?: string | null;
+      /** Core-resolved whitelist for `#<id>` citation links in `text`. */
+      linkableSourceMessageIds?: readonly string[];
     },
   ): Promise<{ messageId: number }>;
   /** Voice bubble with the source's own text fallback; reports what was sent. */
@@ -91,14 +98,41 @@ export interface SourceOutboundPort {
  * app. Callers treat null exactly like v1 treated a stopped poller: the send
  * fails audibly and is recorded on the run/fire — never dropped.
  *
- * The web chat resolves to its in-process port since the dissolve (Phase 6):
- * same shape, no HTTP — the thread store lives in this process.
+ * The web chat resolves to its in-process port since the dissolve (Phase 6).
+ * A transport's port is the HTTP client wrapped with the mirror bookkeeping
+ * that moved core-side in Phase 7: the `#id` link whitelist rides the send
+ * request, and a performed delete lands as a soft delete on the mirror row
+ * (deliveries themselves are mirrored off the transport's
+ * `message.delivered` events).
  */
 export function sourceOutbound(source: SourceId): SourceOutboundPort | null {
   if (source === "chat") return webChatOutbound();
   const config = sourceApiConfig(source);
   if (!config) return null;
-  return sourceApiOutbound(source, config);
+  const port = sourceApiOutbound(source, config);
+  return {
+    ...port,
+    async sendMessage(chatId, opts) {
+      // Chat-wide whitelist: the port does not know the chat's stream shape,
+      // and an over-wide list only ever renders a link (the operator plane's
+      // unscoped read, the recorded follow-up).
+      const linkable = await filterMirroredMessageIds(
+        { source, chatId, assistantId: opts.assistantId ?? null, direct: false },
+        findMessageRefs(opts.text),
+      ).catch(() => []);
+      return port.sendMessage(chatId, { ...opts, linkableSourceMessageIds: linkable });
+    },
+    async deleteMessage(chatId, messageId) {
+      const result = await port.deleteMessage(chatId, messageId);
+      if (result.deleted) {
+        await markSourceMessageDeleted(
+          { source, chatId, assistantId: null, direct: false },
+          String(messageId),
+        ).catch(() => undefined);
+      }
+      return result;
+    },
+  };
 }
 
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -138,6 +172,7 @@ export function sourceApiOutbound(
               opts.replyToMessageId != null ? String(opts.replyToMessageId) : null,
             threadId: opts.threadId != null ? String(opts.threadId) : null,
             silent: opts.silent ?? false,
+            linkableSourceMessageIds: opts.linkableSourceMessageIds ?? [],
           }),
         }),
       );

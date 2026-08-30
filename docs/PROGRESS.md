@@ -360,25 +360,25 @@ new user decisions):
   `assistant_transports` table) is fetched by tg at boot and on bus
   change events. Owner identity lives in tg's transport config blob.
 
-- [ ] **A — conversation store lands in core.** The `source_*` tables +
+- [x] **A — conversation store lands in core.** The `source_*` tables +
       `transports` + `assistant_transports` in the core store schema
       with a migration; repositories ported from tg's `store.ts`,
       `media/store.ts`, `content/*`, `feedback/store.ts`; the v1 import
       (tg's `import-v1.ts`) retargeted to the core tables.
-- [ ] **B — core reads locally.** The per-source lookups resolve `tg`
+- [x] **B — core reads locally.** The per-source lookups resolve `tg`
       to core-store implementations for the directory, media
       store/browse, the content plane (messages, summaries, search,
       index, analytics), and feedbacks; `tg-content.ts` and the
       listing half of `tg-operator.ts` are deleted; a one-shot script
       ports the dev tg DB into the core store.
-- [ ] **C — ingest inversion.** The transport-update contract in
+- [x] **C — ingest inversion.** The transport-update contract in
       `packages/contracts`; tg's inbound/cross-feed/delivery stop
       writing any store and publish updates + delivered events; the
       core ingest consumer persists, fans out (audience from core
       presence), composes context, and feeds the pipeline; reply
       deliveries carry the core-resolved link whitelist; the
       processed-hold releases core-side.
-- [ ] **D — feedback machine in core.** Reaction/callback/menu-reply
+- [x] **D — feedback machine in core.** Reaction/callback/menu-reply
       updates forwarded by tg; the flow state machine ported into the
       core; menu send/edit/answer served by tg's API; the learning
       jobs read core rows directly.

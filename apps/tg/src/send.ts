@@ -1,25 +1,30 @@
-import { recordAssistantMessage, type CrossFeed } from "./cross-feed";
-import type { TgDb } from "./db";
+import {
+  messageDedupeKey,
+  type MessageDeliveredEvent,
+} from "@assistant-hub/contracts";
+
+import { runningRoster, type AssistantConnection } from "./connections";
 import type { TgOutbound } from "./outbound";
-import { filterMirroredMessageIds } from "./store";
-import { findMessageRefs } from "./telegram";
+import { updateEnvelope, type UpdatePublisher } from "./updates";
 
 /**
- * Sending one text message into a Telegram chat, as one assistant, with
- * everything that has to happen around it: `#id` references turned into real
- * links only where the target is actually mirrored, the send itself, and the
- * mirror row (which is also what feeds the chat's other assistants).
+ * Sending one text message into a Telegram chat, as one assistant: the send
+ * itself, then the `message.delivered` event the core's ingest mirrors and
+ * cross-feeds. One function because there are two callers who must not drift
+ * apart: the internal REST API and this app's MCP delivery tools.
  *
- * One function because there are two callers who must not drift apart: the
- * internal REST API, which the core uses for sends it decides itself, and this
- * app's MCP `send_message` / `reply_to_message` tools, which the model calls
- * inside a turn.
+ * `#id` links: the whitelist arrives from the CORE (it owns the mirror since
+ * Phase 7) — callers pass what the reply-delivery event or the send request
+ * carried; nothing is resolved here.
  */
 
-export interface SendChatMessageInput {
-  db: TgDb;
+export interface SendDeps {
   sender: TgOutbound;
-  crossFeed?: CrossFeed;
+  publisher: UpdatePublisher;
+  running: () => AssistantConnection[];
+}
+
+export interface SendChatMessageInput {
   chatId: string;
   assistantId: string | null;
   text: string;
@@ -27,6 +32,8 @@ export interface SendChatMessageInput {
   replyToMessageId?: number | null;
   threadId?: number | null;
   silent?: boolean;
+  /** Core-resolved whitelist for `#<id>` citation links. */
+  linkableMessageIds?: readonly number[];
 }
 
 export interface SentChatMessage {
@@ -35,35 +42,76 @@ export interface SentChatMessage {
   replyToMessageId: number | null;
 }
 
-export async function sendChatMessage(input: SendChatMessageInput): Promise<SentChatMessage> {
-  const linkableMessageIds = await filterMirroredMessageIds(
-    input.db,
-    input.chatId,
-    findMessageRefs(input.text),
-    input.assistantId,
-  ).catch(() => []);
+/** Whether a telegram chat id names a group (negative ids). */
+export function isGroupChat(chatId: string): boolean {
+  return chatId.startsWith("-");
+}
 
-  const sent = await input.sender.sendMessage(input.chatId, input.text, {
+/** Report one performed delivery to the core (mirror + cross-feed seam). */
+export async function publishDelivered(
+  deps: Pick<SendDeps, "publisher" | "running">,
+  input: {
+    chatId: string;
+    assistantId: string | null;
+    messageId: number;
+    content: string;
+    replyToMessageId: number | null;
+    threadId?: number | null;
+    silent?: boolean;
+    image?: { fileId: string; fileUniqueId: string | null; base64: string } | null;
+  },
+): Promise<void> {
+  const isGroup = isGroupChat(input.chatId);
+  const event: MessageDeliveredEvent = {
+    ...updateEnvelope(`${input.chatId}:${input.messageId}`),
+    type: "message.delivered",
+    source: "tg",
+    chat: { id: input.chatId, kind: isGroup ? "group" : "direct" },
+    assistantId: input.assistantId,
+    sourceMessageId: String(input.messageId),
+    dedupeKey: messageDedupeKey({
+      chatId: input.chatId,
+      sourceMessageId: String(input.messageId),
+      assistantId: isGroup ? null : input.assistantId,
+    }),
+    content: input.content,
+    replyToSourceMessageId:
+      input.replyToMessageId != null ? String(input.replyToMessageId) : null,
+    sentAt: new Date().toISOString(),
+    threadId: input.threadId != null ? String(input.threadId) : null,
+    silent: input.silent ?? false,
+    image: input.image ?? null,
+    running: runningRoster(deps.running()),
+  };
+  await deps.publisher.publish(event);
+}
+
+export async function sendChatMessage(
+  deps: SendDeps,
+  input: SendChatMessageInput,
+): Promise<SentChatMessage> {
+  const sent = await deps.sender.sendMessage(input.chatId, input.text, {
     replyToMessageId: input.replyToMessageId ?? null,
     threadId: input.threadId ?? null,
     silent: input.silent ?? false,
-    linkableMessageIds,
+    linkableMessageIds: input.linkableMessageIds ?? [],
   });
 
-  await recordAssistantMessage(
-    input.db,
-    {
-      chatId: input.chatId,
-      assistantId: input.assistantId,
-      telegramMessageId: sent.messageId,
-      content: input.text,
-      replyToMessageId: sent.replyToMessageId,
-      sentAt: new Date(),
-      threadId: input.threadId ?? null,
-      silent: input.silent ?? false,
-    },
-    input.crossFeed,
-  ).catch(() => null);
+  await publishDelivered(deps, {
+    chatId: input.chatId,
+    assistantId: input.assistantId,
+    messageId: sent.messageId,
+    content: input.text,
+    // What is actually in the chat, not what was asked for.
+    replyToMessageId: sent.replyToMessageId,
+    threadId: input.threadId,
+    silent: input.silent,
+  }).catch((err) => {
+    console.error(
+      `Failed to report delivery ${input.chatId}:${sent.messageId}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  });
 
   return { messageId: sent.messageId, replyToMessageId: sent.replyToMessageId };
 }

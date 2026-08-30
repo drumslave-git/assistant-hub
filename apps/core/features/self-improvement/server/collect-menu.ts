@@ -1,10 +1,9 @@
 /**
- * Feedback menu options, building, and callback-data codec — the v1
- * `features/self-improvement/{options,menu}.ts` ported verbatim with the
- * source split (the flows are Telegram interactions, so they live with the
- * source; the distilled outputs — preferences, corrections — stay core).
- * Pure and transport-agnostic: the keyboard is a plain grid the grammy
- * adapter converts to an `InlineKeyboard`.
+ * Feedback menu options, building, and callback-data codec — home again in
+ * the core with the Phase 7 de-storing (they left with the source split and
+ * came back with the store). Pure and transport-agnostic: the keyboard is a
+ * plain grid the owning transport converts to its platform's inline-keyboard
+ * shape.
  */
 
 /** `up` (👍) or `down` (👎). */

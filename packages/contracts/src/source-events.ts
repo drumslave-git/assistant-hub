@@ -254,6 +254,13 @@ export const replyDeliveryEventSchema = eventEnvelopeSchema.extend({
    * internal API, which can answer with the delivered id (slice D).
    */
   silent: z.boolean().default(false),
+  /**
+   * The mirror-checked whitelist for `#<id>` citation links in `text`,
+   * resolved by the core (it owns the mirror since Phase 7): ids the
+   * transport may render as tappable message links; anything else stays
+   * plain text. Absent → no links.
+   */
+  linkableSourceMessageIds: z.array(z.string().min(1)).optional(),
 });
 
 /**

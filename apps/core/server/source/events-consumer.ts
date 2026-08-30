@@ -5,10 +5,13 @@ import {
   BUS_EVENTS_CHANNEL,
   dashboardRefreshEventSchema,
   feedbackRecordedEventSchema,
+  parseScopedRef,
   replyDeliveryEventSchema,
   traceRecordedEventSchema,
   turnLifecycleEventSchema,
 } from "@assistant-hub/contracts";
+
+import { releaseHold } from "@/server/ingest/consumer";
 
 import { handleFeedbackRecorded } from "@/features/self-improvement/server/recorded-consumer";
 import {
@@ -78,8 +81,28 @@ export async function startSourceEventsConsumer(input: {
       }
       if (type === "turn.lifecycle") {
         const parsed = turnLifecycleEventSchema.safeParse(payload);
-        if (!parsed.success || parsed.data.source !== "chat") return;
-        handleChatTurnLifecycle(parsed.data);
+        if (!parsed.success) return;
+        if (parsed.data.source === "chat") {
+          handleChatTurnLifecycle(parsed.data);
+          return;
+        }
+        // A transport turn settled: release the mirror row's live-processing
+        // hold (the transport keeps only the typing rendering; the hold moved
+        // in with the store — Phase 7).
+        if (parsed.data.phase === "settled") {
+          const event = parsed.data;
+          void releaseHold(
+            event.source,
+            parseScopedRef(event.chatRef).id,
+            event.sourceMessageId,
+            event.assistantId ?? null,
+          ).catch((err) => {
+            console.error(
+              "processed-hold release failed:",
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+        }
         return;
       }
       if (type === "trace.recorded") {

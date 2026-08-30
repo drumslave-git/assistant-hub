@@ -7,14 +7,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BotManager } from "./bot-manager";
-import type { CrossFeed } from "./cross-feed";
-import type { TgDb } from "./db";
+import type { AssistantConnection } from "./connections";
 import {
   reactToMessage,
   TELEGRAM_REACTION_EMOJI,
   toTelegramReactionEmoji,
 } from "./reactions";
 import { sendChatMessage } from "./send";
+import type { UpdatePublisher } from "./updates";
 
 /**
  * This app's own MCP server (PLAN.md: "it exposes an MCP server for its
@@ -111,10 +111,11 @@ function requireTurn(meta: unknown): TurnToolMeta | null {
 }
 
 export interface TgMcpDeps {
-  db: TgDb;
   manager: Pick<BotManager, "senderFor">;
-  /** Hands a delivered message to the chat's other assistants, as sends do. */
-  crossFeed?: CrossFeed;
+  /** The transport-update producer (delivered + bot-reaction events). */
+  updates: UpdatePublisher;
+  /** The connections running right now (the delivered event's roster). */
+  running: () => AssistantConnection[];
 }
 
 /** Build this app's MCP server, with every tool bound to the request's turn. */
@@ -130,16 +131,20 @@ export function createTgMcpServer(deps: TgMcpDeps): McpServer {
    * a call that arrives anyway cannot smuggle a send into the wrong turn.
    */
   const deliver = (turn: TurnToolMeta, text: string, replyToMessageId: number | null) =>
-    sendChatMessage({
-      db: deps.db,
-      sender: deps.manager.senderFor(turn.assistantId ?? null),
-      crossFeed: deps.crossFeed,
-      chatId: turn.chatId,
-      assistantId: turn.assistantId ?? null,
-      text,
-      replyToMessageId,
-      threadId: turn.threadId ?? null,
-    });
+    sendChatMessage(
+      {
+        sender: deps.manager.senderFor(turn.assistantId ?? null),
+        publisher: deps.updates,
+        running: deps.running,
+      },
+      {
+        chatId: turn.chatId,
+        assistantId: turn.assistantId ?? null,
+        text,
+        replyToMessageId,
+        threadId: turn.threadId ?? null,
+      },
+    );
 
   server.registerTool(
     "reply_to_message",
@@ -276,8 +281,8 @@ export function createTgMcpServer(deps: TgMcpDeps): McpServer {
       let outcome;
       try {
         outcome = await reactToMessage({
-          db: deps.db,
           sender: deps.manager.senderFor(turn.assistantId ?? null),
+          updates: deps.updates,
           chatId: turn.chatId,
           messageId: message_id,
           emoji: reaction,

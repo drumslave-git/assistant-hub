@@ -1,54 +1,35 @@
-import { openPublisher, openQueue, type BusPublisher } from "@assistant-hub/bus";
-import { busTraceClient, dashboardRefresh } from "@assistant-hub/service";
-import {
-  BUS_EVENTS_CHANNEL,
-  INBOUND_MESSAGES_QUEUE,
-  turnCorrelationId,
-  type InboundMessageEvent,
-  type SourceTraceClient,
-} from "@assistant-hub/contracts";
+import { openPublisher, type BusPublisher } from "@assistant-hub/bus";
+import { BUS_EVENTS_CHANNEL } from "@assistant-hub/contracts";
+import { dashboardRefresh } from "@assistant-hub/service";
 import { run, sequentialize, type RunnerHandle } from "@grammyjs/runner";
+import type { MessageReactionUpdated } from "@grammyjs/types";
 import { Bot, HttpError, type Context } from "grammy";
 
-import type { AssistantConnection } from "./audience";
-import { createCrossFeed, type CrossFeed } from "./cross-feed";
+import type { AssistantConnection } from "./connections";
+import { forwardCallbackPress } from "./core-client";
 import type { TgDb } from "./db";
-import {
-  captureFeedbackReply,
-  processCallbackUpdate,
-  processReactionUpdate,
-  type FeedbackDeps,
-  type FeedbackTransport,
-} from "./feedback/flows";
-import { processIncomingMessage } from "./inbound";
+import { presenceEvent, processIncomingMessage } from "./inbound";
 import { createBotOutbound, type TgOutbound } from "./outbound";
-
+import { resolveIsOwner } from "./owner";
+import { isGroupChat } from "./send";
 import {
-  applyMessageEdit,
   deleteConnectionsByAssistant,
   listEnabledConnections,
 } from "./store";
+import { SeenCache, updateEnvelope, type UpdatePublisher } from "./updates";
 
 /**
- * Poller lifecycle for this app's telegram connections — the v1 bot-manager
- * (`apps/core/server/telegram/bot-manager.ts`) ported to the source split:
- * tokens come from the connections table (one bot per assistant), updates
- * feed the transport-agnostic inbound processor which enqueues normalized
- * events, and outbound goes through the {@link TgSender} the delivery
- * consumer uses. Supervision semantics are v1's, kept verbatim: bounded
- * fetch-retry, flat-interval reconnect on transient network failures,
- * edge-triggered logging, bounded stop drain.
+ * Poller lifecycle for this app's telegram connections — supervision
+ * semantics unchanged since the source split (bounded fetch-retry,
+ * flat-interval reconnect on transient network failures, edge-triggered
+ * logging, bounded stop drain). What each update BECOMES changed with the
+ * Phase 7 de-storing: everything is forwarded to the core as
+ * transport-update events; nothing is stored here.
  *
- * Runs a poller per ENABLED connection (the store allows one per
- * assistant; a v1 migration yields at most one). Reconciliation from
- * desired state on operator command arrives with the operator API slice —
- * this boots what is enabled and supervises it.
- *
- * Updates handled: `message` / `edited_message` (slice A) plus
- * `message_reaction` / `callback_query` (slice D — the feedback flows,
- * tg-local now that feedbacks live in this store; completions go out as
- * `feedback.recorded` bus events for the core's learning jobs). In groups
- * Telegram only delivers `message_reaction` when the bot is an admin.
+ * Updates handled: `message` / `edited_message` /
+ * `message_reaction` (feedback triggers — in groups Telegram only delivers
+ * them when the bot is an admin) / `callback_query` (menu presses, forwarded
+ * synchronously for the toast).
  */
 
 export type ConnectionState = "running" | "error" | "stopped";
@@ -110,79 +91,52 @@ async function initWithDeadline(bot: Bot): Promise<void> {
   }
 }
 
-/** A running bot's API as the feedback-menu sink (reaction menus + presses). */
-function grammyFeedbackTransport(bot: Bot): FeedbackTransport {
-  const toInlineKeyboard = (keyboard: { text: string; callbackData: string }[][]) => ({
-    inline_keyboard: keyboard.map((row) =>
-      row.map((button) => ({ text: button.text, callback_data: button.callbackData })),
-    ),
-  });
-  return {
-    async sendMenu(input) {
-      const sent = await bot.api.sendMessage(input.chatId, input.text, {
-        reply_parameters: { message_id: input.replyToMessageId },
-        reply_markup: toInlineKeyboard(input.keyboard),
-      });
-      return { messageId: sent.message_id };
-    },
-    async editMenu(input) {
-      await bot.api.editMessageText(input.chatId, input.messageId, input.text, {
-        // Editing without `reply_markup` drops the inline keyboard.
-        ...(input.keyboard ? { reply_markup: toInlineKeyboard(input.keyboard) } : {}),
-      });
-    },
-    async deleteMenu(input) {
-      await bot.api.deleteMessage(input.chatId, input.messageId);
-    },
-    async answerCallback(input) {
-      await bot.api.answerCallbackQuery(input.callbackQueryId, {
-        ...(input.text ? { text: input.text } : {}),
-      });
-    },
-  };
+/** Emoji set of one reaction list (custom/paid reactions are not thumbs). */
+function emojiSet(reactions: { type: string; emoji?: string }[]): Set<string> {
+  const set = new Set<string>();
+  for (const reaction of reactions) {
+    if (reaction.type === "emoji" && reaction.emoji) set.add(reaction.emoji);
+  }
+  return set;
+}
+
+/**
+ * The thumb reaction *added* by this update, or null (reaction removals and
+ * other emoji are ignored — feedback is collected only on a fresh 👍/👎).
+ * Platform semantics, so the mapping lives with the transport.
+ */
+export function detectAddedThumb(
+  update: Pick<MessageReactionUpdated, "old_reaction" | "new_reaction">,
+): "up" | "down" | null {
+  const before = emojiSet(update.old_reaction);
+  const after = emojiSet(update.new_reaction);
+  if (after.has("👍") && !before.has("👍")) return "up";
+  if (after.has("👎") && !before.has("👎")) return "down";
+  return null;
 }
 
 export class BotManager {
   private pollers = new Map<string, Poller>();
-  private queue: ReturnType<typeof openQueue<InboundMessageEvent>>;
   private publisher: BusPublisher;
-  private traces: SourceTraceClient;
-  /**
-   * Hands an assistant's delivered message to the chat's other assistants
-   * (`cross-feed.ts`). It lives here because this is where both halves it
-   * needs already are: the queue producer, and the running bots' identities.
-   */
-  readonly crossFeed: CrossFeed;
+  private seen = new SeenCache();
 
   constructor(
     private readonly deps: {
       db: TgDb;
       redisUrl: string;
+      updates: UpdatePublisher;
       onStatusChange?: (status: ConnectionStatus) => void;
     },
   ) {
-    this.queue = openQueue<InboundMessageEvent>(INBOUND_MESSAGES_QUEUE, deps.redisUrl);
     this.publisher = openPublisher(deps.redisUrl);
-    this.traces = busTraceClient("tg", this.publisher);
-    this.crossFeed = createCrossFeed({
-      db: deps.db,
-      running: () => this.runningConnections(),
-      enqueue: (event) => this.enqueueInbound(event),
-    });
-  }
-
-  /** Enqueue one normalized inbound event for the core's pipeline. */
-  private async enqueueInbound(event: InboundMessageEvent): Promise<void> {
-    await this.queue.add("message.inbound", event);
   }
 
   /**
    * Every connection with a live bot account. A stopped or still-connecting
    * poller is not one: it has no identity to put on an event and could not
-   * deliver an answer either. Both shared-chat paths read this — the group
-   * fan-out of an inbound message and the cross-feed of a reply.
+   * deliver an answer either.
    */
-  private runningConnections(): AssistantConnection[] {
+  runningConnections(): AssistantConnection[] {
     return [...this.pollers.values()].flatMap((poller) =>
       poller.bot?.botInfo
         ? [
@@ -197,16 +151,6 @@ export class BotManager {
           ]
         : [],
     );
-  }
-
-  /** The feedback flows' collaborators over one running bot. */
-  private feedbackDeps(bot: Bot, assistantId: string): FeedbackDeps {
-    return {
-      db: this.deps.db,
-      assistantId,
-      transport: grammyFeedbackTransport(bot),
-      publish: (event) => this.publisher.publish(BUS_EVENTS_CHANNEL, event),
-    };
   }
 
   /** Start a poller for every enabled connection. Boot entry. */
@@ -227,11 +171,9 @@ export class BotManager {
   }
 
   /**
-   * The outbound ops for one assistant's connection (the delivery consumer
-   * and the internal API both send through this). A null assistant means
-   * "whichever connection runs" — with Phase 2's single connection, simply
-   * the bot. Resolution is per call, so a poller restart never leaves a
-   * stale handle behind.
+   * The outbound ops for one assistant's connection. A null assistant means
+   * "whichever connection runs". Resolution is per call, so a poller restart
+   * never leaves a stale handle behind.
    */
   senderFor(assistantId: string | null): TgOutbound {
     const requireBot = (): Bot => {
@@ -248,7 +190,10 @@ export class BotManager {
     return createBotOutbound(requireBot);
   }
 
-  private setStatus(poller: Poller, status: Omit<ConnectionStatus, "connectionId" | "assistantId">): void {
+  private setStatus(
+    poller: Poller,
+    status: Omit<ConnectionStatus, "connectionId" | "assistantId">,
+  ): void {
     poller.status = {
       connectionId: poller.connectionId,
       assistantId: poller.assistantId,
@@ -256,7 +201,7 @@ export class BotManager {
     };
     this.deps.onStatusChange?.({ ...poller.status });
     // The dashboard's bot card watches `status` — a poller that dies or
-    // reconnects must show up without a reload (v1 behavior, over the bus).
+    // reconnects must show up without a reload.
     void this.publisher
       .publish(BUS_EVENTS_CHANNEL, dashboardRefresh("tg", ["status"]))
       .catch(() => undefined);
@@ -337,7 +282,7 @@ export class BotManager {
     bot.on("message", (ctx) => this.onMessage(poller, input.botToken, ctx));
     bot.on("edited_message", (ctx) => this.onEditedMessage(poller, ctx));
     // Feedback collection: 👍/👎 reactions open a menu, presses answer it.
-    bot.on("message_reaction", (ctx) => this.onReaction(poller, bot, ctx));
+    bot.on("message_reaction", (ctx) => this.onReaction(poller, ctx));
     bot.on("callback_query:data", (ctx) => this.onCallbackQuery(poller, bot, ctx));
     bot.catch((err) => {
       console.error(`Telegram bot error (${input.connectionId}):`, err.error);
@@ -387,183 +332,105 @@ export class BotManager {
   private async onMessage(poller: Poller, botToken: string, ctx: Context): Promise<void> {
     const message = ctx.message;
     if (!message || !ctx.chat) return;
-    // This app's half of the turn, correlated the way the core's reply trace
-    // is (`<chatId>:<messageId>`) so the whole cross-app flow filters as one.
-    // Settled — and therefore published — only for a message that became an
-    // inbound event, or that failed: plain mirrored chatter leaves nothing
-    // behind (the v1 noise rule).
-    const trace = this.traces.startTrace({
-      feature: "bot-messaging",
-      action: "inbound",
-      assistantId: poller.assistantId,
-      trigger: {
-        kind: "telegram",
-        actor: message.from ? String(message.from.id) : String(ctx.chat.id),
-        // This poller's own turn. In a group the same message may open a turn
-        // for other assistants too (the trace's enqueue event names them);
-        // the mirroring and ingest below happen once, here.
-        correlationId: turnCorrelationId(
-          String(ctx.chat.id),
-          String(message.message_id),
-          poller.assistantId,
-        ),
-      },
-      inputSummary: message.text ?? message.caption ?? "(media)",
-    });
     try {
-      const bot = poller.bot;
       const result = await processIncomingMessage(message, {
-        db: this.deps.db,
         assistantId: poller.assistantId,
-        identity: {
-          botUsername: ctx.me.username,
-          // `first_name` is the bot's display name — what people call it.
-          botDisplayName: ctx.me.first_name,
-        },
         botId: ctx.me.id,
         botToken,
-        // A group message is a turn for every assistant in the chat;
-        // Telegram delivers it to each bot but only one poller mirrors it.
         running: () => this.runningConnections(),
-        enqueue: (event) => this.enqueueInbound(event),
-        // A reply to an awaiting feedback menu is that menu's answer, not a
-        // turn; the capture deletes the menu and publishes the completion.
-        captureFeedback: bot
-          ? async (input) =>
-              (await captureFeedbackReply(input, this.feedbackDeps(bot, poller.assistantId))) !=
-              null
-          : undefined,
+        seen: this.seen,
+        isOwner: (sender) => resolveIsOwner(this.deps.db, sender),
       });
-      // The mirror and the directory just changed — ping the pages that
-      // show them (best-effort; the message is already stored).
-      void this.publisher
-        .publish(BUS_EVENTS_CHANNEL, dashboardRefresh("tg", ["history", "users", "groups"]))
-        .catch(() => undefined);
-      if (result.status === "enqueued") {
-        const events = result.events ?? [];
-        trace.event({
-          message:
-            events.length > 1
-              ? `inbound event enqueued for ${events.length} assistants`
-              : "inbound event enqueued",
-          type: "output",
-          level: "success",
-          data: {
-            // Every turn this one message opened, so a group shared by
-            // several assistants shows who was handed it and under which
-            // correlation each of their turns runs.
-            turns: events.map((event) => ({
-              assistantId: event.assistantId,
-              eventId: event.eventId,
-              correlationId: event.correlationId,
-              addressed: event.addressing.addressed,
-            })),
-          },
-        });
-        await trace.succeed({
-          outputSummary:
-            events.length > 1
-              ? `enqueued for the core (${events.length} assistants)`
-              : "enqueued for the core",
-        });
+      if (result.status === "forwarded") {
+        await this.deps.updates.publish(result.event);
+      } else if (result.status === "duplicate") {
+        // The duplicate receipt still proves THIS bot is in the chat.
+        await this.deps.updates.publish(
+          presenceEvent({ chatId: String(ctx.chat.id), assistantId: poller.assistantId }),
+        );
       }
     } catch (err) {
       console.error(
-        `Inbound processing failed for ${ctx.chat.id}:${message.message_id}:`,
+        `Inbound forwarding failed for ${ctx.chat.id}:${message.message_id}:`,
         errorMessage(err),
       );
-      await trace.fail(err);
     }
   }
 
-  private async onReaction(poller: Poller, bot: Bot, ctx: Context): Promise<void> {
+  private async onReaction(poller: Poller, ctx: Context): Promise<void> {
     const reaction = ctx.messageReaction;
     if (!reaction) return;
-    // Correlated to the reacted reply's turn, like the completion event —
-    // the menu, the answer, and the learning jobs all group under it.
-    // Settles only when a menu actually opened (or on failure); ignored
-    // reactions — other emoji, non-bot messages — leave nothing behind.
-    const trace = this.traces.startTrace({
-      feature: "self-improvement",
-      action: "collect-feedback",
-      assistantId: poller.assistantId,
-      trigger: {
-        kind: "telegram",
-        actor: reaction.user ? String(reaction.user.id) : String(reaction.chat.id),
-        correlationId: `${reaction.chat.id}:${reaction.message_id}`,
-      },
-      inputSummary: "reaction on a bot reply",
-    });
+    // Anonymous (channel-identity) reactions carry no user — nobody to ask.
+    const user = reaction.user;
+    if (!user || user.is_bot) return;
+    const thumb = detectAddedThumb(reaction);
+    if (!thumb) return;
+    const chatId = String(reaction.chat.id);
+    // A group reaction reaches every admin bot; forward it once.
+    if (
+      isGroupChat(chatId) &&
+      !this.seen.first(`r:${chatId}:${reaction.message_id}:${user.id}:${thumb}`)
+    ) {
+      return;
+    }
     try {
-      const outcome = await processReactionUpdate(
-        reaction,
-        this.feedbackDeps(bot, poller.assistantId),
-      );
-      if (outcome.status === "menu_sent") {
-        trace.event({
-          message: "feedback menu sent",
-          type: "output",
-          level: "success",
-          data: { feedbackId: outcome.feedback.id, reaction: outcome.feedback.reaction },
-        });
-        await trace.succeed({ outputSummary: `menu sent (${outcome.feedback.reaction})` });
-      }
+      await this.deps.updates.publish({
+        ...updateEnvelope(`${chatId}:${reaction.message_id}`),
+        type: "transport.reaction",
+        source: "tg",
+        chat: { id: chatId, kind: isGroupChat(chatId) ? "group" : "direct" },
+        assistantId: poller.assistantId,
+        sourceMessageId: String(reaction.message_id),
+        reaction: thumb,
+        user: {
+          userId: String(user.id),
+          username: user.username?.toLowerCase() ?? null,
+          firstName: user.first_name ?? null,
+          lastName: user.last_name ?? null,
+        },
+      });
     } catch (err) {
       console.error(
-        `Reaction processing failed for ${reaction.chat.id}:${reaction.message_id}:`,
+        `Reaction forwarding failed for ${chatId}:${reaction.message_id}:`,
         errorMessage(err),
       );
-      await trace.fail(err);
     }
   }
 
   private async onCallbackQuery(poller: Poller, bot: Bot, ctx: Context): Promise<void> {
     const query = ctx.callbackQuery;
     if (!query) return;
-    const chatId = query.message ? String(query.message.chat.id) : null;
-    // Settles for a press that changed feedback state (answered, or flipped
-    // to awaiting free text) or failed; foreign menus and stale presses drop.
-    const trace = this.traces.startTrace({
-      feature: "self-improvement",
-      action: "collect-feedback",
-      assistantId: poller.assistantId,
-      trigger: {
-        kind: "telegram",
-        actor: String(query.from.id),
-        ...(chatId && query.message
-          ? { correlationId: `${chatId}:${query.message.message_id}` }
-          : {}),
-      },
-      inputSummary: "feedback menu press",
-    });
+    const message = query.message;
+    // The menu message is needed to act on it; Telegram omits it for
+    // messages that are too old or inaccessible. Answer so the button stops
+    // spinning either way.
+    if (!message || !query.data) {
+      await bot.api.answerCallbackQuery(query.id).catch(() => undefined);
+      return;
+    }
+    const chatId = String(message.chat.id);
     try {
-      const outcome = await processCallbackUpdate(
-        query,
-        this.feedbackDeps(bot, poller.assistantId),
-      );
-      if (outcome.status === "recorded") {
-        trace.event({
-          message: "feedback recorded",
-          type: "output",
-          level: "success",
-          data: { feedbackId: outcome.feedback.id, answer: outcome.feedback.feedback },
-        });
-        await trace.succeed({
-          outputSummary: outcome.feedback.feedback ?? "recorded",
-          // The row lives in this store, but the completion's correlation is
-          // the REACTED reply's turn (what the completion event carries).
-          correlationId: `${outcome.feedback.chatId}:${outcome.feedback.telegramMessageId}`,
-        });
-      } else if (outcome.status === "awaiting_text") {
-        trace.event({ message: "awaiting free-text answer", type: "step" });
-        await trace.succeed({
-          outputSummary: "awaiting free-text answer",
-          correlationId: `${outcome.feedback.chatId}:${outcome.feedback.telegramMessageId}`,
-        });
-      }
+      // Synchronous by design: the platform's spinner wants an answer only
+      // the flow's outcome can word (the core owns the flow since Phase 7).
+      const { toast } = await forwardCallbackPress({
+        source: "tg",
+        assistantId: poller.assistantId,
+        chat: { id: chatId, kind: isGroupChat(chatId) ? "group" : "direct" },
+        user: {
+          userId: String(query.from.id),
+          username: query.from.username?.toLowerCase() ?? null,
+          firstName: query.from.first_name ?? null,
+          lastName: query.from.last_name ?? null,
+        },
+        menuSourceMessageId: String(message.message_id),
+        data: query.data,
+      });
+      await bot.api
+        .answerCallbackQuery(query.id, toast ? { text: toast } : undefined)
+        .catch(() => undefined);
     } catch (err) {
-      console.error(`Callback processing failed for query ${query.id}:`, errorMessage(err));
-      await trace.fail(err);
+      console.error(`Callback forwarding failed for query ${query.id}:`, errorMessage(err));
+      await bot.api.answerCallbackQuery(query.id).catch(() => undefined);
     }
   }
 
@@ -572,22 +439,33 @@ export class BotManager {
     if (!edited || !ctx.chat) return;
     const content = edited.text ?? edited.caption ?? "";
     if (!content.trim()) return;
-    await applyMessageEdit(this.deps.db, {
-      chatId: String(edited.chat.id),
-      telegramMessageId: edited.message_id,
-      content,
-      editedAt: new Date((edited.edit_date ?? edited.date) * 1000),
-      assistantId: poller.assistantId,
-    }).catch((err) => {
-      console.error("Failed to mirror edited message:", errorMessage(err));
-    });
+    const chatId = String(edited.chat.id);
+    // A group edit reaches every bot in the chat; forward it once.
+    if (
+      isGroupChat(chatId) &&
+      !this.seen.first(`e:${chatId}:${edited.message_id}:${edited.edit_date ?? edited.date}`)
+    ) {
+      return;
+    }
+    await this.deps.updates
+      .publish({
+        ...updateEnvelope(`${chatId}:${edited.message_id}`),
+        type: "transport.edited",
+        source: "tg",
+        chat: { id: chatId, kind: isGroupChat(chatId) ? "group" : "direct" },
+        assistantId: poller.assistantId,
+        sourceMessageId: String(edited.message_id),
+        content,
+        editedAt: new Date((edited.edit_date ?? edited.date) * 1000).toISOString(),
+      })
+      .catch((err) => {
+        console.error("Failed to forward edited message:", errorMessage(err));
+      });
   }
 
   /**
    * Reconcile one connection to its desired state (operator API writes):
-   * enabled starts/restarts its poller (a token change takes effect by
-   * restart — start is idempotent and always replaces the running bot),
-   * disabled stops it. The status row stays for the listing.
+   * enabled starts/restarts its poller, disabled stops it.
    */
   async reconcileConnection(row: {
     id: string;
@@ -654,13 +532,12 @@ export class BotManager {
     this.setStatus(poller, { state: "stopped", username: null, since: null, error: null });
   }
 
-  /** Stop every poller, the queue producer, and the bus publisher. Shutdown entry. */
+  /** Stop every poller and the bus publisher. Shutdown entry. */
   async close(): Promise<void> {
     for (const poller of this.pollers.values()) {
       poller.desired = false;
       await this.stopPoller(poller);
     }
-    await this.queue.close();
     await this.publisher.close();
   }
 }

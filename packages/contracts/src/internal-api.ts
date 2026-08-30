@@ -106,6 +106,8 @@ export const internalSendMessageRequestSchema = z.object({
   threadId: z.string().nullable().optional(),
   /** Send without a notification ping (transient acknowledgements). */
   silent: z.boolean().default(false),
+  /** Core-resolved whitelist for `#<id>` citation links in `text`. */
+  linkableSourceMessageIds: z.array(z.string().min(1)).optional(),
 });
 
 export const internalSentMessageResponseSchema = z.object({
@@ -261,4 +263,32 @@ export const internalSetTitleRequestSchema = z.object({
 
 export const internalSetTitleResponseSchema = z.object({
   title: z.string().min(1),
+});
+
+/**
+ * POST /internal/chats/:chatId/menu — post an inline-keyboard menu into a
+ * chat (the feedback flow's options menu, driven by the core since the
+ * Phase 7 de-storing). The keyboard is a plain button grid the transport
+ * converts to its platform's shape.
+ */
+export const internalSendMenuRequestSchema = z.object({
+  text: z.string().min(1),
+  keyboard: z.array(z.array(z.object({ text: z.string().min(1), callbackData: z.string().min(1) }))),
+  replyToSourceMessageId: z.string().min(1),
+});
+
+export const internalSentMenuResponseSchema = z.object({
+  sourceMessageId: z.string().min(1),
+});
+
+/**
+ * PATCH /internal/chats/:chatId/menu/:messageId — rewrite a previously sent
+ * menu (`keyboard: null` removes the buttons). DELETE on the same path
+ * removes the menu message (platform refusals are cosmetic).
+ */
+export const internalEditMenuRequestSchema = z.object({
+  text: z.string().min(1),
+  keyboard: z
+    .array(z.array(z.object({ text: z.string().min(1), callbackData: z.string().min(1) })))
+    .nullable(),
 });

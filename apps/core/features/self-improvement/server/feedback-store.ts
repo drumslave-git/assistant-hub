@@ -1,21 +1,22 @@
 import "server-only";
 
 import {
-  internalFeedbackResponseSchema,
-  internalFeedbacksResponseSchema,
-  operatorMessageResponseSchema,
-  type InternalFeedback,
-} from "@assistant-hub/contracts";
-
-import { getEnv } from "@/server/env";
+  getSourceFeedback,
+  listSourceFeedbacks,
+  listUnincorporatedSourceFeedbacks,
+  patchSourceFeedback,
+  type SourceFeedbackRecord,
+} from "@/server/source-store/feedbacks";
+import { getSourceMessage } from "@/server/source-store/repository";
+import { getSourceMediaByMessage } from "@/server/source-store/media";
 import type { UserFeedback } from "../types";
 
 /**
- * The feedback rows live in the owning source's store since the split; the
- * core's learning jobs (reflection, the daily folds, the dashboard view)
- * reach them through these ports — reads plus the write-backs (model,
- * reflection, fold-version stamps). Injected everywhere they are used, so
- * the whole learning pipeline runs in tests against in-memory fakes.
+ * The feedback rows live in the core's conversation store since the Phase 7
+ * de-storing; the learning jobs (reflection, the daily folds, the dashboard
+ * view) reach them through these ports — reads plus the write-backs (model,
+ * reflection, fold-version stamps). Still injected everywhere they are used,
+ * so the whole learning pipeline runs in tests against in-memory fakes.
  */
 
 export interface FeedbackWriteBack {
@@ -55,7 +56,7 @@ export interface FeedbackPorts {
   messages: SourceMessagePort;
 }
 
-function toUserFeedback(feedback: InternalFeedback): UserFeedback {
+function toUserFeedback(feedback: SourceFeedbackRecord): UserFeedback {
   return {
     id: feedback.id,
     chatId: feedback.chatId,
@@ -70,82 +71,51 @@ function toUserFeedback(feedback: InternalFeedback): UserFeedback {
     reflectionModel: feedback.reflectionModel,
     prefsVersion: feedback.prefsVersion,
     correctionsVersion: feedback.correctionsVersion,
-    createdAt: feedback.createdAt,
-    updatedAt: feedback.updatedAt,
+    createdAt: feedback.createdAt.toISOString(),
+    updatedAt: feedback.updatedAt.toISOString(),
   };
 }
 
-const REQUEST_TIMEOUT_MS = 30_000;
-
 /**
- * The tg-API-backed ports, or null when the source API is not configured —
- * callers then skip exactly like an unconfigured LLM: the job reports why,
- * nothing pretends to have run.
+ * The conversation-store-backed ports. Feedback collection is telegram-only
+ * today (the one source with reactions), so the reads stay scoped to `tg`
+ * rows and the message lookups read the tg mirror unscoped (the operator
+ * plane's read, exactly what the exchange renderer needs).
  */
 export function resolveFeedbackPorts(): FeedbackPorts | null {
-  const env = getEnv();
-  if (!env.TG_API_URL || !env.INTERNAL_API_TOKEN) return null;
-  const baseUrl = env.TG_API_URL.replace(/\/$/, "");
-  const token = env.INTERNAL_API_TOKEN;
-
-  const request = async (path: string, init?: RequestInit): Promise<unknown> => {
-    const res = await fetch(`${baseUrl}${path}`, {
-      ...init,
-      headers: {
-        "x-internal-token": token,
-        ...(init?.body ? { "content-type": "application/json" } : {}),
-        ...init?.headers,
-      },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      const body = (await res.json().catch(() => null)) as {
-        error?: { message?: string };
-      } | null;
-      throw new Error(body?.error?.message ?? `tg internal API ${path} answered ${res.status}`);
-    }
-    return res.json();
-  };
-
   return {
     feedbacks: {
       async listAll() {
-        const body = internalFeedbacksResponseSchema.parse(await request("/internal/feedbacks"));
-        return body.feedbacks.map(toUserFeedback);
+        return (await listSourceFeedbacks()).map(toUserFeedback);
       },
       async listUnincorporated(kind) {
-        const body = internalFeedbacksResponseSchema.parse(
-          await request(`/internal/feedbacks?needs=${kind}`),
-        );
-        return body.feedbacks.map(toUserFeedback);
+        return (await listUnincorporatedSourceFeedbacks(kind)).map(toUserFeedback);
       },
       async get(id) {
-        const body = internalFeedbackResponseSchema.parse(
-          await request(`/internal/feedbacks/${encodeURIComponent(id)}`),
-        );
-        return body.feedback ? toUserFeedback(body.feedback) : null;
+        const record = await getSourceFeedback(id);
+        return record ? toUserFeedback(record) : null;
       },
       async patch(id, patch) {
-        await request(`/internal/feedbacks/${encodeURIComponent(id)}`, {
-          method: "PATCH",
-          body: JSON.stringify(patch),
-        });
+        await patchSourceFeedback(id, patch);
       },
     },
     messages: {
       async getMessage(chatId, sourceMessageId) {
-        const body = operatorMessageResponseSchema.parse(
-          await request(
-            `/internal/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(sourceMessageId)}`,
-          ),
+        const row = await getSourceMessage(
+          { source: "tg", chatId, assistantId: null, direct: false },
+          sourceMessageId,
         );
-        if (!body.message) return null;
+        if (!row) return null;
         // A media message's readable content is its description when the
         // text is empty (a photo answered "what is this?").
-        const content =
-          body.message.content ||
-          (body.message.media?.description ? `[${body.message.media.description}]` : "");
-        return { content, replyToSourceMessageId: body.message.replyToSourceMessageId };
+        let content = row.content;
+        if (!content) {
+          const media = await getSourceMediaByMessage("tg", chatId, sourceMessageId).catch(
+            () => null,
+          );
+          if (media?.description) content = `[${media.description}]`;
+        }
+        return { content, replyToSourceMessageId: row.replyToSourceMessageId };
       },
     },
   };

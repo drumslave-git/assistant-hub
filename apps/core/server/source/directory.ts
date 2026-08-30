@@ -12,9 +12,9 @@ import {
 import { ApiError, isApiError } from "@/lib/api-error";
 
 import { webChatDirectoryClient } from "@/features/web-chat/server/directory";
+import { sourceDirectoryClient } from "@/server/source-store/directory-client";
 
 import type { SourceDirectoryClient } from "./operator-client";
-import { tgOperatorClient } from "./tg-operator";
 
 /**
  * The aggregated directory — the dashboard's one read of "who has talked to
@@ -40,12 +40,13 @@ export interface DirectorySource {
 }
 
 /**
- * Registered sources, in the order the dashboard lists them. The web chat's
- * client answers from the core's own tables since the dissolve (Phase 6) —
- * same contract, no HTTP, never unconfigured.
+ * Registered sources, in the order the dashboard lists them. Every entry
+ * answers from the core's own tables since Phase 7 (the web chat's since the
+ * Phase 6 dissolve, telegram's since the de-storing) — same contract, no
+ * HTTP, never unconfigured.
  */
 export const DIRECTORY_SOURCES: readonly DirectorySource[] = [
-  { id: "tg", label: "Telegram", client: tgOperatorClient },
+  { id: "tg", label: "Telegram", client: () => sourceDirectoryClient("tg") },
   { id: "chat", label: "Web chat", client: webChatDirectoryClient },
 ];
 

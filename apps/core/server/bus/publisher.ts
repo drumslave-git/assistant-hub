@@ -1,6 +1,7 @@
 import "server-only";
 
 import { openPublisher, type BusPublisher } from "@assistant-hub/bus";
+import { BUS_EVENTS_CHANNEL } from "@assistant-hub/contracts";
 
 import { getEnv } from "@/server/env";
 
@@ -20,4 +21,15 @@ export function getBusPublisher(): BusPublisher | null {
   const g = globalThis as typeof globalThis & { [KEY]?: BusPublisher };
   if (!g[KEY]) g[KEY] = openPublisher(env.REDIS_URL);
   return g[KEY];
+}
+
+/**
+ * Publish one event onto the cross-app channel through the shared
+ * publisher; false when the bus is unconfigured (callers surface it).
+ */
+export async function publishBusEvent(payload: unknown): Promise<boolean> {
+  const publisher = getBusPublisher();
+  if (!publisher) return false;
+  await publisher.publish(BUS_EVENTS_CHANNEL, payload);
+  return true;
 }

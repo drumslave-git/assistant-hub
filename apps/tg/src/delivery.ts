@@ -5,26 +5,30 @@ import {
   replyDeliveryEventSchema,
   turnLifecycleEventSchema,
 } from "@assistant-hub/contracts";
-import { openPublisher, openSubscriber, type BusPublisher, type BusSubscription } from "@assistant-hub/bus";
-import { busTraceClient, dashboardRefresh } from "@assistant-hub/service";
+import {
+  openPublisher,
+  openSubscriber,
+  type BusPublisher,
+  type BusSubscription,
+} from "@assistant-hub/bus";
+import { busTraceClient } from "@assistant-hub/service";
 
-import { recordAssistantMessage, type CrossFeed } from "./cross-feed";
-import type { TgDb } from "./db";
+import type { AssistantConnection } from "./connections";
 import type { TgOutbound } from "./outbound";
-import { filterMirroredMessageIds, markMessageProcessed } from "./store";
-import { findMessageRefs } from "./telegram";
+import { publishDelivered } from "./send";
+import type { UpdatePublisher } from "./updates";
 
 /**
- * The outbound half of the source contract: consume the core's
- * reply-delivery events (persist the reply in this store, perform the send)
- * and its turn-lifecycle events (render as the Telegram typing indicator,
- * release the mirror's live-processing hold when the turn settles). The
- * model never has to remember to deliver its own answer — and typing is
- * never an MCP tool (PLAN.md).
+ * The outbound half of the transport contract: consume the core's
+ * reply-delivery events (perform the send, report it back as
+ * `message.delivered` — the core mirrors and cross-feeds) and its
+ * turn-lifecycle events (render as the Telegram typing indicator). The model
+ * never has to remember to deliver its own answer — and typing is never an
+ * MCP tool (PLAN.md).
  *
- * A delivered reply is also what the OTHER assistants in a group hear:
- * mirroring it runs through the shared seam that cross-feeds it to them
- * (`cross-feed.ts`), since Telegram never hands one bot another's message.
+ * Stateless since Phase 7: the `#id` link whitelist arrives ON the event
+ * (the core owns the mirror), and the processed-hold release moved to the
+ * core's settle handler.
  */
 
 /** What delivery needs from the running bot; the bot manager provides it. */
@@ -34,10 +38,9 @@ export type TgSender = Pick<TgOutbound, "sendMessage" | "sendTyping">;
 const TYPING_REFRESH_MS = 4_500;
 
 /**
- * Typing runs from `accepted` until `settled` — the source renders the
+ * Typing runs from `accepted` until `settled` — the transport renders the
  * core's turn lifecycle natively. Keyed per turn so concurrent chats never
- * share a loop; `progress` refreshes nothing extra (the loop is already
- * ticking) but keeps the contract's phase set honest.
+ * share a loop.
  */
 class TypingLoops {
   private loops = new Map<string, ReturnType<typeof setInterval>>();
@@ -46,10 +49,6 @@ class TypingLoops {
 
   start(key: string, chatId: string, threadId: number | null, assistantId: string | null): void {
     if (this.loops.has(key)) return;
-    // Resolve per tick: the RIGHT assistant's bot types (a null id — an old
-    // publisher — falls back to whichever connection runs), and a poller
-    // restart mid-turn never leaves a stale handle. A tick with no running
-    // bot is skipped, not thrown — typing is cosmetic.
     const tick = () => {
       try {
         this.senderFor(assistantId).sendTyping(chatId, threadId);
@@ -80,27 +79,20 @@ export interface DeliveryConsumer {
 }
 
 /**
- * Subscribe to the bus and act on the events addressed to this source.
- * Payloads are validated per type; anything else on the channel is not ours
- * and is ignored. Failures are logged, never thrown into the subscriber —
- * one bad delivery must not kill the consumer for every chat.
+ * Subscribe to the bus and act on the events addressed to this transport.
+ * Failures are logged, never thrown into the subscriber — one bad delivery
+ * must not kill the consumer for every chat.
  */
 export async function startDeliveryConsumer(input: {
-  db: TgDb;
   redisUrl: string;
   /** Resolve the sender for one assistant's connection, per event. */
   senderFor: (assistantId: string | null) => TgSender;
-  /**
-   * The core deleted an assistant — drop what this app keys on it (the bot
-   * manager stops the poller and deletes the connection row).
-   */
+  /** The connections running right now (the delivered event's roster). */
+  running: () => AssistantConnection[];
+  /** The transport-update producer (delivered events). */
+  updates: UpdatePublisher;
+  /** The core deleted an assistant — drop what this app keys on it. */
   onAssistantDeleted?: (assistantId: string) => Promise<void>;
-  /**
-   * Hands the delivered reply to the other assistants in the chat
-   * (`cross-feed.ts`). Absent → nobody else hears it, which is exactly the
-   * single-assistant deployment.
-   */
-  crossFeed?: CrossFeed;
   onError?: (context: string, error: unknown) => void;
 }): Promise<DeliveryConsumer> {
   const onError =
@@ -130,17 +122,11 @@ export async function startDeliveryConsumer(input: {
       try {
         const replyToMessageId =
           event.replyToSourceMessageId != null ? Number(event.replyToSourceMessageId) : null;
-        // Which `#<id>` citations really exist here decides what links (the
-        // whitelist keeps invented ids as plain text); a failed check drops
-        // the links, never the reply.
-        const linkableMessageIds = await filterMirroredMessageIds(
-          input.db,
-          chatId,
-          findMessageRefs(event.text),
-          event.assistantId,
-        ).catch(() => []);
-        // Send first, then mirror what was actually delivered — the mirror
-        // records reality (v1 order: deliver, then record best-effort).
+        // The `#id` whitelist arrives on the event — the core checked its
+        // mirror; this side only renders links.
+        const linkableMessageIds = (event.linkableSourceMessageIds ?? [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id));
         const sent = await input.senderFor(event.assistantId).sendMessage(chatId, event.text, {
           replyToMessageId,
           threadId: event.threadId != null ? Number(event.threadId) : null,
@@ -148,9 +134,7 @@ export async function startDeliveryConsumer(input: {
           linkableMessageIds,
         });
         // Telegram drops a reply target it will not attach and delivers the
-        // message anyway (`allow_sending_without_reply` — losing the answer
-        // to save the pointer is the wrong trade). Silent by design, so it is
-        // said out loud here: what went in, what came back.
+        // message anyway (`allow_sending_without_reply`). Said out loud here.
         const replyTargetDropped = replyToMessageId != null && sent.replyToMessageId == null;
         trace.event({
           message: replyTargetDropped
@@ -166,34 +150,27 @@ export async function startDeliveryConsumer(input: {
             replyToMessageId: sent.replyToMessageId,
           },
         });
-        await recordAssistantMessage(
-          input.db,
+        // The core's ingest mirrors and cross-feeds off this report.
+        await publishDelivered(
+          { publisher: input.updates, running: input.running },
           {
             chatId,
             assistantId: event.assistantId,
-            telegramMessageId: sent.messageId,
+            messageId: sent.messageId,
             content: event.text,
-            // What is actually in the chat, not what was asked for.
             replyToMessageId: sent.replyToMessageId,
-            sentAt: new Date(),
             threadId: event.threadId != null ? Number(event.threadId) : null,
             silent: event.silent,
           },
-          input.crossFeed,
         ).catch((error) => {
-          onError(`mirror of delivered reply ${chatId}:${sent.messageId}`, error);
+          onError(`delivered report ${chatId}:${sent.messageId}`, error);
           trace.event({
-            message: "mirror write failed (message already delivered)",
+            message: "delivered report failed (message already delivered)",
             type: "db",
             level: "warn",
             data: { error: error instanceof Error ? error.message : String(error) },
           });
-          return null;
         });
-        // The mirror grew a reply — ping the history pages (best-effort).
-        void publisher
-          .publish(BUS_EVENTS_CHANNEL, dashboardRefresh("tg", ["history"]))
-          .catch(() => undefined);
         await trace.succeed({ outputSummary: `delivered ${chatId}:${sent.messageId}` });
       } catch (error) {
         await trace.fail(error);
@@ -215,14 +192,6 @@ export async function startDeliveryConsumer(input: {
       const key = `${chatId}:${event.sourceMessageId}`;
       if (event.phase === "settled") {
         typing.stop(key);
-        // Release the live-processing hold the mirror took on this message —
-        // on every settle, replied or ignored (v1's `finally`).
-        await markMessageProcessed(
-          input.db,
-          chatId,
-          Number(event.sourceMessageId),
-          event.assistantId ?? null,
-        ).catch((error) => onError(`processed release ${key}`, error));
       } else {
         typing.start(
           key,
