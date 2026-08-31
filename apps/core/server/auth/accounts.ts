@@ -57,6 +57,15 @@ export async function insertAccount(
   return rows[0];
 }
 
+/** Hard-delete an account row (FK cascades follow). False when unknown. */
+export async function deleteAccountRow(
+  id: string,
+  db: StoreDb = getStoreDb(),
+): Promise<boolean> {
+  const rows = await db.delete(accounts).where(eq(accounts.id, id)).returning({ id: accounts.id });
+  return rows.length > 0;
+}
+
 /** Patch an account row; returns the fresh row or null when it is unknown. */
 export async function updateAccount(
   id: string,

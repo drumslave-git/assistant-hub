@@ -241,6 +241,31 @@ export function AccountsManager({
     }
   }
 
+  async function hardDelete(account: AccountView) {
+    const ok = await confirm({
+      title: `Delete ${account.username} forever?`,
+      body:
+        "Their assistants (with tasks and bot connections), tool connections, chat threads " +
+        "and the memory about them are all deleted. This cannot be undone.",
+      confirmLabel: "Delete everything",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/accounts/${encodeURIComponent(account.id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        setActionError(await readError(res));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setActionError("Network error — could not reach the server");
+    }
+  }
+
   async function toggleActive(account: AccountView) {
     if (account.active) {
       const ok = await confirm({
@@ -359,6 +384,18 @@ export function AccountsManager({
                     >
                       {account.active ? "Deactivate" : "Reactivate"}
                     </Button>
+                    {/* The two-step confirm: deletion exists only once
+                        deactivated (which no self / last-admin can be). */}
+                    {!account.active ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-danger"
+                        onClick={() => void hardDelete(account)}
+                      >
+                        Delete…
+                      </Button>
+                    ) : null}
                   </div>
                 </TableCell>
               </TableRow>

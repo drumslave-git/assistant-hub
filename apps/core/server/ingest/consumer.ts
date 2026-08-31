@@ -51,6 +51,7 @@ import { enqueueInboundEvent } from "@/server/turn/enqueue";
 import { sourceOutbound } from "@/server/turn/source-outbound";
 
 import { resolveOwnerRights } from "@/server/owner-rights";
+import { silencedAssistantIds } from "@/server/ownership";
 
 import { buildChatInfo, buildConversationContext, buildSenderInfo } from "./context";
 
@@ -197,13 +198,17 @@ async function storeEventMedia(event: TransportMessageEvent): Promise<void> {
  * got the update its turn.
  */
 async function resolveReceivers(event: TransportMessageEvent): Promise<TransportReceiver[]> {
-  const self = event.receivers.find((r) => r.assistantId === event.receivedBy);
+  // Offboarding (Phase 9): a deactivated account's assistants answer
+  // nothing, even while a poller is still winding down.
+  const silenced = await silencedAssistantIds();
+  const receivers = event.receivers.filter((r) => !silenced.has(r.assistantId));
+  const self = receivers.find((r) => r.assistantId === event.receivedBy);
   const selfList = self ? [self] : [];
   if (event.chat.kind === "direct") return selfList;
   const present = new Set(
     await listChatAssistants(event.source, event.chat.id).catch(() => [] as string[]),
   );
-  const listening = event.receivers.filter((r) => present.has(r.assistantId));
+  const listening = receivers.filter((r) => present.has(r.assistantId));
   if (self && !listening.some((r) => r.assistantId === self.assistantId)) {
     return [...selfList, ...listening];
   }

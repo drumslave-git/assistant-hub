@@ -1,5 +1,5 @@
 import { patchAccountSchema } from "@/features/accounts/schema";
-import { patchAccount } from "@/features/accounts/server/service";
+import { deleteAccountHard, patchAccount } from "@/features/accounts/server/service";
 import { ApiError } from "@/lib/api-error";
 import { defineRoute, ok, parseJson } from "@/server/http";
 
@@ -15,4 +15,12 @@ export const PATCH = defineRoute(async ({ request, params, account }) => {
   return ok({
     account: await patchAccount(params.id, patch, { id: account.id }, { kind: "dashboard" }),
   });
+});
+
+export const DELETE = defineRoute(async ({ params, account }) => {
+  if (!account) throw ApiError.unauthorized("Sign in to manage accounts");
+  // Hard offboarding (Phase 9): only a DEACTIVATED account can be deleted;
+  // the service cascades assistants, connections, threads and person memory.
+  await deleteAccountHard(params.id, { id: account.id }, { kind: "dashboard" });
+  return ok({ deleted: true });
 });

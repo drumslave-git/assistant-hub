@@ -1,6 +1,7 @@
 import "server-only";
 
 import { ApiError } from "@/lib/api-error";
+import { silencedAssistantIds } from "@/server/ownership";
 import type { TraceTrigger } from "@/lib/trace";
 import { getGroupContext, getGroupLanguage } from "@/features/known-groups/server/service";
 import { getUserContext, getUserLanguage } from "@/features/known-users/server/service";
@@ -135,7 +136,11 @@ async function loadChatScopedFireDeps(assistantId: string, chatId: string, db: S
 export async function runDueTasks(deps: DueRunDeps): Promise<{ fired: number; failed: number }> {
   const db = deps.db ?? getStoreDb();
   const now = deps.now ?? new Date();
-  const due = await listDueTasks(db, now);
+  const allDue = await listDueTasks(db, now);
+  // Offboarding (Phase 9): a deactivated account's assistants fire nothing.
+  // Their rows stay due (untouched), so reactivation resumes them.
+  const silenced = await silencedAssistantIds(db);
+  const due = allDue.filter((task) => !silenced.has(task.assistantId));
   if (due.length === 0) return { fired: 0, failed: 0 };
 
   let fired = 0;

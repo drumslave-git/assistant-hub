@@ -17,6 +17,7 @@ import { publishBusEvent } from "@/server/bus/publisher";
 import { publishEvent } from "@/server/realtime/hub";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { withTrace } from "@/server/trace";
+import { silencedAssistantIds } from "@/server/ownership";
 
 import {
   assistantTransports,
@@ -85,6 +86,9 @@ export async function desiredTransportState(
     .from(assistantTransports)
     .where(eq(assistantTransports.transport, id))
     .orderBy(asc(assistantTransports.createdAt));
+  // Offboarding (Phase 9): a deactivated account's assistants run nothing.
+  // Computed, not stored, so reactivation restores the exact prior state.
+  const silenced = await silencedAssistantIds(db);
   return {
     transport: { enabled: row.enabled, config: row.config },
     connections: connections.map((connection) => ({
@@ -92,7 +96,7 @@ export async function desiredTransportState(
       assistantId: connection.assistantId,
       config: connection.config,
       // A disabled transport runs nothing, whatever its connections say.
-      enabled: row.enabled && connection.enabled,
+      enabled: row.enabled && connection.enabled && !silenced.has(connection.assistantId),
     })),
   };
 }

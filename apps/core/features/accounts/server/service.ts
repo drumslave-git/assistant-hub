@@ -5,7 +5,20 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
+import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
+
+import { getAssistants, removeAssistant } from "@/features/assistants/server/service";
+import { deleteUserMemory } from "@/features/memory/server/repository";
 import {
+  deletePersonLink,
+  findLinksForRefs,
+  listMembersOfLinks,
+  replacePersonLinkMembers,
+} from "@/features/person-links/server/repository";
+import { resolveLinkedRefs } from "@/features/person-links/server/service";
+import { getDb } from "@/db/drizzle";
+import {
+  deleteAccountRow,
   getAccountById,
   getAccountByUsername,
   insertAccount,
@@ -13,10 +26,11 @@ import {
   updateAccount,
   type AccountRow,
 } from "@/server/auth/accounts";
+import { announceTransportChange, listTransports } from "@/server/transports/service";
 import { hashPassword } from "@/server/auth/password";
 import { publishEvent } from "@/server/realtime/hub";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
-import { withTrace } from "@/server/trace";
+import { withTrace, type TraceRecorder } from "@/server/trace";
 
 import type { AccountView, CreateAccount, PatchAccount } from "../schema";
 
@@ -149,12 +163,125 @@ export async function patchAccount(
         db,
       );
       if (!updated) throw ApiError.notFound("No such account");
+      if ("active" in patch) {
+        // Offboarding (Phase 9): the desired transport state computes over
+        // account activity, so the pollers must re-reconcile now.
+        await announceTransports(trace);
+      }
       publishEvent(FEATURE.realtimeTopic);
       await trace.succeed({
         outputSummary: `${action} ok for '${updated.username}'`,
         relatedIds: { [FEATURE.relatedIdsKey]: [updated.id] },
       });
       return toView(updated);
+    },
+  );
+}
+
+/** Nudge every registered transport to refetch its desired state. */
+async function announceTransports(trace: TraceRecorder): Promise<void> {
+  try {
+    const transports = await listTransports();
+    for (const transport of transports) {
+      await announceTransportChange(transport.id as "tg" | "chat");
+    }
+  } catch (err) {
+    await trace.event({
+      type: "step",
+      level: "warn",
+      message: "transport announce failed - pollers reconcile on their next fetch",
+      data: { error: err instanceof Error ? err.message : String(err) },
+    });
+  }
+}
+
+/**
+ * Hard delete (Phase 9 offboarding): the account and everything that is
+ * only theirs. Requires the account to be DEACTIVATED first — that two-step
+ * is the confirm, and it inherits the deactivation guards (no self, no last
+ * admin). What goes, in order: their assistants through the assistants
+ * service (so `assistant.deleted` lifecycle events fire and the transports
+ * clean up; tasks and bot connections cascade), the memory documents under
+ * their linked identities, their person-link membership (the link survives
+ * only if two other identities remain), and finally the account row — whose
+ * FK cascades take the web threads, the link codes and their tool
+ * connections with it.
+ */
+export async function deleteAccountHard(
+  id: string,
+  actor: { id: string },
+  trigger: TraceTrigger,
+  db: StoreDb = getStoreDb(),
+): Promise<void> {
+  return withTrace(
+    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `delete ${id}` },
+    async (trace) => {
+      const row = await getAccountById(id, db);
+      if (!row) throw ApiError.notFound("No such account");
+      if (row.id === actor.id) {
+        throw ApiError.badRequest("You cannot delete your own account");
+      }
+      if (row.active) {
+        throw ApiError.badRequest("Deactivate the account first — deletion is the second step");
+      }
+
+      // Their assistants, through the service (lifecycle events + cascades).
+      const owned = (await getAssistants(db)).filter((a) => a.ownerAccountId === row.id);
+      for (const assistant of owned) {
+        await removeAssistant(assistant.id, trigger, db);
+      }
+      await trace.event({
+        type: "db",
+        message: `${owned.length} assistant(s) deleted with their tasks and connections`,
+      });
+
+      // The person memory under their linked identities (the v1-backed
+      // memory store keys by local id until cutover). Guarded whole: an
+      // unreachable v1 store must not abort the offboarding — it is noted
+      // in the trace instead.
+      const accountRef = scopedRef("chat", "user", row.id);
+      const linked = (await resolveLinkedRefs([accountRef], db)).get(accountRef) ?? [accountRef];
+      let forgotten = 0;
+      try {
+        const v1 = getDb();
+        for (const ref of linked) {
+          const parsed = tryParseScopedRef(ref);
+          if (parsed?.kind !== "user") continue;
+          if (await deleteUserMemory(v1, parsed.id).catch(() => false)) forgotten += 1;
+        }
+      } catch (err) {
+        await trace.event({
+          type: "step",
+          level: "warn",
+          message: "memory store unreachable - person memory not cleared",
+          data: { error: err instanceof Error ? err.message : String(err) },
+        });
+      }
+
+      // Leave the link graph consistent: the account's identity goes; the
+      // link survives only while it still joins at least two identities.
+      const linkOf = await findLinksForRefs(db, [accountRef]);
+      const linkId = linkOf.get(accountRef);
+      if (linkId) {
+        const members = ((await listMembersOfLinks(db, [linkId])).get(linkId) ?? []).filter(
+          (member) => member !== accountRef,
+        );
+        if (members.length >= 2) await replacePersonLinkMembers(db, linkId, members);
+        else await deletePersonLink(db, linkId);
+      }
+      await trace.event({
+        type: "db",
+        message: `person memory cleared (${forgotten} document(s)); link membership removed`,
+      });
+
+      await deleteAccountRow(row.id, db);
+      await announceTransports(trace);
+      publishEvent(FEATURE.realtimeTopic);
+      publishEvent("users");
+      await trace.succeed({
+        outputSummary: `account '${row.username}' deleted with everything that was only theirs`,
+        relatedIds: { [FEATURE.relatedIdsKey]: [row.id] },
+      });
     },
   );
 }

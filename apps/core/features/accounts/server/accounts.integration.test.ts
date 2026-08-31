@@ -18,10 +18,13 @@ import { listTraces } from "@/server/trace";
 
 import * as storeSchema from "../../../store/schema";
 
+import { createAssistant } from "@/features/assistants/server/service";
 import { findLinksForRefs, listMembersOfLinks } from "@/features/person-links/server/repository";
+import { silencedAssistantIds } from "@/server/ownership";
+import { desiredTransportState } from "@/server/transports/service";
 
 import { LINK_CODE_TTL_MS, mintLinkCode, redeemLinkCode } from "./self-link";
-import { createAccount, listAccountViews, patchAccount } from "./service";
+import { createAccount, deleteAccountHard, listAccountViews, patchAccount } from "./service";
 
 const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
 
@@ -49,7 +52,9 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await pool.query(`TRUNCATE accounts, person_links CASCADE`);
+  await pool.query(
+    `TRUNCATE accounts, person_links, assistants, transports, tool_connections CASCADE`,
+  );
 });
 
 const trigger = { kind: "test" } as const;
@@ -284,5 +289,108 @@ describe("self-link codes", () => {
     const linkId = (await findLinksForRefs(db, [accountRef])).get(accountRef)!;
     const members = (await listMembersOfLinks(db, [linkId])).get(linkId) ?? [];
     expect(new Set(members)).toEqual(new Set(["tg:user:1001", "tg:user:2002", accountRef]));
+  });
+});
+
+describe("offboarding (Phase 9)", () => {
+  it("deactivation silences the account's assistants everywhere it is computed", async () => {
+    const adminId = await seedAdmin();
+    const user = await createAccount(
+      { username: "sam", role: "user", temporaryPassword: "temp-pass-1234" },
+      trigger,
+      db,
+    );
+    const mine = await createAssistant(
+      { name: "Sam's bot", persona: "" },
+      trigger,
+      { id: user.id },
+      db,
+    );
+    const admins = await createAssistant(
+      { name: "House bot", persona: "" },
+      trigger,
+      { id: adminId },
+      db,
+    );
+    await pool.query(
+      `INSERT INTO transports (id, name, base_url, enabled) VALUES ('tg', 'Telegram', 'http://x', true)`,
+    );
+    await pool.query(
+      `INSERT INTO assistant_transports (id, assistant_id, transport, config, enabled)
+       VALUES ('c-mine', $1, 'tg', '{}'::jsonb, true), ('c-admin', $2, 'tg', '{}'::jsonb, true)`,
+      [mine.id, admins.id],
+    );
+
+    await patchAccount(user.id, { active: false }, { id: adminId }, trigger, db);
+    expect(await silencedAssistantIds(db)).toEqual(new Set([mine.id]));
+    const state = await desiredTransportState("tg", db);
+    const byId = new Map(state.connections.map((c) => [c.id, c.enabled]));
+    expect(byId.get("c-mine")).toBe(false);
+    expect(byId.get("c-admin")).toBe(true);
+
+    // Reactivation restores the exact prior state - nothing was mutated.
+    await patchAccount(user.id, { active: true }, { id: adminId }, trigger, db);
+    expect(await silencedAssistantIds(db)).toEqual(new Set());
+    const restored = await desiredTransportState("tg", db);
+    expect(restored.connections.every((c) => c.enabled)).toBe(true);
+  });
+
+  it("hard delete requires deactivation and then cascades everything that is only theirs", async () => {
+    const adminId = await seedAdmin();
+    const user = await createAccount(
+      { username: "sam", role: "user", temporaryPassword: "temp-pass-1234" },
+      trigger,
+      db,
+    );
+    const mine = await createAssistant(
+      { name: "Sam's bot", persona: "" },
+      trigger,
+      { id: user.id },
+      db,
+    );
+    await pool.query(
+      `INSERT INTO web_threads (id, user_id, assistant_id, name) VALUES ('t-1', $1, $2, 'Chat')`,
+      [user.id, mine.id],
+    );
+    await pool.query(
+      `INSERT INTO tool_connections (id, slug, name, transport, endpoint_url, owner_account_id)
+       VALUES ('tc-1', 'mine', 'Mine', 'http', 'https://tools.example.test/mcp', $1)`,
+      [user.id],
+    );
+    // Link the account to a platform identity; the link dies with them
+    // (fewer than two identities would remain).
+    const { code } = await mintLinkCode(user.id, trigger, db);
+    await redeemLinkCode({ senderRef: "tg:user:777", text: code }, db);
+
+    // Active - refused; the two-step is the confirm.
+    await expect(
+      deleteAccountHard(user.id, { id: adminId }, trigger, db),
+    ).rejects.toMatchObject({ message: expect.stringContaining("Deactivate the account first") });
+    // Self-delete refused outright.
+    await expect(
+      deleteAccountHard(adminId, { id: adminId }, trigger, db),
+    ).rejects.toMatchObject({ message: expect.stringContaining("your own account") });
+
+    await patchAccount(user.id, { active: false }, { id: adminId }, trigger, db);
+    await deleteAccountHard(user.id, { id: adminId }, trigger, db);
+
+    const counts = await pool.query(
+      `SELECT
+         (SELECT count(*)::int FROM accounts WHERE id = $1) AS account,
+         (SELECT count(*)::int FROM assistants WHERE id = $2) AS assistant,
+         (SELECT count(*)::int FROM web_threads) AS threads,
+         (SELECT count(*)::int FROM tool_connections) AS connections,
+         (SELECT count(*)::int FROM person_links) AS links,
+         (SELECT count(*)::int FROM account_link_codes) AS codes`,
+      [user.id, mine.id],
+    );
+    expect(counts.rows[0]).toEqual({
+      account: 0,
+      assistant: 0,
+      threads: 0,
+      connections: 0,
+      links: 0,
+      codes: 0,
+    });
   });
 });
