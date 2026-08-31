@@ -1,13 +1,17 @@
 import "server-only";
 
 export {
-  changeOperatorPassword,
+  assertValidUsername,
+  changeAccountPassword,
   isAuthConfigured,
   judgeSessionToken,
-  loginOperator,
+  loginAccount,
+  requireAccount,
   requireOperator,
-  setupOperator,
+  setupFirstAdmin,
   MIN_PASSWORD_LENGTH,
+  MIN_USERNAME_LENGTH,
+  type SessionAccount,
   type SessionVerdict,
 } from "./service";
 export {

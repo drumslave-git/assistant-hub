@@ -6,9 +6,9 @@ import { isAuthConfigured, MIN_PASSWORD_LENGTH } from "@/server/auth";
 export const dynamic = "force-dynamic";
 
 /**
- * First-run setup: choose the operator password. Exists only while no password
- * is stored — afterwards it permanently redirects to `/login` (changing the
- * password means clearing the DB column; see the README).
+ * First-run setup: create the first admin account. Exists only while no
+ * account exists — afterwards it permanently redirects to `/login` (further
+ * accounts are created by admins in the dashboard).
  */
 export default async function SetupPage() {
   const configured = await isAuthConfigured().catch(() => false);
@@ -20,13 +20,13 @@ export default async function SetupPage() {
         <div className="space-y-1 text-center">
           <h1 className="text-xl font-semibold">Welcome to llm-tg-bot</h1>
           <p className="text-sm text-muted">
-            Set the operator password that will protect this dashboard. At least{" "}
+            Create the first admin account that will own this dashboard. Password at least{" "}
             {MIN_PASSWORD_LENGTH} characters.
           </p>
         </div>
         <AuthPasswordForm
           endpoint="/api/auth/setup"
-          submitLabel="Set password and continue"
+          submitLabel="Create admin and continue"
           autoComplete="new-password"
         />
       </div>

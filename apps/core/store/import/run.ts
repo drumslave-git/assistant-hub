@@ -1,3 +1,5 @@
+import { randomBytes, randomUUID } from "node:crypto";
+
 import { DEFAULT_ASSISTANT_ID, scopedRef } from "@assistant-hub/contracts";
 import {
   ImportReport,
@@ -17,8 +19,10 @@ import type { Pool } from "pg";
  *
  * Mapping (v1 → core store):
  * - backends, settings (minus telegram_bot_token / active_personality_id /
- *   owner_username / owner_user_id — token and owner belong to the tg app),
- *   self_corrections, general_memories — copied verbatim.
+ *   owner_username / owner_user_id / operator_password_hash /
+ *   session_secret), self_corrections, general_memories — copied verbatim.
+ * - the operator password becomes the first admin **account** (username
+ *   'admin', hash copied verbatim — the scrypt string is self-describing).
  * - personalities → assistants, id-preserving; when v1 has no active
  *   personality a default assistant is created under DEFAULT_ASSISTANT_ID so
  *   the tg import can bind the bot token to the same id.
@@ -39,6 +43,7 @@ import type { Pool } from "pg";
  */
 
 const TARGET_TABLES = [
+  "accounts",
   "backends",
   "settings",
   "assistants",
@@ -54,6 +59,9 @@ const TARGET_TABLES = [
   "person_links",
   "person_link_members",
 ];
+
+/** Username the ported operator signs in with after cutover. */
+export const FIRST_ADMIN_USERNAME = "admin";
 
 const tgUser = (id: string | null): string | null => (id == null ? null : scopedRef("tg", "user", id));
 const tgChat = (id: string | null): string | null => (id == null ? null : scopedRef("tg", "chat", id));
@@ -101,8 +109,6 @@ export async function runCoreImport(input: {
       "id",
       "chat_backend_id",
       "model",
-      "operator_password_hash",
-      "session_secret",
       "tavily_api_key",
       "embedding_backend_id",
       "embedding_model",
@@ -133,6 +139,24 @@ export async function runCoreImport(input: {
       columns: settingsCols,
       sql: `SELECT ${settingsCols.join(", ")} FROM settings`,
     });
+
+    // --- first admin account (Phase 8: the operator password ports forward) ---
+    log("first admin account…");
+    const operatorRes = await v1.query(`SELECT operator_password_hash FROM settings`);
+    const operatorHash: string | null = operatorRes.rows[0]?.operator_password_hash ?? null;
+    if (operatorHash) {
+      // The stored scrypt string is self-describing, so it copies verbatim;
+      // the session secret is fresh (old cookies die at cutover anyway).
+      await insertBatch(target, {
+        table: "accounts",
+        columns: ["id", "username", "password_hash", "role", "session_secret"],
+        rows: [[randomUUID(), FIRST_ADMIN_USERNAME, operatorHash, "admin", randomBytes(32).toString("base64url")]],
+      });
+      report.count("accounts", 1, await countRows(target, `SELECT count(*) AS count FROM accounts`));
+      report.note(`first admin created as '${FIRST_ADMIN_USERNAME}' from the v1 operator password`);
+    } else {
+      report.note("v1 had no operator password — no admin created; first-run /setup will ask");
+    }
 
     // --- personalities → assistants (id-preserving) + default assistant ---
     log("assistants…");
@@ -396,12 +420,20 @@ export async function runCoreImport(input: {
     // --- spot checks ---
     log("verifying…");
     const [v1Settings, coreSettings] = await Promise.all([
-      v1.query(`SELECT model, timezone, daily_jobs_run_time, operator_password_hash FROM settings`),
-      target.query(`SELECT model, timezone, daily_jobs_run_time, operator_password_hash FROM settings`),
+      v1.query(`SELECT model, timezone, daily_jobs_run_time FROM settings`),
+      target.query(`SELECT model, timezone, daily_jobs_run_time FROM settings`),
     ]);
     report.check(
       JSON.stringify(v1Settings.rows[0] ?? null) === JSON.stringify(coreSettings.rows[0] ?? null),
-      "settings singleton fields survived (model, timezone, daily jobs time, password hash)",
+      "settings singleton fields survived (model, timezone, daily jobs time)",
+    );
+    const adminCount = await countRows(
+      target,
+      `SELECT count(*) AS count FROM accounts WHERE role = 'admin'`,
+    );
+    report.check(
+      operatorHash ? adminCount === 1 : adminCount === 0,
+      "first admin account matches the v1 operator credential",
     );
     const defaultExists = await countRows(
       target,

@@ -27,10 +27,12 @@ export default async function DashboardLayout({
   const verdict = await judgeSessionToken(token).catch(() => {
     // A DB outage must not lock the operator out of the status shell — the
     // pages themselves render their "database unavailable" states.
-    return "ok" as const;
+    return { kind: "db-down" } as const;
   });
-  if (verdict === "unconfigured") redirect("/setup");
-  if (verdict === "invalid") redirect("/login");
+  if (verdict.kind === "unconfigured") redirect("/setup");
+  if (verdict.kind === "invalid") redirect("/login");
+  // A temporary password holds the session at the change form (Phase 8).
+  if (verdict.kind === "ok" && verdict.account.mustChangePassword) redirect("/password");
 
   const readiness = await getConfigReadiness();
   // The poller's live state (probed from the tg service, which owns it since

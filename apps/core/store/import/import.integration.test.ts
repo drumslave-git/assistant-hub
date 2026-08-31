@@ -128,13 +128,29 @@ describe("v1 → core store import", () => {
       timezone: "Europe/Kyiv",
       daily_jobs_run_time: "05:30",
       maintenance_mode_enabled: true,
-      operator_password_hash: "scrypt:fixture",
     });
     expect(settings.rows[0].telegram_bot_token).toBeUndefined();
     expect(settings.rows[0].active_personality_id).toBeUndefined();
-    // Owner identity is the tg app's now — the columns do not exist here.
+    // The global owner and the single operator credential are superseded by
+    // accounts + owner rights (Phase 8) — the columns do not exist here.
     expect(settings.rows[0].owner_username).toBeUndefined();
     expect(settings.rows[0].owner_user_id).toBeUndefined();
+    expect(settings.rows[0].operator_password_hash).toBeUndefined();
+    expect(settings.rows[0].session_secret).toBeUndefined();
+
+    // The operator password became the first admin account, hash verbatim.
+    const admins = await target.query(
+      `SELECT username, password_hash, role, must_change_password, active FROM accounts`,
+    );
+    expect(admins.rows).toEqual([
+      {
+        username: "admin",
+        password_hash: "scrypt:fixture",
+        role: "admin",
+        must_change_password: false,
+        active: true,
+      },
+    ]);
 
     // Personalities became assistants, id-preserving; the active one is the
     // default, so no synthetic assistant was created.

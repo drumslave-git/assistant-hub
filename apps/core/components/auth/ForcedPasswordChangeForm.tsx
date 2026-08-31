@@ -7,24 +7,16 @@ import { Button, Input } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
 
 /**
- * The one credentials form both auth pages render: `/login` posts to the
- * login endpoint, `/setup` to the first-run setup endpoint (which creates
- * the first admin). On success the session cookie is already set by the
- * response; a hard navigation reloads the server-rendered tree as an
- * authenticated visitor.
+ * The temporary-password replacement form (`/password`): an account created
+ * by an admin signs in with the handed-over password and is held here until
+ * it is replaced. Posts to the same change-password endpoint the Settings
+ * Security tab uses; the response re-cookies this session, so a hard
+ * navigation lands in the dashboard as normal.
  */
-export function AuthPasswordForm({
-  endpoint,
-  submitLabel,
-  autoComplete,
-}: {
-  endpoint: string;
-  submitLabel: string;
-  autoComplete: "current-password" | "new-password";
-}) {
+export function ForcedPasswordChangeForm() {
   const router = useRouter();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,10 +25,10 @@ export function AuthPasswordForm({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch("/api/auth/change-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ currentPassword, newPassword }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as ApiErrorBody;
@@ -55,29 +47,29 @@ export function AuthPasswordForm({
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <Input
-        type="text"
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        autoComplete="username"
-        aria-label="Username"
-        placeholder="Username"
+        type="password"
+        value={currentPassword}
+        onChange={(e) => setCurrentPassword(e.target.value)}
+        autoComplete="current-password"
+        aria-label="Temporary password"
+        placeholder="Temporary password"
         autoFocus
       />
       <Input
         type="password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        autoComplete={autoComplete}
-        aria-label="Password"
-        placeholder="Password"
+        value={newPassword}
+        onChange={(e) => setNewPassword(e.target.value)}
+        autoComplete="new-password"
+        aria-label="New password"
+        placeholder="New password"
       />
       {error ? <p className="text-sm text-danger">{error}</p> : null}
       <Button
         type="submit"
-        disabled={busy || username.length === 0 || password.length === 0}
+        disabled={busy || currentPassword.length === 0 || newPassword.length === 0}
         className="w-full"
       >
-        {busy ? "Working…" : submitLabel}
+        {busy ? "Working…" : "Set new password"}
       </Button>
     </form>
   );

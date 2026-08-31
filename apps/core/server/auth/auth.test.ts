@@ -6,6 +6,7 @@ import {
   mintSessionToken,
   readSessionCookie,
   sessionCookie,
+  sessionTokenAccountId,
   verifySessionToken,
   SESSION_COOKIE,
   SESSION_TTL_MS,
@@ -32,31 +33,40 @@ describe("password hashing", () => {
 
 describe("session tokens", () => {
   const secret = "test-secret";
+  const accountId = "acct-1234";
 
-  it("mints a token the same secret verifies", () => {
-    const token = mintSessionToken(secret);
+  it("mints a token the same secret verifies, naming its account", () => {
+    const token = mintSessionToken(accountId, secret);
+    expect(sessionTokenAccountId(token)).toBe(accountId);
     expect(verifySessionToken(secret, token)).toBe(true);
   });
 
-  it("rejects a token signed with a different secret (rotation logs everyone out)", () => {
-    const token = mintSessionToken(secret);
+  it("rejects a token signed with a different secret (rotation signs that account out)", () => {
+    const token = mintSessionToken(accountId, secret);
     expect(verifySessionToken("rotated", token)).toBe(false);
   });
 
-  it("rejects a tampered payload", () => {
-    const token = mintSessionToken(secret);
-    const [exp, nonce, sig] = token.split(".");
-    expect(verifySessionToken(secret, `${Number(exp) + 9999}.${nonce}.${sig}`)).toBe(false);
+  it("rejects a tampered payload — the account claim is covered by the signature", () => {
+    const token = mintSessionToken(accountId, secret);
+    const [id, exp, nonce, sig] = token.split(".");
+    expect(verifySessionToken(secret, `${id}.${Number(exp) + 9999}.${nonce}.${sig}`)).toBe(false);
+    expect(verifySessionToken(secret, `other-account.${exp}.${nonce}.${sig}`)).toBe(false);
   });
 
   it("rejects an expired token", () => {
     const past = new Date(Date.now() - SESSION_TTL_MS - 1000);
-    const token = mintSessionToken(secret, past);
+    const token = mintSessionToken(accountId, secret, past);
     expect(verifySessionToken(secret, token)).toBe(false);
   });
 
+  it("reads no account claim from garbage", () => {
+    expect(sessionTokenAccountId("")).toBeNull();
+    expect(sessionTokenAccountId(".x.y.z")).toBeNull();
+    expect(sessionTokenAccountId("no-dots")).toBeNull();
+  });
+
   it("round-trips through the cookie helpers", () => {
-    const token = mintSessionToken(secret);
+    const token = mintSessionToken(accountId, secret);
     const header = sessionCookie(token).split(";")[0];
     expect(readSessionCookie(`other=1; ${header}; x=2`)).toBe(token);
     expect(readSessionCookie(null)).toBeNull();

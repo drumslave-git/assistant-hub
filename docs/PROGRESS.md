@@ -330,13 +330,82 @@ Known pitfalls for whoever starts:
 | 5 | MCP connections (HTTP): CRUD, discovery, snapshot/apply, scoping | done |
 | 6 | Chat dissolve: apps/chat merges into core (store, backend, tools, pages) | done |
 | 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | done |
-| 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | todo |
+| 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | in-progress |
 | 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | todo |
 | 10 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
 
 Phases 0–5 describe the as-built per-app architecture that phases 6–9
 deliberately supersede (2026-08-30 revision); their criteria below are
 history, not the current target.
+
+## Phase 8 — Accounts (acceptance criteria)
+
+Scope from PLAN.md: the accounts table, roles and per-account sessions;
+first-run setup creates the first admin; account management UI; role
+gates across every page and API; assistants gain owning accounts and
+owner-rights resolution replaces the global owner; identity links with
+the self-link bot-code flow; memory rescoped with the user-facing
+view + delete.
+
+Design fixed at open (user Q&A, 2026-08-31):
+
+- **Accounts join the person-link graph.** An account is a new identity
+  kind (`account:<id>`) inside the existing person-link mechanism; the
+  self-link code just adds a membership. Memory and owner-rights resolve
+  through the one graph. Non-account humans keep plain links.
+- **The operator ports forward.** A one-shot dev port (and the same move
+  at cutover) creates the first admin from the existing operator hash —
+  the stored scrypt string is self-describing, so it copies verbatim.
+- **Admin-created accounts get a temporary password** and must change it
+  at first sign-in; the forced-change gate holds the session to the
+  change-password surface until they do.
+- **Web user = account.** Each account IS its web-chat identity
+  (`chat:user:<accountId>`); threads belong to accounts; the old
+  `web_users` operator row and its threads port onto the first admin.
+
+- [ ] **A — accounts + auth.** `accounts` in the core store (unique
+      username, display name, aliases, scrypt hash, role admin|user,
+      per-account session secret, must-change-password, active) with a
+      migration; the auth service rewritten on accounts: username +
+      password login, session tokens carrying the account id and signed
+      per-account (a password change signs out that account only),
+      first-run `/setup` creates the first admin, login/setup pages gain
+      the username field; the dev port creates the first admin from the
+      v1 operator hash.
+- [ ] **B — role gates + account management.** `defineRoute` grows an
+      access level (admin-only stays the default; `account` for the
+      surfaces any signed-in account may use; public stays health +
+      auth) and hands the body the acting account; the dashboard layout
+      resolves the account, filters nav by role, and user-role visitors
+      get the chat-shaped shell; an `/accounts` admin page (create with
+      temp password, role, activate/deactivate, reset password), all
+      actions traced.
+- [ ] **C — assistant owners + owner rights.** `owner_account_id` on
+      assistants (existing rows → the first admin, visible in the
+      editor); the transport contract drops `isOwner` — tg stops
+      stamping it, the owner fields leave tg's transport config, its
+      `owner.ts`, and the Settings owner card; core ingest resolves
+      owner rights per receiver instead: sender ref → link graph →
+      account, owner iff that account owns the assistant or is an
+      admin; the web chat resolves its sender the same way.
+- [ ] **D — accounts in the link graph + self-link.** `account:<id>`
+      refs are valid person-link members; the directory offers accounts
+      as identities; memory identity resolution follows account refs;
+      the profile mints a one-time short-TTL code — sending it to any
+      connected bot links that platform identity to the account (ingest
+      detects it, links, confirms in the chat); admins link/unlink via
+      the existing person-links UI.
+- [ ] **E — web chat on accounts + profile + own memory.** `web_users`
+      is dropped: threads key on the account id, the operator row and
+      threads ported to the first admin, the chat directory lists
+      accounts; a profile page (display name, change password, linked
+      identities, mint link code); every account can view and delete
+      the memory documents held under its linked identities (the admin
+      memory page stays global).
+- [ ] **F — proof.** Suites, lint, typecheck green; dev ports run;
+      docs updated; live checks recorded — admin sign-in, a created
+      user's forced password change, and the self-link code round-trip
+      through a bot.
 
 ## Phase 7 — One store, stateless transports (acceptance criteria)
 

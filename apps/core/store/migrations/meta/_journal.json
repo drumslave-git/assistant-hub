@@ -57,6 +57,13 @@
       "when": 1788104359013,
       "tag": "0007_early_the_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788176258668,
+      "tag": "0008_last_bulldozer",
+      "breakpoints": true
     }
   ]
 }

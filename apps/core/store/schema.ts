@@ -66,6 +66,52 @@ export type BackendRow = typeof backends.$inferSelect;
 export type BackendInsert = typeof backends.$inferInsert;
 
 /**
+ * Accounts — who signs in (redesign Phase 8, PLAN.md "Accounts and roles").
+ * Username + password (self-describing scrypt hash), a role, and a
+ * per-account session secret: session cookies are HMAC-signed with the
+ * account's own secret, so rotating it (a password change) signs out that
+ * account's sessions and nobody else's. The first admin is created by
+ * first-run `/setup`; admins create further accounts with a temporary
+ * password (`must_change_password` holds the session at the change form
+ * until it is replaced). `active = false` blocks sign-in, data intact.
+ *
+ * An account is also an identity: `account:<id>` refs join the person-link
+ * graph, anchoring platform identities (and the memory held under them) to
+ * the person who owns the account. The account IS its web-chat identity —
+ * web threads key on the account id.
+ */
+export const accounts = pgTable(
+  "accounts",
+  {
+    id: text("id").primaryKey(),
+    /** Sign-in name; unique case-insensitively. */
+    username: text("username").notNull(),
+    /** Shown in chat rosters and the dashboard; null falls back to username. */
+    displayName: text("display_name"),
+    /** Operator-curated alternate names (addressing, directory search). */
+    aliases: text("aliases").array().notNull().default([]),
+    /** Self-describing scrypt hash (`server/auth/password.ts`). Secret. */
+    passwordHash: text("password_hash").notNull(),
+    role: text("role").$type<"admin" | "user">().notNull(),
+    /** HMAC key this account's session tokens are signed with. Secret. */
+    sessionSecret: text("session_secret").notNull(),
+    /** Temporary-password gate: the session is held at the change form. */
+    mustChangePassword: boolean("must_change_password").notNull().default(false),
+    /** False blocks sign-in (reversible deactivation); data stays. */
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("accounts_username_unique").on(sql`lower(${t.username})`),
+    check("accounts_role_check", sql`${t.role} in ('admin', 'user')`),
+  ],
+);
+
+export type AccountRow = typeof accounts.$inferSelect;
+export type AccountInsert = typeof accounts.$inferInsert;
+
+/**
  * Application settings — the shared brain configuration. A single typed row
  * (`id = 'singleton'`), exactly the v1 table minus what left the core:
  *
@@ -73,11 +119,13 @@ export type BackendInsert = typeof backends.$inferInsert;
  *   assistant, owned by apps/tg).
  * - `active_personality_id` — personalities became assistants; "active" is
  *   replaced by transport connections binding an assistant to a chat.
- * - `owner_username` / `owner_user_id` — owner identity and resolution are
- *   the source app's job (user decision, 2026-08-22): they live in the tg
- *   store's settings, and the core receives the resolved is-owner flag on
- *   inbound events. `maintenance_mode_enabled` stays here — the pipeline
- *   gate that consumes that flag is a core feature.
+ * - `owner_username` / `owner_user_id` — the global owner identity is
+ *   superseded by per-assistant owner rights resolved through accounts and
+ *   identity links (redesign Phase 8). `maintenance_mode_enabled` stays
+ *   here — the pipeline gate that consumes that flag is a core feature.
+ * - `operator_password_hash` / `session_secret` — the single operator
+ *   credential became the `accounts` table (redesign Phase 8); sessions are
+ *   signed per account.
  */
 export const settings = pgTable(
   "settings",
@@ -89,10 +137,6 @@ export const settings = pgTable(
     }),
     /** Selected chat model id (from the backend's `/v1/models`). */
     model: text("model"),
-    /** Operator dashboard password (self-describing scrypt hash). Secret. */
-    operatorPasswordHash: text("operator_password_hash"),
-    /** HMAC key for session-cookie signing. Secret. */
-    sessionSecret: text("session_secret"),
     /** Tavily API key for the web-search tool. Secret. */
     tavilyApiKey: text("tavily_api_key"),
     /** Embedding backend (`/v1/embeddings`); null means "use the chat backend". */

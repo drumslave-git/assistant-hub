@@ -3,11 +3,12 @@ import "server-only";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /**
- * Stateless operator sessions: the cookie value is `<expiresMs>.<nonce>.<sig>`
- * where `sig` = HMAC-SHA256 over the first two parts, keyed by the DB-stored
- * session secret. No session table — a token is valid iff its signature checks
- * out and it has not expired, and rotating the secret (a new setup) invalidates
- * everything at once.
+ * Stateless account sessions (redesign Phase 8): the cookie value is
+ * `<accountId>.<expiresMs>.<nonce>.<sig>` where `sig` = HMAC-SHA256 over the
+ * first three parts, keyed by that account's DB-stored session secret. No
+ * session table — a token is valid iff its signature checks out against the
+ * account it names and it has not expired. Rotating one account's secret (a
+ * password change) invalidates that account's sessions and nobody else's.
  */
 
 import { SESSION_COOKIE } from "@/lib/auth";
@@ -21,10 +22,25 @@ function sign(payload: string, secret: string): string {
   return createHmac("sha256", secret).update(payload).digest("base64url");
 }
 
-/** Mint a session token valid for {@link SESSION_TTL_MS} from `now`. */
-export function mintSessionToken(secret: string, now: Date = new Date()): string {
-  const payload = `${now.getTime() + SESSION_TTL_MS}.${randomBytes(16).toString("base64url")}`;
+/** Mint a session token for one account, valid for {@link SESSION_TTL_MS}. */
+export function mintSessionToken(
+  accountId: string,
+  secret: string,
+  now: Date = new Date(),
+): string {
+  const payload = `${accountId}.${now.getTime() + SESSION_TTL_MS}.${randomBytes(16).toString("base64url")}`;
   return `${payload}.${sign(payload, secret)}`;
+}
+
+/**
+ * The account id a token claims to belong to, or null for a malformed token.
+ * Only a claim — {@link verifySessionToken} decides whether to believe it.
+ */
+export function sessionTokenAccountId(token: string): string | null {
+  const firstDot = token.indexOf(".");
+  if (firstDot <= 0) return null;
+  const id = token.slice(0, firstDot);
+  return id.length > 0 ? id : null;
 }
 
 /** Whether a token is authentic (signature) and current (expiry). */
@@ -39,7 +55,7 @@ export function verifySessionToken(
   const sig = Buffer.from(token.slice(lastDot + 1));
   const expected = Buffer.from(sign(payload, secret));
   if (sig.length !== expected.length || !timingSafeEqual(sig, expected)) return false;
-  const expiresMs = Number(payload.split(".")[0]);
+  const expiresMs = Number(payload.split(".")[1]);
   return Number.isFinite(expiresMs) && expiresMs > now.getTime();
 }
 
