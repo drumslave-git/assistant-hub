@@ -156,8 +156,9 @@ export async function buildChatInfo(
 
 /**
  * The sender, from the event's raw profile plus the stored curated fields.
- * `isOwner` arrives resolved by the transport (owner identity is transport
- * config; the core only ever receives the flag).
+ * `isOwner` is the CORE's judgement since Phase 8: resolved per receiving
+ * assistant from accounts + identity links (`server/owner-rights.ts`) and
+ * passed in by the ingest fan-out.
  */
 export async function buildSenderInfo(
   source: SourceId,

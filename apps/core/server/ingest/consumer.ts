@@ -48,6 +48,8 @@ import { insertSourceMedia, insertUnavailableSourceMedia } from "@/server/source
 import { withTrace } from "@/server/trace";
 import { enqueueInboundEvent } from "@/server/turn/enqueue";
 
+import { resolveOwnerRights } from "@/server/owner-rights";
+
 import { buildChatInfo, buildConversationContext, buildSenderInfo } from "./context";
 
 /**
@@ -71,9 +73,14 @@ async function buildTurnEvent(
   const chatId = event.chat.id;
   const direct = event.chat.kind === "direct";
   const scope = { source, chatId, assistantId: receiver.assistantId, direct };
+  const senderRef = scopedRef(source, "user", event.sender.userId);
   const [chatInfo, sender, context] = await Promise.all([
     buildChatInfo(source, event.chat),
-    buildSenderInfo(source, event.sender, event.sender.isOwner),
+    // Owner rights are per receiving assistant (Phase 8): the sender's linked
+    // account against this assistant's owner, admins everywhere.
+    resolveOwnerRights({ senderRef, assistantId: receiver.assistantId }).then((isOwner) =>
+      buildSenderInfo(source, event.sender, isOwner),
+    ),
     buildConversationContext(scope, {
       senderId: event.sender.userId,
       excludeSourceMessageId: event.message.sourceMessageId,

@@ -9,7 +9,6 @@ import { createApi } from "./api";
 import { BotManager } from "./bot-manager";
 import { startDeliveryConsumer } from "./delivery";
 import { fetchDesiredState, registerUntilAccepted } from "./desired-state";
-import { OwnerConfig } from "./owner";
 import { openUpdatePublisher } from "./updates";
 
 /**
@@ -26,8 +25,7 @@ const internalToken = requireEnv("INTERNAL_API_TOKEN");
 const port = Number(optionalEnv("PORT") ?? "3210");
 
 const updates = openUpdatePublisher(redisUrl);
-const owner = new OwnerConfig();
-const manager = new BotManager({ redisUrl, updates, owner });
+const manager = new BotManager({ redisUrl, updates });
 
 // The API serves /health from the first moment; pollers join once the core
 // has answered the registration.

@@ -32,9 +32,6 @@ export const transcriptionModeSchema = z.enum(["transcriptions", "chat"]);
 /** A backend id from the catalog; null = "use the chat backend". */
 const backendId = z.string().trim().min(1).max(100);
 
-/** Owner is chosen from known users; the id is Telegram's numeric user id. */
-const ownerUserId = z.string().trim().regex(/^\d+$/, "Invalid user id");
-
 /** Local wall-clock time as `HH:MM` (24-hour). */
 const timeOfDay = z
   .string()
@@ -85,10 +82,6 @@ export const settingsSchema = z.object({
   browserModel: model.nullable(),
   /** Whether a Tavily API key is stored, enabling the browsing agent's search fallback (value never exposed). */
   webSearchConfigured: z.boolean(),
-  /** Owner's numeric user id (chosen from known users), or null when unset. */
-  ownerUserId: z.string().nullable(),
-  /** Owner's @username, denormalized from the chosen known user (display only). */
-  ownerUsername: z.string().nullable(),
   /** Whether maintenance mode is on. */
   maintenanceModeEnabled: z.boolean(),
   /** Consecutive assistant turns a chat may hold before every bot there goes quiet. */
@@ -134,7 +127,6 @@ export const updateSettingsSchema = z
     browserBackendId: backendId.nullable(),
     browserModel: model.nullable(),
     tavilyApiKey: apiKey.nullable(),
-    ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
     /**
      * Bounded 0–10: assistants answering each other is a conversation, not a

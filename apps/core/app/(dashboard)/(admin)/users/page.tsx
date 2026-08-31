@@ -38,7 +38,7 @@ export default async function UsersPage() {
     <>
       <PageHeader
         title="Known users"
-        description="Everyone who has reached the bot, across every connected source. Curate aliases and pick the owner from this list in Settings."
+        description="Everyone who has reached the bot, across every connected source. Curate aliases, and link identities to accounts so memory and owner rights follow the person."
         actions={
           <div className="flex items-center gap-2">
             <LiveIndicator topic="users" />

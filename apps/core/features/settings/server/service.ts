@@ -6,7 +6,6 @@ import {
   getBackendById,
   type BackendRecord,
 } from "@/features/backends/server/repository";
-import { getKnownUser } from "@/features/known-users/server/repository";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { LlmBackendId } from "@/lib/llm-backend";
@@ -37,7 +36,6 @@ import { probeSpeech, type SpeechRuntime } from "@/server/llm/speech";
 import { probeTranscription, type TranscriptionRuntime } from "@/server/llm/transcription";
 import { tinySilenceWav } from "@/server/media/audio";
 import { tinyProbePng } from "@/server/media/image";
-import { saveSourceOwner } from "@/server/transports/status";
 import { withTrace, type TraceRecorder } from "@/server/trace";
 import { getEnv } from "@/server/env";
 import {
@@ -122,8 +120,6 @@ function toClientSettings(record: SettingsRecord | null, store: StoreSettingsRec
     browserBackendId: record?.browserBackendId ?? null,
     browserModel: record?.browserModel ?? null,
     webSearchConfigured: Boolean(record?.tavilyApiKey),
-    ownerUsername: record?.ownerUsername ?? null,
-    ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
     assistantLoopGuardTurns: store.assistantLoopGuardTurns,
     timezone: record?.timezone ?? "UTC",
@@ -499,11 +495,11 @@ export async function getActivePersonalityId(db: DrizzleDb = getDb()): Promise<s
 
 /**
  * The maintenance state the bot needs to police an incoming message. Owner
- * identity is deliberately NOT here since the split: the owning source stamps
- * `sender.isOwner` on every inbound event (its settings are authoritative —
- * the core's owner columns are a display denormalization only), and tasks
- * carry `createdByOwner` stamped at creation, so no core code compares user
- * ids against an owner id.
+ * identity is deliberately NOT here: owner rights are resolved per turn from
+ * accounts + identity links + assistant ownership (Phase 8,
+ * `server/owner-rights.ts`) and ride the inbound event as `sender.isOwner`;
+ * tasks carry `createdByOwner` stamped at creation, so no core code compares
+ * user ids against an owner id.
  */
 export interface BotPolicy {
   /** Whether maintenance mode is on. */
@@ -613,21 +609,6 @@ async function validateBackendIds(db: DrizzleDb, patch: SettingsPatch): Promise<
       throw ApiError.badRequest(`Unknown backend for ${backendKey}: ${id}`);
     }
   }
-}
-
-/**
- * Resolve the owner selection into a column patch. The owner is picked by id from
- * known users; we validate it exists and denormalize the @username for display.
- * A null id clears the owner.
- */
-async function ownerPatch(
-  db: DrizzleDb,
-  ownerUserId: string | null,
-): Promise<Pick<SettingsPatch, "ownerUserId" | "ownerUsername">> {
-  if (!ownerUserId) return { ownerUserId: null, ownerUsername: null };
-  const user = await getKnownUser(db, ownerUserId);
-  if (!user) throw ApiError.badRequest("Selected owner is not a known user");
-  return { ownerUserId: user.userId, ownerUsername: user.username };
 }
 
 /** Redact secrets before they reach trace storage. */
@@ -815,21 +796,6 @@ export async function updateSettings(
       await trace.event({ type: "input", message: "settings update", data: redact(input) });
       const patch = toPatch(input);
       await validateBackendIds(db, patch);
-      if (input.ownerUserId !== undefined) {
-        const owner = await ownerPatch(db, input.ownerUserId);
-        // Owner identity lives with the source since the split — it resolves
-        // `isOwner` per inbound event. Routed there first; the v1 columns
-        // stay as the shadow the transitional policy reads.
-        await saveSourceOwner({
-          ownerUsername: owner.ownerUsername ?? null,
-          ownerUserId: owner.ownerUserId ?? null,
-        });
-        await trace.event({
-          type: "step",
-          message: "owner routed to the telegram service settings",
-        });
-        Object.assign(patch, owner);
-      }
       const cleared = await clearStaleModelSelections(
         db,
         await getSettingsRecord(db),

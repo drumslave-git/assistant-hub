@@ -12,7 +12,8 @@ export const GET = defineRoute(async () => ok({ assistants: await getAssistants(
   access: "account",
 });
 
-export const POST = defineRoute(async ({ request }) => {
+export const POST = defineRoute(async ({ request, account }) => {
   const input = await parseJson(request, createAssistantSchema);
-  return ok(await createAssistant(input, { kind: "dashboard" }), { status: 201 });
+  // The creator owns the assistant (Phase 8 owner rights).
+  return ok(await createAssistant(input, { kind: "dashboard" }, account), { status: 201 });
 });

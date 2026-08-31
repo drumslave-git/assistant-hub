@@ -116,7 +116,6 @@ function messageEvent(overrides: {
       username: "sam",
       firstName: "Sam",
       lastName: null,
-      isOwner: false,
     },
     message: {
       sourceMessageId,

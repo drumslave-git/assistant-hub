@@ -54,7 +54,7 @@ describe("assistants service", () => {
   const trigger = { kind: "dashboard" } as const;
 
   it("creates, lists, edits, and reads a persona", async () => {
-    const created = await createAssistant({ name: "Sarcastic Bot", persona: "Be dry." }, trigger, db);
+    const created = await createAssistant({ name: "Sarcastic Bot", persona: "Be dry." }, trigger, null, db);
     expect(created).toMatchObject({ name: "Sarcastic Bot", persona: "Be dry." });
 
     const listed = await getAssistants(db);
@@ -70,24 +70,24 @@ describe("assistants service", () => {
   });
 
   it("asserts the identity even with an empty persona; unknown ids stay null", async () => {
-    const created = await createAssistant({ name: "Plain", persona: "  " }, trigger, db);
+    const created = await createAssistant({ name: "Plain", persona: "  " }, trigger, null, db);
     expect(await getAssistantPersona(created.id, db)).toBe("You are Plain.");
     expect(await getAssistantPersona("nope", db)).toBeNull();
   });
 
   it("refuses a duplicate name, case-insensitively", async () => {
-    await createAssistant({ name: "Echo", persona: "" }, trigger, db);
-    await expect(createAssistant({ name: "echo", persona: "" }, trigger, db)).rejects.toMatchObject(
+    await createAssistant({ name: "Echo", persona: "" }, trigger, null, db);
+    await expect(createAssistant({ name: "echo", persona: "" }, trigger, null, db)).rejects.toMatchObject(
       { status: 409 },
     );
-    const other = await createAssistant({ name: "Other", persona: "" }, trigger, db);
+    const other = await createAssistant({ name: "Other", persona: "" }, trigger, null, db);
     await expect(editAssistant(other.id, { name: "ECHO" }, trigger, db)).rejects.toMatchObject({
       status: 409,
     });
   });
 
   it("deletes an assistant and records the source-notification outcome", async () => {
-    const created = await createAssistant({ name: "Doomed", persona: "" }, trigger, db);
+    const created = await createAssistant({ name: "Doomed", persona: "" }, trigger, null, db);
     await removeAssistant(created.id, trigger, db);
     expect(await getAssistants(db)).toEqual([]);
 
@@ -109,7 +109,7 @@ describe("assistants service", () => {
   });
 
   it("records every mutation as a trace with the assistant related", async () => {
-    const created = await createAssistant({ name: "Traced", persona: "" }, trigger, db);
+    const created = await createAssistant({ name: "Traced", persona: "" }, trigger, null, db);
     const { traces } = await listTraces({ feature: "assistants" });
     const create = traces.find((t) => t.action === "create");
     expect(create?.relatedIds?.assistants).toEqual([created.id]);

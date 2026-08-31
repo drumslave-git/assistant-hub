@@ -35,20 +35,9 @@ export function registrationRequest(port: number): TransportRegistrationRequest 
           "The bot starts polling as soon as it connects.",
       },
     ],
-    transportConfigSchema: [
-      {
-        key: "ownerUsername",
-        label: "Owner @username",
-        kind: "text",
-        help: "The Telegram @username whose messages carry owner rights.",
-      },
-      {
-        key: "ownerUserId",
-        label: "Owner user id",
-        kind: "text",
-        help: "Resolved automatically the first time the owner messages a bot.",
-      },
-    ],
+    // Owner rights moved to the core's accounts + identity links (Phase 8):
+    // this transport has no config of its own any more.
+    transportConfigSchema: [],
   };
 }
 
@@ -88,15 +77,7 @@ export async function fetchDesiredState(): Promise<TransportDesiredState> {
   return transportDesiredStateSchema.parse(await request("/api/internal/transports/tg/desired"));
 }
 
-/** Write back into this transport's own config blob (the resolved owner id). */
-export async function writeBackTransportConfig(
-  patch: Record<string, unknown>,
-): Promise<void> {
-  await request("/api/internal/transports/tg/config", {
-    method: "PATCH",
-    body: JSON.stringify(patch),
-  });
-}
+
 
 /**
  * Register, retrying until the core answers — the core may boot after this

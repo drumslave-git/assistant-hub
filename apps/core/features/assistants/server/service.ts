@@ -135,6 +135,8 @@ export async function getSingleAssistantPersona(
 export async function createAssistant(
   input: CreateAssistant,
   trigger: TraceTrigger,
+  /** The acting account — the new assistant's owner (null while unconfigured). */
+  owner: { id: string } | null = null,
   db: StoreDb = getStoreDb(),
 ): Promise<Assistant> {
   // Minted before the trace opens, so the creation is filterable under the
@@ -157,6 +159,7 @@ export async function createAssistant(
       const record = await insertAssistant(db, id, {
         name: input.name,
         persona: input.persona,
+        ownerAccountId: owner?.id ?? null,
       });
       await trace.event({ type: "db", message: "assistant created" });
       await trace.succeed({

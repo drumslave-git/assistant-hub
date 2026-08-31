@@ -11,7 +11,6 @@ import type { AssistantConnection } from "./connections";
 import { forwardCallbackPress } from "./core-client";
 import { presenceEvent, processIncomingMessage } from "./inbound";
 import { createBotOutbound, type TgOutbound } from "./outbound";
-import type { OwnerConfig } from "./owner";
 import { isGroupChat } from "./send";
 import { SeenCache, updateEnvelope, type UpdatePublisher } from "./updates";
 
@@ -123,7 +122,6 @@ export class BotManager {
     private readonly deps: {
       redisUrl: string;
       updates: UpdatePublisher;
-      owner: OwnerConfig;
       onStatusChange?: (status: ConnectionStatus) => void;
     },
   ) {
@@ -156,11 +154,9 @@ export class BotManager {
    * Reconcile the pollers to the core's desired state (boot, and every
    * `transport.config.changed`): start what should run, restart what
    * changed (start is idempotent and always replaces the running bot),
-   * stop and drop what is gone or disabled. The transport-level config
-   * (owner identity) lands in the owner holder on the same pass.
+   * stop and drop what is gone or disabled.
    */
   async applyDesiredState(state: TransportDesiredState): Promise<ConnectionStatus[]> {
-    this.deps.owner.apply(state.transport.config);
     const desired = new Map(
       state.connections.map((connection) => [connection.id, connection]),
     );
@@ -366,7 +362,6 @@ export class BotManager {
         botToken,
         running: () => this.runningConnections(),
         seen: this.seen,
-        isOwner: (sender) => this.deps.owner.resolveIsOwner(sender),
       });
       if (result.status === "forwarded") {
         await this.deps.updates.publish(result.event);

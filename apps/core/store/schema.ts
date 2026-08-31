@@ -238,6 +238,15 @@ export const assistants = pgTable(
     name: text("name").notNull(),
     /** Persona instructions appended to the base system prompt. */
     persona: text("persona").notNull().default(""),
+    /**
+     * The owning account (Phase 8): a sender holds owner rights in a turn
+     * iff their linked account is this one (admins hold them everywhere).
+     * Null only for rows created while auth was unconfigured — those are
+     * admin-owned in effect (nobody else has owner rights on them).
+     */
+    ownerAccountId: text("owner_account_id").references(() => accounts.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

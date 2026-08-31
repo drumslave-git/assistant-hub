@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import {
+  Badge,
   Button,
   Card,
   CardAction,
@@ -159,10 +160,13 @@ function AssistantDialog({
 
 function AssistantCard({
   assistant,
+  ownerName,
   onEdit,
   onDelete,
 }: {
   assistant: Assistant;
+  /** Owning account's display name, or null for a pre-auth row. */
+  ownerName: string | null;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -171,6 +175,10 @@ function AssistantCard({
       <CardHeader>
         <div className="flex min-w-0 items-center gap-2">
           <CardTitle className="truncate">{assistant.name}</CardTitle>
+          {/* Owner rights in a turn follow this account (Phase 8). */}
+          <Badge tone="neutral" className="shrink-0">
+            {ownerName ? `owner: ${ownerName}` : "admin-owned"}
+          </Badge>
         </div>
         <CardAction>
           <Button
@@ -202,7 +210,14 @@ function AssistantCard({
   );
 }
 
-export function AssistantsManager({ assistants }: { assistants: Assistant[] }) {
+export function AssistantsManager({
+  assistants,
+  ownerNames,
+}: {
+  assistants: Assistant[];
+  /** Account display names by id, for the owner badge. */
+  ownerNames: Record<string, string>;
+}) {
   useLiveRefresh("assistants");
   const router = useRouter();
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -252,6 +267,7 @@ export function AssistantsManager({ assistants }: { assistants: Assistant[] }) {
             <AssistantCard
               key={a.id}
               assistant={a}
+              ownerName={a.ownerAccountId ? (ownerNames[a.ownerAccountId] ?? null) : null}
               onEdit={() => setState({ kind: "edit", assistant: a })}
               onDelete={() => void remove(a)}
             />

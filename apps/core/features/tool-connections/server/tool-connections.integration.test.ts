@@ -141,7 +141,7 @@ describe("tool connections service", () => {
   });
 
   it("scopes a connection to one app and an explicit assistant selection", async () => {
-    const assistant = await createAssistant({ name: "Anna", persona: "" }, trigger, db);
+    const assistant = await createAssistant({ name: "Anna", persona: "" }, trigger, null, db);
     const created = await createToolConnection(
       { ...input, appScope: "tg", allAssistants: false, assistantIds: [assistant.id] },
       trigger,
@@ -392,8 +392,8 @@ describe("connection toolset", () => {
   });
 
   it("honours an explicit assistant selection", async () => {
-    const anna = await createAssistant({ name: "Anna", persona: "" }, trigger, db);
-    const igor = await createAssistant({ name: "Igor", persona: "" }, trigger, db);
+    const anna = await createAssistant({ name: "Anna", persona: "" }, trigger, null, db);
+    const igor = await createAssistant({ name: "Igor", persona: "" }, trigger, null, db);
     await ready({ allAssistants: false, assistantIds: [anna.id] });
 
     expect(await names({ source: "tg", assistantId: anna.id })).toEqual(["weather__forecast"]);

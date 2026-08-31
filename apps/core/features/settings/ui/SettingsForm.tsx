@@ -22,8 +22,6 @@ import {
   type TabItem,
 } from "@/components/ui";
 import type { Backend } from "@/features/backends/server/schema";
-import { formatKnownUserLabel } from "@/features/known-users/format";
-import type { KnownUser } from "@/features/known-users/server/schema";
 import { cn } from "@/lib/cn";
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 import type { ProbeReport, Settings } from "../server/schema";
@@ -165,15 +163,12 @@ export function SettingsForm({
   initial,
   backends = [],
   initialBackendModels = {},
-  knownUsers = [],
 }: {
   initial: Settings;
   /** The saved backend catalog the role selects offer. */
   backends?: Backend[];
   /** Models preloaded server-side per backend id, so dropdowns work on open. */
   initialBackendModels?: Record<string, string[]>;
-  /** Users who have messaged the bot — the owner is chosen from this list. */
-  knownUsers?: KnownUser[];
 }) {
   const router = useRouter();
 
@@ -203,7 +198,6 @@ export function SettingsForm({
 
   // Core operational settings.
   const tavilyKey = useSecretField(initial.webSearchConfigured);
-  const [ownerUserId, setOwnerUserId] = useState(initial.ownerUserId ?? "");
   const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
   const [timezone, setTimezone] = useState(initial.timezone);
   const [dailyJobsRunTime, setDailyJobsRunTime] = useState(initial.dailyJobsRunTime);
@@ -347,9 +341,6 @@ export function SettingsForm({
     if (speechVoice.trim() !== (initial.speechVoice ?? "")) {
       patch.speechVoice = speechVoice.trim() === "" ? null : speechVoice.trim();
     }
-    if (ownerUserId !== (initial.ownerUserId ?? "")) {
-      patch.ownerUserId = ownerUserId === "" ? null : ownerUserId;
-    }
     if (maintenanceMode !== initial.maintenanceModeEnabled) {
       patch.maintenanceModeEnabled = maintenanceMode;
     }
@@ -418,7 +409,6 @@ export function SettingsForm({
       bgd.applySaved({ backendId: data.backgroundBackendId, model: data.backgroundModel });
       setSpeechVoice(data.speechVoice ?? "");
       setAudioTranscriptionMode(data.audioTranscriptionMode);
-      setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
       setDailyJobsRunTime(data.dailyJobsRunTime);
@@ -741,36 +731,9 @@ export function SettingsForm({
       </p>
 
       <Field
-        id="ownerUserId"
-        label="Owner"
-        hint={
-          knownUsers.length > 0
-            ? "The bot owner controls maintenance mode. Chosen from users who have messaged the bot."
-            : "No users yet — the owner is chosen from people who have messaged the bot. Start the bot and message it first."
-        }
-      >
-        {({ id, describedBy }) => (
-          <Select
-            id={id}
-            aria-describedby={describedBy}
-            value={ownerUserId}
-            disabled={knownUsers.length === 0}
-            onChange={(e) => setOwnerUserId(e.target.value)}
-          >
-            <option value="">No owner</option>
-            {knownUsers.map((u) => (
-              <option key={u.userId} value={u.userId}>
-                {formatKnownUserLabel(u)}
-              </option>
-            ))}
-          </Select>
-        )}
-      </Field>
-
-      <Field
         id="maintenanceMode"
         label="Maintenance mode"
-        hint="When on, the bot stays fully functional for the owner only; everyone else gets a static maintenance notice."
+        hint="When on, the bots stay fully functional for senders with owner rights (an assistant's owning account, and admins); everyone else gets a static maintenance notice."
       >
         {({ id, describedBy }) => (
           <div className="flex items-center gap-3">

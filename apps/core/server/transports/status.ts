@@ -2,7 +2,7 @@ import "server-only";
 
 import type { OperatorConnection } from "@assistant-hub/contracts";
 
-import { announceTransportChange, listConnectionViews, mergeTransportConfig } from "./service";
+import { listConnectionViews } from "./service";
 
 /**
  * The dashboard's telegram status surfaces over the transport registry —
@@ -107,18 +107,3 @@ export async function getSourceBotStatus(): Promise<{
   }
 }
 
-/**
- * The owner write: the transport resolves `isOwner` per inbound event from
- * its config, so the identity lands in the tg transport's config blob and
- * the change is announced for the transport to pick up.
- */
-export async function saveSourceOwner(input: {
-  ownerUsername: string | null;
-  ownerUserId: string | null;
-}): Promise<void> {
-  await mergeTransportConfig("tg", {
-    ownerUsername: input.ownerUsername,
-    ownerUserId: input.ownerUserId,
-  });
-  await announceTransportChange("tg");
-}

@@ -22,6 +22,8 @@ export const assistantSchema = z.object({
   id: z.string(),
   name: z.string(),
   persona: z.string(),
+  /** The owning account, or null for pre-auth rows (admin-owned in effect). */
+  ownerAccountId: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

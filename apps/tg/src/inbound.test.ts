@@ -41,7 +41,6 @@ function deps(overrides: Partial<InboundDeps> = {}): InboundDeps {
     botToken: "token",
     running: () => [anna, igor],
     seen: new SeenCache(),
-    isOwner: async () => false,
     download: async () => null,
     ...overrides,
   };
@@ -58,7 +57,7 @@ describe("processIncomingMessage", () => {
       source: "tg",
       receivedBy: "anna",
       chat: { id: "-100200", kind: "group", title: "The group" },
-      sender: { userId: "7", username: "sam", isOwner: false },
+      sender: { userId: "7", username: "sam" },
       dedupeKey: "-100200:42",
     });
     // The @mention names igor's bot: his verdict is addressed, anna's is the

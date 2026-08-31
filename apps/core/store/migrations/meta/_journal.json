@@ -64,6 +64,13 @@
       "when": 1788176258668,
       "tag": "0008_last_bulldozer",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788177455517,
+      "tag": "0009_wakeful_butterfly",
+      "breakpoints": true
     }
   ]
 }

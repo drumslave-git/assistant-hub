@@ -46,11 +46,6 @@ export interface InboundDeps {
   running: () => AssistantConnection[];
   /** The group-update dedupe cache (one per process). */
   seen: SeenCache;
-  /** Resolve the sender's owner flag (transport config is this app's). */
-  isOwner: (sender: {
-    userId: string;
-    username: string | null;
-  }) => Promise<boolean>;
   /** Test seam: fake the Telegram file download. */
   download?: FileDownloader;
 }
@@ -129,15 +124,13 @@ export async function processIncomingMessage(
       title: chat.title ?? null,
       type: isGroup ? chat.type : null,
     },
+    // Owner rights are the core's judgement (Phase 8) - this app only
+    // reports who spoke.
     sender: {
       userId: senderId,
       username: from.username?.toLowerCase() ?? null,
       firstName: from.first_name ?? null,
       lastName: from.last_name ?? null,
-      isOwner: await deps.isOwner({
-        userId: senderId,
-        username: from.username?.toLowerCase() ?? null,
-      }),
     },
     message: {
       sourceMessageId: String(message.message_id),

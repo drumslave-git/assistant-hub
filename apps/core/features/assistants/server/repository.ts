@@ -17,6 +17,8 @@ export interface AssistantRecord {
   id: string;
   name: string;
   persona: string;
+  /** The owning account (Phase 8), or null for pre-auth rows (admin-owned). */
+  ownerAccountId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -32,6 +34,7 @@ function mapRow(row: AssistantRow): AssistantRecord {
     id: row.id,
     name: row.name,
     persona: row.persona,
+    ownerAccountId: row.ownerAccountId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -71,12 +74,19 @@ export async function isNameTaken(db: StoreDb, name: string, exceptId?: string):
 export async function insertAssistant(
   db: StoreDb,
   id: string,
-  values: AssistantValues,
+  values: AssistantValues & { ownerAccountId: string | null },
 ): Promise<AssistantRecord> {
   const now = new Date();
   const [row] = await db
     .insert(assistants)
-    .values({ id, name: values.name, persona: values.persona, createdAt: now, updatedAt: now })
+    .values({
+      id,
+      name: values.name,
+      persona: values.persona,
+      ownerAccountId: values.ownerAccountId,
+      createdAt: now,
+      updatedAt: now,
+    })
     .returning();
   return mapRow(row);
 }

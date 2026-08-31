@@ -96,13 +96,10 @@ export const transportMessageEventSchema = eventEnvelopeSchema.extend({
   /** The connection (assistant) whose poller received this update. */
   receivedBy: z.string().min(1),
   chat: transportChatSchema,
-  sender: transportUserSchema.extend({
-    /**
-     * Owner check, RESOLVED by the transport (owner identity is transport
-     * config; the core only ever receives the flag).
-     */
-    isOwner: z.boolean(),
-  }),
+  // Owner rights are the CORE's judgement since Phase 8 (accounts + identity
+  // links + assistant ownership) - the transport reports who spoke, nothing
+  // about what they may do.
+  sender: transportUserSchema,
   message: z.object({
     sourceMessageId: z.string().min(1),
     content: z.string(),

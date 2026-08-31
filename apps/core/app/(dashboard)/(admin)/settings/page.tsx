@@ -16,7 +16,6 @@ import {
 import { featureDebugHref } from "@/lib/features";
 import { getBackends, preloadBackendModels } from "@/features/backends/server/service";
 import { getSettings } from "@/features/settings/server/service";
-import { listUsers } from "@/features/known-users/server/service";
 import { SettingsForm } from "@/features/settings/ui/SettingsForm";
 
 // Settings are read from the database at request time.
@@ -91,25 +90,22 @@ async function SettingsFormLoader() {
       initial={data.settings}
       backends={data.backends}
       initialBackendModels={data.backendModels}
-      knownUsers={data.knownUsers}
     />
   );
 }
 
 /**
- * Settings + catalog + model preload + known users — independent reads run
- * together; the sequential awaits this replaces made every page load their sum.
+ * Settings + catalog + model preload — independent reads run together; the
+ * sequential awaits this replaces made every page load their sum.
  */
 async function loadSettingsFormData() {
-  const [settings, backends, backendModels, knownUsers] = await Promise.all([
+  const [settings, backends, backendModels] = await Promise.all([
     getSettings(),
     getBackends(),
     // Preload every backend's model list so the role dropdowns are populated on
     // open; an unreachable backend yields an empty list and the form fetches
     // (and shows the error) when a role actually needs it.
     preloadBackendModels(),
-    // Known users populate the owner dropdown.
-    listUsers(),
   ]);
-  return { settings, backends, backendModels, knownUsers };
+  return { settings, backends, backendModels };
 }

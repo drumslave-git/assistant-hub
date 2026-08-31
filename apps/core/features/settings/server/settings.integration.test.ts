@@ -6,7 +6,6 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { insertBackend } from "@/features/backends/server/repository";
-import { upsertKnownUser } from "@/features/known-users/server/repository";
 import type { LlmBackendId } from "@/lib/llm-backend";
 import { chatCompletion, listModels } from "@/server/llm/client";
 import { probeEmbeddings } from "@/server/llm/embeddings";
@@ -55,10 +54,6 @@ vi.mock("@/server/llm/client", async (importOriginal) => {
 
 // Owner identity routes to the tg source app since the split; the operator
 // client is mocked so the write is asserted, not performed.
-vi.mock("@/server/transports/status", () => ({
-  saveSourceOwner: vi.fn(),
-}));
-
 // The browser probe runs a tool round rather than a plain completion.
 vi.mock("@/server/llm/tool-loop", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/server/llm/tool-loop")>();
@@ -87,11 +82,6 @@ const chatCompletionWithToolsMock = vi.mocked(chatCompletionWithTools);
 const probeEmbeddingsMock = vi.mocked(probeEmbeddings);
 const probeImagesMock = vi.mocked(probeImages);
 const probeSpeechMock = vi.mocked(probeSpeech);
-
-/** Seed a known user so the owner can be chosen by id. */
-async function seedUser(ctx: TestDb, userId: string, username: string | null) {
-  await upsertKnownUser(ctx.db, { userId, username, firstName: null, lastName: null });
-}
 
 /** Seed one backend row and return its id. */
 async function seedBackend(
@@ -188,8 +178,6 @@ describe("getSettings", () => {
       browserBackendId: null,
       browserModel: null,
       webSearchConfigured: false,
-      ownerUsername: null,
-      ownerUserId: null,
       maintenanceModeEnabled: false,
       // Store-owned (see `store-repository.ts`): a suite with no v2 store
       // configured reads the documented default rather than failing.
@@ -291,18 +279,10 @@ describe("updateSettings", () => {
     expect(JSON.stringify(detail)).not.toContain("tvly-secret");
   });
 
-  it("resolves the owner from known users and denormalizes the username", async () => {
-    await seedUser(ctx, "42", "operator");
-    const set = await updateSettings({ ownerUserId: "42" }, trigger, ctx.db);
-    expect(set.ownerUserId).toBe("42");
-    expect(set.ownerUsername).toBe("operator");
-    // Owner identity is the source's since the split — the policy carries
-    // only maintenance state; the columns above stay as display data.
+  it("carries only maintenance state in the policy (owner rights are per turn, Phase 8)", async () => {
     expect(await getBotPolicy(ctx.db)).toEqual({ maintenanceModeEnabled: false });
-
-    await expect(updateSettings({ ownerUserId: "999" }, trigger, ctx.db)).rejects.toThrow(
-      /known user/i,
-    );
+    await updateSettings({ maintenanceModeEnabled: true }, trigger, ctx.db);
+    expect(await getBotPolicy(ctx.db)).toEqual({ maintenanceModeEnabled: true });
   });
 
   it("persists every role's backend + model selection", async () => {
