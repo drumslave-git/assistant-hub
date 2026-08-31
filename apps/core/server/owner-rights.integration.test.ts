@@ -17,7 +17,7 @@ import type { StoreDb } from "@/server/store/db";
 import * as storeSchema from "../store/schema";
 
 import { accountForSenderRef, resolveOwnerRights } from "./owner-rights";
-import { ownedAssistantIds, requireAssistantOwnership } from "./ownership";
+import { chatKey, ownedAssistantIds, requireAssistantOwnership, servedChatKeys } from "./ownership";
 
 const STORE_MIGRATIONS = fileURLToPath(new URL("../store/migrations", import.meta.url));
 
@@ -46,7 +46,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await pool.query(`TRUNCATE accounts, assistants, person_links CASCADE`);
+  await pool.query(`TRUNCATE accounts, assistants, person_links, source_chat_assistants CASCADE`);
 });
 
 async function seedAccount(role: "admin" | "user", active = true): Promise<string> {
@@ -177,5 +177,27 @@ describe("ownership helpers (Phase 9)", () => {
     await expect(
       requireAssistantOwnership({ id: owner, role: "user" }, "no-such-assistant", db),
     ).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("scopes chat visibility to what the actor's assistants serve", async () => {
+    const owner = await seedAccount("user");
+    const other = await seedAccount("user");
+    const mine = await seedAssistant(owner);
+    const theirs = await seedAssistant(other);
+    await pool.query(
+      `INSERT INTO source_chat_assistants (source, chat_id, assistant_id)
+       VALUES ('tg', '-100111', $1), ('tg', '555', $1), ('tg', '-100222', $2)`,
+      [mine, theirs],
+    );
+
+    // Admin: unrestricted.
+    expect(await servedChatKeys(null, db)).toBeNull();
+
+    const served = await servedChatKeys({ id: owner, role: "user" }, db);
+    expect(served).toEqual(new Set([chatKey("tg", "-100111"), chatKey("tg", "555")]));
+
+    // An account with no assistants serves nowhere.
+    const empty = await seedAccount("user");
+    expect(await servedChatKeys({ id: empty, role: "user" }, db)).toEqual(new Set());
   });
 });

@@ -4,6 +4,8 @@ import Link from "next/link";
 import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { featureDebugHref } from "@/lib/features";
+import { actingAccount } from "@/server/auth/acting";
+import { chatKey, servedChatKeys } from "@/server/ownership";
 import { getHistoryOverview } from "@/features/history/server/service";
 import type { ChatSummaryView } from "@/features/history/server/schema";
 import {
@@ -21,11 +23,25 @@ export const dynamic = "force-dynamic";
  * and links to each chat's full mirror.
  */
 export default async function HistoryPage() {
+  // Role-scoped since Phase 9: a user sees the chats their own assistants
+  // serve; the transfer/summary/debug chrome is the operator's.
+  const account = await actingAccount();
+  const restricted = account?.role === "user";
+
   let chats: ChatSummaryView[] | null = null;
   let summaryJob: SummaryJobInfo | null = null;
   let dbError: string | null = null;
   try {
-    [chats, summaryJob] = await Promise.all([getHistoryOverview(), getSummaryJobInfo()]);
+    const [overview, jobInfo, served] = await Promise.all([
+      getHistoryOverview(),
+      getSummaryJobInfo(),
+      servedChatKeys(account),
+    ]);
+    chats =
+      served === null
+        ? overview
+        : overview.filter((chat) => served.has(chatKey("tg", chat.chatId)));
+    summaryJob = jobInfo;
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read history from the database";
   }
@@ -38,31 +54,35 @@ export default async function HistoryPage() {
         actions={
           <div className="flex items-center gap-2">
             <LiveIndicator topic="history" />
-            <Button asChild variant="outline" size="sm">
-              <Link href="/history/transfer">
-                <ArrowDownUp className="h-4 w-4" aria-hidden />
-                Import / export
-              </Link>
-            </Button>
-            <Button asChild variant="outline" size="sm">
-              <Link href={featureDebugHref("history-summaries")}>
-                <Bug className="h-4 w-4" aria-hidden />
-                Summary runs
-              </Link>
-            </Button>
-            <Button asChild variant="outline" size="sm">
-              <Link href={featureDebugHref("history")}>
-                <Bug className="h-4 w-4" aria-hidden />
-                Debug
-              </Link>
-            </Button>
+            {restricted ? null : (
+              <>
+                <Button asChild variant="outline" size="sm">
+                  <Link href="/history/transfer">
+                    <ArrowDownUp className="h-4 w-4" aria-hidden />
+                    Import / export
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" size="sm">
+                  <Link href={featureDebugHref("history-summaries")}>
+                    <Bug className="h-4 w-4" aria-hidden />
+                    Summary runs
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" size="sm">
+                  <Link href={featureDebugHref("history")}>
+                    <Bug className="h-4 w-4" aria-hidden />
+                    Debug
+                  </Link>
+                </Button>
+              </>
+            )}
           </div>
         }
       />
 
       {chats ? (
         <div className="space-y-6">
-          {summaryJob ? <SummaryJobCard initial={summaryJob} /> : null}
+          {summaryJob && !restricted ? <SummaryJobCard initial={summaryJob} /> : null}
           <ChatSummaryList chats={chats} />
         </div>
       ) : (

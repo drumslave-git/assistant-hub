@@ -5,6 +5,8 @@ import { notFound } from "next/navigation";
 import { TraceDetail } from "@/components/debug";
 import { Button } from "@/components/ui";
 import { isApiError } from "@/lib/api-error";
+import { actingAccount } from "@/server/auth/acting";
+import { requireTraceVisible } from "@/server/ownership";
 import { getTraceDetail } from "@/server/trace";
 import type { Trace } from "@/lib/trace";
 
@@ -22,6 +24,8 @@ export default async function TraceDetailPage({
   let trace: Trace;
   try {
     trace = await getTraceDetail(id);
+    // Phase 9: a user sees only their own assistants' turns.
+    await requireTraceVisible(await actingAccount(), trace);
   } catch (err) {
     if (isApiError(err) && err.code === "not_found") notFound();
     throw err;

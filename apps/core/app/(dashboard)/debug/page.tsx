@@ -4,6 +4,8 @@ import { PruneCard, TraceExplorer } from "@/components/debug";
 import { EmptyState, PageHeader } from "@/components/ui";
 import { getAssistants } from "@/features/assistants/server/service";
 import { DEFAULT_TRACE_PAGE_SIZE } from "@/lib/trace";
+import { actingAccount } from "@/server/auth/acting";
+import { ownedAssistantIds, visibleTraceScope } from "@/server/ownership";
 import { getTraceList, getTraceMonths, type TraceListView } from "@/server/trace";
 import { traceQuerySchema } from "@/server/trace/schema";
 
@@ -24,6 +26,9 @@ export default async function DebugPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const sp = await searchParams;
+  // Role-scoped since Phase 9: a user sees their own assistants' turns.
+  const account = await actingAccount();
+  const restricted = account?.role === "user";
   const parsed = traceQuerySchema.safeParse({
     feature: first(sp.feature),
     assistantId: first(sp.assistantId),
@@ -52,13 +57,17 @@ export default async function DebugPage({
   let months: string[] = [];
   let storeError: string | null = null;
   try {
-    [view, months] = await Promise.all([getTraceList(query), getTraceMonths()]);
+    const scope = await visibleTraceScope(account);
+    [view, months] = await Promise.all([getTraceList({ ...query, ...scope }), getTraceMonths()]);
   } catch (err) {
     storeError = err instanceof Error ? err.message : "Could not read the trace store";
   }
-  // Names for the Assistant column and its dropdown. A store that cannot be
-  // read costs the column, never the page: traces are still the point here.
-  const assistants = await getAssistants().catch(() => []);
+  // Names for the Assistant column and its dropdown (scoped per role). A
+  // store that cannot be read costs the column, never the page.
+  const owned = await ownedAssistantIds(account).catch(() => null);
+  const assistants = (await getAssistants().catch(() => [])).filter(
+    (a) => owned === null || owned.has(a.id),
+  );
 
   return (
     <>
@@ -74,7 +83,8 @@ export default async function DebugPage({
             basePath="/debug"
             assistants={assistants.map((a) => ({ id: a.id, name: a.name }))}
           />
-          <PruneCard months={months} />
+          {/* Pruning deletes everyone's history — operator-only. */}
+          {restricted ? null : <PruneCard months={months} />}
         </div>
       ) : (
         <EmptyState

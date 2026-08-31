@@ -1,3 +1,6 @@
+import { redirect } from "next/navigation";
+
+import { actingAccount } from "@/server/auth/acting";
 import { ArrowLeft, Database } from "lucide-react";
 import Link from "next/link";
 
@@ -15,6 +18,10 @@ export const dynamic = "force-dynamic";
  * client.
  */
 export default async function HistoryTransferPage() {
+  // Import/export moves the whole archive - operator-only (Phase 9).
+  const account = await actingAccount();
+  if (account?.role === "user") redirect("/history");
+
   let chats: ChatSummaryView[] | null = null;
   let dbError: string | null = null;
   try {

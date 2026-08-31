@@ -736,6 +736,12 @@ export interface ListTracesInput {
   feature?: string;
   /** One assistant's actions — see `Trace.assistantId`. */
   assistantId?: string;
+  /**
+   * Only traces of THESE assistants (Phase 9 visibility scoping: a user
+   * sees their own assistants' turns). Traces carrying no assistant id are
+   * excluded — those are operator actions.
+   */
+  assistantIdIn?: readonly string[];
   status?: TraceStatus;
   /** Every trace of one process (a turn, a job run) — exact trigger correlation. */
   correlationId?: string;
@@ -856,6 +862,10 @@ export async function listTraces(input: ListTracesInput = {}): Promise<ListTrace
   }
   if (input.feature) all = all.filter((t) => t.feature === input.feature);
   if (input.assistantId) all = all.filter((t) => t.assistantId === input.assistantId);
+  if (input.assistantIdIn) {
+    const allowed = new Set(input.assistantIdIn);
+    all = all.filter((t) => t.assistantId != null && allowed.has(t.assistantId));
+  }
   if (input.status) all = all.filter((t) => t.status === input.status);
   if (input.correlationId) {
     all = all.filter((t) => t.trigger.correlationId === input.correlationId);

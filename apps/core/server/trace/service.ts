@@ -27,6 +27,8 @@ export interface TraceQuery {
   feature?: string;
   /** One assistant's actions — see `Trace.assistantId`. */
   assistantId?: string;
+  /** Only these assistants' traces (Phase 9 scoping); see the store input. */
+  assistantIdIn?: readonly string[];
   status?: TraceStatus;
   /** Every trace of one process (a turn, a job run) — exact trigger correlation. */
   correlationId?: string;

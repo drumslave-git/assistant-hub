@@ -663,6 +663,15 @@ describe("assistant scoping", () => {
     expect((await listTraces({ assistantId: "assistant-b" })).total).toBe(1);
     expect((await listTraces({})).total).toBe(3);
 
+    // The set filter (Phase 9 user scoping): only the named assistants'
+    // traces, unstamped ones excluded; both single and set filters compose.
+    expect((await listTraces({ assistantIdIn: ["assistant-a", "assistant-b"] })).total).toBe(2);
+    expect((await listTraces({ assistantIdIn: ["assistant-a"] })).total).toBe(1);
+    expect((await listTraces({ assistantIdIn: [] })).total).toBe(0);
+    expect(
+      (await listTraces({ assistantId: "assistant-b", assistantIdIn: ["assistant-a"] })).total,
+    ).toBe(0);
+
     await flushTracesNow();
     __resetTraceStoreForTests();
     // Survives the round trip to disk — the filter is not an in-memory trick.

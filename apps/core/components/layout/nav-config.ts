@@ -63,7 +63,7 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
     // What the bot has seen and who it talked to.
     label: "Conversations",
     items: [
-      { href: "/history", label: "History", icon: MessageSquare },
+      { href: "/history", label: "History", icon: MessageSquare, adminOnly: false },
       { href: "/vision", label: "Vision", icon: Image },
       { href: "/users", label: "Users", icon: Users },
       { href: "/groups", label: "Groups", icon: UsersRound },
@@ -94,7 +94,7 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
       { href: "/backends", label: "Backends", icon: Server },
       { href: "/accounts", label: "Accounts", icon: KeyRound },
       { href: "/settings", label: "Settings", icon: Settings },
-      { href: "/debug", label: "Debug", icon: Bug },
+      { href: "/debug", label: "Debug", icon: Bug, adminOnly: false },
     ],
   },
   {

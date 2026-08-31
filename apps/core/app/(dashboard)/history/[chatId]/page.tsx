@@ -1,11 +1,14 @@
 import { ArrowLeft, Database, Download } from "lucide-react";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 
 import { Button, EmptyState, PageHeader, Tabs } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { getChatHistory } from "@/features/history/server/service";
 import type { ChatMessageWithTrace } from "@/features/history/server/schema";
 import type { ChatSummaryRecord } from "@/features/history/server/summaries-repository";
+import { actingAccount } from "@/server/auth/acting";
+import { chatKey, servedChatKeys } from "@/server/ownership";
 import { requireSourceContent } from "@/server/source/tg-content";
 import { ChatHistoryTable } from "@/features/history/ui/ChatHistoryTable";
 import { ChatSummariesList } from "@/features/history/ui/ChatSummariesList";
@@ -24,6 +27,10 @@ export default async function ChatHistoryPage({
 }) {
   const { chatId: raw } = await params;
   const chatId = decodeURIComponent(raw);
+
+  // Phase 9: a user opens only chats their own assistants serve.
+  const served = await servedChatKeys(await actingAccount()).catch(() => null);
+  if (served !== null && !served.has(chatKey("tg", chatId))) notFound();
 
   let messages: ChatMessageWithTrace[] | null = null;
   let summaries: ChatSummaryRecord[] = [];
