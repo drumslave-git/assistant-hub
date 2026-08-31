@@ -133,25 +133,26 @@ run and report what is missing.
 
 ## Dashboard authentication
 
-The dashboard and its API are protected by a single operator password, stored
-**hashed in the database** (no env credential). On first contact a fresh
-install forces the `/setup` page, where the password is chosen; every later
-visit signs in at `/login`. Sessions are signed cookies valid for 30 days; the
-Sign out button in the top bar ends one.
+The dashboard and its API are protected by **accounts** (username + password,
+hashed in the database — no env credential) with two roles: **admin** (the
+whole dashboard) and **user** (the web chat and their own profile/memory). On
+first contact a fresh install forces the `/setup` page, which creates the
+first admin; every later visit signs in at `/login`. Sessions are signed
+cookies valid for 30 days, signed per account — a password change signs out
+that account's other sessions and nobody else's.
 
-- **Set up promptly.** Until the password is set, the app is open — anyone who
-  can reach the port can run `/setup` first and own the dashboard. Bring the
-  stack up, then visit it and set the password before exposing the port beyond
+- **Set up promptly.** Until the first admin exists, the app is open — anyone
+  who can reach the port can run `/setup` first and own the dashboard. Bring
+  the stack up, then create the admin before exposing the port beyond
   localhost/LAN.
-- **Forgot the password?** Clear it in the database and run setup again:
-
-  ```sh
-  docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-    -c "update settings set operator_password_hash = null, session_secret = null"
-  ```
-
-  Restart is not required; the next dashboard visit redirects to `/setup`.
-- **Changing the password** is done in the dashboard at Settings → Security. It
-  requires the current password and signs out every other session (the browser
-  making the change stays signed in).
+- **Accounts** are created by admins at `/accounts` (no open registration),
+  with a temporary password the holder must replace at first sign-in. Admins
+  can also deactivate/reactivate accounts, change roles, and issue a fresh
+  temporary password — which is the reset path for a forgotten password.
+- **A locked-out sole admin**: delete that account row in the database
+  (`delete from accounts where username = '<name>'` on the core store); if it
+  was the only account, the next visit re-runs `/setup` — otherwise promote a
+  trusted account first (`update accounts set role = 'admin' where ...`).
+- **Changing your password** is on your `/profile` (admins also under
+  Settings → Security). It requires the current password.
 - `/api/health` stays public for the Docker healthcheck and orchestrators.
