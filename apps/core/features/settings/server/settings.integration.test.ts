@@ -103,7 +103,7 @@ beforeAll(async () => {
   // store, and the env-bound readers (getAssistantLoopGuardTurns) find the
   // same rows the suite writes through ctx.db.
   ctx = await startTestStoreDb();
-  process.env.STORE_DATABASE_URL = ctx.connectionUri;
+  process.env.DATABASE_URL = ctx.connectionUri;
   resetEnvCache();
 });
 

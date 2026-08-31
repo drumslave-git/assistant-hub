@@ -6,14 +6,14 @@ import { runTgImport } from "./import/tg-run";
 // (`npm run import:tg-v1`) — the telegram half of the cutover, retargeted to
 // the core store with the Phase 7 de-storing of the tg app. Reads
 // V1_DATABASE_URL (a COPY of the v1 database during rehearsal — never
-// production) and STORE_DATABASE_URL (the freshly-migrated core store).
+// production) and DATABASE_URL (the freshly-migrated core store).
 loadEnvConfig(process.cwd());
 
 const v1Url = process.env.V1_DATABASE_URL;
-const targetUrl = process.env.STORE_DATABASE_URL;
+const targetUrl = process.env.DATABASE_URL;
 if (!v1Url || !targetUrl) {
   console.error(
-    "Set V1_DATABASE_URL (v1 copy) and STORE_DATABASE_URL (migrated core store) — see .env.example.",
+    "Set V1_DATABASE_URL (v1 copy) and DATABASE_URL (migrated core store) — see .env.example.",
   );
   process.exit(2);
 }

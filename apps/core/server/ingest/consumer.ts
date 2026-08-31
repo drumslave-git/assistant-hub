@@ -746,6 +746,6 @@ export async function startTransportIngest(input: {
 /** Env-gated starter for boot: runs only when the bus and store are configured. */
 export async function startTransportIngestFromEnv(): Promise<TransportIngest | null> {
   const env = getEnv();
-  if (!env.REDIS_URL || !env.STORE_DATABASE_URL) return null;
+  if (!env.REDIS_URL || !env.DATABASE_URL) return null;
   return startTransportIngest({ redisUrl: env.REDIS_URL });
 }

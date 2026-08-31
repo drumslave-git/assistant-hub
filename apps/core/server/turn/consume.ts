@@ -931,6 +931,6 @@ export async function startTurnConsumer(input: {
  */
 export async function startTurnConsumerFromEnv(): Promise<TurnConsumer | null> {
   const env = getEnv();
-  if (!env.REDIS_URL || !env.STORE_DATABASE_URL) return null;
+  if (!env.REDIS_URL || !env.DATABASE_URL) return null;
   return startTurnConsumer({ redisUrl: env.REDIS_URL });
 }

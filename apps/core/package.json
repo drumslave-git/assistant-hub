@@ -14,8 +14,6 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
-    "store:generate": "drizzle-kit generate --config drizzle.store.config.ts",
-    "store:migrate": "drizzle-kit migrate --config drizzle.store.config.ts",
     "import:v1": "tsx store/import-v1.ts",
     "import:tg-v1": "tsx store/import-tg-v1.ts"
   },

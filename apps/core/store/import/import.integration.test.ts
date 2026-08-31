@@ -10,9 +10,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runCoreImport } from "./run";
 
-// The frozen v1 chain builds the SOURCE fixture; the store chain builds the
-// target. Both are this app's own directories.
-const V1_MIGRATIONS = fileURLToPath(new URL("../../db/migrations", import.meta.url));
+// The FROZEN v1 chain (kept beside the import as a fixture — the live app
+// has one chain: store/) builds the SOURCE database; the store chain builds
+// the target.
+const V1_MIGRATIONS = fileURLToPath(new URL("./v1-migrations", import.meta.url));
 const STORE_MIGRATIONS = fileURLToPath(new URL("../migrations", import.meta.url));
 
 const vec = (seed: number): string =>

@@ -12,7 +12,6 @@ const recorder = vi.hoisted(() => ({
   fail: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/server/trace", () => ({ startTrace: vi.fn().mockResolvedValue(recorder) }));
-vi.mock("@/db/drizzle", () => ({ getDb: () => ({}) }));
 
 import { openPolicy } from "@/test/__mocks__/policy";
 import { BOT, BOT_USER, makeMessage } from "@/test/__mocks__/telegram";

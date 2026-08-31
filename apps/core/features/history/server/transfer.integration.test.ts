@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import { listTraces } from "@/server/trace";
 import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 import {
   fromColumn,
   fromConstant,
@@ -44,10 +44,10 @@ vi.mock("@/server/source-store/directory-client", () => ({
   }),
 }));
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {

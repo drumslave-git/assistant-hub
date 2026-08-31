@@ -207,7 +207,7 @@ export async function removeLink(
  * never touches the directory.
  *
  * Best-effort by design: a deployment without the v2 store yet (the
- * transitional `STORE_DATABASE_URL` is optional until the Phase 6 cutover),
+ * transitional `DATABASE_URL` is optional until the Phase 6 cutover),
  * or a store that cannot be read, resolves every ref to itself — memory then
  * behaves exactly as it did before links existed, rather than failing a
  * reply. Writes are not forgiving this way.
@@ -219,7 +219,7 @@ export async function resolveLinkedRefs(
   const wanted = [...new Set(userRefs.filter(Boolean))];
   const identity = new Map(wanted.map((ref) => [ref, [ref]]));
   if (wanted.length === 0) return identity;
-  if (!db && !getEnv().STORE_DATABASE_URL) return identity;
+  if (!db && !getEnv().DATABASE_URL) return identity;
 
   try {
     const handle = db ?? getStoreDb();

@@ -49,10 +49,10 @@ Run everything against a local Postgres (the dev compose `db` service works).
    node packages/db/scripts/create-database.mjs "postgres://bot:bot@localhost:5432/core"
    ```
 
-4. **Migrate the store** (`STORE_DATABASE_URL` in `apps/core/.env`):
+4. **Migrate the store** (`DATABASE_URL` in `apps/core/.env`):
 
    ```bash
-   npm run store:migrate -w @assistant-hub/core
+   npm run db:migrate -w @assistant-hub/core
    ```
 
 5. **Run the imports**, pointing `V1_DATABASE_URL` at the rehearsal copy:

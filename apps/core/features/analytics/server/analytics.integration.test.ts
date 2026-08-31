@@ -26,7 +26,7 @@ let content: FakeSourceContent;
  */
 beforeAll(async () => {
   ctx = await startTestStoreDb();
-  process.env.STORE_DATABASE_URL = ctx.connectionUri;
+  process.env.DATABASE_URL = ctx.connectionUri;
   resetEnvCache();
 });
 

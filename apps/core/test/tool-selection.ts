@@ -1,7 +1,7 @@
 import { loadEnvConfig } from "@next/env";
 import { afterAll, beforeAll, expect } from "vitest";
 
-import { closePool } from "@/db/pool";
+import { closeStorePool } from "@/server/store/db";
 import { buildSystemPrompt, buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import { getToolset } from "@/features/mcp-tools/server/service";
 import { getLlmRuntime, getTimezone } from "@/features/settings/server/service";
@@ -236,7 +236,7 @@ export function useLiveLlm(): void {
     }
   });
   afterAll(async () => {
-    await closePool();
+    await closeStorePool();
   });
 }
 

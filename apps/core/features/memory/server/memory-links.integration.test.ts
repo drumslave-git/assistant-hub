@@ -34,10 +34,10 @@ const WEB = "0b1c2d3e-4f56-4789-8abc-def012345678";
 
 beforeAll(async () => {
   ctx = await startTestStoreDb();
-  prevStoreUrl = process.env.STORE_DATABASE_URL;
+  prevStoreUrl = process.env.DATABASE_URL;
   // Link resolution and link writes reach the store through the env-bound
   // pool, so point it at the same container database the suite seeds.
-  process.env.STORE_DATABASE_URL = ctx.connectionUri;
+  process.env.DATABASE_URL = ctx.connectionUri;
   resetEnvCache();
 });
 
@@ -45,8 +45,8 @@ afterAll(async () => {
   // Production code opened the process-global store pool; close it before the
   // container stops or its dying clients fail an otherwise green run.
   await closeStorePool();
-  if (prevStoreUrl === undefined) delete process.env.STORE_DATABASE_URL;
-  else process.env.STORE_DATABASE_URL = prevStoreUrl;
+  if (prevStoreUrl === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = prevStoreUrl;
   resetEnvCache();
   await ctx?.stop();
 });

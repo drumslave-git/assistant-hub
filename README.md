@@ -57,7 +57,7 @@ delete that directory.
 | `npm run test` | Vitest unit tests (no Docker needed) |
 | `npm run test:watch` | Vitest watch mode |
 | `npm run test:integration` | DB integration tests against real Postgres (Testcontainers; **Docker required**) |
-| `npm run db:generate` | Generate a SQL migration from `apps/core/db/schema.ts` |
+| `npm run db:generate` | Generate a SQL migration from `apps/core/store/schema.ts` |
 | `npm run db:migrate` | Apply pending migrations to `DATABASE_URL` |
 | `npm run db:studio` | Open Drizzle Studio |
 
@@ -76,7 +76,7 @@ other's code — only packages.
 | `apps/core/components/` | Shared, presentational dashboard UI (no feature business logic). `components/ui/` is the design-system kit (import via `@/components/ui`); `components/layout/` is the responsive app shell (sidebar/drawer/topbar, nav config, extension registry); `components/theme/` holds the theme toggle + pre-hydration script. |
 | `apps/core/features/` | Product feature modules (server service, schemas, API, UI, tests) following the feature contract in [Contributing](docs/development/contributing.md). |
 | `apps/core/server/` | Server-only domain logic and shared infrastructure. Modules that touch secrets, DB, filesystem, Telegram, or the LLM provider import `server-only`. |
-| `apps/core/db/` | This app's Drizzle schema (`schema.ts`), generated SQL migrations (`migrations/`), and pooled Drizzle handle (`getDb()`). |
+| `apps/core/store/` | THE database module: the Drizzle schema (`schema.ts`), the one migration chain (`migrations/`), and the v1 import scripts (`import/`). |
 | `apps/core/lib/` | Small shared utilities and pure contracts (error shape, trace types) importable by both client and server. |
 | `apps/core/test/` | Test support (stubs, fixtures). |
 | `apps/core/store/` | The v2 core-store database module (schema, migrations, v1 import) — the redesign's brain store, beside the v1 `db/` until cutover. |

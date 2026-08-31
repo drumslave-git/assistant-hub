@@ -44,7 +44,7 @@ beforeAll(async () => {
   ctx = await startTestStoreDb();
   // Env-bound readers (user labels via the source-store adapter) go through
   // the process-global store pool (`getStoreDb()`).
-  process.env.STORE_DATABASE_URL = ctx.connectionUri;
+  process.env.DATABASE_URL = ctx.connectionUri;
   resetEnvCache();
 });
 

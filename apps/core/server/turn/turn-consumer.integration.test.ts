@@ -110,7 +110,7 @@ describe("inbound turn consumer", () => {
     const storeUrl = await pg.createDatabase("core_store");
     await applyMigrations(storeUrl, STORE_MIGRATIONS);
     // The whole brain reads the ONE core store since the Phase 10 cutover.
-    process.env.STORE_DATABASE_URL = storeUrl;
+    process.env.DATABASE_URL = storeUrl;
     storePool = new Pool({ connectionString: storeUrl });
     // The event's assistant: its NAME is the spoken-summons identity the
     // core-side name check and analyzer match (user decision, 2026-08-24) —

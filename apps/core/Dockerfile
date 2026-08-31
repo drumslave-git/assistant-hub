@@ -113,7 +113,7 @@ COPY --from=builder /app/node_modules/playwright-core ./node_modules/playwright-
 # in its own dir so its two small deps never touch the app's traced node_modules.
 COPY packages/db/migrate/package.json ./migrate/package.json
 COPY packages/db/migrate/migrate.mjs ./migrate/migrate.mjs
-COPY --from=builder /app/apps/core/db/migrations ./migrate/db/migrations
+COPY --from=builder /app/apps/core/store/migrations ./migrate/db/migrations
 RUN cd migrate && npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 
 # Trace/debug logs, browser-agent downloads and self-updating tool binaries are

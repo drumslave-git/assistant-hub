@@ -41,13 +41,13 @@ import {
  * the roster the audience checks read (`source_chats` / `source_chat_members`,
  * `source = 'tg'`) all live in the core store. The env-bound readers reach it
  * through the process-global store pool, so the suite points
- * STORE_DATABASE_URL at the container.
+ * DATABASE_URL at the container.
  */
 let ctx: TestStoreDb;
 
 beforeAll(async () => {
   ctx = await startTestStoreDb();
-  process.env.STORE_DATABASE_URL = ctx.connectionUri;
+  process.env.DATABASE_URL = ctx.connectionUri;
   resetEnvCache();
 });
 

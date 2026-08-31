@@ -1,7 +1,7 @@
 import { loadEnvConfig } from "@next/env";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { closePool } from "@/db/pool";
+import { closeStorePool } from "@/server/store/db";
 import { getClassifierRuntime } from "@/features/settings/server/service";
 import { runClassifier } from "@/server/llm/classifier";
 
@@ -56,7 +56,7 @@ const CHATTER = "morning all, anyone up for coffee before the standup?";
 const WITH_LINK = "look at this https://example.com/clip/42 lol";
 
 afterAll(async () => {
-  await closePool();
+  await closeStorePool();
 });
 
 /** Run one matcher prompt `RUNS` times; returns the matched ids of each run. */

@@ -85,7 +85,7 @@ export function registerNode(): void {
   void startTraceStore().catch(() => undefined);
 
   // Start the inbound-turn queue consumer — the pipeline's ONLY entrance
-  // since the source split. Env-gated (REDIS_URL + STORE_DATABASE_URL), and
+  // since the source split. Env-gated (REDIS_URL + DATABASE_URL), and
   // loudly so: a core without its queue processes no messages at all.
   void startTurnConsumerFromEnv()
     .then((consumer) => {
@@ -94,7 +94,7 @@ export function registerNode(): void {
         console.log("Inbound turn consumer started (queue: inbound-messages)");
       } else {
         console.warn(
-          "Inbound turn consumer NOT started — set REDIS_URL and STORE_DATABASE_URL; " +
+          "Inbound turn consumer NOT started — set REDIS_URL and DATABASE_URL; " +
             "until then the core processes no incoming messages.",
         );
       }

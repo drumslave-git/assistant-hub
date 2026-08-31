@@ -16,7 +16,7 @@ import { requireEnv } from "@/server/env";
 const POOL_KEY = Symbol.for("assistant-hub.core.store.pool");
 
 function storePool(): Pool {
-  return getProcessPool(POOL_KEY, () => requireEnv("STORE_DATABASE_URL"));
+  return getProcessPool(POOL_KEY, () => requireEnv("DATABASE_URL"));
 }
 
 export interface TurnActionMarkers {

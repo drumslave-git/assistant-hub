@@ -36,10 +36,10 @@ let prevStoreUrl: string | undefined;
 
 beforeAll(async () => {
   ctx = await startTestStoreDb();
-  prevStoreUrl = process.env.STORE_DATABASE_URL;
+  prevStoreUrl = process.env.DATABASE_URL;
   // Person-link resolution inside the service reads the store through the
   // env-bound pool, so point it at the same container database.
-  process.env.STORE_DATABASE_URL = ctx.connectionUri;
+  process.env.DATABASE_URL = ctx.connectionUri;
   resetEnvCache();
 });
 
@@ -47,8 +47,8 @@ afterAll(async () => {
   // Production code opened the process-global store pool; close it before the
   // container stops or its dying clients fail an otherwise green run.
   await closeStorePool();
-  if (prevStoreUrl === undefined) delete process.env.STORE_DATABASE_URL;
-  else process.env.STORE_DATABASE_URL = prevStoreUrl;
+  if (prevStoreUrl === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = prevStoreUrl;
   resetEnvCache();
   await ctx?.stop();
 });

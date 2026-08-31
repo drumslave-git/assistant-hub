@@ -11,7 +11,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import * as storeSchema from "../../../store/schema";
 import { tryGetToolContext } from "@/server/mcp/context";
-import { closePool } from "@/db/pool";
 import { resetEnvCache } from "@/server/env";
 import { closeStorePool, type StoreDb } from "@/server/store/db";
 
@@ -40,7 +39,7 @@ beforeAll(async () => {
   const url = await pg.createDatabase("tasks_scheduler_store");
   await applyMigrations(url, STORE_MIGRATIONS);
   // Settings (timezone) read the core store since the Phase 10 flip.
-  process.env.STORE_DATABASE_URL = url;
+  process.env.DATABASE_URL = url;
   resetEnvCache();
   pool = new Pool({ connectionString: url });
   db = drizzle(pool, { schema: storeSchema }) as StoreDb;
@@ -49,7 +48,6 @@ beforeAll(async () => {
 afterAll(async () => {
   await pool?.end();
   await closeStorePool();
-  await closePool();
   await pg?.stop();
 });
 

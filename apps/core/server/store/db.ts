@@ -15,14 +15,14 @@ import { requireEnv } from "@/server/env";
  * process-global one, so both entries share one pool per process.
  *
  * Transitional beside the v1 `@/db/drizzle` handle until the Phase 6
- * cutover collapses `STORE_DATABASE_URL` into `DATABASE_URL`.
+ * cutover collapses `DATABASE_URL` into `DATABASE_URL`.
  */
 
 const POOL_KEY = Symbol.for("assistant-hub.core.store.pool");
 
 /** The raw pool (SQL-level residents like the turn markers). */
 export function getStorePool(): Pool {
-  return getProcessPool(POOL_KEY, () => requireEnv("STORE_DATABASE_URL"));
+  return getProcessPool(POOL_KEY, () => requireEnv("DATABASE_URL"));
 }
 
 export type StoreDb = ReturnType<typeof drizzle<typeof storeSchema>>;

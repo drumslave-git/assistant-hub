@@ -131,7 +131,7 @@ model, and each role tab has a real probe button:
 | `npm run test` | Vitest unit tests — no Docker, no database |
 | `npm run test:watch` | Vitest watch mode |
 | `npm run test:integration` | Integration tests against real Postgres (Testcontainers; **Docker required**) |
-| `npm run db:generate` | Generate a SQL migration from `db/schema.ts` |
+| `npm run db:generate` | Generate a SQL migration from `store/schema.ts` |
 | `npm run db:migrate` | Apply pending migrations to `DATABASE_URL` |
 | `npm run db:studio` | Drizzle Studio |
 | `npm run release:patch\|minor\|major` | Bump the `package.json` version without a git tag |
