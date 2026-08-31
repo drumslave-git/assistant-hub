@@ -2,19 +2,19 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { and, asc, count, desc, eq, gte, inArray, isNull, max } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNull, max } from "drizzle-orm";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 
 import {
+  accounts,
   webMedia,
   webMessages,
   webThreads,
-  webUsers,
+  type AccountRow,
   type WebMediaRow,
   type WebMessageRow,
   type WebThreadRow,
-  type WebUserRow,
 } from "../../../store/schema";
 
 /**
@@ -28,43 +28,47 @@ import {
  * there is no group shape to model.
  */
 
-/** Every person the web chat knows, newest first. */
-export async function listUsers(db: StoreDb = getStoreDb()): Promise<WebUserRow[]> {
-  return db.select().from(webUsers).orderBy(desc(webUsers.createdAt));
+/**
+ * The web chat's people ARE the accounts (Phase 8, web user = account):
+ * `chat:user:<id>` is an account id, and the chat directory lists the
+ * account roster. Oldest first, matching the account page.
+ */
+export async function listChatUsers(db: StoreDb = getStoreDb()): Promise<AccountRow[]> {
+  return db.select().from(accounts).orderBy(asc(accounts.createdAt));
 }
 
-export async function getUserById(
+export async function getChatUserById(
   userId: string,
   db: StoreDb = getStoreDb(),
-): Promise<WebUserRow | null> {
-  const rows = await db.select().from(webUsers).where(eq(webUsers.id, userId)).limit(1);
+): Promise<AccountRow | null> {
+  const rows = await db.select().from(accounts).where(eq(accounts.id, userId)).limit(1);
   return rows[0] ?? null;
 }
 
-/** Set a person's operator-curated aliases. Null when the user is unknown. */
-export async function updateUserAliases(
+/** Set a person's curated aliases (on the account). Null when unknown. */
+export async function updateChatUserAliases(
   userId: string,
   aliases: string[],
   db: StoreDb = getStoreDb(),
-): Promise<WebUserRow | null> {
+): Promise<AccountRow | null> {
   const rows = await db
-    .update(webUsers)
+    .update(accounts)
     .set({ aliases, updatedAt: new Date() })
-    .where(eq(webUsers.id, userId))
+    .where(eq(accounts.id, userId))
     .returning();
   return rows[0] ?? null;
 }
 
-/** Set (or clear) a person's reply language. Null when the user is unknown. */
-export async function updateUserLanguage(
+/** Set (or clear) a person's reply language (on the account). Null when unknown. */
+export async function updateChatUserLanguage(
   userId: string,
   language: string | null,
   db: StoreDb = getStoreDb(),
-): Promise<WebUserRow | null> {
+): Promise<AccountRow | null> {
   const rows = await db
-    .update(webUsers)
+    .update(accounts)
     .set({ language, updatedAt: new Date() })
-    .where(eq(webUsers.id, userId))
+    .where(eq(accounts.id, userId))
     .returning();
   return rows[0] ?? null;
 }
@@ -83,9 +87,14 @@ export interface ThreadListing {
  * top, and a listing that hid it entirely would read as "the thread was not
  * saved".
  */
-export async function listThreadListings(db: StoreDb = getStoreDb()): Promise<ThreadListing[]> {
+export async function listThreadListings(
+  db: StoreDb = getStoreDb(),
+  options: { forAccountId?: string } = {},
+): Promise<ThreadListing[]> {
   const [threadRows, aggregates] = await Promise.all([
-    db.select().from(webThreads),
+    options.forAccountId
+      ? db.select().from(webThreads).where(eq(webThreads.userId, options.forAccountId))
+      : db.select().from(webThreads),
     db
       .select({
         threadId: webMessages.threadId,
@@ -136,11 +145,11 @@ export async function getThreadById(
 export async function listThreadMembers(
   threadId: string,
   db: StoreDb = getStoreDb(),
-): Promise<Array<{ user: WebUserRow; memberSinceAt: Date; lastSeenAt: Date }>> {
+): Promise<Array<{ user: AccountRow; memberSinceAt: Date; lastSeenAt: Date }>> {
   const rows = await db
-    .select({ user: webUsers, thread: webThreads })
+    .select({ user: accounts, thread: webThreads })
     .from(webThreads)
-    .innerJoin(webUsers, eq(webThreads.userId, webUsers.id))
+    .innerJoin(accounts, eq(webThreads.userId, accounts.id))
     .where(eq(webThreads.id, threadId))
     .limit(1);
   const row = rows[0];
@@ -219,29 +228,6 @@ export async function getMediaRowsForMessages(
   if (messageIds.length === 0) return new Map();
   const rows = await db.select().from(webMedia).where(inArray(webMedia.messageId, messageIds));
   return new Map(rows.map((row) => [row.messageId, row]));
-}
-
-/**
- * The operator's own web user. Single-operator system (until Phase 8's
- * accounts): the dashboard acts as one web identity, created on first use and
- * linkable to the operator's other identities through person links — which is
- * where their real name lives. The name here is deliberately a role, not a
- * guess at who they are.
- */
-export const OPERATOR_USER_NAME = "Operator";
-
-export async function getOrCreateOperatorUser(db: StoreDb = getStoreDb()): Promise<WebUserRow> {
-  const existing = await db
-    .select()
-    .from(webUsers)
-    .where(eq(webUsers.isOperator, true))
-    .limit(1);
-  if (existing[0]) return existing[0];
-  const inserted = await db
-    .insert(webUsers)
-    .values({ id: randomUUID(), name: OPERATOR_USER_NAME, isOperator: true })
-    .returning();
-  return inserted[0];
 }
 
 /** The name a thread wears until it has been said something worth naming. */

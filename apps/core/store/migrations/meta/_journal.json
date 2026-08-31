@@ -71,6 +71,13 @@
       "when": 1788177455517,
       "tag": "0009_wakeful_butterfly",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788178301143,
+      "tag": "0010_curious_starfox",
+      "breakpoints": true
     }
   ]
 }

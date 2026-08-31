@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ApiError } from "@/lib/api-error";
 import { defineRoute, ok, parseJson } from "@/server/http";
 import { postChatMessage } from "@/features/web-chat/server/service";
 
@@ -37,7 +38,8 @@ const postSchema = z
     { message: "a message needs text, an image, a voice note, or some of each" },
   );
 
-export const POST = defineRoute(async ({ request, params }) => {
+export const POST = defineRoute(async ({ request, params, account }) => {
+  if (!account) throw ApiError.unauthorized("Sign in to chat");
   const input = await parseJson(request, postSchema);
-  return ok(await postChatMessage(params.id, input));
+  return ok(await postChatMessage(params.id, input, { accountId: account.id }));
 }, { access: "account" });

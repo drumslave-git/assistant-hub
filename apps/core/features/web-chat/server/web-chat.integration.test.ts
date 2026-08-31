@@ -79,19 +79,27 @@ afterAll(async () => {
   await pg?.stop();
 });
 
+/** The acting account — the web user IS the account since Phase 8. */
+const ACCOUNT_ID = "account-fixture";
+
 beforeEach(async () => {
   enqueued.length = 0;
-  await pool.query(`TRUNCATE web_users RESTART IDENTITY CASCADE`);
+  await pool.query(`TRUNCATE accounts, web_threads, web_messages RESTART IDENTITY CASCADE`);
+  // Admin, so the owner-rights judgement grants the sender (as the single
+  // operator's did before accounts).
+  await pool.query(
+    `INSERT INTO accounts (id, username, display_name, password_hash, role, session_secret)
+     VALUES ($1, 'operator', 'Operator', 'scrypt:x', 'admin', 's')`,
+    [ACCOUNT_ID],
+  );
 });
 
 describe("web-chat store", () => {
-  it("enforces its shape and cascades", async () => {
-    await pool.query(
-      `INSERT INTO web_users (id, name, is_operator) VALUES ('user-1', 'Operator', true)`,
-    );
+  it("enforces its shape and cascades from the account down", async () => {
     await pool.query(
       `INSERT INTO web_threads (id, user_id, assistant_id, name)
-       VALUES ('thread-1', 'user-1', 'assistant-1', 'First thread')`,
+       VALUES ('thread-1', $1, 'assistant-1', 'First thread')`,
+      [ACCOUNT_ID],
     );
     await pool.query(
       `INSERT INTO web_messages (thread_id, role, content, sent_at)
@@ -106,8 +114,9 @@ describe("web-chat store", () => {
       ),
     ).rejects.toThrow(/web_messages_role_check/);
 
-    // Deleting a user cascades through threads to messages.
-    await pool.query(`DELETE FROM web_users WHERE id = 'user-1'`);
+    // Deleting the account cascades through threads to messages (the
+    // hard-delete half of offboarding).
+    await pool.query(`DELETE FROM accounts WHERE id = $1`, [ACCOUNT_ID]);
     const left = await pool.query(`SELECT count(*) AS count FROM web_messages`);
     expect(Number(left.rows[0].count)).toBe(0);
   });
@@ -117,11 +126,12 @@ describe("threads", () => {
   it("creates a thread bound to one assistant, and renames it without rebinding", async () => {
     const thread = await service.createChatThread(
       { assistantId: ASSISTANT_ID, name: "Trip planning" },
+      ACCOUNT_ID,
       db,
     );
     expect(thread).toMatchObject({ assistantId: ASSISTANT_ID, name: "Trip planning" });
 
-    const renamed = await service.renameChatThread(thread.id, "Autumn trip", db);
+    const renamed = await service.renameChatThread(thread.id, "Autumn trip", ACCOUNT_ID, db);
     expect(renamed).toMatchObject({
       id: thread.id,
       name: "Autumn trip",
@@ -131,7 +141,7 @@ describe("threads", () => {
   });
 
   it("starts a chat nameless and lets the pipeline name it from the first exchange", async () => {
-    const thread = await service.createChatThread({ assistantId: ASSISTANT_ID }, db);
+    const thread = await service.createChatThread({ assistantId: ASSISTANT_ID }, ACCOUNT_ID, db);
     expect(thread).toMatchObject({ name: "New chat", titleProvisional: true });
 
     await service.postChatMessage(
@@ -157,8 +167,8 @@ describe("threads", () => {
   });
 
   it("stops asking to be named once someone names it by hand", async () => {
-    const thread = await service.createChatThread({ assistantId: ASSISTANT_ID }, db);
-    const renamed = await service.renameChatThread(thread.id, "My own name for it", db);
+    const thread = await service.createChatThread({ assistantId: ASSISTANT_ID }, ACCOUNT_ID, db);
+    const renamed = await service.renameChatThread(thread.id, "My own name for it", ACCOUNT_ID, db);
     expect(renamed).toMatchObject({ name: "My own name for it", titleProvisional: false });
     expect(await repository.setGeneratedTitle(thread.id, "A generated one", db)).toBeNull();
   });
@@ -168,6 +178,7 @@ describe("posting", () => {
   it("stores the message and enqueues one addressed turn", async () => {
     const thread = await service.createChatThread(
       { assistantId: ASSISTANT_ID, name: "Questions" },
+      ACCOUNT_ID,
       db,
     );
     const posted = await service.postChatMessage(thread.id, { text: "are you there?" }, { db });
@@ -196,6 +207,7 @@ describe("posting", () => {
   it("carries the running conversation as the window, the current turn excluded", async () => {
     const thread = await service.createChatThread(
       { assistantId: ASSISTANT_ID, name: "Ongoing" },
+      ACCOUNT_ID,
       db,
     );
     for (const text of ["first", "second"]) {
@@ -222,6 +234,7 @@ describe("posting", () => {
   it("stores an uploaded image as pending media, normalized, and keeps it after describing", async () => {
     const thread = await service.createChatThread(
       { assistantId: ASSISTANT_ID, name: "With a picture" },
+      ACCOUNT_ID,
       db,
     );
     // A real (tiny) PNG — the service normalizes whatever the browser sends.
@@ -259,7 +272,7 @@ describe("posting", () => {
     expect(described?.frames).toHaveLength(1);
 
     // …and the transcript carries the description with the line.
-    const body = await service.getChatThread(thread.id, db);
+    const body = await service.getChatThread(thread.id, ACCOUNT_ID, db);
     expect(body.messages[0].media).toMatchObject({
       id: mediaId,
       status: "described",
@@ -270,6 +283,7 @@ describe("posting", () => {
   it("answers on the text when an upload cannot be read as an image", async () => {
     const thread = await service.createChatThread(
       { assistantId: ASSISTANT_ID, name: "Broken upload" },
+      ACCOUNT_ID,
       db,
     );
     const posted = await service.postChatMessage(
@@ -288,6 +302,7 @@ describe("posting", () => {
   it("takes a voice note in, stored raw", async () => {
     const thread = await service.createChatThread(
       { assistantId: ASSISTANT_ID, name: "Spoken" },
+      ACCOUNT_ID,
       db,
     );
     const recorded = Buffer.from("not really opus, but bytes are bytes");
@@ -326,6 +341,7 @@ describe("delivery", () => {
   it("stores a delivered reply, and drops one for a thread that is gone", async () => {
     const thread = await service.createChatThread(
       { assistantId: ASSISTANT_ID, name: "Answered" },
+      ACCOUNT_ID,
       db,
     );
     const repoSpy = vi
@@ -333,7 +349,7 @@ describe("delivery", () => {
       .mockReturnValue(db);
     try {
       await deliveryModule.handleChatReplyDelivery(deliveryEvent(thread.id, "yes, I am here"));
-      const body = await service.getChatThread(thread.id, db);
+      const body = await service.getChatThread(thread.id, ACCOUNT_ID, db);
       expect(body.messages.at(-1)).toMatchObject({
         role: "assistant",
         content: "yes, I am here",
@@ -354,6 +370,7 @@ describe("outbound port", () => {
   it("delivers, retracts, and serves voice, images and files", async () => {
     const thread = await service.createChatThread(
       { assistantId: ASSISTANT_ID, name: "Tools at work" },
+      ACCOUNT_ID,
       db,
     );
     {
@@ -386,7 +403,7 @@ describe("outbound port", () => {
       // listing still shows what happened.
       const deleted = await outbound.deleteMessage(thread.id, sent.messageId);
       expect(deleted.deleted).toBe(true);
-      const body = await service.getChatThread(thread.id, db);
+      const body = await service.getChatThread(thread.id, ACCOUNT_ID, db);
       expect(body.messages.map((m) => m.media?.kind ?? null)).toEqual(["voice", "image", "file"]);
       // The voice reply's content is the spoken text — what the window reads.
       expect(body.messages[0]).toMatchObject({
@@ -406,6 +423,7 @@ describe("directory client", () => {
     {
       const thread = await service.createChatThread(
         { assistantId: ASSISTANT_ID, name: "Listed" },
+        ACCOUNT_ID,
         db,
       );
       await service.postChatMessage(thread.id, { text: "hello" }, { db });
@@ -413,7 +431,7 @@ describe("directory client", () => {
       const client = webChatDirectoryClient();
       const users = await client.listUsers();
       expect(users).toHaveLength(1);
-      expect(users[0]).toMatchObject({ label: "Operator", username: null });
+      expect(users[0]).toMatchObject({ label: "Operator", username: "operator" });
 
       const chats = await client.listChats();
       expect(chats).toHaveLength(1);

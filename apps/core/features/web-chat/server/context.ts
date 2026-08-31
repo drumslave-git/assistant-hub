@@ -11,8 +11,8 @@ import {
 
 import type { StoreDb } from "@/server/store/db";
 
-import type { WebThreadRow, WebUserRow } from "../../../store/schema";
-import { getMessagesSince, getUserById } from "./repository";
+import type { AccountRow, WebThreadRow } from "../../../store/schema";
+import { getChatUserById, getMessagesSince } from "./repository";
 
 /**
  * The conversation context for a web-thread turn — history window +
@@ -31,7 +31,7 @@ const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 export async function buildHistoryWindow(
   input: {
     thread: WebThreadRow;
-    user: WebUserRow;
+    user: AccountRow;
     excludeMessageId: number;
     now?: Date;
   },
@@ -52,7 +52,7 @@ export async function buildHistoryWindow(
     // binding is fixed at creation, so no other one can have spoken here.
     assistantId: row.role === "assistant" ? input.thread.assistantId : null,
     senderRef: row.role === "assistant" ? null : scopedRef("chat", "user", input.user.id),
-    senderLabel: row.role === "assistant" ? null : input.user.name,
+    senderLabel: row.role === "assistant" ? null : chatUserLabel(input.user),
     content: row.content,
     sentAt: row.sentAt.toISOString(),
     replyToSourceMessageId: row.replyToMessageId != null ? String(row.replyToMessageId) : null,
@@ -61,13 +61,18 @@ export async function buildHistoryWindow(
   }));
 }
 
+/** How an account reads as a chat participant. */
+export function chatUserLabel(user: AccountRow): string {
+  return user.displayName ?? user.username;
+}
+
 /** The roster of a thread: its owner, and nobody else. */
-export function buildParticipants(user: WebUserRow): Participant[] {
+export function buildParticipants(user: AccountRow): Participant[] {
   return [
     {
       ref: scopedRef("chat", "user", user.id),
-      label: user.name,
-      username: null,
+      label: chatUserLabel(user),
+      username: user.username,
       aliases: user.aliases,
     },
   ];
@@ -92,17 +97,17 @@ export function buildChatInfo(thread: WebThreadRow): ChatInfo {
 }
 
 /**
- * The sender. `isOwner` is resolved here, as the contract requires (owner
- * logic lives on the source side): the operator's own web user IS the
- * operator, so the flag follows the row's `is_operator`, with no username
- * matching to do.
+ * The sender. `isOwner` is the same judgement every source gets (Phase 8):
+ * resolved by the caller from accounts + assistant ownership
+ * (`server/owner-rights.ts`) — here the sender IS an account, so the
+ * resolver short-circuits on the direct ref.
  */
-export function buildSenderInfo(user: WebUserRow): SenderInfo {
+export function buildSenderInfo(user: AccountRow, isOwner: boolean): SenderInfo {
   return {
     ref: scopedRef("chat", "user", user.id),
-    isOwner: user.isOperator,
-    label: user.name,
-    username: null,
+    isOwner,
+    label: chatUserLabel(user),
+    username: user.username,
     firstName: null,
     lastName: null,
     aliases: user.aliases,
@@ -111,7 +116,7 @@ export function buildSenderInfo(user: WebUserRow): SenderInfo {
 }
 
 export async function buildConversationContext(
-  input: { thread: WebThreadRow; user: WebUserRow; excludeMessageId: number; now?: Date },
+  input: { thread: WebThreadRow; user: AccountRow; excludeMessageId: number; now?: Date },
   db?: StoreDb,
 ): Promise<ConversationContext> {
   return {
@@ -120,10 +125,10 @@ export async function buildConversationContext(
   };
 }
 
-/** The thread's owner, or null when the thread points at nobody (never, in practice). */
+/** The thread's owning account, or null when the thread points at nobody. */
 export async function threadOwner(
   thread: WebThreadRow,
   db?: StoreDb,
-): Promise<WebUserRow | null> {
-  return getUserById(thread.userId, db);
+): Promise<AccountRow | null> {
+  return getChatUserById(thread.userId, db);
 }

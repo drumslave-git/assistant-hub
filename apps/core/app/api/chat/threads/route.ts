@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ApiError } from "@/lib/api-error";
 import { defineRoute, ok, parseJson } from "@/server/http";
 import { createChatThread, listChatThreads } from "@/features/web-chat/server/service";
 
@@ -22,11 +23,13 @@ const createSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
 });
 
-export const GET = defineRoute(async () => {
-  return ok({ threads: await listChatThreads() });
+export const GET = defineRoute(async ({ account }) => {
+  if (!account) throw ApiError.unauthorized("Sign in to chat");
+  return ok({ threads: await listChatThreads(account.id) });
 }, { access: "account" });
 
-export const POST = defineRoute(async ({ request }) => {
+export const POST = defineRoute(async ({ request, account }) => {
+  if (!account) throw ApiError.unauthorized("Sign in to chat");
   const input = await parseJson(request, createSchema);
-  return ok({ thread: await createChatThread(input) });
+  return ok({ thread: await createChatThread(input, account.id) });
 }, { access: "account" });

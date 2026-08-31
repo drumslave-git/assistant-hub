@@ -22,7 +22,6 @@ import {
   appendMessage,
   createThread,
   deleteThread,
-  getOrCreateOperatorUser,
   getThreadById,
   getThreadListing,
   listLiveMessages,
@@ -30,6 +29,8 @@ import {
   renameThread,
   type ThreadListing,
 } from "./repository";
+import { resolveOwnerRights } from "@/server/owner-rights";
+import { scopedRef } from "@assistant-hub/contracts";
 import { threadTurns } from "./turns";
 
 /**
@@ -81,27 +82,24 @@ function toThreadMessage(
   };
 }
 
-/** Every thread, most recent first. */
-export async function listChatThreads(db?: StoreDb): Promise<ChatThread[]> {
-  const listings = await listThreadListings(db);
+/** The acting account's threads, most recent first. */
+export async function listChatThreads(accountId: string, db?: StoreDb): Promise<ChatThread[]> {
+  const listings = await listThreadListings(db, { forAccountId: accountId });
   return listings.map(toChatThread);
 }
 
-/**
- * Start a thread with one assistant, owned by the operator's web user
- * (single-operator system until Phase 8's accounts).
- */
+/** Start a thread with one assistant, owned by the acting account. */
 export async function createChatThread(
   input: {
     assistantId: string;
     name?: string;
   },
+  accountId: string,
   db?: StoreDb,
 ): Promise<ChatThread> {
-  const user = await getOrCreateOperatorUser(db);
   const thread = await createThread(
     {
-      userId: user.id,
+      userId: accountId,
       assistantId: input.assistantId,
       name: input.name ?? null,
     },
@@ -111,11 +109,24 @@ export async function createChatThread(
   return toChatThread({ thread, messageCount: 0, lastMessageAt: null });
 }
 
+/**
+ * The chat surface is per account: a thread that is not the acting
+ * account's answers not-found rather than leaking that it exists. (Admin
+ * oversight of all threads lives on the directory pages, not here.)
+ */
+async function requireOwnThread(id: string, accountId: string, db?: StoreDb) {
+  const thread = await getThreadById(id, db);
+  if (!thread || thread.userId !== accountId) throw ApiError.notFound("thread not found");
+  return thread;
+}
+
 /** One thread with its transcript and its running turn, if any. */
 export async function getChatThread(
   id: string,
+  accountId: string,
   db?: StoreDb,
 ): Promise<{ thread: ChatThread; messages: ChatThreadMessage[]; turn: ChatThreadTurn | null }> {
+  await requireOwnThread(id, accountId, db);
   const listing = await getThreadListing(id, db);
   if (!listing) throw ApiError.notFound("thread not found");
   const rows = await listLiveMessages(id, db);
@@ -138,8 +149,10 @@ export async function getChatThread(
 export async function renameChatThread(
   id: string,
   name: string,
+  accountId: string,
   db?: StoreDb,
 ): Promise<ChatThread> {
+  await requireOwnThread(id, accountId, db);
   const row = await renameThread(id, name, db);
   if (!row) throw ApiError.notFound("thread not found");
   pingThreads();
@@ -149,7 +162,8 @@ export async function renameChatThread(
 }
 
 /** Delete a thread and everything in it. */
-export async function deleteChatThread(id: string, db?: StoreDb): Promise<void> {
+export async function deleteChatThread(id: string, accountId: string, db?: StoreDb): Promise<void> {
+  await requireOwnThread(id, accountId, db);
   threadTurns().clear(id);
   const deleted = await deleteThread(id, db);
   if (!deleted) throw ApiError.notFound("thread not found");
@@ -191,12 +205,15 @@ export async function postChatMessage(
     image?: { dataBase64: string; mimeType?: string | null } | null;
     audio?: { dataBase64: string; mimeType?: string | null } | null;
   },
-  options: { now?: () => Date; db?: StoreDb } = {},
+  options: { accountId?: string; now?: () => Date; db?: StoreDb } = {},
 ): Promise<PostMessageResult> {
   const now = options.now?.() ?? new Date();
   const db = options.db;
   const thread = await getThreadById(threadId, db);
   if (!thread) throw ApiError.notFound("thread not found");
+  if (options.accountId !== undefined && thread.userId !== options.accountId) {
+    throw ApiError.notFound("thread not found");
+  }
   const user = await threadOwner(thread, db);
   if (!user) throw ApiError.notFound("thread not found");
 
@@ -244,7 +261,14 @@ export async function postChatMessage(
     source: "chat",
     assistantId: thread.assistantId,
     chat: buildChatInfo(thread),
-    sender: buildSenderInfo(user),
+    sender: buildSenderInfo(
+      user,
+      // The same owner-rights judgement every source gets (Phase 8).
+      await resolveOwnerRights(
+        { senderRef: scopedRef("chat", "user", user.id), assistantId: thread.assistantId },
+        db,
+      ),
+    ),
     addressing: {
       addressed: true,
       source: "private",

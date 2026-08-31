@@ -14,6 +14,7 @@ import {
   Server,
   Settings,
   Sparkles,
+  UserRound,
   Users,
   UsersRound,
   Wrench,
@@ -97,6 +98,12 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
     label: "Web chat",
     adminOnly: false,
     items: [{ href: "/chat", label: "Chat", icon: MessagesSquare }],
+  },
+  {
+    // Every account's own page (Phase 8): identity, password, own memory.
+    label: "You",
+    adminOnly: false,
+    items: [{ href: "/profile", label: "Profile", icon: UserRound }],
   },
 ];
 

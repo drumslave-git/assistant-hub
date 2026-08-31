@@ -1,0 +1,248 @@
+"use client";
+
+import { Brain, Link2, UserRound } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { ChangePasswordSection } from "@/features/settings/ui/ChangePasswordSection";
+import { Timestamp } from "@/components/time/Timestamp";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  Field,
+  Input,
+  useConfirm,
+} from "@/components/ui";
+import type { ApiErrorBody } from "@/lib/api-error";
+
+import type { ProfileIdentity, ProfileMemoryDoc } from "../server/profile";
+
+/**
+ * The profile page body (Phase 8): every account's own surface — display
+ * name, password, the identities linked to this person, and the memory the
+ * assistant holds about them (view + delete; no self-authoring, PLAN.md).
+ */
+
+async function readError(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as ApiErrorBody;
+    return body.error?.message ?? `Request failed (${res.status})`;
+  } catch {
+    return `Request failed (${res.status})`;
+  }
+}
+
+function DisplayNameCard({
+  username,
+  initialDisplayName,
+}: {
+  username: string;
+  initialDisplayName: string | null;
+}) {
+  const router = useRouter();
+  const [displayName, setDisplayName] = useState(initialDisplayName ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ displayName }),
+      });
+      if (!res.ok) {
+        setError(await readError(res));
+        return;
+      }
+      setSaved(true);
+      router.refresh();
+    } catch {
+      setError("Network error — could not reach the server");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Who you are</CardTitle>
+        <CardDescription>
+          Signed in as <span className="font-mono">{username}</span>. The display name is how
+          you appear in chats.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Field id="profile-display-name" label="Display name" hint="Leave empty to use the username.">
+          {({ id, describedBy }) => (
+            <div className="flex gap-2">
+              <Input
+                id={id}
+                aria-describedby={describedBy}
+                value={displayName}
+                onChange={(e) => {
+                  setDisplayName(e.target.value);
+                  setSaved(false);
+                }}
+              />
+              <Button onClick={save} disabled={busy || displayName === (initialDisplayName ?? "")}>
+                {busy ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          )}
+        </Field>
+        {error ? <p className="text-sm text-danger">{error}</p> : null}
+        {saved ? <p className="text-sm text-muted">Saved.</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function IdentitiesCard({ identities }: { identities: ProfileIdentity[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Your identities</CardTitle>
+        <CardDescription>
+          The platform identities linked to you. Memory and owner rights follow these links.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {identities.length <= 1 ? (
+          <p className="text-sm text-muted">
+            Only your web identity so far — nothing else is linked to you yet.
+          </p>
+        ) : null}
+        <ul className="space-y-2">
+          {identities.map((identity) => (
+            <li key={identity.ref} className="flex items-center gap-2 text-sm">
+              <Link2 className="h-3.5 w-3.5 text-faint" aria-hidden />
+              <span className="min-w-0 truncate">
+                {identity.label ?? <span className="font-mono text-xs">{identity.ref}</span>}
+              </span>
+              <Badge tone="neutral">{identity.sourceLabel}</Badge>
+              {identity.self ? <Badge tone="info">this account</Badge> : null}
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+function MemoryCard({ memory }: { memory: ProfileMemoryDoc[] }) {
+  const router = useRouter();
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [error, setError] = useState<string | null>(null);
+
+  async function forget(doc: ProfileMemoryDoc) {
+    const ok = await confirm({
+      title: "Forget this?",
+      body:
+        "The whole memory document under this identity is deleted. The assistant may " +
+        "re-learn facts from future conversations.",
+      confirmLabel: "Forget",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/profile/memory?userId=${encodeURIComponent(doc.userId)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        setError(await readError(res));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError("Network error — could not reach the server");
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>What the assistant remembers about you</CardTitle>
+        <CardDescription>
+          One document per identity. You can read everything and delete any of it — there is
+          no way to write memory by hand.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error ? <p className="text-sm text-danger">{error}</p> : null}
+        {memory.length === 0 ? (
+          <EmptyState
+            icon={Brain}
+            title="Nothing remembered yet"
+            description="Durable facts you share in conversations end up here after the nightly consolidation."
+          />
+        ) : (
+          memory.map((doc) => (
+            <div key={doc.userId} className="rounded-lg border border-border p-4">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs text-faint">{doc.ref}</span>
+                <span className="text-xs text-faint">
+                  updated <Timestamp iso={doc.updatedAt} />
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="ml-auto text-danger"
+                  onClick={() => void forget(doc)}
+                >
+                  Forget
+                </Button>
+              </div>
+              <p className="text-sm whitespace-pre-wrap text-muted">{doc.content}</p>
+            </div>
+          ))
+        )}
+      </CardContent>
+      {confirmDialog}
+    </Card>
+  );
+}
+
+export function ProfileManager({
+  account,
+  identities,
+  memory,
+}: {
+  account: { username: string; displayName: string | null; role: "admin" | "user" };
+  identities: ProfileIdentity[];
+  memory: ProfileMemoryDoc[];
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-2 text-sm text-muted">
+        <UserRound className="h-4 w-4" aria-hidden />
+        <span>
+          Role: <Badge tone={account.role === "admin" ? "info" : "neutral"}>{account.role}</Badge>
+        </span>
+      </div>
+      <DisplayNameCard username={account.username} initialDisplayName={account.displayName} />
+      <IdentitiesCard identities={identities} />
+      <MemoryCard memory={memory} />
+      <Card>
+        <CardHeader>
+          <CardTitle>Password</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ChangePasswordSection />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

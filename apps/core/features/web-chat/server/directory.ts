@@ -5,16 +5,16 @@ import type { OperatorChat, OperatorChatMember, OperatorUser } from "@assistant-
 import { ApiError } from "@/lib/api-error";
 import type { SourceDirectoryClient } from "@/server/source/operator-client";
 
-import type { WebUserRow } from "../../../store/schema";
+import type { AccountRow } from "../../../store/schema";
 import {
   getThreadListing,
+  listChatUsers,
   listThreadListings,
   listThreadMembers,
-  listUsers,
+  updateChatUserAliases,
+  updateChatUserLanguage,
   updateThreadLanguage,
   updateThreadNotes,
-  updateUserAliases,
-  updateUserLanguage,
   type ThreadListing,
 } from "./repository";
 import { pingThreads } from "./service";
@@ -31,15 +31,15 @@ import { pingThreads } from "./service";
  * a thread's roster is its owner.
  */
 
-function toOperatorUser(row: WebUserRow): OperatorUser {
+function toOperatorUser(row: AccountRow): OperatorUser {
   return {
     id: row.id,
-    // A web user has one name and no @handle — the shape's other name parts
-    // belong to the sources that have them.
-    username: null,
+    // The account IS the web identity (Phase 8): its username doubles as
+    // the handle, its display name as the label. Never the secrets.
+    username: row.username,
     firstName: null,
     lastName: null,
-    label: row.name,
+    label: row.displayName ?? row.username,
     aliases: row.aliases,
     language: row.language,
     firstSeenAt: row.createdAt.toISOString(),
@@ -65,7 +65,7 @@ function toOperatorChat(listing: ThreadListing): OperatorChat {
 export function webChatDirectoryClient(): SourceDirectoryClient {
   return {
     async listUsers() {
-      const rows = await listUsers();
+      const rows = await listChatUsers();
       return rows.map(toOperatorUser);
     },
     async listChats() {
@@ -87,8 +87,8 @@ export function webChatDirectoryClient(): SourceDirectoryClient {
     async updateUser(id, input) {
       const row =
         "aliases" in input
-          ? await updateUserAliases(id, input.aliases)
-          : await updateUserLanguage(id, input.language);
+          ? await updateChatUserAliases(id, input.aliases)
+          : await updateChatUserLanguage(id, input.language);
       if (!row) throw ApiError.notFound("user not found");
       return toOperatorUser(row);
     },

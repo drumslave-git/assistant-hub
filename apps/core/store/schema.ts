@@ -90,6 +90,8 @@ export const accounts = pgTable(
     displayName: text("display_name"),
     /** Operator-curated alternate names (addressing, directory search). */
     aliases: text("aliases").array().notNull().default([]),
+    /** Curated reply language for this person, or null (default). */
+    language: text("language"),
     /** Self-describing scrypt hash (`server/auth/password.ts`). Secret. */
     passwordHash: text("password_hash").notNull(),
     role: text("role").$type<"admin" | "user">().notNull(),
@@ -732,38 +734,19 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
  */
 
 /**
- * Web-chat users: the operator gets one bound to their operator session,
- * linkable to other identities via person links like any other pair.
- */
-export const webUsers = pgTable("web_users", {
-  id: text("id").primaryKey(),
-  /** Display name shown in threads. */
-  name: text("name").notNull(),
-  /** True for the operator's own chat user (single-operator system). */
-  isOperator: boolean("is_operator").notNull().default(false),
-  /** Operator-curated alternate names, as in every source's directory. */
-  aliases: text("aliases").array().notNull().default(sql`'{}'::text[]`),
-  /** Operator-configured reply language for this person, or null (default). */
-  language: text("language"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type WebUserRow = typeof webUsers.$inferSelect;
-export type WebUserInsert = typeof webUsers.$inferInsert;
-
-/**
- * Named threads. Each belongs to one web user and is bound to one assistant
- * **at creation** (no mid-thread switching — PLAN.md).
+ * Named threads. Each belongs to one ACCOUNT — the account is its own
+ * web-chat identity since Phase 8 (`chat:user:<accountId>`); the separate
+ * `web_users` table is gone — and is bound to one assistant **at creation**
+ * (no mid-thread switching — PLAN.md).
  */
 export const webThreads = pgTable(
   "web_threads",
   {
     id: text("id").primaryKey(),
-    /** The web user who owns the thread; threads die with their user. */
+    /** The account that owns the thread; threads die with their account. */
     userId: text("user_id")
       .notNull()
-      .references(() => webUsers.id, { onDelete: "cascade" }),
+      .references(() => accounts.id, { onDelete: "cascade" }),
     /** The assistant answering in this thread, fixed at creation. */
     assistantId: text("assistant_id").notNull(),
     /** Thread name — auto-generated from the first exchange, or renamed by hand. */
