@@ -1,9 +1,12 @@
-# llm-tg-bot-nextjs
+# assistant-hub
 
-A Next.js rewrite of the [ollama-tg-bot](https://github.com/drumslave-git/ollama-tg-bot)
-MVP: a Telegram bot powered by an OpenAI-compatible chat completions API, with a
-control/observability dashboard. Pending work is tracked in
-[`docs/TODO.md`](docs/TODO.md).
+A multi-user assistant platform: accounts run their own AI assistants —
+personas, Telegram bots, standing tasks, tools — on one shared brain (an
+OpenAI-compatible chat completions API), with a web chat and a
+control/observability dashboard. Grown out of the
+[ollama-tg-bot](https://github.com/drumslave-git/ollama-tg-bot) MVP through a
+full Next.js rewrite (the v2 redesign — see [docs/PLAN.md](docs/PLAN.md)).
+Pending work is tracked in [`docs/TODO.md`](docs/TODO.md).
 
 ## Documentation
 
@@ -81,7 +84,7 @@ other's code — only packages.
 | `apps/core/test/` | Test support (stubs, fixtures). |
 | `apps/core/store/` | The v2 core-store database module (schema, migrations, v1 import) — the redesign's brain store, beside the v1 `db/` until cutover. |
 | `apps/tg/` | Telegram transport: stateless pollers that register with the core, forward updates as transport events, perform sends, and host the platform's MCP tools. |
-| `packages/db/` | Shared database tooling (`@assistant-hub/db`): pg pool singletons, the production migration runner (`migrate/`), v1-split import plumbing (`/import`), and Testcontainers helpers (`/testing`). Each app defines its own schema and migration chain on top of this. |
+| `packages/db/` | Shared database tooling (`@assistant-hub/db`): pg pool singletons, the production migration runner (`migrate/`), v1 import plumbing (`/import`), and Testcontainers helpers (`/testing`). The one schema and migration chain live in `apps/core/store/`. |
 | `packages/contracts/` | Cross-app zod schemas (`@assistant-hub/contracts`): the source-app contract, scoped refs, bus/queue payloads — populated by the redesign phases. |
 | `packages/ui/` | Shared dashboard components + the typed extension-point registry (`@assistant-hub/ui`) the shell composes from. |
 

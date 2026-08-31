@@ -192,11 +192,32 @@ live, standing rule). Left for the operator: one user-account walk
 (create assistant → connect a bot token → task → tool connection →
 activity/traces) and a deactivate/reactivate round trip.
 
-**Next best task: Phase 10 (cutover)** — rehearsed migration into the
-final shape (one store; the v1 import + tg-v1 import), runbook
-execution, rename to assistant-hub, release pipeline, docs rewrite
-(AGENTS.md describes v1 and must be updated). Write its acceptance
-criteria here when it starts.
+**Phase 10 (cutover) is DONE (2026-08-31) — the v2 redesign is
+COMPLETE.** The final shape is real: every feature reads the ONE core
+database (settings/backends, memory on a scoped-ref keyspace,
+preferences/corrections/exclusions/markers, the tg directory straight
+from source_* with the shadow deleted, vision on source_media,
+browser-agent/analytics/search-stats tables joined fresh), the v1
+database module is deleted, `STORE_DATABASE_URL` collapsed into
+`DATABASE_URL`, one drizzle chain, one Docker Postgres — the v1
+migration chain survives only as the import test's fixture. The
+rehearsal ran against a copy of the dev v1 database: both imports
+ended `VERIFICATION PASSED` (the tg import now person-links the v1
+owner's telegram identity to the first admin instead of writing the
+retired owner blob). The runbook is
+docs/operations/cutover-runbook.md; the project carries the
+assistant-hub name (shell, login/setup, README, root package; the
+release pipeline already shipped assistant-hub-core/tg images; the
+GitHub repo rename is the operator's settings action); AGENTS.md is
+rewritten to describe v2. Proof: typecheck 8/8, lint clean, unit
+1175+36+15+3, integration 419 across all suites (fifteen suites
+re-based to the store bootstrap), live boot on the single database
+with both pollers up. `npm run build` NOT run in dev (standing rule) —
+it runs in the release pipeline. Left for the operator: the
+PRODUCTION cutover itself (follow the runbook), and the repo rename.
+
+**Next best task:** the redesign is finished — day-2 work returns to
+`docs/TODO.md`.
 
 What Phase 4 deliberately did NOT do, so nobody mistakes it for
 missing: web threads are absent from the summarizer, the hybrid search
@@ -380,7 +401,7 @@ Known pitfalls for whoever starts:
 | 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | done |
 | 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | done |
 | 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | done |
-| 10 | Cutover: rehearsed migration, runbook, rename, release, docs | in-progress |
+| 10 | Cutover: rehearsed migration, runbook, rename, release, docs | done |
 
 Phases 0–5 describe the as-built per-app architecture that phases 6–9
 deliberately supersede (2026-08-30 revision); their criteria below are
@@ -403,32 +424,32 @@ rows are not migrated); the dev instance cuts over by re-pointing
 dev ports); the GitHub repository rename is the operator's action —
 the code, images, and docs take the assistant-hub name here.
 
-- [ ] **A — same-shape flips.** Settings and backends move to the
+- [x] **A — same-shape flips.** Settings and backends move to the
       store's identical tables (repositories/service on StoreDb, their
       suites on the store test bootstrap); a dev port copies the LIVE
       v1 rows over the stale Phase-3 import.
-- [ ] **B — scoped-ref flips.** Memory (entries, user documents,
+- [x] **B — scoped-ref flips.** Memory (entries, user documents,
       general document, extraction markers), communication
       preferences, self-corrections, addressing exclusions and the
       summary-day markers move to their store tables — the person
       keyspace becomes scoped refs; profile/offboarding memory reads
       follow; dev rows ported with ids rewritten to refs.
-- [ ] **C — the shadow retires.** known_users / known_groups /
+- [x] **C — the shadow retires.** known_users / known_groups /
       group_members die: curated fields live on source_users /
       source_chats, membership on source_chat_members; the
       known-users/known-groups features and every turn-pipeline
       consumer read the source store; dev curated fields ported.
-- [ ] **D — the rest of the store.** Vision's repository reads
+- [x] **D — the rest of the store.** Vision's repository reads
       source_media (the v1 media tables go unread); browser-agent
       runs + screenshots, analytics insight tables and search-engine
       stats join the store schema (fresh start) and their features
       flip.
-- [ ] **E — one database.** `apps/core/db/` (the v1 module) is
+- [x] **E — one database.** `apps/core/db/` (the v1 module) is
       deleted; `STORE_DATABASE_URL` collapses into `DATABASE_URL`;
       one drizzle config, one migration chain, one Docker Postgres;
       the v1 test bootstrap dies with it; the import scripts target
       the one database; the health probe probes it.
-- [ ] **F — rename, docs, rehearsal.** The project takes the
+- [x] **F — rename, docs, rehearsal.** The project takes the
       assistant-hub name (packages already carry it; the app shell,
       compose images, README and docs follow); AGENTS.md is rewritten
       to describe v2; the cutover runbook (backup → migrate → verify
@@ -1940,6 +1961,33 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+- **2026-08-31 (Phase 10 closes: the cutover — the redesign is done)** —
+  The audit at open found the honest scope: "rehearse the migration"
+  meant first making the migration's TARGET real, because eleven
+  features still read the v1 database. So the phase became the great
+  flip, in five commits: settings+backends (the split settings row
+  healed — store-repository.ts gone, the loop guard an ordinary
+  column); the scoped-ref wave (memory keyed by refs with boundary
+  conversion per source, preferences/corrections/exclusions/markers on
+  their ref-keyed twins, the known-users/known-groups features turned
+  into API-preserving adapters over source_* so ~17 consumers never
+  moved, shadow-directory deleted); vision onto source_media and the
+  fresh-start tables (browser runs, insights, search stats) joining
+  the store schema; then ONE DATABASE — apps/core/db deleted,
+  STORE_DATABASE_URL collapsed into DATABASE_URL, the v1 chain kept
+  solely as the import-test fixture under store/import/v1-migrations.
+  Fifteen integration suites were re-based onto the store bootstrap
+  (three subagents converted them in parallel; one interruption by a
+  usage-limit reset mid-flight, resumed cleanly). The rehearsal ran
+  against a copy of the dev v1 database and both imports verified
+  clean — after one correctness fix the rehearsal itself surfaced: the
+  tg import still wrote the Phase-8-retired global-owner blob, and now
+  person-links the v1 owner's telegram identity to the first admin
+  instead, which is what preserves owner rights and memory continuity
+  across the cutover. Runbook written, AGENTS.md rewritten for v2, the
+  assistant-hub name applied in code and docs. Ten phases, ~2 weeks of
+  sessions, and the one sentence that was the point all along: a new
+  transport can now connect to the core without any changes of core.
 - **2026-08-31 (Phase 9 closes: user ownership)** — Six slices in the
   same session as Phase 8, and the phase was mostly one idea applied
   everywhere: a shared `server/ownership.ts` (Actor, mayActOn,

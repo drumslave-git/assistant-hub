@@ -29,9 +29,9 @@ import type { Pool } from "pg";
  *   users_feedbacks → source_feedbacks, chat_summaries → source_summaries.
  * - settings.telegram_bot_token → one `assistant_transports` row bound to
  *   the default assistant (config `{ botToken }`).
- * - settings.owner_username / owner_user_id → the `transports` row's config
- *   blob (the transport-level opaque section; the base URL is a placeholder
- *   the transport's first self-registration overwrites).
+ * - settings.owner_user_id → a person link joining the owner's telegram
+ *   identity to the first admin account (Phase 8 owner rights; no global
+ *   owner config exists any more).
  *
  * This import is telegram-specific by nature (it reads v1 telegram tables),
  * so telegram stream rules — group ids are negative — are applied HERE, not
@@ -480,20 +480,43 @@ export async function runTgImport(input: {
       await countRows(target, `SELECT count(*) AS count FROM assistant_transports`),
     );
 
-    // The transport row: owner identity in the opaque config blob; the base
-    // URL is a placeholder the transport's first self-registration overwrites
-    // (registration preserves config and the enabled flag).
-    const ownerConfig = {
-      ownerUsername: v1Settings.rows[0]?.owner_username ?? null,
-      ownerUserId: v1Settings.rows[0]?.owner_user_id ?? null,
-    };
+    // The transport row: the base URL is a placeholder the transport's first
+    // self-registration overwrites (registration preserves config/enabled).
     await target.query(
       `INSERT INTO transports (id, name, base_url, config, enabled)
-       VALUES ($1, 'Telegram', '', $2::jsonb, true)
-       ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config`,
-      [SOURCE, JSON.stringify(ownerConfig)],
+       VALUES ($1, 'Telegram', '', '{}'::jsonb, true)
+       ON CONFLICT (id) DO NOTHING`,
+      [SOURCE],
     );
-    report.note("owner identity stored in the tg transport's config blob");
+
+    // The v1 owner IS the operator IS the first admin (Phase 8): link the
+    // owner's telegram identity to the admin account in the person-link
+    // graph, so owner rights and memory continuity survive the cutover with
+    // no global-owner config anywhere.
+    const ownerUserId: string | null = v1Settings.rows[0]?.owner_user_id ?? null;
+    const admin = await target.query(
+      `SELECT id FROM accounts WHERE role = 'admin' AND active ORDER BY created_at LIMIT 1`,
+    );
+    const adminId: string | null = admin.rows[0]?.id ?? null;
+    if (ownerUserId && adminId) {
+      const linkId = crypto.randomUUID();
+      await target.query(`INSERT INTO person_links (id, note) VALUES ($1, $2)`, [
+        linkId,
+        "the operator (cutover self-link)",
+      ]);
+      await target.query(
+        `INSERT INTO person_link_members (link_id, user_ref)
+         VALUES ($1, $2), ($1, $3)`,
+        [linkId, `tg:user:${ownerUserId}`, `chat:user:${adminId}`],
+      );
+      report.note("v1 owner linked to the first admin account (person link)");
+    } else {
+      report.note(
+        ownerUserId
+          ? "v1 owner set but no admin account found - run the core import first"
+          : "v1 had no owner identity - no cutover person link",
+      );
+    }
 
     // --- spot checks ---
     log("verifying…");
@@ -508,12 +531,17 @@ export async function runTgImport(input: {
         "connection carries the v1 bot token bound to the default assistant",
       );
     }
-    const owner = await target.query(`SELECT config FROM transports WHERE id = $1`, [SOURCE]);
-    report.check(
-      owner.rows[0]?.config?.ownerUsername === (v1Settings.rows[0]?.owner_username ?? null) &&
-        owner.rows[0]?.config?.ownerUserId === (v1Settings.rows[0]?.owner_user_id ?? null),
-      "owner identity moved into the transport config blob",
-    );
+    if (ownerUserId && adminId) {
+      const linked = await target.query(
+        `SELECT count(*)::int AS n FROM person_link_members
+          WHERE user_ref IN ($1, $2)`,
+        [`tg:user:${ownerUserId}`, `chat:user:${adminId}`],
+      );
+      report.check(
+        linked.rows[0]?.n === 2,
+        "v1 owner's telegram identity linked to the first admin account",
+      );
+    }
     const pendingBlobless = await countRows(
       target,
       `SELECT count(*) AS count FROM source_media m

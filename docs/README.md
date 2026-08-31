@@ -71,6 +71,7 @@ its behavior, configuration, data, traces and tests.
 | Document | What it covers |
 | --- | --- |
 | [Deployment](operations/deployment.md) | Docker Compose, the image, migrations on start, health checks, releases |
+| [Cutover runbook](operations/cutover-runbook.md) | The one-time v1 → assistant-hub production migration (rehearse first: [v1-split](operations/v1-split.md)) |
 | [Operator guide](operations/operator-guide.md) | Every dashboard page and what to do on it |
 | [Using the bot in chat](operations/using-the-bot.md) | What end users can do in Telegram, and how the bot decides to answer |
 | [Backup and restore](operations/backup-and-restore.md) | What state exists, where, and how to back each part up |

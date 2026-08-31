@@ -139,7 +139,7 @@ export default async function OverviewPage() {
     <>
       <PageHeader
         title="Overview"
-        description={`llm-tg-bot dashboard — v${buildInfo.version}`}
+        description={`assistant-hub dashboard — v${buildInfo.version}`}
         actions={
           <>
             {/* One subscription for the whole page. Every block here re-reads on
