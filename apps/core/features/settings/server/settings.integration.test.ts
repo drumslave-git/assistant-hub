@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 
-import { applyMigrations } from "@assistant-hub/db/testing";
-import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { insertBackend } from "@/features/backends/server/repository";
@@ -15,7 +12,7 @@ import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import { getTraceDetail, listTraces } from "@/server/trace";
 import { resetEnvCache } from "@/server/env";
 import { closeStorePool } from "@/server/store/db";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 import { getSettingsRecord } from "./repository";
 import { updateSettingsSchema, type ProbeReport } from "./schema";
 import {
@@ -85,7 +82,7 @@ const probeSpeechMock = vi.mocked(probeSpeech);
 
 /** Seed one backend row and return its id. */
 async function seedBackend(
-  ctx: TestDb,
+  ctx: TestStoreDb,
   values: { name: string; baseUrl: string; apiKey?: string | null; type?: LlmBackendId },
 ): Promise<string> {
   const id = randomUUID();
@@ -98,35 +95,19 @@ async function seedBackend(
   return id;
 }
 
-const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
 
-let ctx: TestDb;
-/**
- * The settings row is split while the cutover is pending: the v1 database
- * holds everything that predates the redesign, and the v2 core store holds
- * the fields Phase 3 added (`store-repository.ts`). The suite runs both, on
- * one container, so a save can be followed all the way to whichever row owns
- * the field.
- */
-let storePool: Pool;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
-  const admin = new Pool({ connectionString: ctx.connectionUri });
-  try {
-    await admin.query(`CREATE DATABASE core_store`);
-  } finally {
-    await admin.end();
-  }
-  const storeUrl = ctx.connectionUri.replace(/\/[^/?]+(\?|$)/, "/core_store$1");
-  await applyMigrations(storeUrl, STORE_MIGRATIONS);
-  process.env.STORE_DATABASE_URL = storeUrl;
+  // ONE database since the Phase 10 cutover: settings live in the core
+  // store, and the env-bound readers (getAssistantLoopGuardTurns) find the
+  // same rows the suite writes through ctx.db.
+  ctx = await startTestStoreDb();
+  process.env.STORE_DATABASE_URL = ctx.connectionUri;
   resetEnvCache();
-  storePool = new Pool({ connectionString: storeUrl });
 });
 
 afterAll(async () => {
-  await storePool?.end();
   // Production code opened the process-global store pool; close it before the
   // container stops or its dying clients fail an otherwise green run.
   await closeStorePool();
@@ -135,7 +116,6 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
-  await storePool.query(`DELETE FROM settings`);
   // Endpoint unreachable unless a test says otherwise — the conservative case,
   // in which stored selections are never cleared.
   listModelsMock.mockReset();
@@ -179,8 +159,7 @@ describe("getSettings", () => {
       browserModel: null,
       webSearchConfigured: false,
       maintenanceModeEnabled: false,
-      // Store-owned (see `store-repository.ts`): a suite with no v2 store
-      // configured reads the documented default rather than failing.
+      // Documented default (user decision, 2026-08-24).
       assistantLoopGuardTurns: 3,
       timezone: "UTC",
       dailyJobsRunTime: "04:00",
@@ -195,9 +174,7 @@ describe("the store-owned half of the settings", () => {
     const saved = await updateSettings({ assistantLoopGuardTurns: 5 }, trigger, ctx.db);
     expect(saved.assistantLoopGuardTurns).toBe(5);
 
-    // In the v2 store's row — not the v1 settings table, which has no such
-    // column and never will.
-    const rows = await storePool.query(`SELECT assistant_loop_guard_turns FROM settings`);
+    const rows = await ctx.pool.query(`SELECT assistant_loop_guard_turns FROM settings`);
     expect(rows.rows).toEqual([{ assistant_loop_guard_turns: 5 }]);
     expect(await getSettings(ctx.db)).toMatchObject({ assistantLoopGuardTurns: 5 });
     expect(await getAssistantLoopGuardTurns()).toBe(5);
@@ -264,9 +241,8 @@ describe("updateSettings", () => {
 
   it("takes no bot token — connections are per assistant since Phase 3", async () => {
     // The schema strips the retired key, leaving an empty (rejected) update;
-    // nothing token-shaped can land in this database through settings.
+    // the store's settings table has no token-shaped column at all.
     expect(updateSettingsSchema.safeParse({ telegramBotToken: "12345:x" }).success).toBe(false);
-    expect((await getSettingsRecord(ctx.db))?.telegramBotToken ?? null).toBeNull();
   });
 
   it("stores the Tavily key write-only and redacts it from the trace", async () => {

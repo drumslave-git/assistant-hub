@@ -1,8 +1,18 @@
+import { fileURLToPath } from "node:url";
+
+import { applyMigrations } from "@assistant-hub/db/testing";
+import { Pool } from "pg";
+
+import { resetEnvCache } from "@/server/env";
+import { closeStorePool } from "@/server/store/db";
+
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces, startTrace } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
+
+const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
 import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
 
 
@@ -17,11 +27,27 @@ let ctx: TestDb;
 // tg app's own analytics suite against a real database).
 let content: FakeSourceContent;
 
+/**
+ * Settings (timezone) read the core store since the Phase 10 flip; the
+ * analytics rollup tables themselves stay v1 until their slice-D move, so
+ * this suite runs both — the store carved out of the same container.
+ */
 beforeAll(async () => {
   ctx = await startTestDb();
+  const admin = new Pool({ connectionString: ctx.connectionUri });
+  try {
+    await admin.query(`CREATE DATABASE analytics_store`);
+  } finally {
+    await admin.end();
+  }
+  const storeUrl = ctx.connectionUri.replace(/\/[^/?]+(\?|$)/, "/analytics_store$1");
+  await applyMigrations(storeUrl, STORE_MIGRATIONS);
+  process.env.STORE_DATABASE_URL = storeUrl;
+  resetEnvCache();
 });
 
 afterAll(async () => {
+  await closeStorePool();
   await ctx?.stop();
 });
 
@@ -127,8 +153,8 @@ describe("period bounding", () => {
     await seedLlmCall({ at: JULY_02, model: "m", latencyMs: 100, tokens: { p: 10, c: 5 } });
     await seedLlmCall({ at: JULY_15, model: "m", latencyMs: 100, tokens: { p: 70, c: 35 } });
 
-    const day = await getMetricTotals({ unit: "day", anchor: "2026-07-15" }, ctx.db);
-    const month = await getMetricTotals({ unit: "month", anchor: "2026-07" }, ctx.db);
+    const day = await getMetricTotals({ unit: "day", anchor: "2026-07-15" });
+    const month = await getMetricTotals({ unit: "month", anchor: "2026-07" });
 
     expect(day.totals.tokensProcessed).toBe(70);
     expect(month.totals.tokensProcessed).toBe(80);
@@ -143,16 +169,16 @@ describe("period bounding", () => {
       latencyMs: 10,
       tokens: { p: 999, c: 0 },
     });
-    const day = await getMetricTotals({ unit: "day", anchor: "2026-07-15" }, ctx.db);
+    const day = await getMetricTotals({ unit: "day", anchor: "2026-07-15" });
     expect(day.totals.tokensProcessed).toBe(0);
 
-    const next = await getMetricTotals({ unit: "day", anchor: "2026-07-16" }, ctx.db);
+    const next = await getMetricTotals({ unit: "day", anchor: "2026-07-16" });
     expect(next.totals.tokensProcessed).toBe(999);
   });
 
   it("lets an earlier period be navigated to, not just the latest", async () => {
     await seedLlmCall({ at: JULY_02, model: "m", latencyMs: 10, tokens: { p: 42, c: 0 } });
-    const past = await getMetricTotals({ unit: "day", anchor: "2026-07-02" }, ctx.db);
+    const past = await getMetricTotals({ unit: "day", anchor: "2026-07-02" });
     expect(past.totals.tokensProcessed).toBe(42);
     expect(past.anchor).toBe("2026-07-02");
   });
@@ -172,7 +198,7 @@ describe("traffic totals", () => {
       status: "error",
     });
 
-    const t = await getMetricTotals({ unit: "day", anchor: "2026-07-15" }, ctx.db);
+    const t = await getMetricTotals({ unit: "day", anchor: "2026-07-15" });
     expect(t.totals.handled).toBe(3);
     expect(t.totals.replied).toBe(2);
     expect(t.totals.failed).toBe(1);
@@ -196,7 +222,7 @@ describe("traffic totals", () => {
       correlationId: "c2:1",
     });
 
-    const m = await getMetricTotals({ unit: "day", anchor: "2026-07-15", chatId: "c1" }, ctx.db);
+    const m = await getMetricTotals({ unit: "day", anchor: "2026-07-15", chatId: "c1" });
     expect(m.scope).toBe("chat");
     expect(m.totals.tokensProcessed).toBe(40);
     expect(m.totals.tokensGenerated).toBe(10);
@@ -289,7 +315,7 @@ describe("getModels", () => {
       callKind: "reply-final",
     });
 
-    const { models } = await getModels({ unit: "day", anchor: "2026-07-15" }, ctx.db);
+    const { models } = await getModels({ unit: "day", anchor: "2026-07-15" });
 
     // Registry-prefixed variants merge into one clean model name.
     expect(models).toHaveLength(1);
@@ -320,7 +346,7 @@ describe("getModels", () => {
         callKind: "reply-final",
       });
     }
-    const { models } = await getModels({ unit: "day", anchor: "2026-07-15" }, ctx.db);
+    const { models } = await getModels({ unit: "day", anchor: "2026-07-15" });
     const kind = models[0].callKinds[0];
     expect(kind.latencyP50).toBe(100);
     expect(kind.latencyP95).toBe(9000);

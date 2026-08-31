@@ -61,7 +61,7 @@ export async function searchHistoryMessages(
   const query = params.query.trim();
   if (!query) return [];
 
-  const embedding = await getEmbeddingRuntime(db).catch(() => null);
+  const embedding = await getEmbeddingRuntime().catch(() => null);
   const vector = embedding ? await embedOne(embedding, query).catch(() => null) : null;
 
   const matches = await content.searchMessages({

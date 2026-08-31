@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { updateSettings } from "@/features/settings/server/service";
 import { listModels } from "@/server/llm/client";
 import { getTraceDetail, listTraces } from "@/server/trace";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 import { getBackendById } from "./repository";
 import {
   createBackend,
@@ -24,10 +24,10 @@ vi.mock("@/server/llm/client", async (importOriginal) => {
 
 const listModelsMock = vi.mocked(listModels);
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {

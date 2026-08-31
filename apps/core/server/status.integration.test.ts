@@ -5,12 +5,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { insertBackend } from "@/features/backends/server/repository";
 import { updateSettings } from "@/features/settings/server/service";
 import { getHealth, getSystemStatus } from "@/server/status";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {

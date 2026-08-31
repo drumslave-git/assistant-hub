@@ -380,11 +380,62 @@ Known pitfalls for whoever starts:
 | 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | done |
 | 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | done |
 | 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | done |
-| 10 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
+| 10 | Cutover: rehearsed migration, runbook, rename, release, docs | in-progress |
 
 Phases 0–5 describe the as-built per-app architecture that phases 6–9
 deliberately supersede (2026-08-30 revision); their criteria below are
 history, not the current target.
+
+## Phase 10 — Cutover (acceptance criteria)
+
+Scope from PLAN.md: rehearsed migration into the final shape (ONE core
+database), runbook, rename to assistant-hub, release pipeline, docs
+rewrite. The audit at open found the real work: eleven features still
+read the v1 database — the "final shape" is every one of them on the
+core store, and only then does `STORE_DATABASE_URL` collapse into
+`DATABASE_URL`.
+
+Design fixed at open (mechanical consequences of PLAN, no new user
+decisions): analytics rollups, browser-agent runs and search-engine
+stats start fresh (their tables join the store schema now, their v1
+rows are not migrated); the dev instance cuts over by re-pointing
+`DATABASE_URL` at the current store database (already fed by per-slice
+dev ports); the GitHub repository rename is the operator's action —
+the code, images, and docs take the assistant-hub name here.
+
+- [ ] **A — same-shape flips.** Settings and backends move to the
+      store's identical tables (repositories/service on StoreDb, their
+      suites on the store test bootstrap); a dev port copies the LIVE
+      v1 rows over the stale Phase-3 import.
+- [ ] **B — scoped-ref flips.** Memory (entries, user documents,
+      general document, extraction markers), communication
+      preferences, self-corrections, addressing exclusions and the
+      summary-day markers move to their store tables — the person
+      keyspace becomes scoped refs; profile/offboarding memory reads
+      follow; dev rows ported with ids rewritten to refs.
+- [ ] **C — the shadow retires.** known_users / known_groups /
+      group_members die: curated fields live on source_users /
+      source_chats, membership on source_chat_members; the
+      known-users/known-groups features and every turn-pipeline
+      consumer read the source store; dev curated fields ported.
+- [ ] **D — the rest of the store.** Vision's repository reads
+      source_media (the v1 media tables go unread); browser-agent
+      runs + screenshots, analytics insight tables and search-engine
+      stats join the store schema (fresh start) and their features
+      flip.
+- [ ] **E — one database.** `apps/core/db/` (the v1 module) is
+      deleted; `STORE_DATABASE_URL` collapses into `DATABASE_URL`;
+      one drizzle config, one migration chain, one Docker Postgres;
+      the v1 test bootstrap dies with it; the import scripts target
+      the one database; the health probe probes it.
+- [ ] **F — rename, docs, rehearsal.** The project takes the
+      assistant-hub name (packages already carry it; the app shell,
+      compose images, README and docs follow); AGENTS.md is rewritten
+      to describe v2; the cutover runbook (backup → migrate → verify
+      → start → smoke → rollback) is written; the rehearsal runs both
+      import scripts against a copy of the dev v1 database with clean
+      verification reports; suites, lint, typecheck green; PROGRESS
+      closes the redesign.
 
 ## Phase 9 — User ownership (acceptance criteria)
 

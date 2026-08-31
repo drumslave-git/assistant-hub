@@ -138,7 +138,7 @@ export async function runMessageIndexing(
     // Read once per run, not per batch: a settings change takes effect on the
     // next run, and a run that started without embeddings stays consistent about
     // it rather than half-embedding its own backlog.
-    const runtime = await getEmbeddingRuntime(db).catch(() => null);
+    const runtime = await getEmbeddingRuntime().catch(() => null);
 
     const lock = await withAdvisoryLock(
       JOB_NAME,

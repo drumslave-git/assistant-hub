@@ -2,13 +2,13 @@ import "server-only";
 
 import { eq } from "drizzle-orm";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { settings, type SettingsRow } from "@/db/schema";
+import { settings, type SettingsRow } from "../../../store/schema";
+import type { StoreDb } from "@/server/store/db";
 
 /**
  * Typed persistence for the single settings row. Pure data access: no policy, no
  * validation, no masking (the service decides what to expose). Every function
- * takes a {@link DrizzleDb} so it runs against the pool or a test instance.
+ * takes a {@link StoreDb} so it runs against the pool or a test instance.
  *
  * LLM configuration is per **role** — chat, embedding, audio (STT), vision,
  * speech (TTS), image generation, browser agent, classifiers, background jobs.
@@ -62,22 +62,16 @@ export interface SettingsRecord {
   browserBackendId: string | null;
   /** Browser-agent model id; null → the chat model drives browsing. */
   browserModel: string | null;
-  activePersonalityId: string | null;
-  telegramBotToken: string | null;
   tavilyApiKey: string | null;
-  ownerUsername: string | null;
-  ownerUserId: string | null;
   maintenanceModeEnabled: boolean;
+  /** Bot-to-bot loop guard (consecutive assistant turns before silence). */
+  assistantLoopGuardTurns: number;
   /** Operator IANA timezone for wall-clock features (scheduled tasks). */
   timezone: string;
   /** Local `HH:MM` (in `timezone`) every daily background job runs at. */
   dailyJobsRunTime: string;
   /** Hard ceiling (GB) on any single browser-agent download, for every tool. */
   browserDownloadLimitGb: number;
-  /** Operator password (scrypt, self-describing). Secret — never in any view. */
-  operatorPasswordHash: string | null;
-  /** Session-cookie HMAC key. Secret — never in any view. */
-  sessionSecret: string | null;
   updatedAt: string | null;
 }
 
@@ -103,17 +97,12 @@ export interface SettingsPatch {
   backgroundModel?: string | null;
   browserBackendId?: string | null;
   browserModel?: string | null;
-  activePersonalityId?: string | null;
-  telegramBotToken?: string | null;
   tavilyApiKey?: string | null;
-  ownerUsername?: string | null;
-  ownerUserId?: string | null;
   maintenanceModeEnabled?: boolean;
+  assistantLoopGuardTurns?: number;
   timezone?: string;
   dailyJobsRunTime?: string;
   browserDownloadLimitGb?: number;
-  operatorPasswordHash?: string | null;
-  sessionSecret?: string | null;
 }
 
 /**
@@ -132,7 +121,7 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-const cache = new WeakMap<DrizzleDb, CacheEntry>();
+const cache = new WeakMap<StoreDb, CacheEntry>();
 
 function mapRow(row: SettingsRow): SettingsRecord {
   return {
@@ -156,23 +145,18 @@ function mapRow(row: SettingsRow): SettingsRecord {
     backgroundModel: row.backgroundModel,
     browserBackendId: row.browserBackendId,
     browserModel: row.browserModel,
-    activePersonalityId: row.activePersonalityId,
-    telegramBotToken: row.telegramBotToken,
     tavilyApiKey: row.tavilyApiKey,
-    ownerUsername: row.ownerUsername,
-    ownerUserId: row.ownerUserId,
     maintenanceModeEnabled: row.maintenanceModeEnabled,
+    assistantLoopGuardTurns: row.assistantLoopGuardTurns,
     timezone: row.timezone,
     dailyJobsRunTime: row.dailyJobsRunTime,
     browserDownloadLimitGb: row.browserDownloadLimitGb,
-    operatorPasswordHash: row.operatorPasswordHash,
-    sessionSecret: row.sessionSecret,
     updatedAt: row.updatedAt.toISOString(),
   };
 }
 
 /** The settings record, or null when it has never been written. */
-export async function getSettingsRecord(db: DrizzleDb): Promise<SettingsRecord | null> {
+export async function getSettingsRecord(db: StoreDb): Promise<SettingsRecord | null> {
   const cached = cache.get(db);
   if (cached && cached.expiresAt > Date.now()) return cached.record;
   const row = await db.query.settings.findFirst({ where: eq(settings.id, SETTINGS_ID) });
@@ -186,7 +170,7 @@ export async function getSettingsRecord(db: DrizzleDb): Promise<SettingsRecord |
  * Returns the full, updated record.
  */
 export async function upsertSettings(
-  db: DrizzleDb,
+  db: StoreDb,
   patch: SettingsPatch,
 ): Promise<SettingsRecord> {
   const changed = { ...patch, updatedAt: new Date() };

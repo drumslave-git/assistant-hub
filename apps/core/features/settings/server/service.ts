@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import {
   getBackendById,
   type BackendRecord,
@@ -37,7 +36,6 @@ import { probeTranscription, type TranscriptionRuntime } from "@/server/llm/tran
 import { tinySilenceWav } from "@/server/media/audio";
 import { tinyProbePng } from "@/server/media/image";
 import { withTrace, type TraceRecorder } from "@/server/trace";
-import { getEnv } from "@/server/env";
 import {
   getSettingsRecord,
   SETTINGS_ID,
@@ -45,13 +43,6 @@ import {
   type SettingsPatch,
   type SettingsRecord,
 } from "./repository";
-import {
-  getStoreSettings,
-  upsertStoreSettings,
-  STORE_SETTINGS_DEFAULTS,
-  type StoreSettingsPatch,
-  type StoreSettingsRecord,
-} from "./store-repository";
 import type {
   ProbePart,
   ProbeReport,
@@ -76,28 +67,8 @@ import type {
 
 const FEATURE = FEATURES["settings"];
 
-/**
- * The store-owned half of the settings, read best-effort. A deployment that
- * has not been given the v2 store yet (the transitional `STORE_DATABASE_URL`
- * is optional until the Phase 6 cutover) simply reads the defaults instead of
- * failing the whole settings page; writes to these fields are NOT forgiving —
- * see {@link updateSettings}.
- */
-async function readStoreSettings(): Promise<StoreSettingsRecord> {
-  if (!getEnv().STORE_DATABASE_URL) return { ...STORE_SETTINGS_DEFAULTS };
-  try {
-    return await getStoreSettings();
-  } catch (err) {
-    console.warn(
-      "Core store settings unreadable — showing defaults:",
-      err instanceof Error ? err.message : String(err),
-    );
-    return { ...STORE_SETTINGS_DEFAULTS };
-  }
-}
-
-/** Project the internal records to the client-safe shape (masking secrets). */
-function toClientSettings(record: SettingsRecord | null, store: StoreSettingsRecord): Settings {
+/** Project the internal record to the client-safe shape (masking secrets). */
+function toClientSettings(record: SettingsRecord | null): Settings {
   return {
     chatBackendId: record?.chatBackendId ?? null,
     model: record?.model ?? null,
@@ -121,7 +92,8 @@ function toClientSettings(record: SettingsRecord | null, store: StoreSettingsRec
     browserModel: record?.browserModel ?? null,
     webSearchConfigured: Boolean(record?.tavilyApiKey),
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
-    assistantLoopGuardTurns: store.assistantLoopGuardTurns,
+    // User decision, 2026-08-24: default 3.
+    assistantLoopGuardTurns: record?.assistantLoopGuardTurns ?? 3,
     timezone: record?.timezone ?? "UTC",
     dailyJobsRunTime: record?.dailyJobsRunTime ?? DEFAULT_DAILY_JOBS_RUN_TIME,
     browserDownloadLimitGb: record?.browserDownloadLimitGb ?? DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB,
@@ -130,9 +102,8 @@ function toClientSettings(record: SettingsRecord | null, store: StoreSettingsRec
 }
 
 /** Current settings (no secret values), or empty defaults when never configured. */
-export async function getSettings(db: DrizzleDb = getDb()): Promise<Settings> {
-  const [record, store] = await Promise.all([getSettingsRecord(db), readStoreSettings()]);
-  return toClientSettings(record, store);
+export async function getSettings(db: StoreDb = getStoreDb()): Promise<Settings> {
+  return toClientSettings(await getSettingsRecord(db));
 }
 
 /**
@@ -143,7 +114,7 @@ export async function getSettings(db: DrizzleDb = getDb()): Promise<Settings> {
  * restart, exactly like {@link getTimezone}.
  */
 export async function getAssistantLoopGuardTurns(): Promise<number> {
-  return (await readStoreSettings()).assistantLoopGuardTurns;
+  return (await getSettingsRecord(getStoreDb()))?.assistantLoopGuardTurns ?? 3;
 }
 
 /**
@@ -151,7 +122,7 @@ export async function getAssistantLoopGuardTurns(): Promise<number> {
  * by the web-search MCP tool so a key change takes effect without re-registering.
  * Never exposed through an API or to clients.
  */
-export async function getWebSearchApiKey(db: DrizzleDb = getDb()): Promise<string | null> {
+export async function getWebSearchApiKey(db: StoreDb = getStoreDb()): Promise<string | null> {
   return (await getSettingsRecord(db))?.tavilyApiKey ?? null;
 }
 
@@ -169,7 +140,7 @@ export interface LlmRuntime {
  * row is gone, which the FK prevents but a torn read could still see).
  */
 async function resolveRoleBackend(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
   roleBackendId: string | null,
 ): Promise<BackendRecord | null> {
@@ -181,13 +152,13 @@ async function resolveRoleBackend(
  * Server-only: the saved chat (main) connection + model, or null when not fully
  * configured. Used by the conversation core to generate replies.
  */
-export async function getLlmRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
+export async function getLlmRuntime(db: StoreDb = getStoreDb()): Promise<LlmRuntime | null> {
   return toChatRuntime(db, await getSettingsRecord(db));
 }
 
 /** The chat resolver behind {@link getLlmRuntime}, shared with the probe. */
 async function toChatRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<LlmRuntime | null> {
   if (!record?.chatBackendId || !record.model) return null;
@@ -209,7 +180,7 @@ async function toChatRuntime(
  * model id.
  */
 async function toEmbeddingRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<EmbeddingRuntime | null> {
   if (!record?.embeddingModel) return null;
@@ -230,7 +201,7 @@ async function toEmbeddingRuntime(
  * unavailable" and degrade honestly, never throw.
  */
 export async function getEmbeddingRuntime(
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<EmbeddingRuntime | null> {
   return toEmbeddingRuntime(db, await getSettingsRecord(db));
 }
@@ -242,7 +213,7 @@ export async function getEmbeddingRuntime(
  * rather than guessing a model id.
  */
 async function toImageRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<ImageRuntime | null> {
   if (!record?.imageModel) return null;
@@ -262,7 +233,7 @@ async function toImageRuntime(
  * takes effect without a restart. Callers must treat null as "image generation is
  * unavailable" and degrade honestly — the tool is simply not offered.
  */
-export async function getImageRuntime(db: DrizzleDb = getDb()): Promise<ImageRuntime | null> {
+export async function getImageRuntime(db: StoreDb = getStoreDb()): Promise<ImageRuntime | null> {
   return toImageRuntime(db, await getSettingsRecord(db));
 }
 
@@ -272,7 +243,7 @@ export async function getImageRuntime(db: DrizzleDb = getDb()): Promise<ImageRun
  * one voice replies stay off rather than guessing a model id.
  */
 async function toSpeechRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<SpeechRuntime | null> {
   if (!record?.speechModel) return null;
@@ -293,7 +264,7 @@ async function toSpeechRuntime(
  * a change takes effect without a restart. Callers must treat null as "voice
  * replies are unavailable" and fall back to text — never throw.
  */
-export async function getSpeechRuntime(db: DrizzleDb = getDb()): Promise<SpeechRuntime | null> {
+export async function getSpeechRuntime(db: StoreDb = getStoreDb()): Promise<SpeechRuntime | null> {
   return toSpeechRuntime(db, await getSettingsRecord(db));
 }
 
@@ -306,7 +277,7 @@ export async function getSpeechRuntime(db: DrizzleDb = getDb()): Promise<SpeechR
  * endpoint, or an `input_audio` chat completion of its own.
  */
 async function toAudioRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<TranscriptionRuntime | null> {
   if (!record?.audioModel) return null;
@@ -327,7 +298,7 @@ async function toAudioRuntime(
  * `input_audio` chat-completion part. Null when chat itself is unconfigured.
  */
 async function toChatFallbackTranscriptionRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<TranscriptionRuntime | null> {
   if (!record?.chatBackendId || !record.model) return null;
@@ -349,7 +320,7 @@ async function toChatFallbackTranscriptionRuntime(
  * restart.
  */
 export async function getAudioRuntime(
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<TranscriptionRuntime | null> {
   return toAudioRuntime(db, await getSettingsRecord(db));
 }
@@ -363,7 +334,7 @@ export async function getAudioRuntime(
  * of their own (that shape is {@link toEmbeddingRuntime}'s).
  */
 async function toInheritingRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
   modelKey: "visionModel" | "browserModel" | "classifierModel" | "backgroundModel",
   backendKey: "visionBackendId" | "browserBackendId" | "classifierBackendId" | "backgroundBackendId",
@@ -379,26 +350,26 @@ async function toInheritingRuntime(
  * Server-only: the vision connection + model — the describer every photo,
  * video frame, and sticker goes through.
  */
-export async function getVisionRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
+export async function getVisionRuntime(db: StoreDb = getStoreDb()): Promise<LlmRuntime | null> {
   return toVisionRuntime(db, await getSettingsRecord(db));
 }
 
 /** The vision resolver behind {@link getVisionRuntime}, shared with the probe. */
 async function toVisionRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<LlmRuntime | null> {
   return toInheritingRuntime(db, record, "visionModel", "visionBackendId");
 }
 
 /** Server-only: the browser-agent LLM connection + model. */
-export async function getBrowserLlmRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
+export async function getBrowserLlmRuntime(db: StoreDb = getStoreDb()): Promise<LlmRuntime | null> {
   return toBrowserRuntime(db, await getSettingsRecord(db));
 }
 
 /** The browser resolver behind {@link getBrowserLlmRuntime}, shared with the probe. */
 async function toBrowserRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<LlmRuntime | null> {
   return toInheritingRuntime(db, record, "browserModel", "browserBackendId");
@@ -416,13 +387,13 @@ async function toBrowserRuntime(
  * is the role to point at a small fast model. Null only when the chat role it
  * falls back to is unconfigured too.
  */
-export async function getClassifierRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
+export async function getClassifierRuntime(db: StoreDb = getStoreDb()): Promise<LlmRuntime | null> {
   return toClassifierRuntime(db, await getSettingsRecord(db));
 }
 
 /** The classifier resolver behind {@link getClassifierRuntime}, shared with the probe. */
 async function toClassifierRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<LlmRuntime | null> {
   return toInheritingRuntime(db, record, "classifierModel", "classifierBackendId");
@@ -438,13 +409,13 @@ async function toClassifierRuntime(
  * Deliberately *not* used by anything a person is waiting on: a scheduled task
  * fires a real chat reply and stays on the chat role.
  */
-export async function getBackgroundRuntime(db: DrizzleDb = getDb()): Promise<LlmRuntime | null> {
+export async function getBackgroundRuntime(db: StoreDb = getStoreDb()): Promise<LlmRuntime | null> {
   return toBackgroundRuntime(db, await getSettingsRecord(db));
 }
 
 /** The background resolver behind {@link getBackgroundRuntime}, shared with the probe. */
 async function toBackgroundRuntime(
-  db: DrizzleDb,
+  db: StoreDb,
   record: SettingsRecord | null,
 ): Promise<LlmRuntime | null> {
   return toInheritingRuntime(db, record, "backgroundModel", "backgroundBackendId");
@@ -454,7 +425,7 @@ async function toBackgroundRuntime(
  * Server-only: the operator timezone (IANA name, defaulting to `UTC`). Used by
  * the tasks feature to interpret wall-clock schedules.
  */
-export async function getTimezone(db: DrizzleDb = getDb()): Promise<string> {
+export async function getTimezone(db: StoreDb = getStoreDb()): Promise<string> {
   return (await getSettingsRecord(db))?.timezone ?? "UTC";
 }
 
@@ -467,7 +438,7 @@ export const DEFAULT_DAILY_JOBS_RUN_TIME = "04:00";
  * future nightly job. One setting for all of them (user decision): they share the
  * same reason for running overnight, so they share the window.
  */
-export async function getDailyJobsRunTime(db: DrizzleDb = getDb()): Promise<string> {
+export async function getDailyJobsRunTime(db: StoreDb = getStoreDb()): Promise<string> {
   return (await getSettingsRecord(db))?.dailyJobsRunTime ?? DEFAULT_DAILY_JOBS_RUN_TIME;
 }
 
@@ -480,17 +451,9 @@ export const DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB = 10;
  * Purely a disk guard; it never picks a lower quality. Read at call time so a
  * change applies without a restart.
  */
-export async function getBrowserDownloadLimitBytes(db: DrizzleDb = getDb()): Promise<number> {
+export async function getBrowserDownloadLimitBytes(db: StoreDb = getStoreDb()): Promise<number> {
   const gb = (await getSettingsRecord(db))?.browserDownloadLimitGb ?? DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB;
   return gb * 1024 * 1024 * 1024;
-}
-
-/**
- * Server-only: the active personality's id, or null when none is chosen. Used by
- * the personalities feature to resolve the persona composed into replies.
- */
-export async function getActivePersonalityId(db: DrizzleDb = getDb()): Promise<string | null> {
-  return (await getSettingsRecord(db))?.activePersonalityId ?? null;
 }
 
 /**
@@ -507,7 +470,7 @@ export interface BotPolicy {
 }
 
 /** Server-only: read the maintenance policy. Cheap enough to run per message. */
-export async function getBotPolicy(db: DrizzleDb = getDb()): Promise<BotPolicy> {
+export async function getBotPolicy(db: StoreDb = getStoreDb()): Promise<BotPolicy> {
   const record = await getSettingsRecord(db);
   return {
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
@@ -574,12 +537,6 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   if (input.browserDownloadLimitGb !== undefined) {
     patch.browserDownloadLimitGb = input.browserDownloadLimitGb;
   }
-  return patch;
-}
-
-/** The half of a validated update that belongs to the v2 core store. */
-function toStorePatch(input: UpdateSettings): StoreSettingsPatch {
-  const patch: StoreSettingsPatch = {};
   if (input.assistantLoopGuardTurns !== undefined) {
     patch.assistantLoopGuardTurns = input.assistantLoopGuardTurns;
   }
@@ -601,7 +558,7 @@ function isValidIanaTimezone(timeZone: string): boolean {
  * deleted id would otherwise surface later as an FK error (or, worse for the
  * operator, a role silently resolving to nothing).
  */
-async function validateBackendIds(db: DrizzleDb, patch: SettingsPatch): Promise<void> {
+async function validateBackendIds(db: StoreDb, patch: SettingsPatch): Promise<void> {
   for (const { backendKey } of ROLE_FIELDS) {
     const id = patch[backendKey];
     if (id === undefined || id === null) continue;
@@ -655,7 +612,7 @@ function effective<K extends RoleBackendKey | RoleModelKey>(
  * Mutates `patch`; returns human labels of what was cleared.
  */
 async function clearStaleModelSelections(
-  db: DrizzleDb,
+  db: StoreDb,
   before: SettingsRecord | null,
   patch: SettingsPatch,
   trace: TraceRecorder,
@@ -735,7 +692,7 @@ async function clearStaleModelSelections(
 export async function clearRoleModelsNotServed(
   backend: BackendRecord,
   trace: TraceRecorder,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<string[]> {
   const record = await getSettingsRecord(db);
   if (!record) return [];
@@ -787,7 +744,7 @@ export async function clearRoleModelsNotServed(
 export async function updateSettings(
   input: UpdateSettings,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Settings> {
   const fields = Object.keys(input);
   return withTrace(
@@ -804,18 +761,6 @@ export async function updateSettings(
       );
       const record = await upsertSettings(db, patch);
       await trace.event({ type: "db", message: "settings row upserted" });
-      // The store-owned half (fields with no v1 column — see
-      // `store-repository.ts`). Unlike the read path this does NOT fall back:
-      // a save the operator watched must never report success it did not
-      // achieve.
-      const storePatch = toStorePatch(input);
-      let store: StoreSettingsRecord;
-      if (Object.keys(storePatch).length > 0) {
-        store = await upsertStoreSettings(storePatch);
-        await trace.event({ type: "db", message: "core store settings row upserted" });
-      } else {
-        store = await readStoreSettings();
-      }
       await trace.succeed({
         outputSummary:
           cleared.length > 0
@@ -823,7 +768,7 @@ export async function updateSettings(
             : `Updated ${fields.join(", ")}`,
         relatedIds: { [FEATURE.relatedIdsKey]: [SETTINGS_ID] },
       });
-      return toClientSettings(record, store);
+      return toClientSettings(record);
     },
   );
 }
@@ -877,7 +822,7 @@ const CHAT_PROBE_PROMPT = "In one short sentence, what is the capital of France 
 export async function testChat(
   input: TestRoleConnection,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
@@ -995,7 +940,7 @@ function dataUrlByteLength(dataUrl: string): number {
 export async function testEmbeddings(
   input: TestRoleConnection,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
@@ -1051,7 +996,7 @@ export async function testEmbeddings(
 export async function testImages(
   input: TestRoleConnection,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
@@ -1112,7 +1057,7 @@ function pngDataUrl(base64: string): string {
 export async function testSpeech(
   input: TestRoleConnection,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
@@ -1178,7 +1123,7 @@ export async function testSpeech(
 export async function testAudio(
   input: TestAudioConnection,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
@@ -1267,7 +1212,7 @@ const TRANSCRIPTION_MODE_LABELS: Record<"transcriptions" | "chat", string> = {
 export async function testVision(
   input: TestRoleConnection,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
@@ -1362,7 +1307,7 @@ const BROWSER_PROBE_TOOL = {
 export async function testBrowser(
   input: TestRoleConnection,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
@@ -1482,7 +1427,7 @@ const CLASSIFIER_PROBE_MESSAGE = "Zylbot, can you check the schedule for tomorro
 export async function testClassifier(
   input: TestRoleConnection,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
@@ -1609,7 +1554,7 @@ const BACKGROUND_PROBE_TRANSCRIPT: SummarizableMessage[] = [
 export async function testBackground(
   input: TestRoleConnection,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ProbeReport> {
   const record = await getSettingsRecord(db);
   const merged = mergeRoleInput(record, input, {
@@ -1708,16 +1653,11 @@ const EMPTY_RECORD: SettingsRecord = {
   backgroundModel: null,
   browserBackendId: null,
   browserModel: null,
-  activePersonalityId: null,
-  telegramBotToken: null,
   tavilyApiKey: null,
-  ownerUsername: null,
-  ownerUserId: null,
   maintenanceModeEnabled: false,
+  assistantLoopGuardTurns: 3,
   timezone: "UTC",
   dailyJobsRunTime: DEFAULT_DAILY_JOBS_RUN_TIME,
   browserDownloadLimitGb: DEFAULT_BROWSER_DOWNLOAD_LIMIT_GB,
-  operatorPasswordHash: null,
-  sessionSecret: null,
   updatedAt: null,
 };

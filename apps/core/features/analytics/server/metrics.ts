@@ -62,9 +62,8 @@ const TOP_USERS = 10;
 /** The context every card's payload echoes back, plus the resolved instant range. */
 async function resolvePeriod(
   query: MetricsQuery,
-  db: DrizzleDb,
 ): Promise<{ ctx: MetricContext; range: { startUtc: Date; endUtc: Date }; scope: MetricScope }> {
-  const timezone = await getTimezone(db);
+  const timezone = await getTimezone();
   const chatId = query.chatId ?? null;
   const userId = query.userId ?? null;
   // The anchor is resolved against the **operator** timezone, never the browser's:
@@ -86,11 +85,8 @@ async function resolvePeriod(
 }
 
 /** The traffic tiles for one card's filters — the bot's workload, read from traces. */
-export async function getMetricTotals(
-  query: MetricsQuery,
-  db: DrizzleDb = getDb(),
-): Promise<TotalsPayload> {
-  const { ctx, scope } = await resolvePeriod(query, db);
+export async function getMetricTotals(query: MetricsQuery): Promise<TotalsPayload> {
+  const { ctx, scope } = await resolvePeriod(query);
   // One store scan feeds both readings — they used to scan independently.
   const traces = await scanScopeTraces(scope);
   const traffic = trafficTotalsFrom(traces, scope);
@@ -194,18 +190,15 @@ export async function getSeries(
   db: DrizzleDb = getDb(),
   content?: SourceContentClient,
 ): Promise<SeriesPayload> {
-  const { ctx, scope } = await resolvePeriod(query, db);
+  const { ctx, scope } = await resolvePeriod(query);
   const buckets = subBucketKeys(ctx.unit, ctx.anchor);
   const { series, yMax } = await seriesFor(query.section, db, ctx, scope, buckets, content);
   return { ...ctx, section: query.section, bucketUnit: subUnitOf(ctx.unit), buckets, series, yMax };
 }
 
 /** Model performance for one period, from the trace files. */
-export async function getModels(
-  query: MetricsQuery,
-  db: DrizzleDb = getDb(),
-): Promise<ModelsPayload> {
-  const { ctx, scope } = await resolvePeriod(query, db);
+export async function getModels(query: MetricsQuery): Promise<ModelsPayload> {
+  const { ctx, scope } = await resolvePeriod(query);
   const rows = usageRowsFrom(await scanScopeTraces(scope), scope);
   return { ...ctx, models: buildModelStats(rows) };
 }
@@ -216,7 +209,7 @@ export async function getTopUsersCard(
   db: DrizzleDb = getDb(),
   content?: SourceContentClient,
 ): Promise<TopUsersPayload> {
-  const { ctx, scope } = await resolvePeriod(query, db);
+  const { ctx, scope } = await resolvePeriod(query);
   const rows = await getTopUsers(content ?? requireSourceContent(), {
     startUtc: scope.startUtc,
     endUtc: scope.endUtc,
@@ -299,7 +292,7 @@ export async function getPeriodInsightCard(
   query: InsightsQuery,
   db: DrizzleDb = getDb(),
 ): Promise<PeriodInsight | null> {
-  const timezone = await getTimezone(db);
+  const timezone = await getTimezone();
   const anchor = query.anchor ?? currentAnchor(query.unit, new Date(), timezone);
   const row = await getPeriodInsight(db, {
     granularity: query.unit,
@@ -340,7 +333,7 @@ export async function getAvailability(
   db: DrizzleDb = getDb(),
   content?: SourceContentClient,
 ): Promise<string[]> {
-  const timezone = await getTimezone(db);
+  const timezone = await getTimezone();
   const startUtc = periodRange(query.unit, query.from, timezone).startUtc;
   const endUtc = periodRange(query.unit, query.to, timezone).endUtc;
 

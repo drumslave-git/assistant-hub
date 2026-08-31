@@ -2,8 +2,8 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import type { StoreDb } from "@/server/store/db";
+import { getStoreDb } from "@/server/store/db";
 import { getSettingsRecord } from "@/features/settings/server/repository";
 import { clearRoleModelsNotServed } from "@/features/settings/server/service";
 import { ApiError } from "@/lib/api-error";
@@ -48,12 +48,12 @@ function toClient(record: BackendRecord): Backend {
 }
 
 /** All backends (oldest first), client-safe. */
-export async function getBackends(db: DrizzleDb = getDb()): Promise<Backend[]> {
+export async function getBackends(db: StoreDb = getStoreDb()): Promise<Backend[]> {
   return (await listBackends(db)).map(toClient);
 }
 
 /** One backend, client-safe, or null. */
-export async function getBackend(id: string, db: DrizzleDb = getDb()): Promise<Backend | null> {
+export async function getBackend(id: string, db: StoreDb = getStoreDb()): Promise<Backend | null> {
   const record = await getBackendById(db, id);
   return record ? toClient(record) : null;
 }
@@ -64,7 +64,7 @@ export async function getBackend(id: string, db: DrizzleDb = getDb()): Promise<B
  * context on the Backends page. Roles that merely inherit the chat backend are
  * not listed: they follow whatever chat points at, and chat itself is.
  */
-export async function rolesUsingBackend(id: string, db: DrizzleDb = getDb()): Promise<string[]> {
+export async function rolesUsingBackend(id: string, db: StoreDb = getStoreDb()): Promise<string[]> {
   const record = await getSettingsRecord(db);
   if (!record) return [];
   const refs: Array<[string | null, string]> = [
@@ -91,7 +91,7 @@ function redact(input: CreateBackend | UpdateBackend): Record<string, unknown> {
 export async function createBackend(
   input: CreateBackend,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Backend> {
   return withTrace(
     { feature: FEATURE.id, action: "create", trigger, inputSummary: input.name },
@@ -129,7 +129,7 @@ export async function editBackend(
   id: string,
   input: UpdateBackend,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<{ backend: Backend; clearedModels: string[] }> {
   return withTrace(
     { feature: FEATURE.id, action: "update", trigger, inputSummary: `backend ${id}` },
@@ -175,7 +175,7 @@ export async function editBackend(
 export async function removeBackend(
   id: string,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<void> {
   return withTrace(
     { feature: FEATURE.id, action: "delete", trigger, inputSummary: `backend ${id}` },
@@ -203,7 +203,7 @@ export async function removeBackend(
 export async function testBackend(
   input: TestBackend,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<{ models: string[] }> {
   const stored = input.backendId ? await getBackendById(db, input.backendId) : null;
   if (input.backendId && !stored) throw ApiError.notFound("Unknown backend");
@@ -230,7 +230,7 @@ export async function testBackend(
  */
 export async function listBackendModels(
   backendId: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<{ models: string[] }> {
   const record = await getBackendById(db, backendId);
   if (!record) throw ApiError.notFound("Unknown backend");
@@ -248,7 +248,7 @@ export async function listBackendModels(
  * an empty list (never throws).
  */
 export async function preloadBackendModels(
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Record<string, string[]>> {
   const records = await listBackends(db);
   const entries = await Promise.all(

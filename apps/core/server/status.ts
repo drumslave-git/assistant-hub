@@ -2,7 +2,7 @@ import "server-only";
 
 import { sql } from "drizzle-orm";
 
-import { getDb, type DrizzleDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import type { LlmBackendId } from "@/lib/llm-backend";
 import {
   getDownloadStorageHealth,
@@ -104,7 +104,7 @@ export interface ConfigReadiness {
  * probe — that would run on every page). "Configured" means an endpoint and a
  * model are saved; the Overview page does the live reachability check.
  */
-export async function getConfigReadiness(db: DrizzleDb = getDb()): Promise<ConfigReadiness> {
+export async function getConfigReadiness(db: StoreDb = getStoreDb()): Promise<ConfigReadiness> {
   try {
     const settings = await getSettingsRecord(db);
     const configured = Boolean(settings?.chatBackendId && settings?.model);
@@ -164,7 +164,7 @@ const TRANSCRIPTION_PROBE_TIMEOUT_MS = 6_000;
  * real call is the only honest check (same reasoning as the Settings probe).
  */
 async function probeTranscriptionEndpoint(
-  db: DrizzleDb,
+  db: StoreDb,
   chatFallback: UnprobedStatus,
 ): Promise<EndpointStatus> {
   const id = "audio" as const;
@@ -193,7 +193,7 @@ async function probeTranscriptionEndpoint(
 }
 
 /** Every optional endpoint's live status, probed concurrently. */
-async function probeOptionalEndpoints(db: DrizzleDb): Promise<EndpointStatus[]> {
+async function probeOptionalEndpoints(db: StoreDb): Promise<EndpointStatus[]> {
   // The chat-fallback roles (vision, browser agent, voice transcription) are
   // probed only when the operator gave them a model or backend of their own —
   // otherwise they resolve to exactly the chat connection the LLM card already
@@ -352,14 +352,14 @@ function statusCache(): { entry: StatusCacheEntry | null } {
  * share one sweep, and a render within {@link STATUS_CACHE_TTL_MS} reuses the
  * last one. A caller passing its own `db` (tests) always probes fresh.
  */
-export async function getSystemStatus(db?: DrizzleDb): Promise<SystemStatus> {
+export async function getSystemStatus(db?: StoreDb): Promise<SystemStatus> {
   if (db) return probeSystemStatus(db);
   const cache = statusCache();
   const now = Date.now();
   if (cache.entry && now - cache.entry.at < STATUS_CACHE_TTL_MS) {
     return cache.entry.promise;
   }
-  const promise = probeSystemStatus(getDb()).catch((err: unknown) => {
+  const promise = probeSystemStatus(getStoreDb()).catch((err: unknown) => {
     // A failed sweep must not serve stale for the whole window — retry next read.
     cache.entry = null;
     throw err;
@@ -369,7 +369,7 @@ export async function getSystemStatus(db?: DrizzleDb): Promise<SystemStatus> {
 }
 
 /** The uncached probe sweep behind {@link getSystemStatus}. */
-async function probeSystemStatus(db: DrizzleDb): Promise<SystemStatus> {
+async function probeSystemStatus(db: StoreDb): Promise<SystemStatus> {
   // Both write paths are independent of the DB — probe them first so a DB outage
   // cannot hide a dying volume (each is surfaced on its own), and concurrently
   // since neither touches the other's directory.
@@ -456,7 +456,7 @@ export interface HealthReport {
  * omits the live LLM probe so healthchecks stay fast and don't flap on an
  * external endpoint blip.
  */
-export async function getHealth(db: DrizzleDb = getDb()): Promise<HealthReport> {
+export async function getHealth(db: StoreDb = getStoreDb()): Promise<HealthReport> {
   let database: HealthReport["database"];
   try {
     await db.execute(sql`SELECT 1`);

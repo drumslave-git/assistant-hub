@@ -12,7 +12,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import * as storeSchema from "../../../store/schema";
 import { tryGetToolContext } from "@/server/mcp/context";
 import { closePool } from "@/db/pool";
-import type { StoreDb } from "@/server/store/db";
+import { resetEnvCache } from "@/server/env";
+import { closeStorePool, type StoreDb } from "@/server/store/db";
 
 import { MAX_ONE_SHOT_ATTEMPTS } from "../types";
 import { getTaskById } from "./repository";
@@ -27,7 +28,6 @@ import { createTaskService, getTask } from "./service";
  * that a fire's deliveries come only from the `deliver` binding.
  */
 
-const V1_MIGRATIONS = fileURLToPath(new URL("../../../db/migrations", import.meta.url));
 const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
 
 let pg: TestPostgres;
@@ -38,17 +38,17 @@ const ctx = { get db() { return db; } };
 beforeAll(async () => {
   pg = await startTestPostgres();
   const url = await pg.createDatabase("tasks_scheduler_store");
-  // Settings (timezone) still read the v1 database through the app pool.
-  const v1Url = await pg.createDatabase("tasks_scheduler_v1");
   await applyMigrations(url, STORE_MIGRATIONS);
-  await applyMigrations(v1Url, V1_MIGRATIONS);
-  process.env.DATABASE_URL = v1Url;
+  // Settings (timezone) read the core store since the Phase 10 flip.
+  process.env.STORE_DATABASE_URL = url;
+  resetEnvCache();
   pool = new Pool({ connectionString: url });
   db = drizzle(pool, { schema: storeSchema }) as StoreDb;
 });
 
 afterAll(async () => {
   await pool?.end();
+  await closeStorePool();
   await closePool();
   await pg?.stop();
 });

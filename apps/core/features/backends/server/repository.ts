@@ -2,14 +2,14 @@ import "server-only";
 
 import { asc, eq, ne, sql } from "drizzle-orm";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { backends, type BackendRow } from "@/db/schema";
+import type { StoreDb } from "@/server/store/db";
+import { backends, type BackendRow } from "../../../store/schema";
 import { type LlmBackendId, toLlmBackendId } from "@/lib/llm-backend";
 
 /**
  * Typed persistence for the backends catalog. Pure data access: no policy, no
  * validation, no trace recording (the service owns those). Every function takes
- * a {@link DrizzleDb} so it runs against the pool or a test instance.
+ * a {@link StoreDb} so it runs against the pool or a test instance.
  *
  * Records include the raw API key — callers must never return it to clients.
  */
@@ -49,9 +49,9 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-const cache = new WeakMap<DrizzleDb, CacheEntry>();
+const cache = new WeakMap<StoreDb, CacheEntry>();
 
-function invalidate(db: DrizzleDb): void {
+function invalidate(db: StoreDb): void {
   cache.delete(db);
 }
 
@@ -71,7 +71,7 @@ function mapRow(row: BackendRow): BackendRecord {
 }
 
 /** All backends, oldest first (stable creation order). Cached briefly. */
-export async function listBackends(db: DrizzleDb): Promise<BackendRecord[]> {
+export async function listBackends(db: StoreDb): Promise<BackendRecord[]> {
   const cached = cache.get(db);
   if (cached && cached.expiresAt > Date.now()) return cached.records;
   const rows = await db.query.backends.findMany({ orderBy: [asc(backends.createdAt)] });
@@ -81,7 +81,7 @@ export async function listBackends(db: DrizzleDb): Promise<BackendRecord[]> {
 }
 
 /** One backend by id, or null. Served from the same cached listing. */
-export async function getBackendById(db: DrizzleDb, id: string): Promise<BackendRecord | null> {
+export async function getBackendById(db: StoreDb, id: string): Promise<BackendRecord | null> {
   return (await listBackends(db)).find((b) => b.id === id) ?? null;
 }
 
@@ -90,7 +90,7 @@ export async function getBackendById(db: DrizzleDb, id: string): Promise<Backend
  * id (for renames). Names are unique per operator convenience, not by DB
  * constraint, so this check is the source of truth.
  */
-export async function isNameTaken(db: DrizzleDb, name: string, exceptId?: string): Promise<boolean> {
+export async function isNameTaken(db: StoreDb, name: string, exceptId?: string): Promise<boolean> {
   const lowerMatch = sql`lower(${backends.name}) = lower(${name})`;
   const where = exceptId ? sql`${lowerMatch} and ${ne(backends.id, exceptId)}` : lowerMatch;
   const rows = await db.select({ id: backends.id }).from(backends).where(where).limit(1);
@@ -99,7 +99,7 @@ export async function isNameTaken(db: DrizzleDb, name: string, exceptId?: string
 
 /** Insert a backend with an app-generated id. Returns the stored record. */
 export async function insertBackend(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
   values: BackendValues,
 ): Promise<BackendRecord> {
@@ -114,7 +114,7 @@ export async function insertBackend(
 
 /** Apply a patch to one backend. Returns the updated record, or null if unknown. */
 export async function updateBackend(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
   patch: Partial<BackendValues>,
 ): Promise<BackendRecord | null> {
@@ -128,7 +128,7 @@ export async function updateBackend(
 }
 
 /** Delete one backend. Returns true if a row was removed. */
-export async function deleteBackend(db: DrizzleDb, id: string): Promise<boolean> {
+export async function deleteBackend(db: StoreDb, id: string): Promise<boolean> {
   const rows = await db.delete(backends).where(eq(backends.id, id)).returning({ id: backends.id });
   invalidate(db);
   return rows.length > 0;

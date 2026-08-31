@@ -12,6 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import * as storeSchema from "../../../store/schema";
 import * as v1Schema from "@/db/schema";
+import { resetEnvCache } from "@/server/env";
 import { closePool } from "@/db/pool";
 import type { DrizzleDb } from "@/db/drizzle";
 import {
@@ -20,7 +21,7 @@ import {
 } from "@/features/known-groups/server/repository";
 import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { listTraces } from "@/server/trace";
-import type { StoreDb } from "@/server/store/db";
+import { closeStorePool, type StoreDb } from "@/server/store/db";
 
 import { insertTask } from "./repository";
 import { MAX_PROMPT_TASKS_PER_SCOPE, type UpdateTaskInput } from "./schema";
@@ -73,6 +74,9 @@ beforeAll(async () => {
   await applyMigrations(v1Url, V1_MIGRATIONS);
   await applyMigrations(storeUrl, STORE_MIGRATIONS);
   process.env.DATABASE_URL = v1Url;
+  // Settings (timezone) read the core store since the Phase 10 flip.
+  process.env.STORE_DATABASE_URL = storeUrl;
+  resetEnvCache();
   v1Pool = new Pool({ connectionString: v1Url });
   storePool = new Pool({ connectionString: storeUrl });
   v1Db = drizzle(v1Pool, { schema: v1Schema }) as DrizzleDb;
@@ -82,6 +86,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await storePool?.end();
   await v1Pool?.end();
+  await closeStorePool();
   await closePool();
   await pg?.stop();
 });
