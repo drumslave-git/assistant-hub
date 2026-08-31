@@ -13,4 +13,4 @@ export const POST = defineRoute(async ({ request }) => {
   const input = await parseJson(request, loginSchema);
   const { token } = await loginAccount(input, { kind: "dashboard" });
   return ok({ ok: true }, { headers: { "set-cookie": sessionCookie(token) } });
-}, { auth: false });
+}, { access: "public" });

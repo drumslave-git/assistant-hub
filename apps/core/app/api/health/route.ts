@@ -33,4 +33,4 @@ export const GET = defineRoute(async () => {
     },
     { status: health.ready ? 200 : 503 },
   );
-}, { auth: false });
+}, { access: "public" });

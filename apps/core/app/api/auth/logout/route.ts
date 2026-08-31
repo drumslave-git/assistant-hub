@@ -7,4 +7,4 @@ import { defineRoute, ok } from "@/server/http";
  */
 export const POST = defineRoute(async () => {
   return ok({ ok: true }, { headers: { "set-cookie": clearedSessionCookie() } });
-}, { auth: false });
+}, { access: "public" });

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
-import { changeAccountPassword, requireAccount, sessionCookie } from "@/server/auth";
+import { changeAccountPassword, sessionCookie } from "@/server/auth";
 import { defineRoute, ok, parseJson } from "@/server/http";
 
 /**
@@ -18,15 +18,19 @@ const changePasswordSchema = z.object({
   newPassword: z.string().min(1),
 });
 
-export const POST = defineRoute(async ({ request }) => {
-  const account = await requireAccount(request);
-  if (!account) throw ApiError.unauthorized("Sign in to change the password");
-  const input = await parseJson(request, changePasswordSchema);
-  const { token } = await changeAccountPassword(
-    account.id,
-    input.currentPassword,
-    input.newPassword,
-    { kind: "dashboard" },
-  );
-  return ok({ ok: true }, { headers: { "set-cookie": sessionCookie(token) } });
-});
+export const POST = defineRoute(
+  async ({ request, account }) => {
+    if (!account) throw ApiError.unauthorized("Sign in to change the password");
+    const input = await parseJson(request, changePasswordSchema);
+    const { token } = await changeAccountPassword(
+      account.id,
+      input.currentPassword,
+      input.newPassword,
+      { kind: "dashboard" },
+    );
+    return ok({ ok: true }, { headers: { "set-cookie": sessionCookie(token) } });
+  },
+  // Any account may change its own password — including one still holding
+  // its admin-issued temporary password (this is where it gets replaced).
+  { access: "account", allowTemporaryPassword: true },
+);

@@ -8,10 +8,14 @@ import {
   Settings as SettingsIcon,
   Users,
 } from "lucide-react";
+import { cookies } from "next/headers";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { cache, Suspense } from "react";
 
 import { TraceList } from "@/components/debug";
+import { SESSION_COOKIE } from "@/lib/auth";
+import { judgeSessionToken } from "@/server/auth";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { Timestamp } from "@/components/time/Timestamp";
 import {
@@ -124,7 +128,13 @@ function groupSummary(items: StatusItem[]): { text: string; tone: "error" | "war
  * as its own reads finish, so a slow LLM probe delays the status card — never
  * the whole page (operator report, 2026-08-15: Overview load too long).
  */
-export default function OverviewPage() {
+export default async function OverviewPage() {
+  // The Overview is the admin landing; a user-role account's home is the web
+  // chat (Phase 8). Everything below stays admin-shaped.
+  const token = (await cookies()).get(SESSION_COOKIE)?.value ?? null;
+  const verdict = await judgeSessionToken(token).catch(() => ({ kind: "db-down" }) as const);
+  if (verdict.kind === "ok" && verdict.account.role !== "admin") redirect("/chat");
+
   return (
     <>
       <PageHeader

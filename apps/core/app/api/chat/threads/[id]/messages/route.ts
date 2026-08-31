@@ -40,4 +40,4 @@ const postSchema = z
 export const POST = defineRoute(async ({ request, params }) => {
   const input = await parseJson(request, postSchema);
   return ok(await postChatMessage(params.id, input));
-});
+}, { access: "account" });

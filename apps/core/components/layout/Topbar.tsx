@@ -6,6 +6,7 @@ import { Suspense } from "react";
 import { Button } from "@/components/ui/Button";
 import { SearchBox } from "@/components/search/SearchBox";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
+import type { ShellAccount } from "./AppShell";
 
 /**
  * Sticky dashboard top bar: mobile menu trigger, message search, and actions.
@@ -16,7 +17,13 @@ import { ThemeToggle } from "@/components/theme/ThemeToggle";
  * surface) and there are no user accounts to have a profile for, only the one
  * password-holding operator whose sign-out is already its own button.
  */
-export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
+export function Topbar({
+  onMenuClick,
+  account,
+}: {
+  onMenuClick: () => void;
+  account: ShellAccount;
+}) {
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur-md md:px-6">
       <Button
@@ -33,11 +40,17 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
           dashboard layout, so without it every statically rendered page under
           that layout would fail the production build. The fallback is the same
           box, merely unseeded. */}
-      <Suspense fallback={<SearchBox className={SEARCH_BOX_CLASS} />}>
-        <TopbarSearch />
-      </Suspense>
+      {/* Message search reads the whole archive - an admin surface. */}
+      {account.role === "admin" ? (
+        <Suspense fallback={<SearchBox className={SEARCH_BOX_CLASS} />}>
+          <TopbarSearch />
+        </Suspense>
+      ) : null}
 
       <div className="flex flex-1 items-center justify-end gap-1">
+        <span className="hidden truncate px-2 text-sm text-muted sm:inline" title={account.displayName}>
+          {account.displayName}
+        </span>
         <ThemeToggle />
         <SignOutButton />
       </div>

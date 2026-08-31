@@ -22,4 +22,4 @@ export const POST = defineRoute(async ({ request }) => {
   const input = await parseJson(request, setupSchema);
   const { token } = await setupFirstAdmin(input, { kind: "dashboard" });
   return ok({ ok: true }, { headers: { "set-cookie": sessionCookie(token) } });
-}, { auth: false });
+}, { access: "public" });

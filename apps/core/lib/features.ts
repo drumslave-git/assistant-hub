@@ -185,11 +185,20 @@ export const FEATURES = {
     group: "system",
     path: "/debug",
   },
-  /** Operator authentication (setup/login) — every attempt is traced. */
+  /** Account authentication (setup/login/password) — every attempt is traced. */
   auth: {
     id: "auth",
     label: "Auth",
     group: "system",
+  },
+  /** Account management (Phase 8): admin-created accounts, roles, activation. */
+  accounts: {
+    id: "accounts",
+    label: "Accounts",
+    group: "system",
+    realtimeTopic: "accounts",
+    relatedIdsKey: "accounts",
+    path: "/accounts",
   },
   "user-feedback": {
     id: "user-feedback",

@@ -13,14 +13,14 @@ const renameSchema = z.object({ name: z.string().trim().min(1).max(120) });
 
 export const GET = defineRoute(async ({ params }) => {
   return ok(await getChatThread(params.id));
-});
+}, { access: "account" });
 
 export const PATCH = defineRoute(async ({ request, params }) => {
   const { name } = await parseJson(request, renameSchema);
   return ok({ thread: await renameChatThread(params.id, name) });
-});
+}, { access: "account" });
 
 export const DELETE = defineRoute(async ({ params }) => {
   await deleteChatThread(params.id);
   return ok({ deleted: true });
-});
+}, { access: "account" });

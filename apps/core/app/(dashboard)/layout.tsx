@@ -33,6 +33,12 @@ export default async function DashboardLayout({
   if (verdict.kind === "invalid") redirect("/login");
   // A temporary password holds the session at the change form (Phase 8).
   if (verdict.kind === "ok" && verdict.account.mustChangePassword) redirect("/password");
+  // Unconfigured never reaches here and db-down renders the status shell —
+  // both are the operator's situations, so the chrome falls back to admin.
+  const shellAccount =
+    verdict.kind === "ok"
+      ? { displayName: verdict.account.displayName, role: verdict.account.role }
+      : { displayName: "Operator", role: "admin" as const };
 
   const readiness = await getConfigReadiness();
   // The poller's live state (probed from the tg service, which owns it since
@@ -48,7 +54,7 @@ export default async function DashboardLayout({
 
   return (
     <TimezoneProvider timezone={timezone}>
-      <AppShell botStatus={{ ...readiness, bot }}>
+      <AppShell botStatus={{ ...readiness, bot }} account={shellAccount}>
         {/* Global data-loss alerts render above every page; see SystemAlerts. */}
         <SystemAlerts />
         {children}

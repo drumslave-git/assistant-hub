@@ -7,6 +7,7 @@ import {
   CalendarClock,
   Globe,
   Image,
+  KeyRound,
   LayoutDashboard,
   MessageSquare,
   MessagesSquare,
@@ -33,6 +34,8 @@ export interface NavItem {
 export interface NavGroup {
   label?: string;
   items: NavItem[];
+  /** Groups a user-role account never sees (Phase 8); default true. */
+  adminOnly?: boolean;
 }
 
 /**
@@ -82,17 +85,26 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
     label: "System",
     items: [
       { href: "/backends", label: "Backends", icon: Server },
+      { href: "/accounts", label: "Accounts", icon: KeyRound },
       { href: "/settings", label: "Settings", icon: Settings },
       { href: "/debug", label: "Debug", icon: Bug },
     ],
   },
   {
     // The shell's own since the chat dissolve (Phase 6); kept in the spot
-    // the chat app's extension used to render it.
+    // the chat app's extension used to render it. The one group every
+    // account sees - the web chat is the user role's whole surface.
     label: "Web chat",
+    adminOnly: false,
     items: [{ href: "/chat", label: "Chat", icon: MessagesSquare }],
   },
 ];
 
-/** What the sidebar renders. */
+/** What the sidebar renders for a given account role. */
+export function navGroupsForRole(role: "admin" | "user"): NavGroup[] {
+  if (role === "admin") return SHELL_NAV_GROUPS;
+  return SHELL_NAV_GROUPS.filter((group) => group.adminOnly === false);
+}
+
+/** What the sidebar renders (admin view; prefer {@link navGroupsForRole}). */
 export const NAV_GROUPS: NavGroup[] = SHELL_NAV_GROUPS;

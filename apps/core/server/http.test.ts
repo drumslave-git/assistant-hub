@@ -4,12 +4,23 @@ import { z } from "zod";
 import { ApiError } from "@/lib/api-error";
 import { defineRoute, ok, parseJson, parseQuery, toApiError } from "@/server/http";
 
-// defineRoute checks the operator session (a DB read) on every non-public
-// route; these unit tests exercise the wrapper's own machinery, so the check is
-// stubbed and asserted separately below.
-const requireOperatorMock = vi.fn<(request: Request) => Promise<void>>(async () => undefined);
+// defineRoute resolves the session to its account (a DB read) on every
+// non-public route; these unit tests exercise the wrapper's own machinery, so
+// the check is stubbed and asserted separately below.
+import type { RouteAccount } from "@/server/http";
+
+const adminAccount: RouteAccount = {
+  id: "acct-admin",
+  username: "boss",
+  displayName: "boss",
+  role: "admin",
+  mustChangePassword: false,
+};
+const requireAccountMock = vi.fn<(request: Request) => Promise<RouteAccount | null>>(
+  async () => adminAccount,
+);
 vi.mock("@/server/auth/service", () => ({
-  requireOperator: (request: Request) => requireOperatorMock(request),
+  requireAccount: (request: Request) => requireAccountMock(request),
 }));
 
 function jsonRequest(body: unknown, url = "http://test/api"): Request {
@@ -107,21 +118,59 @@ describe("defineRoute", () => {
   });
 
   it("answers 401 when the session check rejects, without running the body", async () => {
-    requireOperatorMock.mockRejectedValueOnce(ApiError.unauthorized("Sign in"));
+    requireAccountMock.mockRejectedValueOnce(ApiError.unauthorized("Sign in"));
     const body = vi.fn(async () => ok({}));
     const res = await defineRoute(body)(new Request("http://test/api"));
     expect(res.status).toBe(401);
     expect(body).not.toHaveBeenCalled();
   });
 
-  it("skips the session check only when a route opts out with auth: false", async () => {
-    requireOperatorMock.mockClear();
-    const open = defineRoute(async () => ok({ open: true }), { auth: false });
+  it("skips the session check only on access: public routes", async () => {
+    requireAccountMock.mockClear();
+    const open = defineRoute(async () => ok({ open: true }), { access: "public" });
     expect((await open(new Request("http://test/api"))).status).toBe(200);
-    expect(requireOperatorMock).not.toHaveBeenCalled();
+    expect(requireAccountMock).not.toHaveBeenCalled();
 
     const gated = defineRoute(async () => ok({}));
     await gated(new Request("http://test/api"));
-    expect(requireOperatorMock).toHaveBeenCalledOnce();
+    expect(requireAccountMock).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a user-role account on the admin default, allows it on access: account", async () => {
+    const user: RouteAccount = { ...adminAccount, id: "acct-user", role: "user" };
+    requireAccountMock.mockResolvedValueOnce(user);
+    const admin = defineRoute(async () => ok({}));
+    const denied = await admin(new Request("http://test/api"));
+    expect(denied.status).toBe(403);
+
+    requireAccountMock.mockResolvedValueOnce(user);
+    const shared = defineRoute(async ({ account }) => ok({ id: account?.id }), {
+      access: "account",
+    });
+    const allowed = await shared(new Request("http://test/api"));
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toEqual({ data: { id: "acct-user" } });
+  });
+
+  it("holds a temporary-password account out of every route except the exempted one", async () => {
+    const holder: RouteAccount = { ...adminAccount, mustChangePassword: true };
+    requireAccountMock.mockResolvedValueOnce(holder);
+    const normal = defineRoute(async () => ok({}), { access: "account" });
+    expect((await normal(new Request("http://test/api"))).status).toBe(403);
+
+    requireAccountMock.mockResolvedValueOnce(holder);
+    const exempt = defineRoute(async () => ok({}), {
+      access: "account",
+      allowTemporaryPassword: true,
+    });
+    expect((await exempt(new Request("http://test/api"))).status).toBe(200);
+  });
+
+  it("stays open while auth is unconfigured (fresh install): a null account passes", async () => {
+    requireAccountMock.mockResolvedValueOnce(null);
+    const handler = defineRoute(async ({ account }) => ok({ account }));
+    const res = await handler(new Request("http://test/api"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { account: null } });
   });
 });

@@ -13,12 +13,20 @@ import { Topbar } from "./Topbar";
  * width-constrained and padded consistently so every page shares the same
  * rhythm.
  */
+/** The signed-in account, as the shell chrome renders it. */
+export interface ShellAccount {
+  displayName: string;
+  role: "admin" | "user";
+}
+
 export function AppShell({
   children,
   botStatus,
+  account,
 }: {
   children: React.ReactNode;
   botStatus: BotStatus;
+  account: ShellAccount;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -36,7 +44,7 @@ export function AppShell({
     <div className="min-h-screen bg-background">
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-border bg-surface md:block">
-        <Sidebar botStatus={botStatus} />
+        <Sidebar botStatus={botStatus} role={account.role} />
       </aside>
 
       {/* Mobile drawer */}
@@ -72,13 +80,13 @@ export function AppShell({
           >
             <X className="h-5 w-5" />
           </Button>
-          <Sidebar botStatus={botStatus} onNavigate={() => setDrawerOpen(false)} />
+          <Sidebar botStatus={botStatus} role={account.role} onNavigate={() => setDrawerOpen(false)} />
         </div>
       </div>
 
       {/* Main column */}
       <div className="flex min-h-screen flex-col md:pl-64">
-        <Topbar onMenuClick={() => setDrawerOpen(true)} />
+        <Topbar onMenuClick={() => setDrawerOpen(true)} account={account} />
         {/* The generous bottom padding is for the floating action button: it is
             `fixed`, so without room reserved here it would sit on top of the
             last row of a table or the final field of a form. Reserved for every

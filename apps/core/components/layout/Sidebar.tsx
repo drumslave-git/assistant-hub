@@ -8,7 +8,7 @@ import { cn } from "@/lib/cn";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Timestamp } from "@/components/time/Timestamp";
-import { NAV_GROUPS, type NavItem } from "./nav-config";
+import { navGroupsForRole, type NavItem } from "./nav-config";
 
 /**
  * What the shell's Bot status card shows: cheap configuration readiness plus
@@ -88,9 +88,12 @@ function NavLink({
 /** Dashboard sidebar contents. Reused by the fixed desktop rail and the mobile drawer. */
 export function Sidebar({
   botStatus,
+  role = "admin",
   onNavigate,
 }: {
   botStatus: BotStatus;
+  /** Filters the nav and the bot-status footer (Phase 8 roles). */
+  role?: "admin" | "user";
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();
@@ -115,7 +118,7 @@ export function Sidebar({
 
       {/* Nav groups */}
       <nav className="flex-1 space-y-4 overflow-y-auto px-3 py-4">
-        {NAV_GROUPS.map((group, i) => (
+        {navGroupsForRole(role).map((group, i) => (
           <div key={group.label ?? i} className="space-y-0.5">
             {group.label ? (
               <div className="px-3 pb-1 text-[11px] font-semibold tracking-wider text-faint uppercase">
@@ -134,7 +137,9 @@ export function Sidebar({
         ))}
       </nav>
 
-      {/* Footer status card: the poller's live state once configured. */}
+      {/* Footer status card: the poller's live state once configured.
+          Operator information - the user role does not see it. */}
+      {role !== "admin" ? null : (
       <div className="p-3">
         <div className="rounded-xl border border-primary/30 bg-primary-soft p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -192,6 +197,7 @@ export function Sidebar({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
