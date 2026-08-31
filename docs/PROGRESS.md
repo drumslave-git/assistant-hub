@@ -166,11 +166,36 @@ live, standing rule). Left for the operator: sign in as 'admin' with
 the old password, create a user account and walk its forced password
 change, and send a link code from Telegram to see the confirmation.
 
-**Next best task: Phase 9 (user ownership)** — full-parity user
-assistants (persona, bot token, tasks, tools), user-owned MCP
-connections with the public-address guard, visibility scoping (own
-assistants' chats/threads/tasks/traces for user accounts), offboarding
-(deactivate keeps data / hard delete cascades). Write its acceptance
+**Phase 9 (user ownership) is DONE (2026-08-31, same session as 8).**
+All six slices landed, one commit per slice: tool connections gained
+owning accounts with the user restrictions (own assistants only, no
+app scope, public endpoints only — checked at create/update/discover/
+apply AND at call time, keyed to the OWNER's current role); the
+assistants, transport-connection, tasks, tool-connections and trace
+APIs opened to account level behind shared ownership helpers
+(`server/ownership.ts`), and the Assistants, Tasks, Tools, History and
+Debug pages left the `(admin)` group with role-scoped data and hidden
+operator chrome; users see the full raw-bodies trace explorer filtered
+to their own assistants' turns and the history of chats those
+assistants serve; offboarding: deactivation silences an account's
+assistants through computed checks (desired transport state, task
+fires, ingest fan-out — reactivation restores exactly), and hard
+delete is the second step of a deactivate-first two-step, cascading
+assistants (with lifecycle events), connections, threads, link codes,
+link membership and person memory. Two deliberate calls to know:
+a user's web-chat picker offers their OWN assistants only, and the
+"typed confirm" the criteria sketched became the stronger
+deactivate-first two-step. Proof: typecheck 8/8, lint clean, unit
+1175 core + 36 tg + 15 contracts, integration 419; migration 0012;
+live boot clean after every slice. `npm run build` NOT run (dev server
+live, standing rule). Left for the operator: one user-account walk
+(create assistant → connect a bot token → task → tool connection →
+activity/traces) and a deactivate/reactivate round trip.
+
+**Next best task: Phase 10 (cutover)** — rehearsed migration into the
+final shape (one store; the v1 import + tg-v1 import), runbook
+execution, rename to assistant-hub, release pipeline, docs rewrite
+(AGENTS.md describes v1 and must be updated). Write its acceptance
 criteria here when it starts.
 
 What Phase 4 deliberately did NOT do, so nobody mistakes it for
@@ -354,7 +379,7 @@ Known pitfalls for whoever starts:
 | 6 | Chat dissolve: apps/chat merges into core (store, backend, tools, pages) | done |
 | 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | done |
 | 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | done |
-| 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | in-progress |
+| 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | done |
 | 10 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
 
 Phases 0–5 describe the as-built per-app architecture that phases 6–9
@@ -382,7 +407,7 @@ Design fixed at open (user Q&A, 2026-08-31):
   owning account is inactive; nothing is mutated, so reactivation
   restores everything exactly as it was.
 
-- [ ] **A — connection ownership + the public-address guard.**
+- [x] **A — connection ownership + the public-address guard.**
       `tool_connections.owner_account_id` (existing rows → the first
       admin; cascade on account delete); creation stamps the acting
       account; a USER-owned connection may scope only to its owner's
@@ -392,23 +417,23 @@ Design fixed at open (user Q&A, 2026-08-31):
       update, discover, apply AND at call/connect time; the
       tool-connections API answers per role (users see and manage only
       their own; admin connections stay unrestricted).
-- [ ] **B — assistants + bot tokens for users.** The assistants API
+- [x] **B — assistants + bot tokens for users.** The assistants API
       filters listings by role and gates edit/delete by ownership; the
       transport-connection API (`/api/transports/...`) opens to
       account level with per-assistant ownership checks, so a user
       connects their own bot token with full parity; the assistants
       page leaves the `(admin)` group with role-aware chrome.
-- [ ] **C — tasks + tools for users.** The tasks API scopes listings
+- [x] **C — tasks + tools for users.** The tasks API scopes listings
       to owned assistants and gates mutations by the task's assistant;
       the tools page and the tasks page leave the `(admin)` group;
       users manage their own connections' toolsets (discover, apply,
       enable) under the same snapshot rules.
-- [ ] **D — activity scoping.** History (chats + web threads) filters
+- [x] **D — activity scoping.** History (chats + web threads) filters
       to conversations the account's own assistants serve; the trace
       list and trace detail answer only traces whose assistant the
       account owns (no-assistant traces stay admin-only); the debug
       explorer page leaves the `(admin)` group with the same scoping.
-- [ ] **E — offboarding.** Deactivating an account silences its
+- [x] **E — offboarding.** Deactivating an account silences its
       assistants everywhere (desired transport state, task fires,
       ingest fan-out — computed from `accounts.active`, announced to
       the transport so pollers stop); hard delete (admin-only, behind
@@ -417,7 +442,7 @@ Design fixed at open (user Q&A, 2026-08-31):
       fire), its tool connections, threads, link codes, its person-link
       membership and the memory documents under its linked identities;
       self-delete and the last admin are refused.
-- [ ] **F — proof.** Suites, lint, typecheck green; docs and PROGRESS
+- [x] **F — proof.** Suites, lint, typecheck green; docs and PROGRESS
       updated; live checks recorded or handed to the operator (a user
       account walking assistant + bot token + task + tool + activity,
       and a deactivate/reactivate round trip).
@@ -1864,6 +1889,30 @@ and stamps `senderIsOwner` on inbound events.
       and trace client land their tests.
 
 ## Session log
+- **2026-08-31 (Phase 9 closes: user ownership)** — Six slices in the
+  same session as Phase 8, and the phase was mostly one idea applied
+  everywhere: a shared `server/ownership.ts` (Actor, mayActOn,
+  ownedAssistantIds, requireAssistantOwnership, servedChatKeys,
+  visibleTraceScope, silencedAssistantIds) that every opened API and
+  every de-admined page resolves through, so the rules live once. The
+  scoping pattern held across five surfaces: assistants (create =
+  own, list = own for users, the web-chat picker included), bot-token
+  connections (per-assistant gates over the Phase 7 schema-driven
+  section), tasks (through the task's assistant; the chat picker
+  narrows to chats the user's assistants actually serve), tool
+  connections (Phase 9's own table change: owner_account_id, migration
+  0012 — with the user restrictions keyed to the owner's CURRENT role,
+  so an admin editing a user's row cannot walk it out of the rules,
+  and the public-address guard re-checked per turn at call time), and
+  traces (an assistantIdIn set filter composed into every facet;
+  unstamped traces are operator actions and stay admin-only). One
+  finding the tests caught: the first cut keyed the user-connection
+  restrictions to the ACTOR — the admin-edit test refused to pass
+  until they followed the owner. Offboarding closed the phase:
+  deactivation is computed (nothing mutated, reactivation exact), and
+  hard delete is deliberately the second step of deactivate-first —
+  stronger than the typed confirm the criteria sketched, and it
+  inherits the no-self/no-last-admin guards for free.
 - **2026-08-31 (Phase 8 closes: accounts)** — Six slices, six commits,
   and the single-operator era ends. The design calls settled at open
   (accounts join the person-link graph as their own web identity; the

@@ -135,7 +135,9 @@ run and report what is missing.
 
 The dashboard and its API are protected by **accounts** (username + password,
 hashed in the database — no env credential) with two roles: **admin** (the
-whole dashboard) and **user** (the web chat and their own profile/memory). On
+whole dashboard) and **user** (the web chat plus their own world: their own
+assistants with bot tokens, tasks, tool connections, activity and traces,
+their profile and the memory held about them). On
 first contact a fresh install forces the `/setup` page, which creates the
 first admin; every later visit signs in at `/login`. Sessions are signed
 cookies valid for 30 days, signed per account — a password change signs out
