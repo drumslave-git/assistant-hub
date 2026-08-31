@@ -205,6 +205,32 @@ describe("transport.message", () => {
     expect(byAssistant.get("anna")?.sender).toMatchObject({ ref: "tg:user:7", label: expect.stringContaining("Sam") });
   });
 
+  it("consumes a self-link code instead of opening a turn", async () => {
+    // A minted code waiting for redemption (Phase 8 self-link).
+    await pool.query(
+      `INSERT INTO accounts (id, username, password_hash, role, session_secret)
+       VALUES ('acct-1', 'sam-web', 'scrypt:x', 'user', 's')`,
+    );
+    await pool.query(
+      `INSERT INTO account_link_codes (code, account_id, expires_at)
+       VALUES ('link-abcd2345', 'acct-1', now() + interval '10 minutes')`,
+    );
+
+    await processTransportUpdate(messageEvent({ content: "link-abcd2345" }));
+
+    // Mirrored (the transcript keeps what was said) but consumed: no turn,
+    // hold released, and the identity now shares a link with the account.
+    expect(enqueued).toHaveLength(0);
+    const rows = await repository.listSourceChatMessages("tg", GROUP, db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].processed).toBe(true);
+    const linked = await pool.query(
+      `SELECT count(*)::int AS n FROM person_link_members
+       WHERE user_ref IN ('tg:user:7', 'chat:user:acct-1')`,
+    );
+    expect(linked.rows[0].n).toBe(2);
+  });
+
   it("is idempotent on the dedupe key", async () => {
     await processTransportUpdate(messageEvent());
     const turns = enqueued.length;

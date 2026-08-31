@@ -78,6 +78,13 @@
       "when": 1788178301143,
       "tag": "0010_curious_starfox",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788179057440,
+      "tag": "0011_pink_galactus",
+      "breakpoints": true
     }
   ]
 }

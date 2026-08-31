@@ -29,6 +29,7 @@ import {
   processReactionUpdate,
 } from "@/features/self-improvement/server/collect-flows";
 import { collectTransport } from "@/features/self-improvement/server/collect-transport";
+import { redeemLinkCode, selfLinkReplyText } from "@/features/accounts/server/self-link";
 import { getEnv } from "@/server/env";
 import { publishEvent } from "@/server/realtime/hub";
 import {
@@ -47,6 +48,7 @@ import {
 import { insertSourceMedia, insertUnavailableSourceMedia } from "@/server/source-store/media";
 import { withTrace } from "@/server/trace";
 import { enqueueInboundEvent } from "@/server/turn/enqueue";
+import { sourceOutbound } from "@/server/turn/source-outbound";
 
 import { resolveOwnerRights } from "@/server/owner-rights";
 
@@ -287,6 +289,32 @@ async function handleTransportMessage(event: TransportMessageEvent): Promise<voi
         return;
       }
     }
+  }
+
+  // Self-link codes (Phase 8): a message that IS a profile-minted code
+  // links this platform identity to its account instead of opening a turn.
+  // Checked after feedback capture; whatever the outcome, the code-shaped
+  // message is consumed and answered, never sent to the model.
+  const selfLink = await redeemLinkCode({
+    senderRef: scopedRef(source, "user", event.sender.userId),
+    text: event.message.content,
+  }).catch(() => null);
+  if (selfLink) {
+    const port = sourceOutbound(source);
+    await port
+      ?.sendMessage(chatId, {
+        text: selfLinkReplyText(selfLink),
+        replyToMessageId: Number(event.message.sourceMessageId) || null,
+        assistantId: event.receivedBy,
+      })
+      .catch((err) => {
+        console.error(
+          "self-link confirmation send failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+    await releaseHold(source, chatId, event.message.sourceMessageId, event.receivedBy);
+    return;
   }
 
   // Ingest media after the mirror. A media message whose payload could not

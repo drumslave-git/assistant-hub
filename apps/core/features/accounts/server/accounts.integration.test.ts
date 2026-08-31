@@ -18,6 +18,9 @@ import { listTraces } from "@/server/trace";
 
 import * as storeSchema from "../../../store/schema";
 
+import { findLinksForRefs, listMembersOfLinks } from "@/features/person-links/server/repository";
+
+import { LINK_CODE_TTL_MS, mintLinkCode, redeemLinkCode } from "./self-link";
 import { createAccount, listAccountViews, patchAccount } from "./service";
 
 const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
@@ -46,7 +49,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await pool.query(`TRUNCATE accounts CASCADE`);
+  await pool.query(`TRUNCATE accounts, person_links CASCADE`);
 });
 
 const trigger = { kind: "test" } as const;
@@ -201,5 +204,85 @@ describe("management actions", () => {
     expect(views).toHaveLength(1);
     expect(JSON.stringify(views)).not.toContain("scrypt");
     expect(JSON.stringify(views)).not.toContain("root-secret");
+  });
+});
+
+describe("self-link codes", () => {
+  it("mints one live code per account and links a platform identity through it", async () => {
+    const adminId = await seedAdmin();
+    const first = await mintLinkCode(adminId, trigger, db);
+    expect(first.code).toMatch(/^link-[a-z0-9]{8}$/);
+    const second = await mintLinkCode(adminId, trigger, db);
+    // The first code was retired by the second mint.
+    expect(await redeemLinkCode({ senderRef: "tg:user:1001", text: first.code }, db)).toEqual({
+      status: "invalid",
+    });
+
+    const outcome = await redeemLinkCode(
+      { senderRef: "tg:user:1001", text: `  ${second.code.toUpperCase()}  ` },
+      db,
+    );
+    expect(outcome).toEqual({ status: "linked", accountLabel: "root-admin" });
+
+    // The graph now holds one person: the tg identity and the account's ref.
+    const accountRef = `chat:user:${adminId}`;
+    const links = await findLinksForRefs(db, ["tg:user:1001", accountRef]);
+    expect(links.get("tg:user:1001")).toBeDefined();
+    expect(links.get("tg:user:1001")).toBe(links.get(accountRef));
+
+    // Burned: the same code answers invalid the second time.
+    expect(await redeemLinkCode({ senderRef: "tg:user:2002", text: second.code }, db)).toEqual({
+      status: "invalid",
+    });
+    // The trace never carries the code itself.
+    const { listTraces: list } = await import("@/server/trace");
+    const serialized = JSON.stringify(await list({ feature: "accounts" }));
+    expect(serialized).not.toContain(second.code);
+  });
+
+  it("ignores non-code text, answers already-linked, and refuses cross-person merges", async () => {
+    const adminId = await seedAdmin();
+    expect(await redeemLinkCode({ senderRef: "tg:user:1001", text: "hello there" }, db)).toBeNull();
+
+    const { code } = await mintLinkCode(adminId, trigger, db);
+    await redeemLinkCode({ senderRef: "tg:user:1001", text: code }, db);
+
+    // Same identity again, fresh code: nothing to do.
+    const again = await mintLinkCode(adminId, trigger, db);
+    expect(await redeemLinkCode({ senderRef: "tg:user:1001", text: again.code }, db)).toEqual({
+      status: "already-linked",
+      accountLabel: "root-admin",
+    });
+
+    // A sender who already belongs to a DIFFERENT person cannot be pulled in.
+    const other = await createAccount(
+      { username: "second", role: "user", temporaryPassword: "temp-pass-1234" },
+      trigger,
+      db,
+    );
+    const otherCode = await mintLinkCode(other.id, trigger, db);
+    expect(await redeemLinkCode({ senderRef: "tg:user:1001", text: otherCode.code }, db)).toEqual(
+      { status: "conflict" },
+    );
+  });
+
+  it("expires codes after their TTL and extends an existing person link in place", async () => {
+    const adminId = await seedAdmin();
+    const { code } = await mintLinkCode(adminId, trigger, db);
+    const afterTtl = new Date(Date.now() + LINK_CODE_TTL_MS + 1000);
+    expect(await redeemLinkCode({ senderRef: "tg:user:1001", text: code }, db, afterTtl)).toEqual({
+      status: "invalid",
+    });
+
+    // Link the account first, then a second platform identity joins the
+    // SAME link rather than minting a parallel person.
+    const one = await mintLinkCode(adminId, trigger, db);
+    await redeemLinkCode({ senderRef: "tg:user:1001", text: one.code }, db);
+    const two = await mintLinkCode(adminId, trigger, db);
+    await redeemLinkCode({ senderRef: "tg:user:2002", text: two.code }, db);
+    const accountRef = `chat:user:${adminId}`;
+    const linkId = (await findLinksForRefs(db, [accountRef])).get(accountRef)!;
+    const members = (await listMembersOfLinks(db, [linkId])).get(linkId) ?? [];
+    expect(new Set(members)).toEqual(new Set(["tg:user:1001", "tg:user:2002", accountRef]));
   });
 });

@@ -114,6 +114,30 @@ export type AccountRow = typeof accounts.$inferSelect;
 export type AccountInsert = typeof accounts.$inferInsert;
 
 /**
+ * One-time self-link codes (Phase 8, PLAN.md "Identity links"): a signed-in
+ * account mints a code in its profile and sends it to any connected bot;
+ * the ingest recognizes it and links that platform identity to the account
+ * in the person-link graph. Short-lived, single-use; minting a new code
+ * retires the account's unused ones.
+ */
+export const accountLinkCodes = pgTable(
+  "account_link_codes",
+  {
+    /** The code verbatim (`link-xxxxxxxx`), matched against message text. */
+    code: text("code").primaryKey(),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+  },
+  (t) => [index("account_link_codes_account_idx").on(t.accountId)],
+);
+
+export type AccountLinkCodeRow = typeof accountLinkCodes.$inferSelect;
+
+/**
  * Application settings — the shared brain configuration. A single typed row
  * (`id = 'singleton'`), exactly the v1 table minus what left the core:
  *

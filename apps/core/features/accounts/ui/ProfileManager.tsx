@@ -110,6 +110,28 @@ function DisplayNameCard({
 }
 
 function IdentitiesCard({ identities }: { identities: ProfileIdentity[] }) {
+  const [minted, setMinted] = useState<{ code: string; expiresAt: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function mint() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/profile/link-code", { method: "POST" });
+      if (!res.ok) {
+        setError(await readError(res));
+        return;
+      }
+      const body = (await res.json()) as { data: { code: string; expiresAt: string } };
+      setMinted(body.data);
+    } catch {
+      setError("Network error — could not reach the server");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -118,7 +140,7 @@ function IdentitiesCard({ identities }: { identities: ProfileIdentity[] }) {
           The platform identities linked to you. Memory and owner rights follow these links.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
         {identities.length <= 1 ? (
           <p className="text-sm text-muted">
             Only your web identity so far — nothing else is linked to you yet.
@@ -136,6 +158,31 @@ function IdentitiesCard({ identities }: { identities: ProfileIdentity[] }) {
             </li>
           ))}
         </ul>
+
+        <div className="space-y-2 border-t border-border pt-4">
+          {minted ? (
+            <div className="space-y-1">
+              <p className="text-sm">
+                Send this code — as the whole message — to any connected bot from the identity
+                you want to link:
+              </p>
+              <p className="font-mono text-lg font-semibold tracking-wide">{minted.code}</p>
+              <p className="text-xs text-faint">
+                One-time, valid until <Timestamp iso={minted.expiresAt} />. Minting again
+                replaces it.
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-muted">
+              To link a messenger identity (e.g. your Telegram), mint a one-time code and send
+              it to a bot from there.
+            </p>
+          )}
+          {error ? <p className="text-sm text-danger">{error}</p> : null}
+          <Button variant="outline" onClick={mint} disabled={busy}>
+            {busy ? "Minting…" : minted ? "Mint a new code" : "Link another identity"}
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );
