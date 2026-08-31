@@ -75,7 +75,7 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/assistants", label: "Assistants", icon: Bot, adminOnly: false },
       { href: "/memory", label: "Memory", icon: Brain },
-      { href: "/tools", label: "Tools", icon: Wrench },
+      { href: "/tools", label: "Tools", icon: Wrench, adminOnly: false },
       { href: "/self-improvement", label: "Self-improvement", icon: Sparkles },
     ],
   },
@@ -83,7 +83,7 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
     // Work the bot does on its own: standing rules, timed jobs, browsing.
     label: "Automation",
     items: [
-      { href: "/tasks", label: "Tasks", icon: CalendarClock },
+      { href: "/tasks", label: "Tasks", icon: CalendarClock, adminOnly: false },
       { href: "/browser", label: "Browser agent", icon: Globe },
       { href: "/jobs", label: "Background jobs", icon: Activity },
     ],

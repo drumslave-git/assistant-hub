@@ -19,6 +19,8 @@ import {
   type TaskChatMember,
 } from "@/features/tasks/ui/TasksManager";
 import { featureDebugHref } from "@/lib/features";
+import { actingAccount } from "@/server/auth/acting";
+import { chatKey, ownedAssistantIds, servedChatKeys } from "@/server/ownership";
 
 // Tasks and the chats they can live in are read at request time.
 export const dynamic = "force-dynamic";
@@ -30,6 +32,11 @@ export const dynamic = "force-dynamic";
  * Client Component that live-updates over the shared SSE stream.
  */
 export default async function TasksPage() {
+  // Role-scoped since Phase 9: a user sees and authors their own
+  // assistants' tasks, in the chats those assistants actually serve.
+  const account = await actingAccount();
+  const restricted = account?.role === "user";
+
   let tasks: Task[] | null = null;
   let job: TaskSchedulerJobInfo | null = null;
   let chats: TaskChat[] = [];
@@ -37,17 +44,24 @@ export default async function TasksPage() {
   let authors: Record<string, string> = {};
   let dbError: string | null = null;
   try {
-    const [view, groups, users, memberships, jobInfo, assistantRows] = await Promise.all([
-      getTasksView(),
-      listGroups(),
-      listUsers(),
-      listMemberships(),
-      getTaskSchedulerInfo(),
-      getAssistants(),
-    ]);
-    tasks = view;
+    const [view, groups, users, memberships, jobInfo, assistantRows, owned, served] =
+      await Promise.all([
+        getTasksView(),
+        listGroups(),
+        listUsers(),
+        listMemberships(),
+        getTaskSchedulerInfo(),
+        getAssistants(),
+        ownedAssistantIds(account),
+        servedChatKeys(account),
+      ]);
+    tasks = owned === null ? view : view.filter((task) => owned.has(task.assistantId));
     job = jobInfo;
-    assistants = assistantRows.map((a) => ({ id: a.id, name: a.name }));
+    assistants = assistantRows
+      .filter((a) => owned === null || owned.has(a.id))
+      .map((a) => ({ id: a.id, name: a.name }));
+    const chatVisible = (chatId: string) =>
+      served === null || served.has(chatKey("tg", chatId));
     // The people a group rule can be limited to: whoever has spoken there, in
     // the roster's order (most recently active first), labelled like everywhere.
     const labels = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
@@ -59,18 +73,22 @@ export default async function TasksPage() {
     }
     // A private chat's id equals the user id, so a DM is addressable by user.
     chats = [
-      ...groups.map((g) => ({
-        chatId: g.chatId,
-        label: g.title ?? `Group ${g.chatId}`,
-        kind: "group" as const,
-        members: membersByChat.get(g.chatId) ?? [],
-      })),
-      ...users.map((u) => ({
-        chatId: u.userId,
-        label: formatKnownUserLabel(u),
-        kind: "dm" as const,
-        members: [],
-      })),
+      ...groups
+        .filter((g) => chatVisible(g.chatId))
+        .map((g) => ({
+          chatId: g.chatId,
+          label: g.title ?? `Group ${g.chatId}`,
+          kind: "group" as const,
+          members: membersByChat.get(g.chatId) ?? [],
+        })),
+      ...users
+        .filter((u) => chatVisible(u.userId))
+        .map((u) => ({
+          chatId: u.userId,
+          label: formatKnownUserLabel(u),
+          kind: "dm" as const,
+          members: [],
+        })),
     ];
     authors = Object.fromEntries(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
   } catch (err) {
@@ -85,12 +103,14 @@ export default async function TasksPage() {
         actions={
           <div className="flex items-center gap-2">
             <LiveIndicator topic="tasks" />
-            <Button asChild variant="outline" size="sm">
-              <Link href={featureDebugHref("tasks")}>
-                <Bug className="h-4 w-4" aria-hidden />
-                Debug
-              </Link>
-            </Button>
+            {restricted ? null : (
+              <Button asChild variant="outline" size="sm">
+                <Link href={featureDebugHref("tasks")}>
+                  <Bug className="h-4 w-4" aria-hidden />
+                  Debug
+                </Link>
+              </Button>
+            )}
           </div>
         }
       />

@@ -7,6 +7,8 @@ import type { ToolsView } from "@/features/mcp-tools/server/schema";
 import { ToolsManager } from "@/features/mcp-tools/ui/ToolsManager";
 import { getToolConnections } from "@/features/tool-connections/server/service";
 import type { ToolConnection } from "@/features/tool-connections/server/schema";
+import { actingAccount } from "@/server/auth/acting";
+import { ownedAssistantIds } from "@/server/ownership";
 
 // Connections are DB-backed and a discovery can change them at any moment.
 export const dynamic = "force-dynamic";
@@ -18,16 +20,24 @@ export const dynamic = "force-dynamic";
  * only when an operator applies a discovery.
  */
 export default async function ToolsPage() {
+  // Role-scoped since Phase 9: a user sees the built-in catalog, their own
+  // connections, and their own assistants in the scope pickers.
+  const account = await actingAccount();
+
   let view: ToolsView | null = null;
   let connections: ToolConnection[] = [];
   let assistants: { id: string; name: string }[] = [];
   let error: string | null = null;
   try {
-    [view, connections, assistants] = await Promise.all([
+    const [viewAll, scopedConnections, assistantRows, owned] = await Promise.all([
       getToolsView(),
-      getToolConnections(),
+      getToolConnections(account),
       getAssistants(),
+      ownedAssistantIds(account),
     ]);
+    view = viewAll;
+    connections = scopedConnections;
+    assistants = assistantRows.filter((a) => owned === null || owned.has(a.id));
   } catch (err) {
     error = err instanceof Error ? err.message : "Could not load tools";
   }
