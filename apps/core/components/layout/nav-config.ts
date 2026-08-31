@@ -29,6 +29,12 @@ export interface NavItem {
   icon: LucideIcon;
   /** Planned-but-not-built routes render disabled with a "soon" hint. */
   soon?: boolean;
+  /**
+   * Items a user-role account never sees (Phase 9); inherits the group's
+   * setting when unset. Role-scoped pages set this false inside an
+   * otherwise admin group.
+   */
+  adminOnly?: boolean;
 }
 
 /** One sidebar group (label optional for the landing group). */
@@ -67,7 +73,7 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
     // What shapes a reply: persona, durable knowledge, tools, learned corrections.
     label: "Bot",
     items: [
-      { href: "/assistants", label: "Assistants", icon: Bot },
+      { href: "/assistants", label: "Assistants", icon: Bot, adminOnly: false },
       { href: "/memory", label: "Memory", icon: Brain },
       { href: "/tools", label: "Tools", icon: Wrench },
       { href: "/self-improvement", label: "Self-improvement", icon: Sparkles },
@@ -110,7 +116,12 @@ const SHELL_NAV_GROUPS: NavGroup[] = [
 /** What the sidebar renders for a given account role. */
 export function navGroupsForRole(role: "admin" | "user"): NavGroup[] {
   if (role === "admin") return SHELL_NAV_GROUPS;
-  return SHELL_NAV_GROUPS.filter((group) => group.adminOnly === false);
+  return SHELL_NAV_GROUPS.flatMap((group) => {
+    const items = group.items.filter(
+      (item) => (item.adminOnly ?? group.adminOnly ?? true) === false,
+    );
+    return items.length > 0 ? [{ ...group, items }] : [];
+  });
 }
 
 /** What the sidebar renders (admin view; prefer {@link navGroupsForRole}). */

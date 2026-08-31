@@ -212,6 +212,19 @@ export async function setTransportEnabled(
 // ---- Per-assistant connections ---------------------------------------------
 
 /** One assistant's connection on one transport, or null. */
+/** One connection row by its id, or null — the ownership gates read this. */
+export async function getAssistantTransportById(
+  id: string,
+  db: StoreDb = getStoreDb(),
+): Promise<AssistantTransportRow | null> {
+  const rows = await db
+    .select()
+    .from(assistantTransports)
+    .where(eq(assistantTransports.id, id))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export async function getAssistantTransport(
   transport: SourceId,
   assistantId: string,

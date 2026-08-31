@@ -161,12 +161,15 @@ function AssistantDialog({
 function AssistantCard({
   assistant,
   ownerName,
+  showOwner,
   onEdit,
   onDelete,
 }: {
   assistant: Assistant;
   /** Owning account's display name, or null for a pre-auth row. */
   ownerName: string | null;
+  /** Admin view labels owners; a user sees only their own — no badge. */
+  showOwner: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -176,9 +179,11 @@ function AssistantCard({
         <div className="flex min-w-0 items-center gap-2">
           <CardTitle className="truncate">{assistant.name}</CardTitle>
           {/* Owner rights in a turn follow this account (Phase 8). */}
-          <Badge tone="neutral" className="shrink-0">
-            {ownerName ? `owner: ${ownerName}` : "admin-owned"}
-          </Badge>
+          {showOwner ? (
+            <Badge tone="neutral" className="shrink-0">
+              {ownerName ? `owner: ${ownerName}` : "admin-owned"}
+            </Badge>
+          ) : null}
         </div>
         <CardAction>
           <Button
@@ -215,8 +220,8 @@ export function AssistantsManager({
   ownerNames,
 }: {
   assistants: Assistant[];
-  /** Account display names by id, for the owner badge. */
-  ownerNames: Record<string, string>;
+  /** Account display names by id for the owner badge; null hides it (user view). */
+  ownerNames: Record<string, string> | null;
 }) {
   useLiveRefresh("assistants");
   const router = useRouter();
@@ -267,7 +272,10 @@ export function AssistantsManager({
             <AssistantCard
               key={a.id}
               assistant={a}
-              ownerName={a.ownerAccountId ? (ownerNames[a.ownerAccountId] ?? null) : null}
+              ownerName={
+                a.ownerAccountId ? (ownerNames?.[a.ownerAccountId] ?? null) : null
+              }
+              showOwner={ownerNames !== null}
               onEdit={() => setState({ kind: "edit", assistant: a })}
               onDelete={() => void remove(a)}
             />

@@ -6,6 +6,8 @@ import { listTransports, previewConfig } from "@/server/transports/service";
  * each row carries the config field schemas the forms render from. Secret
  * config values are reduced to hints.
  */
+// Account level (Phase 9): the assistant editor renders these sections for
+// every owner; secrets are already reduced to hints.
 export const GET = defineRoute(async () => {
   const rows = await listTransports();
   return ok({
@@ -22,4 +24,4 @@ export const GET = defineRoute(async () => {
       updatedAt: row.updatedAt.toISOString(),
     })),
   });
-});
+}, { access: "account" });

@@ -17,6 +17,7 @@ import type { StoreDb } from "@/server/store/db";
 import * as storeSchema from "../store/schema";
 
 import { accountForSenderRef, resolveOwnerRights } from "./owner-rights";
+import { ownedAssistantIds, requireAssistantOwnership } from "./ownership";
 
 const STORE_MIGRATIONS = fileURLToPath(new URL("../store/migrations", import.meta.url));
 
@@ -146,5 +147,35 @@ describe("resolveOwnerRights", () => {
     expect(
       await resolveOwnerRights({ senderRef: `chat:user:${user}`, assistantId: preAuth }, db),
     ).toBe(false);
+  });
+});
+
+describe("ownership helpers (Phase 9)", () => {
+  it("scopes user actors to their own assistants and answers not-found for the rest", async () => {
+    const owner = await seedAccount("user");
+    const other = await seedAccount("user");
+    const admin = await seedAccount("admin");
+    const mine = await seedAssistant(owner);
+    const theirs = await seedAssistant(other);
+
+    // Admin: unrestricted (null = all).
+    expect(await ownedAssistantIds({ id: admin, role: "admin" }, db)).toBeNull();
+    await expect(
+      requireAssistantOwnership({ id: admin, role: "admin" }, theirs, db),
+    ).resolves.toBeUndefined();
+
+    // User: the owned set, and a hard not-found on anything else —
+    // including ids that do not exist at all (no leak either way).
+    const owned = await ownedAssistantIds({ id: owner, role: "user" }, db);
+    expect(owned).toEqual(new Set([mine]));
+    await expect(
+      requireAssistantOwnership({ id: owner, role: "user" }, mine, db),
+    ).resolves.toBeUndefined();
+    await expect(
+      requireAssistantOwnership({ id: owner, role: "user" }, theirs, db),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(
+      requireAssistantOwnership({ id: owner, role: "user" }, "no-such-assistant", db),
+    ).rejects.toMatchObject({ code: "not_found" });
   });
 });

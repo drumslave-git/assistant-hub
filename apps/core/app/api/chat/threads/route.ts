@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
 import { defineRoute, ok, parseJson } from "@/server/http";
+import { requireAssistantOwnership } from "@/server/ownership";
 import { createChatThread, listChatThreads } from "@/features/web-chat/server/service";
 
 /**
@@ -31,5 +32,7 @@ export const GET = defineRoute(async ({ account }) => {
 export const POST = defineRoute(async ({ request, account }) => {
   if (!account) throw ApiError.unauthorized("Sign in to chat");
   const input = await parseJson(request, createSchema);
+  // Phase 9: a user-role account chats with its OWN assistants.
+  await requireAssistantOwnership(account, input.assistantId);
   return ok({ thread: await createChatThread(input, account.id) });
 }, { access: "account" });
