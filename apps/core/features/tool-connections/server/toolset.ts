@@ -13,6 +13,8 @@ import { callRemoteTool, discoveredToolToOpenAi } from "@/server/mcp/http-client
 import { tracedToolCall } from "@/server/mcp/tool-trace";
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
+import { isSafePublicUrl } from "@/features/link-fetch/url-safety";
+import { connectionIsRestricted } from "./service";
 import { listToolConnections, type ToolConnectionRecord } from "./repository";
 import { prefixedToolName } from "./schema";
 
@@ -94,6 +96,17 @@ export async function resolveConnectionToolset(
   const offered = new Map<string, OfferedTool>();
   const tools: ChatCompletionFunctionTool[] = [];
 
+  // Phase 9 call-time half of the public-address guard: which of this
+  // turn's connections are user-owned, judged by the owner's CURRENT role
+  // once per turn (an endpoint edited or a role changed since the offer
+  // was resolved still cannot pull the core into a private range).
+  const restricted = new Set<string>();
+  for (const connection of connections) {
+    if (connection.ownerAccountId && (await connectionIsRestricted(db, connection))) {
+      restricted.add(connection.id);
+    }
+  }
+
   for (const connection of connections) {
     for (const tool of connection.tools) {
       const name = prefixedToolName(connection.slug, tool.name);
@@ -111,6 +124,12 @@ export async function resolveConnectionToolset(
         // Not a throw: an unknown tool name is something the model did, and
         // it can recover from being told so.
         return { text: `Unknown tool: ${name}`, isError: true };
+      }
+      if (restricted.has(entry.connection.id) && !isSafePublicUrl(entry.connection.endpointUrl)) {
+        return {
+          text: `Tool "${name}" is unavailable: its endpoint is not a public address.`,
+          isError: true,
+        };
       }
       const meta = turnMeta(scope);
       const onDelivered = tryGetToolContext()?.onDelivered;

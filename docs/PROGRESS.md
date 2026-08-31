@@ -354,12 +354,73 @@ Known pitfalls for whoever starts:
 | 6 | Chat dissolve: apps/chat merges into core (store, backend, tools, pages) | done |
 | 7 | One store, stateless transports: tg de-stored, transport contract, self-registration, schema-driven config | done |
 | 8 | Accounts: users table, roles, role gates, assistant ownership + owner rights, identity self-link, memory rescope | done |
-| 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | todo |
+| 9 | User ownership: full-parity user assistants, user MCP connections + public-address guard, visibility, offboarding | in-progress |
 | 10 | Cutover: rehearsed migration, runbook, rename, release, docs | todo |
 
 Phases 0–5 describe the as-built per-app architecture that phases 6–9
 deliberately supersede (2026-08-30 revision); their criteria below are
 history, not the current target.
+
+## Phase 9 — User ownership (acceptance criteria)
+
+Scope from PLAN.md: users create full-parity assistants (persona, bot
+token, tasks, tools); user-owned MCP connections with the public-address
+guard; visibility scoping (own assistants' chats, threads, tasks,
+traces); offboarding (deactivate keeps data / hard delete cascades).
+
+Design fixed at open (user Q&A, 2026-08-31):
+
+- **Same pages, role-scoped.** Assistants, Tasks, Tools, History and the
+  trace explorer move out of the `(admin)` route group; their APIs filter
+  by ownership (admins see everything, users their own), and admin-only
+  chrome hides for users. No parallel user UI.
+- **Full debug view, scoped.** Users get the existing trace explorer
+  filtered to their own assistants' turns (by the trace's assistant id);
+  traces that carry no assistant id are admin-only.
+- **Deactivation is computed, never stored.** The transport desired
+  state, the task scheduler and the ingest fan-out skip assistants whose
+  owning account is inactive; nothing is mutated, so reactivation
+  restores everything exactly as it was.
+
+- [ ] **A — connection ownership + the public-address guard.**
+      `tool_connections.owner_account_id` (existing rows → the first
+      admin; cascade on account delete); creation stamps the acting
+      account; a USER-owned connection may scope only to its owner's
+      assistants (never global/all-assistants/per-app) and may target
+      public addresses only — private ranges (RFC1918, loopback,
+      link-local, .localhost, docker host) are rejected at create,
+      update, discover, apply AND at call/connect time; the
+      tool-connections API answers per role (users see and manage only
+      their own; admin connections stay unrestricted).
+- [ ] **B — assistants + bot tokens for users.** The assistants API
+      filters listings by role and gates edit/delete by ownership; the
+      transport-connection API (`/api/transports/...`) opens to
+      account level with per-assistant ownership checks, so a user
+      connects their own bot token with full parity; the assistants
+      page leaves the `(admin)` group with role-aware chrome.
+- [ ] **C — tasks + tools for users.** The tasks API scopes listings
+      to owned assistants and gates mutations by the task's assistant;
+      the tools page and the tasks page leave the `(admin)` group;
+      users manage their own connections' toolsets (discover, apply,
+      enable) under the same snapshot rules.
+- [ ] **D — activity scoping.** History (chats + web threads) filters
+      to conversations the account's own assistants serve; the trace
+      list and trace detail answer only traces whose assistant the
+      account owns (no-assistant traces stay admin-only); the debug
+      explorer page leaves the `(admin)` group with the same scoping.
+- [ ] **E — offboarding.** Deactivating an account silences its
+      assistants everywhere (desired transport state, task fires,
+      ingest fan-out — computed from `accounts.active`, announced to
+      the transport so pollers stop); hard delete (admin-only, behind
+      a typed confirm) removes the account and cascades: its
+      assistants (through the assistants service, so lifecycle events
+      fire), its tool connections, threads, link codes, its person-link
+      membership and the memory documents under its linked identities;
+      self-delete and the last admin are refused.
+- [ ] **F — proof.** Suites, lint, typecheck green; docs and PROGRESS
+      updated; live checks recorded or handed to the operator (a user
+      account walking assistant + bot token + task + tool + activity,
+      and a deactivate/reactivate round trip).
 
 ## Phase 8 — Accounts (acceptance criteria)
 

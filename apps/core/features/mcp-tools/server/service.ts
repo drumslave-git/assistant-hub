@@ -43,7 +43,7 @@ export async function getToolsView(db?: StoreDb): Promise<ToolsView> {
     feature: tool.feature,
   }));
 
-  const connections = await getToolConnections(db);
+  const connections = await getToolConnections(null, db);
   const hosted: ToolView[] = connections.flatMap((connection) =>
     connection.tools.map((tool) => ({
       name: prefixedToolName(connection.slug, tool.name),

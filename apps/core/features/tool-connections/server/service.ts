@@ -2,8 +2,11 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { isSafePublicUrl } from "@/features/link-fetch/url-safety";
 import { ApiError } from "@/lib/api-error";
+import { getAccountById } from "@/server/auth/accounts";
 import { FEATURES } from "@/lib/features";
+import { isRestricted, mayActOn, ownedAssistantIds, type Actor } from "@/server/ownership";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
@@ -38,6 +41,12 @@ import {
  * Editing a connection can only take its tools away (disable, re-scope) —
  * the snapshot itself moves on an explicit apply (user decision,
  * 2026-08-28).
+ *
+ * Ownership (Phase 9): every connection an account creates is that
+ * account's; admins see and manage everything, a user-role account only its
+ * own. A USER-owned connection is restricted — it may scope only to its
+ * owner's assistants (never global / all-assistants / per-app) and may
+ * target public addresses only, checked here and again at call time.
  */
 
 const FEATURE = FEATURES["tool-connections"];
@@ -71,18 +80,79 @@ export function toClient(record: ToolConnectionRecord): ToolConnection {
   };
 }
 
-/** Every connection, oldest first, without secrets. */
-export async function getToolConnections(db: StoreDb = getStoreDb()): Promise<ToolConnection[]> {
-  return (await listToolConnections(db)).map(toClient);
+/** The actor's connections, oldest first, without secrets. */
+export async function getToolConnections(
+  actor: Actor | null = null,
+  db: StoreDb = getStoreDb(),
+): Promise<ToolConnection[]> {
+  const records = await listToolConnections(db);
+  const visible = isRestricted(actor)
+    ? records.filter((record) => record.ownerAccountId === actor.id)
+    : records;
+  return visible.map(toClient);
 }
 
-/** One connection by id, without secrets, or null. */
+/** One connection by id, without secrets, or null (unowned reads as absent). */
 export async function getToolConnection(
   id: string,
+  actor: Actor | null = null,
   db: StoreDb = getStoreDb(),
 ): Promise<ToolConnection | null> {
   const record = await getToolConnectionById(db, id);
-  return record ? toClient(record) : null;
+  if (!record || !mayActOn(actor, record.ownerAccountId)) return null;
+  return toClient(record);
+}
+
+/**
+ * Gate one connection for a mutation: unknown and not-yours both answer
+ * not-found, so the scoped API does not leak which ids exist.
+ */
+async function requireOwnConnection(
+  db: StoreDb,
+  id: string,
+  actor: Actor | null,
+): Promise<ToolConnectionRecord> {
+  const record = await getToolConnectionById(db, id);
+  if (!record || !mayActOn(actor, record.ownerAccountId)) {
+    throw ApiError.notFound("Unknown tool connection");
+  }
+  return record;
+}
+
+/**
+ * The Phase 9 restrictions on a USER-owned connection, applied to the shape
+ * a create/update would leave behind: its scope may name only the owner's
+ * assistants (never everyone, never a whole app), and its endpoint must be
+ * a public address — the core makes the calls, so a private-range URL would
+ * be an SSRF hole, rejected here and again at call time.
+ */
+async function assertUserConnectionRules(
+  db: StoreDb,
+  /** The account that OWNS (or will own) the connection — never the actor. */
+  ownerAccountId: string,
+  next: {
+    endpointUrl: string;
+    appScope: string | null;
+    allAssistants: boolean;
+    assistantIds: readonly string[];
+  },
+): Promise<void> {
+  if (!isSafePublicUrl(next.endpointUrl)) {
+    throw ApiError.badRequest(
+      "User connections may target public addresses only (no localhost or private ranges)",
+    );
+  }
+  if (next.appScope != null) {
+    throw ApiError.badRequest("User connections cannot be scoped to an app");
+  }
+  if (next.allAssistants) {
+    throw ApiError.badRequest("User connections must select specific assistants of your own");
+  }
+  const owned = (await ownedAssistantIds({ id: ownerAccountId, role: "user" }, db))!;
+  const foreign = next.assistantIds.filter((id) => !owned.has(id));
+  if (foreign.length > 0) {
+    throw ApiError.badRequest("User connections may only serve your own assistants");
+  }
 }
 
 /**
@@ -114,10 +184,37 @@ async function assertKnownAssistants(db: StoreDb, ids: readonly string[]): Promi
   if (unknown.length > 0) throw ApiError.badRequest(`Unknown assistant: ${unknown[0]}`);
 }
 
+/**
+ * Whether a connection is Phase 9-restricted: owned by an account whose
+ * CURRENT role is `user`. Judged live, so demotions take effect without a
+ * data migration.
+ */
+export async function connectionIsRestricted(
+  db: StoreDb,
+  record: Pick<ToolConnectionRecord, "ownerAccountId">,
+): Promise<boolean> {
+  if (!record.ownerAccountId) return false;
+  const owner = await getAccountById(record.ownerAccountId, db);
+  return owner?.role === "user";
+}
+
+/** The public-address half of the restriction, at any point the core dials. */
+export async function assertPublicWhenUserOwned(
+  db: StoreDb,
+  record: Pick<ToolConnectionRecord, "ownerAccountId" | "endpointUrl" | "name">,
+): Promise<void> {
+  if ((await connectionIsRestricted(db, record)) && !isSafePublicUrl(record.endpointUrl)) {
+    throw ApiError.badRequest(
+      `"${record.name}" targets a private address — user connections may reach public addresses only`,
+    );
+  }
+}
+
 /** Create a connection, recorded as a trace. */
 export async function createToolConnection(
   input: CreateToolConnection,
   trigger: TraceTrigger,
+  actor: Actor | null = null,
   db: StoreDb = getStoreDb(),
 ): Promise<ToolConnection> {
   const id = randomUUID();
@@ -149,6 +246,9 @@ export async function createToolConnection(
         throw ApiError.conflict(`A connection with slug "${input.slug}" already exists`);
       }
       await assertKnownAssistants(db, input.assistantIds);
+      if (isRestricted(actor)) {
+        await assertUserConnectionRules(db, actor.id, input);
+      }
 
       const record = await insertToolConnection(db, id, {
         slug: input.slug,
@@ -160,6 +260,9 @@ export async function createToolConnection(
         appScope: input.appScope,
         allAssistants: input.allAssistants,
         managed: false,
+        // The creator owns what they create (Phase 9); null only while
+        // auth is unconfigured.
+        ownerAccountId: actor?.id ?? null,
       });
       await setAssistantSelection(db, id, input.assistantIds);
       await trace.event({
@@ -182,6 +285,7 @@ export async function editToolConnection(
   id: string,
   input: UpdateToolConnection,
   trigger: TraceTrigger,
+  actor: Actor | null = null,
   db: StoreDb = getStoreDb(),
 ): Promise<ToolConnection> {
   return withTrace(
@@ -198,8 +302,7 @@ export async function editToolConnection(
           ...(assistantIds ? { assistantIds } : {}),
         },
       });
-      const existing = await getToolConnectionById(db, id);
-      if (!existing) throw ApiError.notFound("Unknown tool connection");
+      const existing = await requireOwnConnection(db, id, actor);
       // A managed connection's identity and endpoint are configuration; its
       // scope and enabled flag are the operator's, so only the former are
       // refused rather than the whole edit.
@@ -216,6 +319,18 @@ export async function editToolConnection(
         throw ApiError.conflict(`A connection with slug "${input.slug}" already exists`);
       }
       if (assistantIds) await assertKnownAssistants(db, assistantIds);
+      // The restrictions follow the OWNER's current role, not the actor's:
+      // an admin editing a user's connection cannot walk it out of the
+      // rules either. Judge the shape the update would LEAVE.
+      if (existing.ownerAccountId && (await connectionIsRestricted(db, existing))) {
+        await assertUserConnectionRules(db, existing.ownerAccountId, {
+          endpointUrl: input.endpointUrl ?? existing.endpointUrl,
+          appScope: input.appScope !== undefined ? input.appScope : existing.appScope,
+          allAssistants:
+            input.allAssistants !== undefined ? input.allAssistants : existing.allAssistants,
+          assistantIds: assistantIds ?? existing.assistantIds,
+        });
+      }
 
       const record = await updateToolConnection(db, id, {
         ...(input.slug !== undefined ? { slug: input.slug } : {}),
@@ -244,13 +359,13 @@ export async function editToolConnection(
 export async function removeToolConnection(
   id: string,
   trigger: TraceTrigger,
+  actor: Actor | null = null,
   db: StoreDb = getStoreDb(),
 ): Promise<void> {
   return withTrace(
     { feature: FEATURE.id, action: "delete", trigger, inputSummary: `connection ${id}` },
     async (trace) => {
-      const existing = await getToolConnectionById(db, id);
-      if (!existing) throw ApiError.notFound("Unknown tool connection");
+      const existing = await requireOwnConnection(db, id, actor);
       assertNotManaged(existing, "deleted");
       await deleteToolConnection(db, id);
       await trace.event({

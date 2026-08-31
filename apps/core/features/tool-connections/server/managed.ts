@@ -116,6 +116,8 @@ async function reconcileOne(
       endpointUrl: desired.endpointUrl,
       authHeaders: desired.authHeaders,
       enabled: true,
+      // Hub-provisioned: nobody's, unrestricted (Phase 9 ownership).
+      ownerAccountId: null,
       appScope: desired.source,
       allAssistants: true,
       managed: true,

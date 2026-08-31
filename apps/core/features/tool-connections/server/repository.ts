@@ -42,6 +42,8 @@ export interface ToolConnectionRecord {
   allAssistants: boolean;
   assistantIds: string[];
   managed: boolean;
+  /** The owning account (Phase 9), or null for managed/system rows. */
+  ownerAccountId: string | null;
   lastDiscoveredAt: string | null;
   lastError: string | null;
   /** What the last discovery saw — not what the model is offered. */
@@ -63,6 +65,7 @@ export interface ToolConnectionValues {
   appScope: SourceId | null;
   allAssistants: boolean;
   managed: boolean;
+  ownerAccountId: string | null;
 }
 
 function mapTool(row: ToolConnectionToolRow): ConnectionToolRecord {
@@ -91,6 +94,7 @@ function mapRow(
     allAssistants: row.allAssistants,
     assistantIds,
     managed: row.managed,
+    ownerAccountId: row.ownerAccountId,
     lastDiscoveredAt: row.lastDiscoveredAt?.toISOString() ?? null,
     lastError: row.lastError,
     discoveredTools: row.lastDiscoveredTools ?? null,

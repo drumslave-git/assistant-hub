@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 import { TURN_META_KEY } from "@assistant-hub/contracts";
 import {
@@ -24,6 +25,7 @@ import type { CreateToolConnection } from "./schema";
 import {
   createToolConnection,
   editToolConnection,
+  getToolConnection,
   getToolConnections,
   removeToolConnection,
 } from "./service";
@@ -78,7 +80,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await pool.query(`TRUNCATE tool_connections, assistants RESTART IDENTITY CASCADE`);
+  await pool.query(`TRUNCATE tool_connections, assistants, accounts RESTART IDENTITY CASCADE`);
 });
 
 describe("tool connections service", () => {
@@ -97,7 +99,7 @@ describe("tool connections service", () => {
   };
 
   it("creates a connection and withholds header values from clients", async () => {
-    const created = await createToolConnection(input, trigger, db);
+    const created = await createToolConnection(input, trigger, null, db);
 
     expect(created).toMatchObject({
       slug: "weather",
@@ -118,7 +120,7 @@ describe("tool connections service", () => {
   });
 
   it("keeps header values out of the trace body too", async () => {
-    await createToolConnection(input, trigger, db);
+    await createToolConnection(input, trigger, null, db);
     const traces = await listTraces({ feature: "tool-connections" });
     const detail = await getTraceDetail(traces.traces[0].id);
     const body = JSON.stringify(detail);
@@ -127,14 +129,15 @@ describe("tool connections service", () => {
   });
 
   it("refuses a duplicate slug and a transport v2 cannot execute", async () => {
-    await createToolConnection(input, trigger, db);
+    await createToolConnection(input, trigger, null, db);
     await expect(
-      createToolConnection({ ...input, name: "Another" }, trigger, db),
+      createToolConnection({ ...input, name: "Another" }, trigger, null, db),
     ).rejects.toThrow(/already exists/);
     await expect(
       createToolConnection(
         { ...input, slug: "shell", transport: "stdio" },
         trigger,
+        null,
         db,
       ),
     ).rejects.toThrow(/Only http connections/);
@@ -145,6 +148,7 @@ describe("tool connections service", () => {
     const created = await createToolConnection(
       { ...input, appScope: "tg", allAssistants: false, assistantIds: [assistant.id] },
       trigger,
+      null,
       db,
     );
     expect(created).toMatchObject({
@@ -154,17 +158,17 @@ describe("tool connections service", () => {
     });
 
     // Selecting nobody is an explicit empty selection, not a fallback to all.
-    const cleared = await editToolConnection(created.id, { assistantIds: [] }, trigger, db);
+    const cleared = await editToolConnection(created.id, { assistantIds: [] }, trigger, null, db);
     expect(cleared.assistantIds).toEqual([]);
     expect(cleared.allAssistants).toBe(false);
 
     await expect(
-      editToolConnection(created.id, { assistantIds: ["nobody"] }, trigger, db),
+      editToolConnection(created.id, { assistantIds: ["nobody"] }, trigger, null, db),
     ).rejects.toThrow(/Unknown assistant/);
   });
 
   it("replaces the whole header set on update and deletes with its snapshot", async () => {
-    const created = await createToolConnection(input, trigger, db);
+    const created = await createToolConnection(input, trigger, null, db);
     await replaceSnapshot(db, created.id, [
       { name: "forecast", description: "Tomorrow", inputSchema: { type: "object" } },
     ]);
@@ -173,13 +177,14 @@ describe("tool connections service", () => {
       created.id,
       { authHeaders: { "X-Api-Key": "other" } },
       trigger,
+      null,
       db,
     );
     expect(updated.authHeaderNames).toEqual(["X-Api-Key"]);
     expect(updated.tools).toHaveLength(1);
 
-    await removeToolConnection(created.id, trigger, db);
-    expect(await getToolConnections(db)).toEqual([]);
+    await removeToolConnection(created.id, trigger, null, db);
+    expect(await getToolConnections(null, db)).toEqual([]);
     const { rows } = await pool.query(`select count(*)::int as n from tool_connection_tools`);
     expect(rows[0].n).toBe(0);
   });
@@ -220,6 +225,7 @@ describe("tool connection discovery", () => {
         assistantIds: [],
       },
       trigger,
+      null,
       db,
     );
   }
@@ -227,14 +233,14 @@ describe("tool connection discovery", () => {
   it("discovers without offering, then applies", async () => {
     const created = await connection();
 
-    const report = await discoverToolConnection(created.id, trigger, db);
+    const report = await discoverToolConnection(created.id, trigger, null, db);
     expect(report.ok).toBe(true);
     expect(report.diff).toMatchObject({ added: ["forecast", "history"], removed: [] });
     // Discovery is a report: nothing is offered yet.
     expect(report.connection.tools).toEqual([]);
     expect(report.connection.discoveredTools).toHaveLength(2);
 
-    const applied = await applyToolConnection(created.id, trigger, db);
+    const applied = await applyToolConnection(created.id, trigger, null, db);
     expect(applied.tools.map((tool) => tool.name)).toEqual(["forecast", "history"]);
     expect(applied.drift).toMatchObject({ added: [], changed: [], removed: [] });
     expect(applied.tools[0].inputSchema).toMatchObject({ type: "object" });
@@ -242,20 +248,20 @@ describe("tool connection discovery", () => {
 
   it("sends the operator's auth headers to the server", async () => {
     const created = await connection();
-    await discoverToolConnection(created.id, trigger, db);
+    await discoverToolConnection(created.id, trigger, null, db);
     expect(remote.lastHeaders().authorization).toBe("Bearer secret-token");
   });
 
   it("reports drift without changing what the model is offered", async () => {
     const created = await connection();
-    await discoverToolConnection(created.id, trigger, db);
-    await applyToolConnection(created.id, trigger, db);
+    await discoverToolConnection(created.id, trigger, null, db);
+    await applyToolConnection(created.id, trigger, null, db);
 
     remote.setTools([
       { name: "forecast", description: "Tomorrow, now with wind", inputShape: { city: z.string() } },
       { name: "radar", description: "Live radar" },
     ]);
-    const report = await discoverToolConnection(created.id, trigger, db);
+    const report = await discoverToolConnection(created.id, trigger, null, db);
 
     expect(report.diff).toEqual({
       added: ["radar"],
@@ -267,7 +273,7 @@ describe("tool connection discovery", () => {
     expect(report.connection.tools.map((tool) => tool.name)).toEqual(["forecast", "history"]);
     expect(report.connection.tools[0].description).toBe("Tomorrow's weather");
 
-    const applied = await applyToolConnection(created.id, trigger, db);
+    const applied = await applyToolConnection(created.id, trigger, null, db);
     expect(applied.tools.map((tool) => tool.name)).toEqual(["forecast", "radar"]);
     expect(applied.tools.find((tool) => tool.name === "forecast")?.description).toBe(
       "Tomorrow, now with wind",
@@ -276,11 +282,11 @@ describe("tool connection discovery", () => {
 
   it("records an unreachable server without losing the applied toolset", async () => {
     const created = await connection();
-    await discoverToolConnection(created.id, trigger, db);
-    await applyToolConnection(created.id, trigger, db);
+    await discoverToolConnection(created.id, trigger, null, db);
+    await applyToolConnection(created.id, trigger, null, db);
 
     remote.failWith(503);
-    const report = await discoverToolConnection(created.id, trigger, db);
+    const report = await discoverToolConnection(created.id, trigger, null, db);
 
     expect(report.ok).toBe(false);
     expect(report.error).toMatch(/streamable-http/);
@@ -294,7 +300,7 @@ describe("tool connection discovery", () => {
 
   it("refuses to apply a connection nobody has discovered", async () => {
     const created = await connection();
-    await expect(applyToolConnection(created.id, trigger, db)).rejects.toThrow(
+    await expect(applyToolConnection(created.id, trigger, null, db)).rejects.toThrow(
       /Discover this connection/,
     );
   });
@@ -342,10 +348,11 @@ describe("connection toolset", () => {
         ...overrides,
       },
       trigger,
+      null,
       db,
     );
-    await discoverToolConnection(created.id, trigger, db);
-    await applyToolConnection(created.id, trigger, db);
+    await discoverToolConnection(created.id, trigger, null, db);
+    await applyToolConnection(created.id, trigger, null, db);
     return created;
   }
 
@@ -372,13 +379,14 @@ describe("connection toolset", () => {
         assistantIds: [],
       },
       trigger,
+      null,
       db,
     );
-    await discoverToolConnection(created.id, trigger, db);
+    await discoverToolConnection(created.id, trigger, null, db);
     // Discovered, not applied: the model is offered nothing.
     expect(await names({ source: "tg" })).toEqual([]);
 
-    await applyToolConnection(created.id, trigger, db);
+    await applyToolConnection(created.id, trigger, null, db);
     await pool.query(`update tool_connections set enabled = false`);
     expect(await names({ source: "tg" })).toEqual([]);
   });
@@ -476,7 +484,7 @@ describe("managed source connections", () => {
   it("registers a deployed source and applies its toolset without an operator", async () => {
     await reconcileManagedConnections({ kind: "system" }, db);
 
-    const [connection] = await getToolConnections(db);
+    const [connection] = await getToolConnections(null, db);
     expect(connection).toMatchObject({
       slug: "tg",
       appScope: "tg",
@@ -539,3 +547,151 @@ describe("managed source connections", () => {
   });
 });
 
+describe("ownership + the public-address guard (Phase 9)", () => {
+  const trigger = { kind: "dashboard" } as const;
+
+  const base = {
+    slug: "mine",
+    name: "My tools",
+    transport: "http" as const,
+    endpointUrl: "https://tools.example.test/mcp",
+    authHeaders: {},
+    enabled: true,
+    appScope: null,
+    allAssistants: false,
+    assistantIds: [] as string[],
+  };
+
+  async function seedAccount(role: "admin" | "user"): Promise<{ id: string; role: "admin" | "user" }> {
+    const id = randomUUID();
+    await pool.query(
+      `INSERT INTO accounts (id, username, password_hash, role, session_secret)
+       VALUES ($1, $2, 'scrypt:x', $3, 's')`,
+      [id, `acct-${id.slice(0, 8)}`, role],
+    );
+    return { id, role };
+  }
+
+  it("stamps the creator as owner and scopes listings per role", async () => {
+    const admin = await seedAccount("admin");
+    const user = await seedAccount("user");
+    const theirAssistant = await createAssistant({ name: "Mine", persona: "" }, trigger, user, db);
+
+    const adminConn = await createToolConnection(
+      { ...base, slug: "shared", allAssistants: true },
+      trigger,
+      admin,
+      db,
+    );
+    const userConn = await createToolConnection(
+      { ...base, assistantIds: [theirAssistant.id] },
+      trigger,
+      user,
+      db,
+    );
+    expect(adminConn.ownerAccountId).toBe(admin.id);
+    expect(userConn.ownerAccountId).toBe(user.id);
+
+    // The admin sees both; the user only their own — by id and by list.
+    expect((await getToolConnections(admin, db)).map((c) => c.slug).sort()).toEqual([
+      "mine",
+      "shared",
+    ]);
+    expect((await getToolConnections(user, db)).map((c) => c.slug)).toEqual(["mine"]);
+    expect(await getToolConnection(adminConn.id, user, db)).toBeNull();
+    await expect(
+      editToolConnection(adminConn.id, { name: "hijacked" }, trigger, user, db),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(removeToolConnection(adminConn.id, trigger, user, db)).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
+  it("holds user connections to their restrictions at create and update", async () => {
+    const user = await seedAccount("user");
+    const other = await seedAccount("user");
+    const own = await createAssistant({ name: "Own", persona: "" }, trigger, user, db);
+    const foreign = await createAssistant({ name: "Foreign", persona: "" }, trigger, other, db);
+
+    // Private endpoints, app scope, all-assistants, and foreign assistants
+    // are each refused.
+    await expect(
+      createToolConnection(
+        { ...base, endpointUrl: "http://192.168.1.10/mcp", assistantIds: [own.id] },
+        trigger,
+        user,
+        db,
+      ),
+    ).rejects.toThrow(/public addresses only/);
+    await expect(
+      createToolConnection(
+        { ...base, appScope: "tg", assistantIds: [own.id] },
+        trigger,
+        user,
+        db,
+      ),
+    ).rejects.toThrow(/cannot be scoped to an app/);
+    await expect(
+      createToolConnection({ ...base, allAssistants: true }, trigger, user, db),
+    ).rejects.toThrow(/select specific assistants/);
+    await expect(
+      createToolConnection({ ...base, assistantIds: [foreign.id] }, trigger, user, db),
+    ).rejects.toThrow(/only serve your own assistants/);
+
+    // A valid one exists; an update may not walk it out of the rules.
+    const created = await createToolConnection(
+      { ...base, assistantIds: [own.id] },
+      trigger,
+      user,
+      db,
+    );
+    await expect(
+      editToolConnection(created.id, { endpointUrl: "http://10.0.0.5/mcp" }, trigger, user, db),
+    ).rejects.toThrow(/public addresses only/);
+    await expect(
+      editToolConnection(created.id, { allAssistants: true }, trigger, user, db),
+    ).rejects.toThrow(/select specific assistants/);
+    // The same admin edit is fine — restrictions follow the OWNER, not the actor.
+    const admin = await seedAccount("admin");
+    await expect(
+      editToolConnection(created.id, { endpointUrl: "http://10.0.0.5/mcp" }, trigger, admin, db),
+    ).rejects.toThrow(/public addresses only/);
+  });
+
+  it("refuses a private endpoint at call time, judged by the owner's current role", async () => {
+    const user = await seedAccount("user");
+    const own = await createAssistant({ name: "Own", persona: "" }, trigger, user, db);
+    const created = await createToolConnection(
+      { ...base, assistantIds: [own.id] },
+      trigger,
+      user,
+      db,
+    );
+    // The endpoint turns private behind the service's back (an admin edit
+    // can do this legitimately for an admin-owned row; simulate drift by
+    // writing the column directly) — the call-time check still refuses.
+    await pool.query(`UPDATE tool_connections SET endpoint_url = 'http://127.0.0.1:9/mcp' WHERE id = $1`, [
+      created.id,
+    ]);
+    await pool.query(
+      `INSERT INTO tool_connection_tools (connection_id, name, description, input_schema)
+       VALUES ($1, 'ping', 'ping', '{}'::jsonb)`,
+      [created.id],
+    );
+
+    const { resolveConnectionToolset } = await import("./toolset");
+    const toolset = await resolveConnectionToolset({ source: "tg", assistantId: own.id }, db);
+    expect(toolset.owns("mine__ping")).toBe(true);
+    const result = await toolset.callTool("mine__ping", {});
+    expect(result.isError).toBe(true);
+    expect(result.text).toMatch(/not a public address/);
+
+    // Promote the owner to admin: the same row stops being restricted.
+    await pool.query(`UPDATE accounts SET role = 'admin' WHERE id = $1`, [user.id]);
+    const unrestricted = await resolveConnectionToolset({ source: "tg", assistantId: own.id }, db);
+    const after = await unrestricted.callTool("mine__ping", {});
+    // Now it actually dials (and fails to connect) rather than refusing.
+    expect(after.isError).toBe(true);
+    expect(after.text).not.toMatch(/not a public address/);
+  });
+});

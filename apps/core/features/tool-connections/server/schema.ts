@@ -109,6 +109,8 @@ export const toolConnectionSchema = z.object({
   /** Assistant ids allowed to call it when `allAssistants` is false. */
   assistantIds: z.array(z.string()),
   managed: z.boolean(),
+  /** The owning account, or null for managed/system rows. */
+  ownerAccountId: z.string().nullable(),
   lastDiscoveredAt: z.string().datetime().nullable(),
   lastError: z.string().nullable(),
   /** What the last discovery saw, or null before the first one. */

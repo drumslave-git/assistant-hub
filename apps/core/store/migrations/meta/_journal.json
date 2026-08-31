@@ -85,6 +85,13 @@
       "when": 1788179057440,
       "tag": "0011_pink_galactus",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788181620210,
+      "tag": "0012_natural_argent",
+      "breakpoints": true
     }
   ]
 }

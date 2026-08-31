@@ -671,6 +671,15 @@ export const toolConnections = pgTable(
      * enable/scope them but not delete or re-point them.
      */
     managed: boolean("managed").notNull().default(false),
+    /**
+     * The owning account (Phase 9). Null for managed/system rows. A
+     * connection whose owner's CURRENT role is `user` is restricted: it may
+     * scope only to that account's assistants and may target public
+     * addresses only. Dies with its account (offboarding cascade).
+     */
+    ownerAccountId: text("owner_account_id").references(() => accounts.id, {
+      onDelete: "cascade",
+    }),
     /** Last successful discovery, and the last failure's message (if any). */
     lastDiscoveredAt: timestamp("last_discovered_at", { withTimezone: true }),
     lastError: text("last_error"),

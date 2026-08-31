@@ -7,6 +7,7 @@ import { listRemoteTools } from "@/server/mcp/http-client";
 import { publishEvent } from "@/server/realtime/hub";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { withTrace } from "@/server/trace";
+import { mayActOn, type Actor } from "@/server/ownership";
 import { describeDiff, diffToolsets, hasDrift, type ToolsetDiff } from "./diff";
 import {
   getToolConnectionById,
@@ -14,7 +15,7 @@ import {
   replaceSnapshot,
   type ToolConnectionRecord,
 } from "./repository";
-import { appliedTools, toClient } from "./service";
+import { appliedTools, assertPublicWhenUserOwned, toClient } from "./service";
 import type { ToolConnection } from "./schema";
 
 /**
@@ -61,12 +62,16 @@ async function reload(db: StoreDb, id: string): Promise<ToolConnectionRecord> {
 export async function discoverToolConnection(
   id: string,
   trigger: TraceTrigger,
+  actor: Actor | null = null,
   db: StoreDb = getStoreDb(),
 ): Promise<DiscoveryReport> {
   return withTrace(
     { feature: FEATURE.id, action: "discover", trigger, inputSummary: `connection ${id}` },
     async (trace) => {
       const record = await reload(db, id);
+      if (!mayActOn(actor, record.ownerAccountId)) {
+        throw ApiError.notFound("Unknown tool connection");
+      }
       trace.relate(FEATURE.relatedIdsKey, [id]);
       await trace.event({
         type: "input",
@@ -76,6 +81,9 @@ export async function discoverToolConnection(
       if (record.transport !== "http") {
         throw ApiError.badRequest("Only http connections can be discovered in this version");
       }
+      // Phase 9: a user-owned endpoint must be public — checked at every
+      // point the core would dial it, discovery included.
+      await assertPublicWhenUserOwned(db, record);
 
       let discovered;
       try {
@@ -134,12 +142,16 @@ export async function discoverToolConnection(
 export async function applyToolConnection(
   id: string,
   trigger: TraceTrigger,
+  actor: Actor | null = null,
   db: StoreDb = getStoreDb(),
 ): Promise<ToolConnection> {
   return withTrace(
     { feature: FEATURE.id, action: "apply", trigger, inputSummary: `connection ${id}` },
     async (trace) => {
       const record = await reload(db, id);
+      if (!mayActOn(actor, record.ownerAccountId)) {
+        throw ApiError.notFound("Unknown tool connection");
+      }
       trace.relate(FEATURE.relatedIdsKey, [id]);
       const discovered = record.discoveredTools;
       if (!discovered) {
