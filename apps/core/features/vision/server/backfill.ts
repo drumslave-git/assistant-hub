@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { withAdvisoryLock } from "@/server/jobs/lock";
@@ -81,7 +80,7 @@ export async function runVisionBackfill(
   source: VisionBackfillSource,
   options: VisionBackfillOptions = {},
   /** Where the advisory lock lives (the app's own DB; injectable in tests). */
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<VisionBackfillResult> {
   const isAborted = options.isAborted ?? (() => false);
   const onProgress = options.onProgress ?? (() => {});

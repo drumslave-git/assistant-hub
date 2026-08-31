@@ -1,7 +1,9 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { memoryExtractionDays } from "@/db/schema";
+import type { StoreDb } from "@/server/store/db";
+import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
+
+import { memoryExtractionDays } from "../../../store/schema";
 import type { SummaryDate } from "@/features/history/summary";
 import type { SourceContentClient } from "@/server/source/tg-content";
 
@@ -34,7 +36,7 @@ export interface PendingExtractionDay {
  * the LLM) on every run forever.
  */
 export async function stampExtractionDay(
-  db: DrizzleDb,
+  db: StoreDb,
   input: {
     chatId: string;
     extractionDate: SummaryDate;
@@ -43,7 +45,7 @@ export async function stampExtractionDay(
   },
 ): Promise<void> {
   const marker = {
-    chatId: input.chatId,
+    chatRef: scopedRef("tg", "chat", input.chatId),
     extractionDate: input.extractionDate,
     messageCount: input.messageCount,
     noteCount: input.noteCount,
@@ -53,7 +55,7 @@ export async function stampExtractionDay(
     .insert(memoryExtractionDays)
     .values(marker)
     .onConflictDoUpdate({
-      target: [memoryExtractionDays.chatId, memoryExtractionDays.extractionDate],
+      target: [memoryExtractionDays.chatRef, memoryExtractionDays.extractionDate],
       set: marker,
     });
 }
@@ -74,7 +76,7 @@ export async function stampExtractionDay(
  */
 export async function listDaysNeedingExtraction(
   content: SourceContentClient,
-  db: DrizzleDb,
+  db: StoreDb,
   params: { timeZone: string; today: SummaryDate; limit: number },
 ): Promise<PendingExtractionDay[]> {
   // The counts come from the owning source's mirror; the markers are this
@@ -83,12 +85,20 @@ export async function listDaysNeedingExtraction(
     content.dayCounts(params.timeZone, params.today),
     db
       .select({
-        chatId: memoryExtractionDays.chatId,
+        chatRef: memoryExtractionDays.chatRef,
         extractionDate: memoryExtractionDays.extractionDate,
         messageCount: memoryExtractionDays.messageCount,
       })
       .from(memoryExtractionDays)
-      .then((rows) => new Map(rows.map((row) => [`${row.chatId}|${row.extractionDate}`, row.messageCount]))),
+      .then(
+        (rows) =>
+          new Map(
+            rows.map((row) => [
+              `${tryParseScopedRef(row.chatRef)?.id ?? row.chatRef}|${row.extractionDate}`,
+              row.messageCount,
+            ]),
+          ),
+      ),
   ]);
   return days
     .filter((day) => markers.get(`${day.chatId}|${day.date}`) !== day.messageCount)
@@ -103,7 +113,7 @@ export async function listDaysNeedingExtraction(
 /** How many (chat, day) pairs are still awaiting extraction — for the dashboard. */
 export async function countDaysNeedingExtraction(
   content: SourceContentClient,
-  db: DrizzleDb,
+  db: StoreDb,
   params: { timeZone: string; today: SummaryDate },
 ): Promise<number> {
   const pending = await listDaysNeedingExtraction(content, db, { ...params, limit: 1_000_000 });

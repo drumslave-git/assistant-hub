@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
 import { renderMediaSuffix, type MediaAnnotation } from "@/features/vision/format";
 import { FEATURES } from "@/lib/features";
@@ -120,7 +119,7 @@ async function embedBatch(
  */
 export async function runMessageIndexing(
   options: IndexMessagesOptions = {},
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
   content: SourceContentClient = requireSourceContent(),
 ): Promise<IndexMessagesResult> {
   const isAborted = options.isAborted ?? (() => false);

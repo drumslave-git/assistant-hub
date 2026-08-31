@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { fakeSourceContent } from "@/test/fake-source-content";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
 import { buildSearchableText, runMessageIndexing } from "./index-messages";
 import { searchHistoryMessages } from "./search";
@@ -22,10 +22,10 @@ import { searchHistoryMessages } from "./search";
 const CHAT = "-1001";
 const BEA = "200";
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getDb } from "@/db/drizzle";
+import { getStoreDb } from "@/server/store/db";
 import { getBackgroundRuntime, getTimezone } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { createDailyScheduler } from "@/server/jobs/daily-scheduler";
@@ -141,7 +141,7 @@ function bucketKeyOfHour(insightHour: string, granularity: Granularity): string 
  * of the scored hours, newest first.
  */
 export async function getRegenerateBuckets(): Promise<Record<Granularity, string[]>> {
-  const hours = await listInsightHours(getDb()).catch(() => []);
+  const hours = await listInsightHours(getStoreDb()).catch(() => []);
   const out = {} as Record<Granularity, string[]>;
   for (const g of GRANULARITIES) {
     out[g] = g === "all" ? ["all"] : [...new Set(hours.map((h) => bucketKeyOfHour(h, g)))];
@@ -161,7 +161,7 @@ export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
   const content = resolveSourceContent();
   const [pendingUnits, regenerateBuckets] = await Promise.all([
     content
-      ? countHoursNeedingInsight(content, getDb(), {
+      ? countHoursNeedingInsight(content, getStoreDb(), {
           timeZone: base.timezone,
           currentHour,
           // Read-only use of the due-scan floor: the count answers the same

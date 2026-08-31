@@ -3,7 +3,6 @@ import "server-only";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { getDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { resolveChatUserByReference } from "@/features/known-users/server/service";
@@ -243,7 +242,7 @@ export function mergeMatches(
 async function resolveLabels(records: ChatMessageRecord[]): Promise<Map<string, string>> {
   const userIds = [...new Set(records.map((r) => r.userId).filter((id): id is string => !!id))];
   if (userIds.length === 0) return new Map();
-  const users = await getKnownUsersByIds(getDb(), userIds);
+  const users = await getKnownUsersByIds(undefined, userIds);
   return new Map(users.map((user) => [user.userId, formatKnownUserLabel(user)]));
 }
 

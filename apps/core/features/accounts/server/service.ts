@@ -5,7 +5,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
-import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
+import { scopedRef } from "@assistant-hub/contracts";
 
 import { getAssistants, removeAssistant } from "@/features/assistants/server/service";
 import { deleteUserMemory } from "@/features/memory/server/repository";
@@ -16,7 +16,6 @@ import {
   replacePersonLinkMembers,
 } from "@/features/person-links/server/repository";
 import { resolveLinkedRefs } from "@/features/person-links/server/service";
-import { getDb } from "@/db/drizzle";
 import {
   deleteAccountRow,
   getAccountById,
@@ -242,20 +241,9 @@ export async function deleteAccountHard(
       const accountRef = scopedRef("chat", "user", row.id);
       const linked = (await resolveLinkedRefs([accountRef], db)).get(accountRef) ?? [accountRef];
       let forgotten = 0;
-      try {
-        const v1 = getDb();
-        for (const ref of linked) {
-          const parsed = tryParseScopedRef(ref);
-          if (parsed?.kind !== "user") continue;
-          if (await deleteUserMemory(v1, parsed.id).catch(() => false)) forgotten += 1;
-        }
-      } catch (err) {
-        await trace.event({
-          type: "step",
-          level: "warn",
-          message: "memory store unreachable - person memory not cleared",
-          data: { error: err instanceof Error ? err.message : String(err) },
-        });
+      for (const ref of linked) {
+        // The memory keyspace is scoped refs since the cutover.
+        if (await deleteUserMemory(db, ref).catch(() => false)) forgotten += 1;
       }
 
       // Leave the link graph consistent: the account's identity goes; the

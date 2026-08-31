@@ -14,7 +14,6 @@ import {
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { closePool } from "@/db/pool";
 import { resetEnvCache } from "@/server/env";
 import { closeStorePool } from "@/server/store/db";
 import type { MediaRecord } from "@/features/vision/server/repository";
@@ -25,7 +24,6 @@ import { getTraceDetail, listTraces } from "@/server/trace";
 import { createTurnActionMarkers } from "./actions";
 import { handleInboundJob, type TurnConsumerContext } from "./consume";
 
-const V1_MIGRATIONS = fileURLToPath(new URL("../../db/migrations", import.meta.url));
 const STORE_MIGRATIONS = fileURLToPath(new URL("../../store/migrations", import.meta.url));
 
 /** A fully-addressed synthetic inbound event (invented ids/names only). */
@@ -109,13 +107,9 @@ describe("inbound turn consumer", () => {
 
   beforeAll(async () => {
     pg = await startTestPostgres();
-    const v1Url = await pg.createDatabase("v1_brain");
     const storeUrl = await pg.createDatabase("core_store");
-    await applyMigrations(v1Url, V1_MIGRATIONS);
     await applyMigrations(storeUrl, STORE_MIGRATIONS);
-    // The brain services (policy, persona, memory, tasks) read the v1 DB via
-    // the app's own pool; the markers live in the v2 store.
-    process.env.DATABASE_URL = v1Url;
+    // The whole brain reads the ONE core store since the Phase 10 cutover.
     process.env.STORE_DATABASE_URL = storeUrl;
     storePool = new Pool({ connectionString: storeUrl });
     // The event's assistant: its NAME is the spoken-summons identity the
@@ -136,7 +130,6 @@ describe("inbound turn consumer", () => {
     // production code — close it before the container stops, or its dying
     // clients surface as unhandled errors and fail an all-green run.
     await closeStorePool();
-    await closePool();
     await pg?.stop();
   });
 
@@ -215,13 +208,15 @@ describe("inbound turn consumer", () => {
     const { insertPreference, insertCorrection } = await import(
       "@/features/self-improvement/server/repository"
     );
-    const { getDb } = await import("@/db/drizzle");
-    const { knownUsers } = await import("@/db/schema");
-    await getDb()
-      .insert(knownUsers)
-      .values({ userId: "5001", username: "alice_example", firstName: "Alice" })
-      .onConflictDoNothing();
-    await insertPreference(getDb(), {
+    const { getStoreDb } = await import("@/server/store/db");
+    const { upsertKnownUser } = await import("@/features/known-users/server/repository");
+    await upsertKnownUser(getStoreDb(), {
+      userId: "5001",
+      username: "alice_example",
+      firstName: "Alice",
+      lastName: null,
+    });
+    await insertPreference(getStoreDb(), {
       id: crypto.randomUUID(),
       userId: "5001",
       model: "fixture-model",
@@ -229,7 +224,7 @@ describe("inbound turn consumer", () => {
       dislikes: "emoji walls",
       version: 1,
     });
-    await insertCorrection(getDb(), {
+    await insertCorrection(getStoreDb(), {
       id: crypto.randomUUID(),
       model: "fixture-model",
       correction: "Answer in fewer words.",
@@ -305,21 +300,9 @@ describe("inbound turn consumer", () => {
     const markers = await storePool.query(`SELECT * FROM turn_actions`);
     expect(markers.rows).toEqual([]);
 
-    // The transitional shadow directory mirrored the event's identity into
-    // the v1 tables the brain still FKs and reads (labels, rosters).
-    const { knownGroups, groupMembers } = await import("@/db/schema");
-    const users = await getDb().select().from(knownUsers);
-    const alice = users.find((u) => u.userId === "5001");
-    expect(alice).toMatchObject({ username: "alice_example", aliases: ["Al"] });
-    // Participants join the roster without clobbering profile names.
-    expect(users.some((u) => u.userId === "5002")).toBe(true);
-    const groups = await getDb().select().from(knownGroups);
-    expect(groups.find((g) => g.chatId === "-300")).toMatchObject({
-      title: "Fixture Group",
-      notes: "seeded for the consumer test",
-    });
-    const members = await getDb().select().from(groupMembers);
-    expect(members.filter((m) => m.chatId === "-300")).toHaveLength(2);
+    // Identity capture is the INGEST's job since the shadow directory died
+    // (Phase 10): the consumer no longer writes any directory rows — the
+    // ingest suite owns that behavior against source_users/source_chats.
   });
 
   it("runs a web-thread turn: no bot account, its own surface, its own trigger", async () => {
@@ -489,11 +472,12 @@ describe("inbound turn consumer", () => {
     expect(currentTurn?.content).toBe("[#40] Aria: @second_bot what do you make of it?");
 
     // The authoring bot account is not a person: it never enters the
-    // directory the brain reads.
-    const { getDb } = await import("@/db/drizzle");
-    const { knownUsers } = await import("@/db/schema");
-    const users = await getDb().select().from(knownUsers);
-    expect(users.some((u) => u.userId === "9001")).toBe(false);
+    // directory the brain reads (capture is the ingest's, which skips bot
+    // senders; the consumer writes no directory rows at all since Phase 10).
+    const botRows = await storePool.query(
+      `SELECT count(*)::int AS n FROM source_users WHERE user_id = '9001'`,
+    );
+    expect(botRows.rows[0].n).toBe(0);
   });
 
   it("goes silent once the chat holds the configured run of assistant messages", async () => {

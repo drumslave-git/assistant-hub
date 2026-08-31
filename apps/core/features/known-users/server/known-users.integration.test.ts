@@ -5,7 +5,7 @@ import {
   upsertKnownGroup,
 } from "@/features/known-groups/server/repository";
 import { listTraces } from "@/server/trace";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 import { getKnownUser, upsertKnownUser } from "./repository";
 import {
   addAliasByReference,
@@ -24,10 +24,10 @@ vi.mock("@/server/source/directory", () => ({
   writeSourceChat: vi.fn(),
 }));
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {

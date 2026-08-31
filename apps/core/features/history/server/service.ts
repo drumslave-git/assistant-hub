@@ -1,11 +1,11 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { renderMediaSuffix, type MediaAnnotation } from "@/features/vision/format";
 import { requireSourceContent, type SourceChatMessage } from "@/server/source/tg-content";
 import { sourceDirectoryClient } from "@/server/source-store/directory-client";
+import type { StoreDb } from "@/server/store/db";
 import { getLatestTraceIdsByCorrelation } from "@/server/trace";
 import {
   botReactionSuffix,
@@ -27,7 +27,7 @@ import type { SourceContentClient } from "@/server/source/tg-content";
 
 /** Resolve known-user labels for every sender in a set of rows. */
 export async function resolveSpeakerLabels(
-  db: DrizzleDb,
+  db: StoreDb | undefined,
   records: readonly ChatMessageRecord[],
 ): Promise<Map<string, string>> {
   const userIds = collectUserIds(records);
@@ -67,7 +67,7 @@ export interface ChatDayTranscript {
  */
 export async function loadChatDayTranscript(
   content: SourceContentClient,
-  db: DrizzleDb,
+  db: StoreDb,
   chatId: string,
   date: SummaryDate,
   timeZone: string,

@@ -1,7 +1,9 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { chatSummaryDays } from "@/db/schema";
+import type { StoreDb } from "@/server/store/db";
+import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
+
+import { chatSummaryDays } from "../../../store/schema";
 import type { SummaryDate } from "../summary";
 
 export type { SourceSummary as ChatSummaryRecord } from "@/server/source/tg-content";
@@ -24,15 +26,22 @@ export interface SummaryDayMarker {
 }
 
 /** Every marker, keyed `chatId|date` for the scan's comparison. */
-export async function listSummaryDayMarkers(db: DrizzleDb): Promise<Map<string, number>> {
+export async function listSummaryDayMarkers(db: StoreDb): Promise<Map<string, number>> {
   const rows = await db
     .select({
-      chatId: chatSummaryDays.chatId,
+      chatRef: chatSummaryDays.chatRef,
       summaryDate: chatSummaryDays.summaryDate,
       messageCount: chatSummaryDays.messageCount,
     })
     .from(chatSummaryDays);
-  return new Map(rows.map((row) => [`${row.chatId}|${row.summaryDate}`, row.messageCount]));
+  // The store keys markers by scoped ref (Phase 10); the scan compares by
+  // the tg-local chat id it walks.
+  return new Map(
+    rows.map((row) => [
+      `${tryParseScopedRef(row.chatRef)?.id ?? row.chatRef}|${row.summaryDate}`,
+      row.messageCount,
+    ]),
+  );
 }
 
 /**
@@ -41,7 +50,7 @@ export async function listSummaryDayMarkers(db: DrizzleDb): Promise<Map<string, 
  * re-summarized on every run forever (v1 semantics).
  */
 export async function upsertSummaryDayMarker(
-  db: DrizzleDb,
+  db: StoreDb,
   input: {
     chatId: string;
     summaryDate: SummaryDate;
@@ -49,12 +58,13 @@ export async function upsertSummaryDayMarker(
     topicCount: number;
   },
 ): Promise<void> {
-  const marker = { ...input, summarizedAt: new Date() };
+  const { chatId, ...rest } = input;
+  const marker = { ...rest, chatRef: scopedRef("tg", "chat", chatId), summarizedAt: new Date() };
   await db
     .insert(chatSummaryDays)
     .values(marker)
     .onConflictDoUpdate({
-      target: [chatSummaryDays.chatId, chatSummaryDays.summaryDate],
+      target: [chatSummaryDays.chatRef, chatSummaryDays.summaryDate],
       set: marker,
     });
 }

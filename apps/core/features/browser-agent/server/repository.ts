@@ -2,12 +2,12 @@ import "server-only";
 
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 
-import type { DrizzleDb } from "@/db/drizzle";
+import type { StoreDb } from "@/server/store/db";
 import {
   browserAgentRuns,
   browserRunScreenshots,
   type BrowserAgentRunRow,
-} from "@/db/schema";
+} from "../../../store/schema";
 
 import type {
   BrowserAgentRun,
@@ -21,7 +21,7 @@ import { getLiveState } from "./live-state";
 /**
  * Typed persistence for browser-agent runs and their screenshots. Pure data
  * access — no policy, no browser, no trace recording (the service/runner own
- * those). Every function takes a {@link DrizzleDb} so it runs against the pool or
+ * those). Every function takes a {@link StoreDb} so it runs against the pool or
  * a test instance.
  */
 
@@ -69,7 +69,7 @@ function mapRow(row: BrowserAgentRunRow): BrowserAgentRun {
 
 /** All runs (optionally scoped to one chat), newest first. */
 export async function listBrowserAgentRuns(
-  db: DrizzleDb,
+  db: StoreDb,
   chatId?: string,
 ): Promise<BrowserAgentRun[]> {
   const rows = await db.query.browserAgentRuns.findMany({
@@ -81,7 +81,7 @@ export async function listBrowserAgentRuns(
 
 /** One run by id, or null. */
 export async function getBrowserAgentRun(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
 ): Promise<BrowserAgentRun | null> {
   const row = await db.query.browserAgentRuns.findFirst({
@@ -92,7 +92,7 @@ export async function getBrowserAgentRun(
 
 /** One run plus its activity feed, screenshot seqs, and live state, or null. */
 export async function getBrowserAgentRunDetail(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
 ): Promise<BrowserAgentRunDetail | null> {
   const row = await db.query.browserAgentRuns.findFirst({ where: eq(browserAgentRuns.id, id) });
@@ -115,7 +115,7 @@ export async function getBrowserAgentRunDetail(
 
 /** Append one completed action to a run's activity feed. Returns the new length (seq). */
 export async function appendBrowserRunStep(
-  db: DrizzleDb,
+  db: StoreDb,
   runId: string,
   step: Omit<BrowserRunStep, "seq">,
 ): Promise<void> {
@@ -130,7 +130,7 @@ export async function appendBrowserRunStep(
 
 /** Insert a queued run with an app-generated id. Returns the stored record. */
 export async function insertBrowserAgentRun(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
   values: InsertBrowserAgentRun,
 ): Promise<BrowserAgentRun> {
@@ -152,7 +152,7 @@ export async function insertBrowserAgentRun(
 }
 
 /** Queued runs, oldest-first — the runner's work queue. */
-export async function listQueuedBrowserAgentRuns(db: DrizzleDb): Promise<BrowserAgentRun[]> {
+export async function listQueuedBrowserAgentRuns(db: StoreDb): Promise<BrowserAgentRun[]> {
   const rows = await db
     .select()
     .from(browserAgentRuns)
@@ -167,7 +167,7 @@ export async function listQueuedBrowserAgentRuns(db: DrizzleDb): Promise<Browser
  * worker (or a redeploy) already took it — the atomic guard against double-run.
  */
 export async function claimBrowserAgentRun(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
 ): Promise<BrowserAgentRun | null> {
   const [row] = await db
@@ -180,7 +180,7 @@ export async function claimBrowserAgentRun(
 
 /** Attach the execution trace id to a running run (for Debug drill-down). */
 export async function setBrowserAgentRunTrace(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
   traceId: string,
 ): Promise<void> {
@@ -193,7 +193,7 @@ export async function setBrowserAgentRunTrace(
  * is deliberately not written here — the count already reflects every step.
  */
 export async function settleBrowserAgentRun(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
   input: {
     status: Extract<BrowserRunStatus, "done" | "failed">;
@@ -219,7 +219,7 @@ export async function settleBrowserAgentRun(
  * Called once at startup so a dead run never blocks the dashboard as "running"
  * forever. Returns how many were reset.
  */
-export async function failStaleRunningRuns(db: DrizzleDb): Promise<number> {
+export async function failStaleRunningRuns(db: StoreDb): Promise<number> {
   const rows = await db
     .update(browserAgentRuns)
     .set({
@@ -234,7 +234,7 @@ export async function failStaleRunningRuns(db: DrizzleDb): Promise<number> {
 
 /** Store one screenshot's bytes at the given capture sequence. */
 export async function insertBrowserRunScreenshot(
-  db: DrizzleDb,
+  db: StoreDb,
   input: { runId: string; seq: number; url: string | null; title: string | null; data: Buffer },
 ): Promise<void> {
   await db.insert(browserRunScreenshots).values({
@@ -248,7 +248,7 @@ export async function insertBrowserRunScreenshot(
 
 /** One screenshot's bytes by (run, seq), or null. */
 export async function getBrowserRunScreenshot(
-  db: DrizzleDb,
+  db: StoreDb,
   runId: string,
   seq: number,
 ): Promise<Buffer | null> {

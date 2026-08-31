@@ -3,8 +3,7 @@ import "server-only";
 import type { SourceId } from "@assistant-hub/contracts";
 import type { Message } from "@grammyjs/types";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type {
@@ -156,7 +155,7 @@ async function loadDetectedMedia(
  */
 export async function ingestMessageMedia(
   params: { token: string; chatId: string; telegramMessageId: number; message: Message },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<{
   images: ImagePayload[];
   kind: MediaKind;
@@ -232,7 +231,7 @@ export async function ingestMessageMedia(
  */
 export async function resolveMediaText(
   params: { token: string; chatId: string; message: Message; trace?: TraceRecorder },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<{ kind: MediaKind; description: string | null } | null> {
   const detected = detectMessageMedia(params.message);
   if (!detected) return null;
@@ -377,7 +376,7 @@ export interface MediaStorePort {
 }
 
 /** The v1 database-backed {@link MediaStorePort}. */
-export function dbMediaStore(db: DrizzleDb): MediaStorePort {
+export function dbMediaStore(db: StoreDb): MediaStorePort {
   return {
     getByMessage: (chatId, telegramMessageId) => getMediaByMessage(db, chatId, telegramMessageId),
     markDescribed: (id, description) => markDescribed(db, id, description),
@@ -387,7 +386,7 @@ export function dbMediaStore(db: DrizzleDb): MediaStorePort {
 
 /** How a describe/transcribe pass records itself and where it reads/writes. */
 export interface DescribeAndStoreOptions {
-  db?: DrizzleDb;
+  db?: StoreDb;
   /** Storage owner override — see {@link MediaStorePort}. Default: this DB. */
   store?: MediaStorePort;
   /**
@@ -418,7 +417,7 @@ export async function describeAndStore(
   deps: DescribeDeps,
   options: DescribeAndStoreOptions = {},
 ): Promise<MediaRecord | null> {
-  const store = options.store ?? dbMediaStore(options.db ?? getDb());
+  const store = options.store ?? dbMediaStore(options.db ?? getStoreDb());
   const media = await store.getByMessage(params.chatId, params.telegramMessageId).catch(
     () => null,
   );
@@ -631,7 +630,7 @@ async function storeDescription(
 export async function getMediaAnnotationsForMessages(
   chatId: string,
   telegramMessageIds: number[],
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Map<number, MediaAnnotation>> {
   return getMediaAnnotations(db, chatId, telegramMessageIds);
 }
@@ -644,7 +643,7 @@ export async function getMediaAnnotationsForMessages(
 export async function getMediaSuffixesForMessages(
   chatId: string,
   telegramMessageIds: number[],
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Map<number, string>> {
   const annotations = await getMediaAnnotations(db, chatId, telegramMessageIds);
   const suffixes = new Map<number, string>();

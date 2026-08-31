@@ -4,7 +4,7 @@ import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces } from "@/server/trace";
 import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
 import {
   countDaysNeedingSummary,
@@ -23,10 +23,10 @@ import {
  * tg app and is pinned by its content suite.
  */
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {

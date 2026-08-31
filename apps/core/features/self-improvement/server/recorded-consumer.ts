@@ -2,8 +2,7 @@ import "server-only";
 
 import { parseScopedRef, type FeedbackRecordedEvent } from "@assistant-hub/contracts";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { FEATURES } from "@/lib/features";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -38,7 +37,7 @@ export interface RecordedConsumerDeps {
   ports: FeedbackPorts;
   /** Null skips reflection (no LLM configured) — the daily job backfills. */
   reflection: ReflectionDeps | null;
-  db?: DrizzleDb;
+  db?: StoreDb;
 }
 
 /** Handle one recorded feedback end to end. Never throws (bus consumer). */
@@ -53,7 +52,7 @@ export async function handleFeedbackRecorded(
     );
     return;
   }
-  const db = deps?.db ?? getDb();
+  const db = deps?.db ?? getStoreDb();
   const chatId = parseScopedRef(event.feedback.chatRef).id;
 
   const trace = await startTrace({

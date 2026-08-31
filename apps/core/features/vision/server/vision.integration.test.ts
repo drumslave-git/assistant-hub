@@ -1,10 +1,11 @@
 import { asc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { mediaBlobs } from "@/db/schema";
 import type { ChatCompletionResult } from "@/server/llm/client";
 import { listTraces } from "@/server/trace";
-import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
+import { seedSourceMessage, startTestStoreDb, type TestStoreDb } from "@/test/store-db";
+
+import { sourceMediaBlobs } from "../../../store/schema";
 
 import {
   getMediaAnnotations,
@@ -21,10 +22,10 @@ import {
   getMediaSuffixesForMessages,
 } from "./service";
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {
@@ -39,7 +40,7 @@ async function seedPending(over?: { chatId?: string; telegramMessageId?: number 
   const chatId = over?.chatId ?? "5";
   const telegramMessageId = over?.telegramMessageId ?? 10;
   // Media rows require their mirrored message (FK) — mirror first, like the pipeline.
-  await seedMirrorMessage(ctx.db, { chatId, telegramMessageId });
+  await seedSourceMessage(ctx, { chatId, telegramMessageId });
   return insertMedia(ctx.db, {
     id: crypto.randomUUID(),
     chatId,
@@ -74,7 +75,7 @@ describe("message_media repository", () => {
   });
 
   it("records an unavailable placeholder with no bytes", async () => {
-    await seedMirrorMessage(ctx.db, { chatId: "5", telegramMessageId: 11 });
+    await seedSourceMessage(ctx, { chatId: "5", telegramMessageId: 11 });
     const row = await insertUnavailableMedia(ctx.db, {
       id: crypto.randomUUID(),
       chatId: "5",
@@ -96,7 +97,7 @@ describe("message_media repository", () => {
     expect(described?.dataBase64).toBeNull();
     expect(described?.describedAt).not.toBeNull();
     // The bytes are physically gone, not just hidden: no blob rows remain.
-    const blobs = await ctx.db.select().from(mediaBlobs).where(eq(mediaBlobs.mediaId, pending!.id));
+    const blobs = await ctx.db.select().from(sourceMediaBlobs).where(eq(sourceMediaBlobs.mediaId, pending!.id));
     expect(blobs).toHaveLength(0);
     // A second describe is a no-op (row no longer pending).
     expect(await markDescribed(ctx.db, pending!.id, "different")).toBeNull();
@@ -106,7 +107,7 @@ describe("message_media repository", () => {
     const frames = ["frame-one", "frame-two", "frame-three"].map((text) =>
       Buffer.from(text).toString("base64"),
     );
-    await seedMirrorMessage(ctx.db, { chatId: "5", telegramMessageId: 50 });
+    await seedSourceMessage(ctx, { chatId: "5", telegramMessageId: 50 });
     await insertMedia(ctx.db, {
       id: crypto.randomUUID(),
       chatId: "5",
@@ -121,7 +122,7 @@ describe("message_media repository", () => {
     });
 
     // One bytea row per frame, indexed in chronological order.
-    const blobs = await ctx.db.select().from(mediaBlobs).orderBy(asc(mediaBlobs.frameIndex));
+    const blobs = await ctx.db.select().from(sourceMediaBlobs).orderBy(asc(sourceMediaBlobs.frameIndex));
     expect(blobs.map((b) => b.frameIndex)).toEqual([0, 1, 2]);
     expect(blobs.map((b) => b.data.toString())).toEqual(["frame-one", "frame-two", "frame-three"]);
 
@@ -189,7 +190,7 @@ describe("describeAndStore", () => {
   });
 
   it("describes a video from its ordered frame sequence, then drops all frames", async () => {
-    await seedMirrorMessage(ctx.db, { chatId: "5", telegramMessageId: 40 });
+    await seedSourceMessage(ctx, { chatId: "5", telegramMessageId: 40 });
     await insertMedia(ctx.db, {
       id: crypto.randomUUID(),
       chatId: "5",

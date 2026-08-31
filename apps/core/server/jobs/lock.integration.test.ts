@@ -2,11 +2,11 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import * as schema from "@/db/schema";
+import type { StoreDb } from "@/server/store/db";
+import * as schema from "../../store/schema";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { barrier, deferred } from "@/test/async";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
 /**
  * Cross-process advisory-lock contention (IMPROVEMENTS §12.1). The lock exists
@@ -17,12 +17,12 @@ import { startTestDb, type TestDb } from "@/test/db";
  * file covers the scenario the lock was actually built for.
  */
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 let poolB: Pool;
-let dbB: DrizzleDb;
+let dbB: StoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
   poolB = new Pool({ connectionString: ctx.connectionUri });
   dbB = drizzle(poolB, { schema });
 });
@@ -68,7 +68,7 @@ describe("withAdvisoryLock across separate pools", () => {
     // Both schedulers fire on the same tick. The winner blocks inside its job on
     // the gate, so the loser must settle first — and must settle as a skip.
     const gate = deferred();
-    const attempt = (db: DrizzleDb) =>
+    const attempt = (db: StoreDb) =>
       withAdvisoryLock(
         "race-job",
         async () => {
@@ -92,7 +92,7 @@ describe("withAdvisoryLock across separate pools", () => {
     // Both jobs must be inside their fn at the same time — if the derived keys
     // collided, one would have skipped and the barrier would never release.
     const bothRunning = barrier(2);
-    const run = (name: string, db: DrizzleDb) =>
+    const run = (name: string, db: StoreDb) =>
       withAdvisoryLock(
         name,
         async () => {

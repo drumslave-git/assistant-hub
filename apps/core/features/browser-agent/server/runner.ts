@@ -2,8 +2,7 @@ import "server-only";
 
 import { rm } from "node:fs/promises";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { sourceOutbound } from "@/server/turn/source-outbound";
 import {
   getBrowserDownloadLimitBytes,
@@ -263,7 +262,7 @@ async function judgeRunOutcome(
 }
 
 /** Execute one claimed run to completion. Never throws — always settles the run. */
-async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
+async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
   active = true;
   publishEvent(FEATURE.realtimeTopic);
 
@@ -497,7 +496,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
  * overlapping triggers (a poll + an enqueue signal) don't double-drain. The
  * advisory lock additionally guards cross-process overlap during a redeploy.
  */
-async function pump(db: DrizzleDb): Promise<void> {
+async function pump(db: StoreDb): Promise<void> {
   if (!started || pumping || active) return;
   pumping = true;
   try {
@@ -532,7 +531,7 @@ async function pump(db: DrizzleDb): Promise<void> {
 }
 
 /** Start the runner (boot): sweep stale runs, then drain any backlog. Idempotent. */
-export function startBrowserAgentRunner(db: DrizzleDb = getDb()): void {
+export function startBrowserAgentRunner(db: StoreDb = getStoreDb()): void {
   if (started) return;
   started = true;
   setRunEnqueuedListener(() => void pump(db));

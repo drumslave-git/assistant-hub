@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { listTraces, startTrace } from "@/server/trace";
 import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
 import { getChatHistory, getHistoryOverview, loadChatDayTranscript } from "./service";
 
@@ -48,10 +48,10 @@ vi.mock("@/server/source-store/directory-client", () => ({
   }),
 }));
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {

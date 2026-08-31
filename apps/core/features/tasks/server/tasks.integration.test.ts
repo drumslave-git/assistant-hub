@@ -1,27 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 
-import {
-  applyMigrations,
-  startTestPostgres,
-  type TestPostgres,
-} from "@assistant-hub/db/testing";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import * as storeSchema from "../../../store/schema";
-import * as v1Schema from "@/db/schema";
-import { resetEnvCache } from "@/server/env";
-import { closePool } from "@/db/pool";
-import type { DrizzleDb } from "@/db/drizzle";
 import {
   recordGroupMembership,
   upsertKnownGroup,
 } from "@/features/known-groups/server/repository";
 import { upsertKnownUser } from "@/features/known-users/server/repository";
+import { resetEnvCache } from "@/server/env";
+import { closeStorePool } from "@/server/store/db";
 import { listTraces } from "@/server/trace";
-import { closeStorePool, type StoreDb } from "@/server/store/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
 import { insertTask } from "./repository";
 import { MAX_PROMPT_TASKS_PER_SCOPE, type UpdateTaskInput } from "./schema";
@@ -47,56 +36,31 @@ import {
  * paused-task rules (invisible from chat; pausing is dashboard-only).
  */
 
-const V1_MIGRATIONS = fileURLToPath(new URL("../../../db/migrations", import.meta.url));
-const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
-
 /**
- * Two databases, like the live topology: tasks live in the v2 store; the
- * directory the audience checks read (group rosters) is the v1 shadow, which
- * the service reaches through the app's own pool (`getDb()`), so the test
- * points DATABASE_URL at the v1 container database.
+ * ONE database since the Phase 10 cutover: tasks, settings (timezone), and
+ * the roster the audience checks read (`source_chats` / `source_chat_members`,
+ * `source = 'tg'`) all live in the core store. The env-bound readers reach it
+ * through the process-global store pool, so the suite points
+ * STORE_DATABASE_URL at the container.
  */
-let pg: TestPostgres;
-let storePool: Pool;
-let v1Pool: Pool;
-let storeDb: StoreDb;
-let v1Db: DrizzleDb;
-const ctx = {
-  get db() {
-    return storeDb;
-  },
-};
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  pg = await startTestPostgres();
-  const v1Url = await pg.createDatabase("tasks_v1");
-  const storeUrl = await pg.createDatabase("tasks_store");
-  await applyMigrations(v1Url, V1_MIGRATIONS);
-  await applyMigrations(storeUrl, STORE_MIGRATIONS);
-  process.env.DATABASE_URL = v1Url;
-  // Settings (timezone) read the core store since the Phase 10 flip.
-  process.env.STORE_DATABASE_URL = storeUrl;
+  ctx = await startTestStoreDb();
+  process.env.STORE_DATABASE_URL = ctx.connectionUri;
   resetEnvCache();
-  v1Pool = new Pool({ connectionString: v1Url });
-  storePool = new Pool({ connectionString: storeUrl });
-  v1Db = drizzle(v1Pool, { schema: v1Schema }) as DrizzleDb;
-  storeDb = drizzle(storePool, { schema: storeSchema }) as StoreDb;
 });
 
 afterAll(async () => {
-  await storePool?.end();
-  await v1Pool?.end();
   await closeStorePool();
-  await closePool();
-  await pg?.stop();
+  await ctx?.stop();
 });
 
 beforeEach(async () => {
-  await storePool.query(`TRUNCATE assistants RESTART IDENTITY CASCADE`);
-  await storePool.query(
+  await ctx.truncate();
+  await ctx.pool.query(
     `INSERT INTO assistants (id, name, persona) VALUES ('assistant-1', 'Fixture Assistant', '')`,
   );
-  await v1Pool.query(`TRUNCATE known_groups, known_users, group_members RESTART IDENTITY CASCADE`);
 });
 
 const ASSISTANT = "assistant-1";
@@ -127,15 +91,15 @@ function create(over: Record<string, unknown> = {}) {
 
 /** Put people on a group's roster (a task can only name people seen there). */
 async function joinGroup(chatId: string, ...userIds: string[]) {
-  await upsertKnownGroup(v1Db, { chatId, title: "Test group", type: "supergroup" });
+  await upsertKnownGroup(ctx.db, { chatId, title: "Test group", type: "supergroup" });
   for (const userId of userIds) {
-    await upsertKnownUser(v1Db, {
+    await upsertKnownUser(ctx.db, {
       userId,
       username: null,
       firstName: `User ${userId}`,
       lastName: null,
     });
-    await recordGroupMembership(v1Db, chatId, userId);
+    await recordGroupMembership(ctx.db, chatId, userId);
   }
 }
 

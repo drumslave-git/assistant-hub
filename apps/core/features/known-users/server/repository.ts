@@ -1,15 +1,25 @@
 import "server-only";
 
-import { eq, inArray } from "drizzle-orm";
-
-import type { DrizzleDb } from "@/db/drizzle";
-import { knownUsers, type KnownUserRow } from "@/db/schema";
+import type { StoreDb } from "@/server/store/db";
+import {
+  getSourceUserById,
+  getSourceUsersByIds,
+  listSourceUsers,
+  updateSourceUserAliases,
+  updateSourceUserLanguage,
+  upsertSourceUser,
+  type SourceUserRow,
+} from "@/server/source-store/repository";
 
 /**
- * Typed persistence for known Telegram users. Pure data access: no policy, no
- * validation. Every function takes a {@link DrizzleDb} so it runs against the
- * pool or a test instance.
+ * Typed persistence for known Telegram users — since the Phase 10 cutover an
+ * adapter over the source store's `source_users` rows (`source = 'tg'`),
+ * which the ingest maintains from live traffic. The record shape and the
+ * function surface are unchanged from the v1 shadow this replaces, so the
+ * label/roster/alias consumers across the brain did not have to move.
  */
+
+const SOURCE = "tg" as const;
 
 /** A known user as stored. */
 export interface KnownUserRecord {
@@ -32,7 +42,7 @@ export interface TelegramUserProfile {
   lastName: string | null;
 }
 
-function mapRow(row: KnownUserRow): KnownUserRecord {
+function mapRow(row: SourceUserRow): KnownUserRecord {
   return {
     userId: row.userId,
     username: row.username,
@@ -46,67 +56,51 @@ function mapRow(row: KnownUserRow): KnownUserRecord {
 }
 
 /** All known users, most-recently-seen first. */
-export async function listKnownUsers(db: DrizzleDb): Promise<KnownUserRecord[]> {
-  const rows = await db.query.knownUsers.findMany({ orderBy: (u, { desc }) => [desc(u.updatedAt)] });
-  return rows.map(mapRow);
+export async function listKnownUsers(db?: StoreDb): Promise<KnownUserRecord[]> {
+  const rows = await listSourceUsers(SOURCE, db);
+  return rows.map(mapRow).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 /** One known user by id, or null. */
-export async function getKnownUser(db: DrizzleDb, userId: string): Promise<KnownUserRecord | null> {
-  const row = await db.query.knownUsers.findFirst({ where: eq(knownUsers.userId, userId) });
+export async function getKnownUser(
+  db: StoreDb | undefined,
+  userId: string,
+): Promise<KnownUserRecord | null> {
+  const row = await getSourceUserById(SOURCE, userId, db);
   return row ? mapRow(row) : null;
 }
 
 /** Many known users by id (for label resolution). */
 export async function getKnownUsersByIds(
-  db: DrizzleDb,
+  db: StoreDb | undefined,
   userIds: string[],
 ): Promise<KnownUserRecord[]> {
   const unique = [...new Set(userIds.filter(Boolean))];
   if (unique.length === 0) return [];
-  const rows = await db.query.knownUsers.findMany({ where: inArray(knownUsers.userId, unique) });
+  const rows = await getSourceUsersByIds(SOURCE, unique, db);
   return rows.map(mapRow);
 }
 
 /**
  * Upsert the Telegram profile of a user who messaged the bot. Refreshes the
- * mutable profile fields but leaves operator-curated `aliases` (and `first_seen_at`)
- * untouched.
+ * mutable profile fields but leaves operator-curated `aliases` (and
+ * `first_seen_at`) untouched. The live path is the ingest's own upsert; this
+ * stays for the curated-edit flows and tests.
  */
-export async function upsertKnownUser(db: DrizzleDb, profile: TelegramUserProfile): Promise<void> {
-  const now = new Date();
-  await db
-    .insert(knownUsers)
-    .values({
-      userId: profile.userId,
-      username: profile.username,
-      firstName: profile.firstName,
-      lastName: profile.lastName,
-      firstSeenAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: knownUsers.userId,
-      set: {
-        username: profile.username,
-        firstName: profile.firstName,
-        lastName: profile.lastName,
-        updatedAt: now,
-      },
-    });
+export async function upsertKnownUser(
+  db: StoreDb | undefined,
+  profile: TelegramUserProfile,
+): Promise<void> {
+  await upsertSourceUser({ source: SOURCE, ...profile }, db);
 }
 
 /** Replace a user's alias list. Returns the updated record, or null if unknown. */
 export async function setKnownUserAliases(
-  db: DrizzleDb,
+  db: StoreDb | undefined,
   userId: string,
   aliases: string[],
 ): Promise<KnownUserRecord | null> {
-  const [row] = await db
-    .update(knownUsers)
-    .set({ aliases, updatedAt: new Date() })
-    .where(eq(knownUsers.userId, userId))
-    .returning();
+  const row = await updateSourceUserAliases(SOURCE, userId, aliases, db);
   return row ? mapRow(row) : null;
 }
 
@@ -115,14 +109,10 @@ export async function setKnownUserAliases(
  * Returns the updated record, or null if the user is unknown.
  */
 export async function setKnownUserLanguage(
-  db: DrizzleDb,
+  db: StoreDb | undefined,
   userId: string,
   language: string | null,
 ): Promise<KnownUserRecord | null> {
-  const [row] = await db
-    .update(knownUsers)
-    .set({ language, updatedAt: new Date() })
-    .where(eq(knownUsers.userId, userId))
-    .returning();
+  const row = await updateSourceUserLanguage(SOURCE, userId, language, db);
   return row ? mapRow(row) : null;
 }

@@ -17,7 +17,7 @@ import {
   type ChatMessage,
 } from "@/server/llm/client";
 import { getTraceDetail, listTraces, startTrace } from "@/server/trace";
-import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
+import { seedSourceMessage, startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
 /**
  * Voice messages ride the vision media pipeline (`message_media`, kind `voice`);
@@ -27,10 +27,10 @@ import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
  * files are needed.
  */
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {
@@ -66,7 +66,7 @@ function tinyWavBase64(): string {
 async function seedVoice(over?: { telegramMessageId?: number; dataBase64?: string }) {
   const telegramMessageId = over?.telegramMessageId ?? 70;
   // Media rows require their mirrored message (FK) — mirror first, like the pipeline.
-  await seedMirrorMessage(ctx.db, { chatId: "5", telegramMessageId });
+  await seedSourceMessage(ctx, { chatId: "5", telegramMessageId });
   return insertMedia(ctx.db, {
     id: crypto.randomUUID(),
     chatId: "5",

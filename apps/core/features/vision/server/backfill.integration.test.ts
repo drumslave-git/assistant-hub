@@ -1,20 +1,21 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { messageMedia } from "@/db/schema";
 import type { ChatCompletionResult } from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { listTraces } from "@/server/trace";
-import { seedMirrorMessage, startTestDb, type TestDb } from "@/test/db";
+import { seedSourceMessage, startTestStoreDb, type TestStoreDb } from "@/test/store-db";
+
+import { sourceMedia } from "../../../store/schema";
 
 import { runVisionBackfill, type VisionBackfillSource } from "./backfill";
 import { countPendingMedia, insertMedia, listPendingMedia } from "./repository";
 import { dbMediaStore } from "./service";
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {
@@ -31,7 +32,7 @@ async function seedPending(
   over?: { processed?: boolean },
 ) {
   // Media rows require their mirrored message (FK) — mirror first, like the pipeline.
-  await seedMirrorMessage(ctx.db, { chatId, telegramMessageId, processed: over?.processed });
+  await seedSourceMessage(ctx, { chatId, telegramMessageId, processed: over?.processed });
   return insertMedia(ctx.db, {
     id: crypto.randomUUID(),
     chatId,
@@ -164,9 +165,9 @@ describe("runVisionBackfill", () => {
     // Backdate the media past the hold timeout — a pipeline that died before
     // its `finally` released the hold must not hide the row forever.
     await ctx.db
-      .update(messageMedia)
+      .update(sourceMedia)
       .set({ createdAt: new Date(Date.now() - 11 * 60_000) })
-      .where(eq(messageMedia.id, row!.id));
+      .where(eq(sourceMedia.id, row!.id));
 
     expect(await listPendingMedia(ctx.db)).toHaveLength(1);
   });

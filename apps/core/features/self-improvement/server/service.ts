@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import type { AddressingExclusion } from "@/features/bot-messaging/exclusions";
 import {
   deleteAddressingExclusion,
@@ -57,7 +56,7 @@ export async function resolveReplyModel(
  * The latest global self-correction text for the system prompt, or null when
  * none exists yet. Read fresh per reply (like the personality).
  */
-export async function getLatestSelfCorrectionPrompt(db: DrizzleDb = getDb()): Promise<string | null> {
+export async function getLatestSelfCorrectionPrompt(db: StoreDb = getStoreDb()): Promise<string | null> {
   const latest = await getLatestCorrection(db);
   return latest?.correction.trim() ? latest.correction : null;
 }
@@ -76,11 +75,11 @@ export interface PreferencesContext {
  */
 export async function getPreferencesContext(
   userId: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<PreferencesContext | null> {
   const latest = await getLatestPreference(db, userId);
   if (!latest) return null;
-  const [user] = await getKnownUsersByIds(db, [userId]);
+  const [user] = await getKnownUsersByIds(undefined, [userId]);
   const label = user ? formatKnownUserLabel(user) : `user ${userId}`;
   const content = formatPreferencesContext({
     label,
@@ -126,7 +125,7 @@ export interface SelfImprovementView {
  * latest preferences per user, latest correction, and the addressing
  * exclusions those feedbacks produced.
  */
-export async function getSelfImprovementView(db: DrizzleDb = getDb()): Promise<SelfImprovementView> {
+export async function getSelfImprovementView(db: StoreDb = getStoreDb()): Promise<SelfImprovementView> {
   const ports = resolveFeedbackPorts();
   let feedbacksError: string | null = null;
   const [feedbacks, preferences, correction, exclusions] = await Promise.all([
@@ -151,7 +150,7 @@ export async function getSelfImprovementView(db: DrizzleDb = getDb()): Promise<S
     ...preferences.map((p) => p.userId),
     ...exclusions.flatMap((e) => (e.userId ? [e.userId] : [])),
   ];
-  const users = await getKnownUsersByIds(db, userIds);
+  const users = await getKnownUsersByIds(undefined, userIds);
   const labels = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
   const labelFor = (userId: string) => labels.get(userId) ?? `user ${userId}`;
   return {
@@ -173,7 +172,7 @@ export async function getSelfImprovementView(db: DrizzleDb = getDb()): Promise<S
  */
 export async function removeAddressingExclusion(
   id: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<AddressingExclusion | null> {
   const trace = await startTrace({
     feature: FEEDBACK_FEATURE.id,

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
 import { listEngineStats, recordEngineOutcome } from "./engine-stats";
 
@@ -11,10 +11,10 @@ import { listEngineStats, recordEngineOutcome } from "./engine-stats";
  * is what keeps a long-dead engine's record from freezing the ranking forever.
  */
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {

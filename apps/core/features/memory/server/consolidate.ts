@@ -1,8 +1,9 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { formatKnownUserLabel } from "@/features/known-users/format";
+import { tryParseScopedRef } from "@assistant-hub/contracts";
+
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { FEATURES } from "@/lib/features";
 import type {
@@ -78,7 +79,7 @@ export interface ConsolidateDeps {
   onProgress?: (progress: JobProgress | null) => void;
   /** Correlation shared with the extraction half of the same nightly run. */
   runCorrelationId?: string;
-  db?: DrizzleDb;
+  db?: StoreDb;
 }
 
 export interface ConsolidateResult {
@@ -106,7 +107,7 @@ const EMPTY: Omit<ConsolidateResult, "summary"> = {
  * so the nightly tick does not spam Debug with empty runs.
  */
 export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<ConsolidateResult> {
-  const db = deps.db ?? getDb();
+  const db = deps.db ?? getStoreDb();
 
   const [userIds, generalEntries] = await Promise.all([
     listUsersWithPendingEntries(db),
@@ -188,7 +189,11 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
       const entries = (await getPendingUserEntries(db, userId)).slice(0, budget);
       if (entries.length === 0) continue;
 
-      const [user] = await getKnownUsersByIds(db, [userId]);
+      // The backlog keys are scoped refs (Phase 10); label tg identities
+      // from the directory, everyone else by their ref.
+      const parsed = tryParseScopedRef(userId);
+      const [user] =
+        parsed?.source === "tg" ? await getKnownUsersByIds(db, [parsed.id]) : [undefined];
       const label = user ? formatKnownUserLabel(user) : `User ${userId}`;
       deps.onProgress?.({ step: `Consolidating memory of ${label}`, current: ++processed, total });
       const existing = await getUserMemory(db, userId);

@@ -2,8 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { FEATURES } from "@/lib/features";
 import { extractJsonObject } from "@/lib/json";
 import type {
@@ -59,7 +58,7 @@ export interface SelfImprovementDeps {
   /** The source-owned feedback rows + mirror (real: the tg internal API). */
   ports: FeedbackPorts;
   /** The core store the distilled outputs (prefs, corrections) are written to. */
-  db?: DrizzleDb;
+  db?: StoreDb;
 }
 
 export interface SelfImprovementResult {
@@ -139,7 +138,7 @@ function groupByUser(feedbacks: UserFeedback[]): Map<string, UserFeedback[]> {
  * otherwise, so the daily tick doesn't spam Debug).
  */
 export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<SelfImprovementResult> {
-  const db = deps.db ?? getDb();
+  const db = deps.db ?? getStoreDb();
 
   const [prefsBacklog, correctionsBacklog] = await Promise.all([
     deps.ports.feedbacks.listUnincorporated("prefs"),

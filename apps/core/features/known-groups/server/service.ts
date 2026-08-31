@@ -2,8 +2,7 @@ import "server-only";
 
 import { parseScopedRef } from "@assistant-hub/contracts";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
@@ -55,7 +54,7 @@ function toClientSummary(record: KnownGroupSummaryRecord): KnownGroupSummary {
 }
 
 /** All known groups (with member counts), most-recently-seen first. */
-export async function listGroups(db: DrizzleDb = getDb()): Promise<KnownGroupSummary[]> {
+export async function listGroups(db: StoreDb = getStoreDb()): Promise<KnownGroupSummary[]> {
   return (await listKnownGroups(db)).map(toClientSummary);
 }
 
@@ -65,7 +64,7 @@ export async function listGroups(db: DrizzleDb = getDb()): Promise<KnownGroupSum
  * people picker).
  */
 export async function listMemberships(
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<{ chatId: string; userId: string }[]> {
   return listGroupMemberships(db);
 }
@@ -79,7 +78,7 @@ export async function listMemberships(
  */
 export async function rememberGroupActivity(
   params: TelegramGroupProfile & { userId: string | null },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<void> {
   try {
     const before = await getKnownGroup(db, params.chatId);
@@ -174,7 +173,7 @@ export async function updateNotes(
   chatRef: string,
   input: UpdateGroupNotes,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<KnownGroup> {
   // The shadow row is keyed by the source-local id — see the known-users
   // service for why the transitional shadow directory stays telegram-shaped.
@@ -204,7 +203,7 @@ export async function updateLanguage(
   chatRef: string,
   input: UpdateGroupLanguage,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<KnownGroup> {
   const chatId = parseScopedRef(chatRef).id;
   return withTrace(
@@ -236,7 +235,7 @@ export async function updateLanguage(
  */
 export async function getGroupLanguage(
   chatId: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<string | null> {
   const group = await getKnownGroup(db, chatId);
   return group?.language ?? null;
@@ -256,7 +255,7 @@ export interface GroupContext {
  */
 export async function getGroupContext(
   chatId: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<GroupContext | null> {
   const [group, members] = await Promise.all([
     getKnownGroup(db, chatId),

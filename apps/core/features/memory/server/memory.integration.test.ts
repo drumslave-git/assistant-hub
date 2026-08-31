@@ -1,17 +1,12 @@
 ﻿import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { closePool } from "@/db/pool";
-import {
-  chatMessages,
-  generalMemories,
-  groupMembers,
-  knownGroups,
-  knownUsers,
-} from "@/db/schema";
+import { resetEnvCache } from "@/server/env";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import { closeStorePool } from "@/server/store/db";
 import { listTraces } from "@/server/trace";
+import { generalMemories, sourceChatMembers, sourceChats, sourceUsers } from "@/store/schema";
 import { fakeSourceContent } from "@/test/fake-source-content";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
 import { runMemoryConsolidation, type ConsolidateDeps } from "./consolidate";
 import { runMemoryExtraction, type ExtractDeps } from "./extract";
@@ -36,20 +31,25 @@ import {
  * hybrid search, and the reply-context injection.
  */
 
-let ctx: TestDb;
-let prevDatabaseUrl: string | undefined;
+let ctx: TestStoreDb;
+let prevStoreUrl: string | undefined;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
-  prevDatabaseUrl = process.env.DATABASE_URL;
-  // The service reaches the DB through the app's own pool (`getDb()`), so bind it.
-  process.env.DATABASE_URL = ctx.connectionUri;
+  ctx = await startTestStoreDb();
+  prevStoreUrl = process.env.STORE_DATABASE_URL;
+  // Person-link resolution inside the service reads the store through the
+  // env-bound pool, so point it at the same container database.
+  process.env.STORE_DATABASE_URL = ctx.connectionUri;
+  resetEnvCache();
 });
 
 afterAll(async () => {
-  await closePool();
-  if (prevDatabaseUrl === undefined) delete process.env.DATABASE_URL;
-  else process.env.DATABASE_URL = prevDatabaseUrl;
+  // Production code opened the process-global store pool; close it before the
+  // container stops or its dying clients fail an otherwise green run.
+  await closeStorePool();
+  if (prevStoreUrl === undefined) delete process.env.STORE_DATABASE_URL;
+  else process.env.STORE_DATABASE_URL = prevStoreUrl;
+  resetEnvCache();
   await ctx?.stop();
 });
 
@@ -61,25 +61,30 @@ const CHAT_ID = "555";
 const GROUP_ID = "-100777";
 const ADA = "100";
 const GRACE = "200";
+// The memory keyspace stores SCOPED REFS since the Phase 10 cutover; the
+// service converts local ids at its boundary, so what lands in the store is
+// the ref form of the same person/chat.
+const ADA_REF = `tg:user:${ADA}`;
+const GROUP_REF = `tg:chat:${GROUP_ID}`;
 
 async function seedUser(userId: string, firstName: string, aliases: string[] = []): Promise<void> {
   await ctx.db
-    .insert(knownUsers)
-    .values({ userId, username: firstName.toLowerCase(), firstName, aliases })
+    .insert(sourceUsers)
+    .values({ source: "tg", userId, username: firstName.toLowerCase(), firstName, aliases })
     .onConflictDoNothing();
 }
 
 /** A group both people take part in. */
 async function seedGroup(): Promise<void> {
   await ctx.db
-    .insert(knownGroups)
-    .values({ chatId: GROUP_ID, title: "Test group", type: "supergroup" })
+    .insert(sourceChats)
+    .values({ source: "tg", chatId: GROUP_ID, title: "Test group", type: "supergroup" })
     .onConflictDoNothing();
   await ctx.db
-    .insert(groupMembers)
+    .insert(sourceChatMembers)
     .values([
-      { chatId: GROUP_ID, userId: ADA },
-      { chatId: GROUP_ID, userId: GRACE },
+      { source: "tg", chatId: GROUP_ID, userId: ADA },
+      { source: "tg", chatId: GROUP_ID, userId: GRACE },
     ])
     .onConflictDoNothing();
 }
@@ -135,7 +140,8 @@ describe("memory_save (the write path)", () => {
 
     const entries = await listMemoryEntries(ctx.db);
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ scope: "user", userId: ADA, content: "Lives in Lisbon." });
+    // Stored under the scoped ref, not the local id — the keyspace is refs.
+    expect(entries[0]).toMatchObject({ scope: "user", userId: ADA_REF, content: "Lives in Lisbon." });
   });
 
   it("queues a general fact with no person attached", async () => {
@@ -157,29 +163,15 @@ describe("memory_save (the write path)", () => {
  * have to guess who the bot can identify.
  */
 describe("subject placement", () => {
-  /** Both people have spoken in the group, so both resolve as participants. */
+  /**
+   * Both people are on the group's membership roster, so both resolve as
+   * participants — resolution reads the (shadow-kept) roster since the split,
+   * not the message mirror, which lives with the owning source.
+   */
   async function seedSpeakers(): Promise<void> {
     await seedUser(ADA, "Ada");
     await seedUser(GRACE, "Grace");
     await seedGroup();
-    await ctx.db.insert(chatMessages).values([
-      {
-        chatId: GROUP_ID,
-        telegramMessageId: 1,
-        role: "user",
-        userId: ADA,
-        content: "hi",
-        sentAt: new Date("2026-07-28T10:00:00.000Z"),
-      },
-      {
-        chatId: GROUP_ID,
-        telegramMessageId: 2,
-        role: "user",
-        userId: GRACE,
-        content: "hello",
-        sentAt: new Date("2026-07-28T10:01:00.000Z"),
-      },
-    ]);
   }
 
   it("binds an unnamed subject to the speaker, and resolves a named participant", async () => {
@@ -369,7 +361,7 @@ describe("nightly consolidation â€” user documents", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].at(-1)?.content).toContain("Ada");
 
-    const stored = await getUserMemory(ctx.db, ADA);
+    const stored = await getUserMemory(ctx.db, ADA_REF);
     expect(stored?.content).toBe("Lives in Porto.\nLikes rye bread.");
     expect(stored?.embedded).toBe(true);
     // Consumed notes are gone, so a re-run costs nothing.
@@ -396,7 +388,7 @@ describe("nightly consolidation â€” user documents", () => {
 
     // The existing document was offered to the merge, so the model could supersede it.
     expect(calls[0].at(-1)?.content).toContain("Lives in Porto.");
-    const stored = await getUserMemory(ctx.db, ADA);
+    const stored = await getUserMemory(ctx.db, ADA_REF);
     expect(stored?.content).toBe("Lives in Lisbon.");
     expect(stored?.content).not.toContain("Porto");
   });
@@ -418,7 +410,7 @@ describe("nightly consolidation â€” user documents", () => {
     // A garbage response must never erase a document that took months to build.
     expect(result.failed).toBe(1);
     expect(result.usersUpdated).toBe(0);
-    expect((await getUserMemory(ctx.db, ADA))?.content).toBe("Lives in Porto.");
+    expect((await getUserMemory(ctx.db, ADA_REF))?.content).toBe("Lives in Porto.");
     // ...and the note survives for the next run rather than being silently dropped.
     expect(await listMemoryEntries(ctx.db)).toHaveLength(1);
   });
@@ -553,7 +545,7 @@ describe("consolidation without an embedding model", () => {
     const result = await runMemoryConsolidation({ ...deps, embed: null });
 
     expect(result.usersUpdated).toBe(1);
-    const stored = await getUserMemory(ctx.db, ADA);
+    const stored = await getUserMemory(ctx.db, ADA_REF);
     expect(stored?.content).toBe("Lives in Lisbon.");
     expect(stored?.embedded).toBe(false);
 
@@ -641,7 +633,7 @@ describe("search", () => {
       limit: 8,
     });
     expect(hits).toHaveLength(1);
-    expect(hits[0]).toMatchObject({ scope: "user", userId: ADA });
+    expect(hits[0]).toMatchObject({ scope: "user", userId: ADA_REF });
   });
 
   /**
@@ -707,7 +699,8 @@ describe("operator edits", () => {
     // No embedding endpoint is configured in the test env, so the rewrite stores
     // the corrected text with a null vector rather than keeping a vector that
     // describes text the document no longer contains.
-    const updated = await editUserMemory(ADA, { content: "Lives in Lisbon." }, ctx.db);
+    // Operator edits key on the stored ref — the dashboard shows refs.
+    const updated = await editUserMemory(ADA_REF, { content: "Lives in Lisbon." }, ctx.db);
     expect(updated.content).toBe("Lives in Lisbon.");
     expect(updated.embedded).toBe(false);
 
@@ -833,8 +826,8 @@ describe("passive extraction (the un-addressed half of memory)", () => {
       "Ada moved to Lisbon.",
       "Grace lives in Porto.",
     ]);
-    // Queued against the chat they were said in, like any other note.
-    expect(entries.every((e) => e.chatId === GROUP_ID)).toBe(true);
+    // Queued against the chat they were said in (as a ref), like any other note.
+    expect(entries.every((e) => e.chatId === GROUP_REF)).toBe(true);
   });
 
   /**
@@ -878,7 +871,7 @@ describe("passive extraction (the un-addressed half of memory)", () => {
       scriptedLlm([JSON.stringify({ memory: "Ada is a veterinarian." })]).deps,
     );
 
-    const stored = await getUserMemory(ctx.db, ADA);
+    const stored = await getUserMemory(ctx.db, ADA_REF);
     expect(stored?.content).toBe("Ada is a veterinarian.");
     expect(await listMemoryEntries(ctx.db)).toHaveLength(0);
   });

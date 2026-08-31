@@ -1,4 +1,4 @@
-import { getDb } from "@/db/drizzle";
+import { getStoreDb } from "@/server/store/db";
 import { getBrowserRunScreenshot } from "@/features/browser-agent/server/repository";
 import { ApiError } from "@/lib/api-error";
 import { defineRoute } from "@/server/http";
@@ -11,7 +11,7 @@ import { defineRoute } from "@/server/http";
 export const GET = defineRoute(async ({ params }) => {
   const seq = Number(params.seq);
   if (!Number.isInteger(seq) || seq < 0) throw ApiError.badRequest("Invalid screenshot sequence");
-  const data = await getBrowserRunScreenshot(getDb(), params.id, seq);
+  const data = await getBrowserRunScreenshot(getStoreDb(), params.id, seq);
   if (!data) throw ApiError.notFound("Screenshot not found");
   return new Response(new Uint8Array(data), {
     status: 200,

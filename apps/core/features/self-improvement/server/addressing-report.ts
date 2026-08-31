@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import type { DrizzleDb } from "@/db/drizzle";
+import type { StoreDb } from "@/server/store/db";
 import { readAddressingCheck } from "@/features/bot-messaging/addressing-trace";
 import { normalizeExclusionTerm, type AddressingExclusion } from "@/features/bot-messaging/exclusions";
 import { insertAddressingExclusion } from "@/features/bot-messaging/server/exclusions-repository";
@@ -40,7 +40,7 @@ export type AddressingReportOutcome =
  * fail the press.
  */
 export async function recordAddressingExclusion(
-  db: DrizzleDb,
+  db: StoreDb,
   messages: SourceMessagePort,
   feedback: UserFeedback,
   trace: TraceRecorder,

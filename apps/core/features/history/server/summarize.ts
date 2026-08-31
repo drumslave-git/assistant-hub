@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { FEATURES } from "@/lib/features";
 import { newRunCorrelationId, type TraceTrigger } from "@/lib/trace";
 import type {
@@ -109,7 +108,7 @@ export async function summarizeChatDay(
   // The actor is the CHAT the day belongs to — see `extractChatDay`'s note:
   // ids are clickable facets, and the job's identity is the trace's feature.
   trigger: TraceTrigger = { kind: "cron", actor: params.chatId },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<SummarizeDayResult> {
   const trace = await startTrace(
     {
@@ -272,7 +271,7 @@ export interface SummarizationRunResult {
  */
 export async function listDaysNeedingSummary(
   content: SourceContentClient,
-  db: DrizzleDb,
+  db: StoreDb,
   params: { timeZone: string; today: SummaryDate; limit: number },
 ): Promise<{ chatId: string; summaryDate: SummaryDate; messageCount: number }[]> {
   const [days, markers] = await Promise.all([
@@ -288,7 +287,7 @@ export async function listDaysNeedingSummary(
 /** How many (chat, day) pairs are still awaiting summarization — for the dashboard. */
 export async function countDaysNeedingSummary(
   content: SourceContentClient,
-  db: DrizzleDb,
+  db: StoreDb,
   params: { timeZone: string; today: SummaryDate },
 ): Promise<number> {
   const pending = await listDaysNeedingSummary(content, db, { ...params, limit: 1_000_000 });
@@ -297,7 +296,7 @@ export async function countDaysNeedingSummary(
 
 export async function runSummarization(
   deps: SummarizeDeps,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<SummarizationRunResult> {
   const now = deps.now?.() ?? new Date();
   const today = currentSummaryDate(now, deps.timeZone);

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import { setKnownUserAliases, upsertKnownUser } from "@/features/known-users/server/repository";
 import { listTraces } from "@/server/trace";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 import { getGroupMembers, getKnownGroup } from "./repository";
 import {
   getGroupContext,
@@ -21,10 +21,10 @@ vi.mock("@/server/source/directory", () => ({
   writeSourceChat: vi.fn(),
 }));
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
+  ctx = await startTestStoreDb();
 });
 
 afterAll(async () => {

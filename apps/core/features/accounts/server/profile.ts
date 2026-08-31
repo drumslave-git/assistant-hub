@@ -10,7 +10,7 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { getAccountById, updateAccount } from "@/server/auth/accounts";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb } from "@/server/store/db";
 import { publishEvent } from "@/server/realtime/hub";
 import { withTrace } from "@/server/trace";
 
@@ -37,7 +37,7 @@ export interface ProfileIdentity {
 
 /** A memory document about one of the profile's identities. */
 export interface ProfileMemoryDoc {
-  /** The local id the document is keyed under (deletable by it). */
+  /** The scoped ref the document is keyed under (deletable by it). */
   userId: string;
   /** The identity ref it belongs to. */
   ref: string;
@@ -80,20 +80,17 @@ export async function getProfileIdentities(accountId: string): Promise<ProfileId
 
 /**
  * The memory documents held under any of the account's identities. The
- * memory keyspace is flat local ids (v1 shape until cutover), so each ref's
- * local id indexes its document.
+ * memory keyspace is scoped refs since the Phase 10 cutover, so the linked
+ * refs ARE the document keys.
  */
 export async function getProfileMemory(accountId: string): Promise<ProfileMemoryDoc[]> {
   const refs = await identityRefs(accountId);
-  const byLocalId = new Map<string, string>();
-  for (const ref of refs) {
-    const parsed = tryParseScopedRef(ref);
-    if (parsed?.kind === "user") byLocalId.set(parsed.id, ref);
-  }
-  const docs = await getUserMemoriesFor(getDb(), [...byLocalId.keys()]);
+  // The memory keyspace is scoped refs since the cutover - the identity
+  // refs ARE the document keys.
+  const docs = await getUserMemoriesFor(getStoreDb(), [...new Set(refs)]);
   return docs.map((doc) => ({
     userId: doc.userId,
-    ref: byLocalId.get(doc.userId) ?? scopedRef("chat", "user", doc.userId),
+    ref: doc.userId,
     content: doc.content,
     updatedAt: doc.updatedAt,
   }));
@@ -105,14 +102,8 @@ export async function getProfileMemory(accountId: string): Promise<ProfileMemory
  * delete, so the admin memory page's history shows it like any other.
  */
 export async function forgetOwnMemory(accountId: string, userId: string): Promise<void> {
-  const refs = await identityRefs(accountId);
-  const ownIds = new Set(
-    refs.flatMap((ref) => {
-      const parsed = tryParseScopedRef(ref);
-      return parsed?.kind === "user" ? [parsed.id] : [];
-    }),
-  );
-  if (!ownIds.has(userId)) {
+  const refs = new Set(await identityRefs(accountId));
+  if (!refs.has(userId)) {
     throw ApiError.forbidden("That memory document is not about you");
   }
   await forgetUser(userId);

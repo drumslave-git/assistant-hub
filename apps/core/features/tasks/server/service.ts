@@ -2,7 +2,6 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { getDb } from "@/db/drizzle";
 import { getAssistantById } from "@/features/assistants/server/repository";
 import { getGroupMembers } from "@/features/known-groups/server/repository";
 import { getTimezone } from "@/features/settings/server/service";
@@ -245,9 +244,10 @@ async function assertTargetsAllowed(
   ) {
     throw ApiError.badRequest(TARGETS_SCOPE_MESSAGE);
   }
-  // Membership is a directory read — the v1 shadow tables the consumer
-  // dual-writes, not the tasks store (Phase 6 re-points it at the source).
-  const members = new Set((await getGroupMembers(getDb(), chatId)).map((member) => member.userId));
+  // Membership is a directory read over the source store (Phase 10).
+  const members = new Set(
+    (await getGroupMembers(undefined, chatId)).map((member) => member.userId),
+  );
   const unknown = targetUserIds.filter((id) => !members.has(id));
   if (unknown.length > 0) {
     throw ApiError.badRequest(

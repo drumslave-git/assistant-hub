@@ -2,8 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 
 import type { BrowserAgentRun, BrowserAgentRunDetail } from "../types";
 import {
@@ -40,7 +39,7 @@ export interface EnqueueBrowserRunInput {
  */
 export async function enqueueBrowserRun(
   input: EnqueueBrowserRunInput,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<BrowserAgentRun> {
   const values: InsertBrowserAgentRun = {
     chatId: input.chatId,
@@ -57,7 +56,7 @@ export async function enqueueBrowserRun(
 /** All runs (optionally chat-scoped), newest first — for the dashboard. */
 export async function getBrowserAgentRuns(
   chatId?: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<BrowserAgentRun[]> {
   return listBrowserAgentRuns(db, chatId);
 }
@@ -65,7 +64,7 @@ export async function getBrowserAgentRuns(
 /** One run plus its screenshot sequence numbers, or null. */
 export async function getBrowserAgentRunView(
   id: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<BrowserAgentRunDetail | null> {
   return getBrowserAgentRunDetail(db, id);
 }

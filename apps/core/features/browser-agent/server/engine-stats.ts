@@ -2,9 +2,8 @@ import "server-only";
 
 import { sql } from "drizzle-orm";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
-import { searchEngineStats } from "@/db/schema";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
+import { searchEngineStats } from "../../../store/schema";
 
 import type { EngineStat } from "../types";
 
@@ -62,8 +61,8 @@ export function rankEngines(names: string[], stats: EngineStat[]): string[] {
 }
 
 /** The whole scoreboard, best-first (the order the cascade will use). */
-export async function listEngineStats(database?: DrizzleDb): Promise<EngineStat[]> {
-  const db = database ?? getDb();
+export async function listEngineStats(database?: StoreDb): Promise<EngineStat[]> {
+  const db = database ?? getStoreDb();
   const rows = await db.select().from(searchEngineStats);
   const stats = rows.map((row) => ({
     engine: row.engine,
@@ -87,14 +86,14 @@ export async function recordEngineOutcome(
   engine: string,
   ok: boolean,
   error?: string,
-  database?: DrizzleDb,
+  database?: StoreDb,
 ): Promise<void> {
   const now = new Date();
   try {
     // Resolved inside the try, not as a default argument: with no DATABASE_URL,
-    // `getDb()` throws, and a default argument would throw *past* this handler —
+    // `getStoreDb()` throws, and a default argument would throw *past* this handler —
     // failing a search that had already succeeded.
-    const db = database ?? getDb();
+    const db = database ?? getStoreDb();
     await db
       .insert(searchEngineStats)
       .values({

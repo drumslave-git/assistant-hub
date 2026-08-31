@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getDb } from "@/db/drizzle";
+import { getStoreDb } from "@/server/store/db";
 import {
   getBackgroundRuntime,
   getEmbeddingRuntime,
@@ -162,9 +162,9 @@ export async function getMemoryJobInfo(): Promise<MemoryJobInfo> {
   ]);
   const content = resolveSourceContent();
   const [pendingNotes, pendingExtractionDays] = await Promise.all([
-    countPendingNotes(getDb()).catch(() => 0),
+    countPendingNotes(getStoreDb()).catch(() => 0),
     content
-      ? countDaysNeedingExtraction(content, getDb(), {
+      ? countDaysNeedingExtraction(content, getStoreDb(), {
           timeZone: base.timezone,
           today: currentSummaryDate(new Date(), base.timezone),
         }).catch(() => 0)

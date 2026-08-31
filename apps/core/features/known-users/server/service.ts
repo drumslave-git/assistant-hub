@@ -2,8 +2,7 @@ import "server-only";
 
 import { parseScopedRef, scopedRef } from "@assistant-hub/contracts";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { getGroupMembers } from "@/features/known-groups/server/repository";
 import { isGroupChatId } from "@/lib/telegram";
 import { ApiError } from "@/lib/api-error";
@@ -54,12 +53,12 @@ function toClient(record: KnownUserRecord): KnownUser {
 }
 
 /** All known users, most-recently-seen first. */
-export async function listUsers(db: DrizzleDb = getDb()): Promise<KnownUser[]> {
+export async function listUsers(db: StoreDb = getStoreDb()): Promise<KnownUser[]> {
   return (await listKnownUsers(db)).map(toClient);
 }
 
 /** One known user by id, or null. */
-export async function getUser(userId: string, db: DrizzleDb = getDb()): Promise<KnownUser | null> {
+export async function getUser(userId: string, db: StoreDb = getStoreDb()): Promise<KnownUser | null> {
   const record = await getKnownUser(db, userId);
   return record ? toClient(record) : null;
 }
@@ -72,7 +71,7 @@ export async function getUser(userId: string, db: DrizzleDb = getDb()): Promise<
  */
 export async function getUserLabels(
   userIds: readonly string[],
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<Map<string, string>> {
   const wanted = [...new Set(userIds.filter(Boolean))];
   if (wanted.length === 0) return new Map();
@@ -97,7 +96,7 @@ export interface UserContext {
  */
 export async function getUserContext(
   userId: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<UserContext | null> {
   const user = await getKnownUser(db, userId);
   if (!user) return null;
@@ -156,7 +155,7 @@ async function traceUserCapture(
  */
 export async function rememberUser(
   profile: TelegramUserProfile,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<void> {
   try {
     const before = await getKnownUser(db, profile.userId);
@@ -201,7 +200,7 @@ export type ResolveChatUserResult =
 export async function resolveChatUserByReference(
   chatId: string,
   reference: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ResolveChatUserResult> {
   // The chat's participants: for a group, its (shadow-kept) membership
   // roster; a private chat's one participant is its peer (chat id = user
@@ -234,7 +233,7 @@ export type AddAliasByReferenceResult =
 export async function addAliasByReference(
   params: { chatId: string; reference: string; aliases: string[] },
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<AddAliasByReferenceResult> {
   return withTrace(
     { feature: FEATURE.id, action: "add-aliases", trigger, inputSummary: params.reference },
@@ -299,7 +298,7 @@ export async function updateLanguage(
   userRef: string,
   input: UpdateUserLanguage,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<KnownUser> {
   const userId = parseScopedRef(userRef).id;
   return withTrace(
@@ -333,7 +332,7 @@ export async function updateLanguage(
  */
 export async function getUserLanguage(
   userId: string,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<string | null> {
   const user = await getKnownUser(db, userId);
   return user?.language ?? null;
@@ -344,7 +343,7 @@ export async function updateAliases(
   userRef: string,
   input: UpdateAliases,
   trigger: TraceTrigger,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<KnownUser> {
   const userId = parseScopedRef(userRef).id;
   return withTrace(

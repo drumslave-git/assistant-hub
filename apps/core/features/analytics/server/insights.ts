@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { normalizeModelName } from "@/features/self-improvement/model-name";
 import { FEATURES } from "@/lib/features";
 import type {
@@ -91,7 +90,7 @@ export interface AnalyticsInsightsDeps {
   now?: Date;
   /** Publish live per-hour / per-period progress (drives the Jobs dashboard). */
   onProgress?: (progress: JobProgress | null) => void;
-  db?: DrizzleDb;
+  db?: StoreDb;
   /** The owning source's content API; the default resolves from env. */
   content?: SourceContentClient;
 }
@@ -171,7 +170,7 @@ function weightedMood(children: { moodScore: number; messageCount: number }[]): 
 /** The (chat, hour) pairs owed a score right now. */
 async function pendingHours(
   content: SourceContentClient,
-  db: DrizzleDb,
+  db: StoreDb,
   deps: AnalyticsInsightsDeps,
 ): Promise<PendingInsightHour[]> {
   const now = deps.now ?? new Date();
@@ -204,7 +203,7 @@ async function pendingHours(
 export async function runAnalyticsInsights(
   deps: AnalyticsInsightsDeps,
 ): Promise<AnalyticsInsightsResult> {
-  const db = deps.db ?? getDb();
+  const db = deps.db ?? getStoreDb();
   const content = deps.content ?? requireSourceContent();
   const pending = await pendingHours(content, db, deps);
   if (pending.length === 0) return { ...EMPTY, summary: "nothing to compute" };
@@ -227,7 +226,7 @@ export async function regenerateAnalyticsInsights(
   deps: AnalyticsInsightsDeps,
   params: { granularity: Granularity; bucket: string },
 ): Promise<AnalyticsInsightsResult> {
-  const db = deps.db ?? getDb();
+  const db = deps.db ?? getStoreDb();
   const content = deps.content ?? requireSourceContent();
   const dropped = await deleteInsightsForPeriod(db, params);
   // The drop just un-scored hours that may lie below the due-scan's floor — the
@@ -254,7 +253,7 @@ export async function regenerateAnalyticsInsights(
  */
 async function runInsightPass(
   deps: AnalyticsInsightsDeps,
-  db: DrizzleDb,
+  db: StoreDb,
   content: SourceContentClient,
   pending: PendingInsightHour[],
   meta: { action: string; inputSummary: string; dropped?: { units: number; periods: number } },
@@ -428,7 +427,7 @@ type RollupOutcome = "written" | "failed" | "empty";
  * grain.
  */
 async function rollUpPeriod(
-  db: DrizzleDb,
+  db: StoreDb,
   target: PeriodTarget,
   complete: (
     system: string,
@@ -511,7 +510,7 @@ interface RollupSource {
  * The rows a period rolls up from: the scored hour itself for `hour`, and the stored
  * next-finer roll-ups for everything else.
  */
-async function loadChildren(db: DrizzleDb, target: PeriodTarget): Promise<RollupSource[]> {
+async function loadChildren(db: StoreDb, target: PeriodTarget): Promise<RollupSource[]> {
   if (target.granularity === "hour") {
     const rows = await listHourInsightsForPeriod(db, {
       granularity: "hour",

@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
 import { embedOne } from "@/server/llm/embeddings";
 import {
@@ -55,7 +54,7 @@ export interface MessageSearchHit extends SourceMessageMatch {
  */
 export async function searchHistoryMessages(
   params: { query: string; chatId?: string | null; limit?: number },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
   content: SourceContentClient = requireSourceContent(),
 ): Promise<MessageSearchHit[]> {
   const query = params.query.trim();

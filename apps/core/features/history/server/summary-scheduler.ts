@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getDb } from "@/db/drizzle";
+import { getStoreDb } from "@/server/store/db";
 import {
   getBackgroundRuntime,
   getEmbeddingRuntime,
@@ -113,7 +113,7 @@ export async function getSummaryJobInfo(): Promise<SummaryJobInfo> {
   ]);
   const content = resolveSourceContent();
   const pendingDays = content
-    ? await countDaysNeedingSummary(content, getDb(), {
+    ? await countDaysNeedingSummary(content, getStoreDb(), {
         timeZone: base.timezone,
         today: currentSummaryDate(new Date(), base.timezone),
       }).catch(() => 0)

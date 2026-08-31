@@ -3,7 +3,7 @@ import "server-only";
 import type { SourceId } from "@assistant-hub/contracts";
 import type { Message } from "@grammyjs/types";
 
-import type { DrizzleDb } from "@/db/drizzle";
+import type { StoreDb } from "@/server/store/db";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
 import type {
@@ -373,7 +373,7 @@ export interface BotMessagingDeps {
    * every path, including the early ignores. Absent → opened lazily as before.
    */
   trace?: TraceRecorder;
-  db?: DrizzleDb;
+  db?: StoreDb;
 }
 
 export type HandleOutcome =

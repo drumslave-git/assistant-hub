@@ -2,9 +2,10 @@ import "server-only";
 
 import { desc, eq } from "drizzle-orm";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
-import { addressingExclusions, type AddressingExclusionRow } from "@/db/schema";
+import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
+
+import { addressingExclusions, type AddressingExclusionRow } from "../../../store/schema";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { normalizeExclusionTerm, type AddressingExclusion } from "../exclusions";
 
 /**
@@ -13,15 +14,18 @@ import { normalizeExclusionTerm, type AddressingExclusion } from "../exclusions"
  * self-improvement service; the reads are consumed by the addressing analyzer.
  */
 
+/** The store keys provenance by scoped ref (Phase 10); the feature is tg-scoped. */
+const idOf = (ref: string | null) => (ref ? (tryParseScopedRef(ref)?.id ?? ref) : null);
+
 function mapExclusion(row: AddressingExclusionRow): AddressingExclusion {
   return {
     id: row.id,
     term: row.term,
     normalized: row.normalized,
     botDisplayName: row.botDisplayName,
-    chatId: row.chatId,
-    telegramMessageId: row.telegramMessageId,
-    userId: row.userId,
+    chatId: idOf(row.chatRef),
+    telegramMessageId: row.sourceMessageId,
+    userId: idOf(row.userRef),
     feedbackId: row.feedbackId,
     createdAt: row.createdAt.toISOString(),
   };
@@ -44,7 +48,7 @@ export interface InsertAddressingExclusion {
  * a conflict — the first report's provenance is kept.
  */
 export async function insertAddressingExclusion(
-  db: DrizzleDb,
+  db: StoreDb,
   values: InsertAddressingExclusion,
 ): Promise<{ exclusion: AddressingExclusion; created: boolean }> {
   const normalized = normalizeExclusionTerm(values.term);
@@ -55,9 +59,9 @@ export async function insertAddressingExclusion(
       term: values.term.trim(),
       normalized,
       botDisplayName: values.botDisplayName,
-      chatId: values.chatId ?? null,
-      telegramMessageId: values.telegramMessageId ?? null,
-      userId: values.userId ?? null,
+      chatRef: values.chatId ? scopedRef("tg", "chat", values.chatId) : null,
+      sourceMessageId: values.telegramMessageId ?? null,
+      userRef: values.userId ? scopedRef("tg", "user", values.userId) : null,
       feedbackId: values.feedbackId ?? null,
     })
     .onConflictDoNothing({ target: addressingExclusions.normalized })
@@ -75,7 +79,7 @@ export async function insertAddressingExclusion(
 
 /** All exclusions, newest first (dashboard). */
 export async function listAddressingExclusions(
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<AddressingExclusion[]> {
   const rows = await db
     .select()
@@ -89,7 +93,7 @@ export async function listAddressingExclusions(
  * prompt shows the model the word people actually wrote).
  */
 export async function listAddressingExclusionTerms(
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<string[]> {
   const rows = await db
     .select({ term: addressingExclusions.term })
@@ -100,7 +104,7 @@ export async function listAddressingExclusionTerms(
 
 /** Remove one exclusion. Returns the removed row, or null when it was gone. */
 export async function deleteAddressingExclusion(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
 ): Promise<AddressingExclusion | null> {
   const [row] = await db

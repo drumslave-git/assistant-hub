@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { completeTranscriptBatches } from "@/features/history/server/batched-completion";
 import { loadChatDayTranscript } from "@/features/history/server/service";
 import {
@@ -106,7 +105,7 @@ export interface ExtractDayResult {
 async function queueNotes(
   notes: readonly ExtractedNote[],
   chatId: string,
-  db: DrizzleDb,
+  db: StoreDb,
 ): Promise<{ queued: ExtractedNote[]; rejected: { note: ExtractedNote; error: string }[] }> {
   const queued: ExtractedNote[] = [];
   const rejected: { note: ExtractedNote; error: string }[] = [];
@@ -156,7 +155,7 @@ export async function extractChatDay(
   // own identity is already the trace's feature. User rule, 2026-08-15: every
   // URL filter is a UI affordance, and ids must be facets, not free text.
   trigger: TraceTrigger = { kind: "cron", actor: params.chatId },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ExtractDayResult> {
   const trace = await startTrace(
     {
@@ -311,7 +310,7 @@ export interface ExtractionRunResult {
  */
 export async function runMemoryExtraction(
   deps: ExtractDeps,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<ExtractionRunResult> {
   const now = deps.now?.() ?? new Date();
   const today = currentSummaryDate(now, deps.timeZone);

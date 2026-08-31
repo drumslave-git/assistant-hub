@@ -72,7 +72,6 @@ import type { TraceRecorder } from "@/server/trace";
 import { createTurnActionMarkers, closeTurnActionStore, type TurnActionMarkers } from "./actions";
 import { checkLoopGuard } from "./loop-guard";
 import { nameConversation } from "./name-conversation";
-import { shadowDirectory } from "./shadow-directory";
 import {
   botTranscriptLabel,
   renderChatContext,
@@ -654,14 +653,6 @@ export async function processInboundEvent(
   // flight, so they only ever run while the bot is quiet (v1 behavior).
   pokeVisionBackfill();
   pokeMessageIndexing();
-
-  // Transitional shadow of the source's directory into the v1 tables the
-  // brain still FKs and reads (see shadow-directory.ts). Awaited so the
-  // turn's own preference/memory writes find their FK targets; failures are
-  // swallowed inside — never a lost turn. A cross-fed message's "sender" is
-  // another assistant's bot account, which has no business in a directory of
-  // people (the chat and its roster still refresh).
-  await shadowDirectory(event, { skipSender: isCrossFed(event) });
 
   let effectiveText = event.message.content;
   let addressing = toAddressResult(event);

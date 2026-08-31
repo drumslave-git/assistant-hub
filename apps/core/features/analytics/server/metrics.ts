@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { requireSourceContent, type SourceContentClient } from "@/server/source/tg-content";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
@@ -109,7 +108,7 @@ export async function getMetricTotals(query: MetricsQuery): Promise<TotalsPayloa
 /** Build one chart card's series over the period's dense sub-bucket axis. */
 async function seriesFor(
   section: SeriesSection,
-  db: DrizzleDb,
+  db: StoreDb,
   ctx: MetricContext,
   scope: MetricScope,
   keys: string[],
@@ -187,7 +186,7 @@ async function seriesFor(
 /** One chart card's payload. */
 export async function getSeries(
   query: SeriesQuery,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
   content?: SourceContentClient,
 ): Promise<SeriesPayload> {
   const { ctx, scope } = await resolvePeriod(query);
@@ -206,7 +205,8 @@ export async function getModels(query: MetricsQuery): Promise<ModelsPayload> {
 /** The most active people in the period, with the tokens their turns cost. */
 export async function getTopUsersCard(
   query: MetricsQuery,
-  db: DrizzleDb = getDb(),
+  // Kept positionally for callers; the labels read the adapter's own handle.
+  _db: StoreDb = getStoreDb(),
   content?: SourceContentClient,
 ): Promise<TopUsersPayload> {
   const { ctx, scope } = await resolvePeriod(query);
@@ -218,7 +218,7 @@ export async function getTopUsersCard(
   });
   const userIds = rows.map((r) => r.userId);
   const [labelRows, traces] = await Promise.all([
-    userIds.length > 0 ? getKnownUsersByIds(db, userIds) : Promise.resolve([]),
+    userIds.length > 0 ? getKnownUsersByIds(undefined, userIds) : Promise.resolve([]),
     scanScopeTraces(scope),
   ]);
   const usage = usageRowsFrom(traces, scope);
@@ -247,7 +247,7 @@ export async function getTopUsersCard(
  */
 export async function getMoodForPeriod(
   params: { unit: PeriodUnit; anchor: string; chatId: string },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<MoodPayload> {
   if (!params.chatId) return { aggregate: null, points: [] };
 
@@ -290,7 +290,7 @@ export async function getMoodForPeriod(
  */
 export async function getPeriodInsightCard(
   query: InsightsQuery,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<PeriodInsight | null> {
   const timezone = await getTimezone();
   const anchor = query.anchor ?? currentAnchor(query.unit, new Date(), timezone);
@@ -330,7 +330,7 @@ export async function getPeriodInsightCard(
  */
 export async function getAvailability(
   query: AvailabilityQuery,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
   content?: SourceContentClient,
 ): Promise<string[]> {
   const timezone = await getTimezone();

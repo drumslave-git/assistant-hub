@@ -2,8 +2,7 @@ import "server-only";
 
 import type { Pool } from "pg";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 
 /**
  * Postgres session-level advisory locks for background jobs — the DB-backed
@@ -41,10 +40,10 @@ async function lockKey(client: { query: Pool["query"] }, name: string): Promise<
 export async function withAdvisoryLock<T>(
   name: string,
   fn: () => Promise<T>,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<{ ran: true; result: T } | { ran: false; result?: undefined }> {
   // drizzle-orm/node-postgres exposes the underlying pg Pool as `$client` at
-  // runtime; it is just not in the DrizzleDb type surface.
+  // runtime; it is just not in the StoreDb type surface.
   const pool = (db as unknown as { $client: Pool }).$client;
   const client = await pool.connect();
   try {

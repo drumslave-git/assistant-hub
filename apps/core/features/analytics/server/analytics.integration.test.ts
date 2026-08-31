@@ -1,48 +1,32 @@
-import { fileURLToPath } from "node:url";
-
-import { applyMigrations } from "@assistant-hub/db/testing";
-import { Pool } from "pg";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resetEnvCache } from "@/server/env";
 import { closeStorePool } from "@/server/store/db";
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces, startTrace } from "@/server/trace";
-import { startTestDb, type TestDb } from "@/test/db";
-
-const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
 import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
-
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
 
 import { getMetricTotals, getModels, getMoodForPeriod, getSeries } from "./metrics";
 import { regenerateAnalyticsInsights, runAnalyticsInsights } from "./insights";
 import { getPeriodInsight } from "./repository";
 import { resetInsightScanFloor } from "./watermark";
 
-let ctx: TestDb;
+let ctx: TestStoreDb;
 // The mirror lives with the owning source since the swap; these tests seed the
 // contract-faithful in-memory client (SQL bucket semantics are pinned in the
 // tg app's own analytics suite against a real database).
 let content: FakeSourceContent;
 
 /**
- * Settings (timezone) read the core store since the Phase 10 flip; the
- * analytics rollup tables themselves stay v1 until their slice-D move, so
- * this suite runs both — the store carved out of the same container.
+ * One store database serves everything since the Phase 10 cutover: the
+ * insight tables live in the store schema, and the env-bound handle (which
+ * settings/timezone reads go through) is pointed at the same container.
  */
 beforeAll(async () => {
-  ctx = await startTestDb();
-  const admin = new Pool({ connectionString: ctx.connectionUri });
-  try {
-    await admin.query(`CREATE DATABASE analytics_store`);
-  } finally {
-    await admin.end();
-  }
-  const storeUrl = ctx.connectionUri.replace(/\/[^/?]+(\?|$)/, "/analytics_store$1");
-  await applyMigrations(storeUrl, STORE_MIGRATIONS);
-  process.env.STORE_DATABASE_URL = storeUrl;
+  ctx = await startTestStoreDb();
+  process.env.STORE_DATABASE_URL = ctx.connectionUri;
   resetEnvCache();
 });
 

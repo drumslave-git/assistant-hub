@@ -2,17 +2,19 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import type { FeedbackRecordedEvent } from "@assistant-hub/contracts";
 
-import { closePool } from "@/db/pool";
 import { ADDRESSING_CHECK_EVENT } from "@/features/bot-messaging/addressing-trace";
 import {
   listAddressingExclusions,
   listAddressingExclusionTerms,
 } from "@/features/bot-messaging/server/exclusions-repository";
-import { knownUsers, selfCorrections, usersCommunicationPreferences } from "@/db/schema";
 import { stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import { resetEnvCache } from "@/server/env";
+import { closeStorePool } from "@/server/store/db";
 import { getTrace, listTraces, startTrace } from "@/server/trace";
-import { startTestDb, type TestDb } from "@/test/db";
+import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
+
+import { communicationPreferences, selfCorrections, sourceUsers } from "../../../store/schema";
 
 import type { UserFeedback } from "../types";
 import { runSelfImprovement } from "./analyze";
@@ -36,21 +38,19 @@ import { removeAddressingExclusion } from "./service";
  * `feedback.recorded` consumer here is where the core's learning starts.
  */
 
-let ctx: TestDb;
-let prevDatabaseUrl: string | undefined;
+let ctx: TestStoreDb;
 
 beforeAll(async () => {
-  ctx = await startTestDb();
-  prevDatabaseUrl = process.env.DATABASE_URL;
-  // Prefs/corrections/exclusions run through the app's own pool (`getDb()`).
-  process.env.DATABASE_URL = ctx.connectionUri;
+  ctx = await startTestStoreDb();
+  // Env-bound readers (user labels via the source-store adapter) go through
+  // the process-global store pool (`getStoreDb()`).
+  process.env.STORE_DATABASE_URL = ctx.connectionUri;
+  resetEnvCache();
 });
 
 afterAll(async () => {
   stopVisionBackfill();
-  await closePool();
-  if (prevDatabaseUrl === undefined) delete process.env.DATABASE_URL;
-  else process.env.DATABASE_URL = prevDatabaseUrl;
+  await closeStorePool();
   await ctx?.stop();
 });
 
@@ -64,15 +64,15 @@ const USER_ID = "100";
 const NOT_ADDRESSED_OPTION = "Wasn't talking to you";
 
 /**
- * The v1 core tables (preferences, exclusions) still FK `known_users`; the
- * writes under test need the rows even though the feedback data itself now
- * lives behind the ports.
+ * User labels resolve through the source-store adapter (`source_users`,
+ * `source = 'tg'`); the flows under test expect the rows even though the
+ * feedback data itself now lives behind the ports.
  */
 async function seedKnownUsers(...userIds: string[]): Promise<void> {
   for (const userId of userIds) {
     await ctx.db
-      .insert(knownUsers)
-      .values({ userId, username: `user${userId}`, firstName: `U${userId}` })
+      .insert(sourceUsers)
+      .values({ source: "tg", userId, username: `user${userId}`, firstName: `U${userId}` })
       .onConflictDoNothing();
   }
 }
@@ -530,7 +530,7 @@ describe("daily incorporation (runSelfImprovement)", () => {
       prefsVersion: null,
       correctionsVersion: null,
     });
-    expect(await ctx.db.select().from(usersCommunicationPreferences)).toHaveLength(0);
+    expect(await ctx.db.select().from(communicationPreferences)).toHaveLength(0);
     expect(await ctx.db.select().from(selfCorrections)).toHaveLength(0);
     // The run trace still settles (success with failure counts in the summary).
     const traces = await listTraces({ feature: "self-improvement" });

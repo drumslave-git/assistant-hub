@@ -1,8 +1,7 @@
 import { loadEnvConfig } from "@next/env";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { getDb } from "@/db/drizzle";
-import { closePool } from "@/db/pool";
+import { closeStorePool, getStoreDb } from "@/server/store/db";
 import { getLlmRuntime } from "@/features/settings/server/service";
 import { closeSharedChromium } from "@/features/link-fetch/server/playwright";
 
@@ -35,7 +34,7 @@ describe.skipIf(!LLM_LIVE)("browser agent — real browse (live)", () => {
   });
   afterAll(async () => {
     await closeSharedChromium().catch(() => {});
-    await closePool().catch(() => {});
+    await closeStorePool().catch(() => {});
   });
 
   it(
@@ -100,7 +99,7 @@ describe.skipIf(!LLM_LIVE)("browser agent — real browse (live)", () => {
     async () => {
       const runtime = await getLlmRuntime();
       if (!runtime) throw new Error("LLM is not configured in DB settings.");
-      const db = getDb();
+      const db = getStoreDb();
 
       // A dashboard run has no chat — nothing is sent to Telegram; the report and
       // the activity feed land on the run row, which is exactly what the UI reads.

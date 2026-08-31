@@ -1315,3 +1315,289 @@ export const assistantTransports = pgTable(
 
 export type AssistantTransportRow = typeof assistantTransports.$inferSelect;
 export type AssistantTransportInsert = typeof assistantTransports.$inferInsert;
+
+/* ------------------------------------------------------------------
+ * Joined at the Phase 10 cutover (fresh start, v1 rows not migrated):
+ * browser-agent runs + screenshots, the analytics insight rollups, and
+ * the search-engine scoreboard - shapes carried over from v1 verbatim.
+ * ------------------------------------------------------------------ */
+
+/**
+ * One download completed by a browser-agent run, as stored on the run row.
+ * Structural twin of `BrowserDownloadRecord` in `features/browser-agent/types.ts`
+ * (jsonb columns cannot import feature types without inverting the dependency).
+ */
+interface BrowserAgentDownloadJson {
+  /** The page the file came from (the link the agent was on). */
+  sourceUrl: string;
+  filename: string;
+  sizeBytes: number;
+  /**
+   * True when the file itself reached the chat, in which case the server copy was
+   * removed. Rows written before 2026-07-29 carry `inline` (small enough to attach)
+   * instead — a different question, and absent here it reads as false, which is
+   * right for them: back then every download stayed on disk.
+   */
+  deliveredToChat?: boolean;
+  /** True when the file was deleted instead of kept (restricted run, too large to attach). */
+  discarded?: boolean;
+  /** @deprecated Pre-2026-07-29 rows only; superseded by {@link deliveredToChat}. */
+  inline?: boolean;
+}
+
+/**
+ * One completed action in a run's activity feed (structural twin of
+ * `BrowserRunStep` in `features/browser-agent/types.ts`, minus `seq`, which is
+ * derived from array order on read).
+ */
+interface BrowserAgentStepJson {
+  tool: string;
+  action: string;
+  url: string | null;
+  ok: boolean;
+  summary: string;
+  at: string;
+}
+
+
+/**
+ * One browser-agent run: a self-contained browsing goal the chat model queued via
+ * the `browse_web` tool (or the operator queued from the dashboard), executed in
+ * the background by a sub-agent LLM driving the generic browser toolset. The
+ * queue is this table — the runner picks up `queued` rows oldest-first, flips
+ * them `running`, and settles them `done`/`failed` with the final report.
+ *
+ * `chat_id` is null for dashboard-started runs: there is no chat to deliver to,
+ * so the report is only stored here. `is_owner` is resolved at enqueue time and
+ * gates the download tool for the whole run (recorded decision: anyone can start
+ * a run; downloads are owner-only). Ids are app-generated UUIDs.
+ */
+export const browserAgentRuns = pgTable(
+  "browser_agent_runs",
+  {
+    id: text("id").primaryKey(),
+    /** Chat the run reports back to, or null for a dashboard-started run. */
+    chatId: text("chat_id"),
+    /** Forum-topic thread to deliver into, or null (chat root). */
+    threadId: bigint("thread_id", { mode: "number" }),
+    /** Numeric Telegram user id of whoever asked for the run, or null (dashboard). */
+    createdByUserId: text("created_by_user_id"),
+    /** Whether the run carries owner rights — gates the download tools. */
+    isOwner: boolean("is_owner").notNull().default(false),
+    /**
+     * True when a standing chat rule drove the run in a group chat (whoever
+     * sent the message), or lent the sender rights they did not hold: downloads
+     * are then constrained to `source_urls` and must attach to the chat or be
+     * discarded (user decisions, 2026-08-01).
+     */
+    restricted: boolean("restricted").notNull().default(false),
+    /** Verbatim http(s) URLs of the triggering message, extracted in code. */
+    sourceUrls: jsonb("source_urls")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** The self-contained browsing goal the agent works toward. */
+    goal: text("goal").notNull(),
+    /** `queued` | `running` | `done` | `failed`. */
+    status: text("status").notNull().default("queued"),
+    /** The agent's final report (delivered to the chat when one is bound). */
+    report: text("report"),
+    /** Why the run failed, when `status = 'failed'`. */
+    error: text("error"),
+    /** Browser actions the agent performed. */
+    steps: integer("steps").notNull().default(0),
+    /** Ordered activity feed — one entry per completed action (live during a run). */
+    activity: jsonb("activity")
+      .$type<BrowserAgentStepJson[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** Files downloaded during the run (see {@link BrowserAgentDownloadJson}). */
+    downloads: jsonb("downloads")
+      .$type<BrowserAgentDownloadJson[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** Trace id of the run's execution trace, for Debug drill-down. */
+    traceId: text("trace_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** When the runner picked the run up, or null while queued. */
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    /** When the run settled (done/failed), or null. */
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [
+    // The runner scans for queued rows oldest-first.
+    index("browser_agent_runs_status_idx").on(t.status, t.createdAt),
+    index("browser_agent_runs_chat_idx").on(t.chatId),
+    check(
+      "browser_agent_runs_status_check",
+      sql`${t.status} in ('queued', 'running', 'done', 'failed')`,
+    ),
+  ],
+);
+
+export type BrowserAgentRunRow = typeof browserAgentRuns.$inferSelect;
+export type BrowserAgentRunInsert = typeof browserAgentRuns.$inferInsert;
+
+/**
+ * Screenshots captured during a browser-agent run, in capture order. The bytes
+ * are stored here (JPEG) and served to the dashboard run view; trace events carry
+ * only the `(run, seq)` reference — the same "no base64 in trace JSON" convention
+ * vision media follows. Rows vanish with their run.
+ */
+export const browserRunScreenshots = pgTable(
+  "browser_run_screenshots",
+  {
+    /** Owning run. */
+    runId: text("run_id")
+      .notNull()
+      .references(() => browserAgentRuns.id, { onDelete: "cascade" }),
+    /** Capture order within the run, starting at 0. */
+    seq: integer("seq").notNull(),
+    /** Page URL at capture time. */
+    url: text("url"),
+    /** Page title at capture time. */
+    title: text("title"),
+    /** JPEG bytes of the viewport screenshot. */
+    data: bytea("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.runId, t.seq] })],
+);
+
+export type BrowserRunScreenshotRow = typeof browserRunScreenshots.$inferSelect;
+export type BrowserRunScreenshotInsert = typeof browserRunScreenshots.$inferInsert;
+
+/**
+ * One chat's LLM-derived analytics insight for one **hour** — the base grain of the
+ * analytics feature's expensive pass (mood + top topic + word), computed by the
+ * nightly insights job from that hour's transcript (and the existing
+ * {@link chatSummaries} for the day it belongs to).
+ *
+ * The hour is the grain because it is the finest thing the dashboard plots: a
+ * day-period chart draws 24 points, so mood has to exist at that resolution or it
+ * cannot be shown beside every other metric. Everything coarser — a day's mood, a
+ * month's word — is a roll-up of these rows into {@link periodInsights}, never a
+ * second reading of the transcript.
+ *
+ * Only hours that actually hold messages are ever scored, so the cost tracks
+ * conversation volume rather than the calendar.
+ *
+ * A scored hour is final: the job never re-reads it because its message count
+ * drifted, which keeps the nightly token spend a function of new conversation and
+ * nothing else. Rewriting one is an explicit operator action (Regenerate). The job
+ * fails closed — an unusable model response leaves the existing row untouched.
+ * `model` is the clean model name (`normalizeModelName`); informational only.
+ */
+export const chatHourInsights = pgTable(
+  "chat_hour_insights",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    /** Telegram chat/group id this insight belongs to. */
+    chatId: text("chat_id").notNull(),
+    /** The insight hour (`YYYY-MM-DD HH`) as wall-clock in the operator timezone. */
+    insightHour: text("insight_hour").notNull(),
+    /** Mood score 0 (very negative) – 100 (very positive) for the hour's conversation. */
+    moodScore: integer("mood_score").notNull(),
+    /** Short mood label (e.g. `positive`, `tense`). */
+    moodLabel: text("mood_label").notNull(),
+    /** One-sentence justification of the mood, for the dashboard. */
+    moodSummary: text("mood_summary").notNull(),
+    /** The single most-discussed topic of the hour, as named by the model. */
+    topTopic: text("top_topic").notNull(),
+    /** The standout word of the hour, as named by the model. */
+    word: text("word"),
+    /** Messages the hour held when it was scored. */
+    messageCount: integer("message_count").notNull(),
+    /** Clean model name that produced this insight (informational). */
+    model: text("model").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("chat_hour_insights_chat_hour_idx").on(t.chatId, t.insightHour)],
+);
+
+export type ChatHourInsightRow = typeof chatHourInsights.$inferSelect;
+export type ChatHourInsightInsert = typeof chatHourInsights.$inferInsert;
+
+/**
+ * The period roll-up of analytics insight — "word of the period", top topic, and an
+ * aggregate mood — for one chat at one granularity.
+ *
+ * Produced by the same nightly job once the hour rows are fresh: the mood is a
+ * message-weighted average of the period's {@link chatHourInsights} (deterministic,
+ * so it never depends on a fragile parse), while the word and topic are one cheap
+ * LLM pass that *selects* from the hours' own words and topics rather than inventing
+ * a new phrase.
+ *
+ * A row is written at **every** granularity an hour touches, `hour` included — the
+ * hour row is a straight copy of its {@link chatHourInsights} score, costing no LLM
+ * call. That redundancy is deliberate: it means every mood read, from a day's 24
+ * hourly points to the all-time figure, is the same query against one table instead
+ * of a special case for the finest grain.
+ *
+ * Always per chat. A cross-chat average of unrelated conversations is not a mood
+ * anybody has, so there is no global scope.
+ */
+export const periodInsights = pgTable(
+  "period_insights",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    /** `hour` | `day` | `week` | `month` | `year` | `all`. */
+    granularity: text("granularity").notNull(),
+    /** Bucket key: `YYYY-MM-DD HH`, `YYYY-MM-DD`, `YYYY-MM`, `YYYY`, or `all`. */
+    bucket: text("bucket").notNull(),
+    /** Telegram chat/group id this roll-up covers. */
+    chatId: text("chat_id").notNull(),
+    /** The standout word of the period, as named by the model. */
+    wordOfPeriod: text("word_of_period").notNull(),
+    /** The most-discussed topic across the period, as named by the model. */
+    topTopic: text("top_topic").notNull(),
+    /** Message-weighted average mood 0–100 across the period's hour rows. */
+    moodScore: integer("mood_score").notNull(),
+    /** Aggregate mood label. */
+    moodLabel: text("mood_label").notNull(),
+    /** Scored hour rows that fed this roll-up. */
+    sourceUnits: integer("source_units").notNull(),
+    /** Messages across the period when it was computed. */
+    messageCount: integer("message_count").notNull(),
+    /** Clean model name that produced the word/topic (informational). */
+    model: text("model").notNull(),
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("period_insights_key_idx").on(t.granularity, t.bucket, t.chatId),
+    check(
+      "period_insights_granularity_check",
+      sql`${t.granularity} in ('hour', 'day', 'week', 'month', 'year', 'all')`,
+    ),
+  ],
+);
+
+export type PeriodInsightRow = typeof periodInsights.$inferSelect;
+export type PeriodInsightInsert = typeof periodInsights.$inferInsert;
+
+/**
+ * Scoreboard for the browser agent's search sources — one row per engine (plus the
+ * API fallback), counting how often each actually returned results. The cascade
+ * sorts itself by these numbers, so an engine that starts blocking us sinks and one
+ * that recovers climbs back, instead of every search paying a fixed toll for a
+ * dead engine ahead of a working one.
+ *
+ * Deliberately a live scoreboard, not a history: this holds the current standing,
+ * and the per-search story is already in the run's activity feed and trace. Counts
+ * are halved once their total passes a cap (see `engine-stats.ts`), so the ranking
+ * keeps reacting instead of being anchored by ancient results.
+ */
+export const searchEngineStats = pgTable("search_engine_stats", {
+  /** Source name as the code knows it (`DuckDuckGo`, `Google`, `Bing`, `Tavily`). */
+  engine: text("engine").primaryKey(),
+  /** Attempts that produced usable results. */
+  successes: integer("successes").notNull().default(0),
+  /** Attempts that produced none — blocked, captcha'd, empty, or errored. */
+  failures: integer("failures").notNull().default(0),
+  lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+  lastFailureAt: timestamp("last_failure_at", { withTimezone: true }),
+  /** Why the last failure failed — the operator's first clue about an engine. */
+  lastError: text("last_error"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

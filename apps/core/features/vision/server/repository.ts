@@ -2,21 +2,31 @@ import "server-only";
 
 import { and, asc, count, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { chatMessages, mediaBlobs, messageMedia, type MessageMediaRow } from "@/db/schema";
+import {
+  sourceMedia,
+  sourceMediaBlobs,
+  sourceMessages,
+} from "../../../store/schema";
+import type { StoreDb } from "@/server/store/db";
 
 import type { MediaAnnotation, MediaKind, MediaStatus } from "../types";
 
 /**
- * Typed persistence for `message_media` + `media_blobs`. Pure data access — no
- * policy, validation, or trace recording (the service owns those). Every function
- * takes a {@link DrizzleDb} so it runs against the pool or a test instance.
+ * Typed persistence for telegram media — since the Phase 10 cutover an
+ * adapter over the source store's `source_media` + `source_media_blobs`
+ * rows (`source = 'tg'`). The record shape and the function surface are
+ * unchanged from the v1 tables this replaces (`telegramMessageId` stays a
+ * number at this boundary; the store keys messages by source-local TEXT
+ * ids, so the adapter converts).
  *
- * Bytes live in `media_blobs` (real `bytea`, one row per frame, only while the
- * media row is `pending`); this module converts to/from the base64 strings the
- * rest of the app speaks (the vision model and the dashboard preview both want
- * base64 anyway), so callers never see `Buffer`s.
+ * Bytes live in `source_media_blobs` (real `bytea`, one row per frame, only
+ * while the media row is `pending`); this module converts to/from the
+ * base64 strings the rest of the app speaks, so callers never see Buffers.
  */
+
+const SOURCE = "tg" as const;
+
+type MediaRow = typeof sourceMedia.$inferSelect;
 
 /** A stored media row. */
 export interface MediaRecord {
@@ -37,7 +47,6 @@ export interface MediaRecord {
   describedAt: string | null;
 }
 
-/** Fields for inserting a freshly ingested (pending) media row. */
 export interface InsertMedia {
   id: string;
   chatId: string;
@@ -60,11 +69,11 @@ export interface InsertMedia {
  * Map a media row plus its ordered frame payloads (base64) to the app-facing
  * record. `images` is empty for described/unavailable rows — bytes are gone.
  */
-function mapRow(row: MessageMediaRow, images: string[] = []): MediaRecord {
+function mapRow(row: MediaRow, images: string[] = []): MediaRecord {
   return {
     id: row.id,
     chatId: row.chatId,
-    telegramMessageId: row.telegramMessageId,
+    telegramMessageId: Number(row.sourceMessageId),
     kind: row.kind as MediaKind,
     fileId: row.fileId,
     fileUniqueId: row.fileUniqueId,
@@ -84,16 +93,16 @@ function mapRow(row: MessageMediaRow, images: string[] = []): MediaRecord {
  * whole set). Ids without blob rows — described/unavailable media — are absent.
  */
 async function loadImagesByMediaId(
-  db: DrizzleDb,
+  db: StoreDb,
   mediaIds: string[],
 ): Promise<Map<string, string[]>> {
   const images = new Map<string, string[]>();
   if (mediaIds.length === 0) return images;
   const rows = await db
     .select()
-    .from(mediaBlobs)
-    .where(inArray(mediaBlobs.mediaId, mediaIds))
-    .orderBy(asc(mediaBlobs.mediaId), asc(mediaBlobs.frameIndex));
+    .from(sourceMediaBlobs)
+    .where(inArray(sourceMediaBlobs.mediaId, mediaIds))
+    .orderBy(asc(sourceMediaBlobs.mediaId), asc(sourceMediaBlobs.frameIndex));
   for (const row of rows) {
     const list = images.get(row.mediaId);
     if (list) list.push(row.data.toString("base64"));
@@ -103,19 +112,19 @@ async function loadImagesByMediaId(
 }
 
 /**
- * Insert a pending media row. Idempotent on `(chat_id, telegram_message_id)` so a
- * re-delivered update does not duplicate. Returns the stored row, or null when
- * one already existed.
+ * Insert a pending media row. Idempotent on `(chat, message)` so a re-delivered
+ * update does not duplicate. Returns the stored row, or null when one existed.
  */
-export async function insertMedia(db: DrizzleDb, values: InsertMedia): Promise<MediaRecord | null> {
+export async function insertMedia(db: StoreDb, values: InsertMedia): Promise<MediaRecord | null> {
   const images = values.frames && values.frames.length > 0 ? values.frames : [values.dataBase64];
   return db.transaction(async (tx) => {
     const [row] = await tx
-      .insert(messageMedia)
+      .insert(sourceMedia)
       .values({
         id: values.id,
+        source: SOURCE,
         chatId: values.chatId,
-        telegramMessageId: values.telegramMessageId,
+        sourceMessageId: String(values.telegramMessageId),
         kind: values.kind,
         fileId: values.fileId,
         fileUniqueId: values.fileUniqueId ?? null,
@@ -124,11 +133,11 @@ export async function insertMedia(db: DrizzleDb, values: InsertMedia): Promise<M
         status: "pending",
       })
       .onConflictDoNothing({
-        target: [messageMedia.chatId, messageMedia.telegramMessageId],
+        target: [sourceMedia.source, sourceMedia.chatId, sourceMedia.sourceMessageId],
       })
       .returning();
     if (!row) return null;
-    await tx.insert(mediaBlobs).values(
+    await tx.insert(sourceMediaBlobs).values(
       images.map((base64, frameIndex) => ({
         mediaId: row.id,
         frameIndex,
@@ -141,15 +150,16 @@ export async function insertMedia(db: DrizzleDb, values: InsertMedia): Promise<M
 
 /** Insert a placeholder row for media that could not be loaded/decoded. */
 export async function insertUnavailableMedia(
-  db: DrizzleDb,
+  db: StoreDb,
   values: Omit<InsertMedia, "dataBase64">,
 ): Promise<MediaRecord | null> {
   const [row] = await db
-    .insert(messageMedia)
+    .insert(sourceMedia)
     .values({
       id: values.id,
+      source: SOURCE,
       chatId: values.chatId,
-      telegramMessageId: values.telegramMessageId,
+      sourceMessageId: String(values.telegramMessageId),
       kind: values.kind,
       fileId: values.fileId,
       fileUniqueId: values.fileUniqueId ?? null,
@@ -158,14 +168,14 @@ export async function insertUnavailableMedia(
       status: "unavailable",
     })
     .onConflictDoNothing({
-      target: [messageMedia.chatId, messageMedia.telegramMessageId],
+      target: [sourceMedia.source, sourceMedia.chatId, sourceMedia.sourceMessageId],
     })
     .returning();
   return row ? mapRow(row) : null;
 }
 
 /** A row plus its frames — only a pending row can have any, so skip the query otherwise. */
-async function withImages(db: DrizzleDb, row: MessageMediaRow): Promise<MediaRecord> {
+async function withImages(db: StoreDb, row: MediaRow): Promise<MediaRecord> {
   const images =
     row.status === "pending" ? ((await loadImagesByMediaId(db, [row.id])).get(row.id) ?? []) : [];
   return mapRow(row, images);
@@ -173,23 +183,32 @@ async function withImages(db: DrizzleDb, row: MessageMediaRow): Promise<MediaRec
 
 /** The media row for a specific message (bytes included while pending), or null. */
 export async function getMediaByMessage(
-  db: DrizzleDb,
+  db: StoreDb,
   chatId: string,
   telegramMessageId: number,
 ): Promise<MediaRecord | null> {
-  const row = await db.query.messageMedia.findFirst({
-    where: and(
-      eq(messageMedia.chatId, chatId),
-      eq(messageMedia.telegramMessageId, telegramMessageId),
-    ),
-  });
-  return row ? withImages(db, row) : null;
+  const rows = await db
+    .select()
+    .from(sourceMedia)
+    .where(
+      and(
+        eq(sourceMedia.source, SOURCE),
+        eq(sourceMedia.chatId, chatId),
+        eq(sourceMedia.sourceMessageId, String(telegramMessageId)),
+      ),
+    )
+    .limit(1);
+  return rows[0] ? withImages(db, rows[0]) : null;
 }
 
 /** One media row by id (bytes included while pending), or null. */
-export async function getMediaById(db: DrizzleDb, id: string): Promise<MediaRecord | null> {
-  const row = await db.query.messageMedia.findFirst({ where: eq(messageMedia.id, id) });
-  return row ? withImages(db, row) : null;
+export async function getMediaById(db: StoreDb, id: string): Promise<MediaRecord | null> {
+  const rows = await db
+    .select()
+    .from(sourceMedia)
+    .where(and(eq(sourceMedia.source, SOURCE), eq(sourceMedia.id, id)))
+    .limit(1);
+  return rows[0] ? withImages(db, rows[0]) : null;
 }
 
 /**
@@ -199,22 +218,22 @@ export async function getMediaById(db: DrizzleDb, id: string): Promise<MediaReco
  * row so we never overwrite a prior description.
  */
 export async function markDescribed(
-  db: DrizzleDb,
+  db: StoreDb,
   id: string,
   description: string,
 ): Promise<MediaRecord | null> {
   return db.transaction(async (tx) => {
     const [row] = await tx
-      .update(messageMedia)
+      .update(sourceMedia)
       .set({
         description,
         status: "described",
         describedAt: new Date(),
       })
-      .where(and(eq(messageMedia.id, id), eq(messageMedia.status, "pending")))
+      .where(and(eq(sourceMedia.id, id), eq(sourceMedia.status, "pending")))
       .returning();
     if (!row) return null;
-    await tx.delete(mediaBlobs).where(eq(mediaBlobs.mediaId, id));
+    await tx.delete(sourceMediaBlobs).where(eq(sourceMediaBlobs.mediaId, id));
     return mapRow(row);
   });
 }
@@ -224,28 +243,29 @@ export async function markDescribed(
  * id — how each media message reads in the history transcript.
  */
 export async function getMediaAnnotations(
-  db: DrizzleDb,
+  db: StoreDb,
   chatId: string,
   telegramMessageIds: number[],
 ): Promise<Map<number, MediaAnnotation>> {
   if (telegramMessageIds.length === 0) return new Map();
   const rows = await db
     .select({
-      telegramMessageId: messageMedia.telegramMessageId,
-      kind: messageMedia.kind,
-      status: messageMedia.status,
-      description: messageMedia.description,
+      sourceMessageId: sourceMedia.sourceMessageId,
+      kind: sourceMedia.kind,
+      status: sourceMedia.status,
+      description: sourceMedia.description,
     })
-    .from(messageMedia)
+    .from(sourceMedia)
     .where(
       and(
-        eq(messageMedia.chatId, chatId),
-        inArray(messageMedia.telegramMessageId, telegramMessageIds),
+        eq(sourceMedia.source, SOURCE),
+        eq(sourceMedia.chatId, chatId),
+        inArray(sourceMedia.sourceMessageId, telegramMessageIds.map(String)),
       ),
     );
   return new Map(
     rows.map((r) => [
-      r.telegramMessageId,
+      Number(r.sourceMessageId),
       { kind: r.kind as MediaKind, status: r.status as MediaStatus, description: r.description },
     ]),
   );
@@ -253,14 +273,15 @@ export async function getMediaAnnotations(
 
 /**
  * Recent media rows for the dashboard, newest first. The scan itself never
- * touches bytes (they live in `media_blobs`); frames are then fetched in one
- * query for just the pending rows — the only ones whose preview is rendered.
+ * touches bytes; frames are then fetched in one query for just the pending
+ * rows — the only ones whose preview is rendered.
  */
-export async function listRecentMedia(db: DrizzleDb, limit = 100): Promise<MediaRecord[]> {
+export async function listRecentMedia(db: StoreDb, limit = 100): Promise<MediaRecord[]> {
   const rows = await db
     .select()
-    .from(messageMedia)
-    .orderBy(desc(messageMedia.createdAt))
+    .from(sourceMedia)
+    .where(eq(sourceMedia.source, SOURCE))
+    .orderBy(desc(sourceMedia.createdAt))
     .limit(limit);
   const pendingIds = rows.filter((row) => row.status === "pending").map((row) => row.id);
   const images = await loadImagesByMediaId(db, pendingIds);
@@ -283,46 +304,57 @@ export interface PendingMediaRef {
 const LIVE_HOLD_TIMEOUT = sql`now() - interval '10 minutes'`;
 
 /**
- * Oldest pending media rows, for the vision backfill job (priority 8).
- * Oldest-first so the backlog drains in arrival order. Deliberately byte-free:
- * `describeAndStore` re-reads each row (with bytes) when its turn comes, so the
- * batch scan never loads payloads it may not use.
+ * Oldest pending media rows, for the vision backfill job. Oldest-first so the
+ * backlog drains in arrival order. Deliberately byte-free: `describeAndStore`
+ * re-reads each row (with bytes) when its turn comes.
  *
  * Rows whose message is still held by the live reply pipeline
- * (`chat_messages.processed = false`, see the semaphore column) are excluded —
- * backfill only ever picks up leftovers, never work in flight — unless the hold
- * has clearly expired (crashed pipeline).
+ * (`source_messages.processed = false`) are excluded — backfill only ever
+ * picks up leftovers, never work in flight — unless the hold has clearly
+ * expired (crashed pipeline). A DM message may mirror into several
+ * per-assistant streams, hence the DISTINCT.
  */
-export async function listPendingMedia(db: DrizzleDb, limit = 20): Promise<PendingMediaRef[]> {
-  return db
+export async function listPendingMedia(db: StoreDb, limit = 20): Promise<PendingMediaRef[]> {
+  const rows = await db
     .select({
-      id: messageMedia.id,
-      chatId: messageMedia.chatId,
-      telegramMessageId: messageMedia.telegramMessageId,
+      id: sourceMedia.id,
+      chatId: sourceMedia.chatId,
+      sourceMessageId: sourceMedia.sourceMessageId,
     })
-    .from(messageMedia)
+    .from(sourceMedia)
     .innerJoin(
-      chatMessages,
+      sourceMessages,
       and(
-        eq(chatMessages.chatId, messageMedia.chatId),
-        eq(chatMessages.telegramMessageId, messageMedia.telegramMessageId),
+        eq(sourceMessages.source, sourceMedia.source),
+        eq(sourceMessages.chatId, sourceMedia.chatId),
+        eq(sourceMessages.sourceMessageId, sourceMedia.sourceMessageId),
       ),
     )
     .where(
       and(
-        eq(messageMedia.status, "pending"),
-        or(eq(chatMessages.processed, true), lt(messageMedia.createdAt, LIVE_HOLD_TIMEOUT)),
+        eq(sourceMedia.source, SOURCE),
+        eq(sourceMedia.status, "pending"),
+        or(eq(sourceMessages.processed, true), lt(sourceMedia.createdAt, LIVE_HOLD_TIMEOUT)),
       ),
     )
-    .orderBy(asc(messageMedia.createdAt))
-    .limit(limit);
+    .orderBy(asc(sourceMedia.createdAt))
+    .limit(limit * 2);
+  const seen = new Set<string>();
+  const out: PendingMediaRef[] = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    out.push({ id: row.id, chatId: row.chatId, telegramMessageId: Number(row.sourceMessageId) });
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /** How many media rows are still awaiting a description (backfill backlog size). */
-export async function countPendingMedia(db: DrizzleDb): Promise<number> {
+export async function countPendingMedia(db: StoreDb): Promise<number> {
   const [row] = await db
     .select({ value: count() })
-    .from(messageMedia)
-    .where(eq(messageMedia.status, "pending"));
+    .from(sourceMedia)
+    .where(and(eq(sourceMedia.source, SOURCE), eq(sourceMedia.status, "pending")));
   return row?.value ?? 0;
 }

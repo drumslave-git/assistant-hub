@@ -2,8 +2,8 @@ import "server-only";
 
 import { scopedRef, tryParseScopedRef, type SourceId } from "@assistant-hub/contracts";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
+import { getAccountById } from "@/server/auth/accounts";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { getGroupMembers } from "@/features/known-groups/server/repository";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUser, getKnownUsersByIds } from "@/features/known-users/server/repository";
@@ -73,11 +73,9 @@ async function tryEmbed(text: string): Promise<number[] | null> {
  *
  * Ids are resolved in the CALLER's source (a web thread's sender is a
  * `chat:user:…`, not a telegram one), and a linked identity from any source
- * contributes its document: the memory tables are one flat keyspace keyed by
- * whatever id wrote the row, so a telegram user id and a web user's uuid sit
- * side by side there. That is what makes a linked pair one body of knowledge
- * across sources. (The keyspace becomes scoped refs at the Phase 6 cutover;
- * nothing here has to change when it does.)
+ * contributes its document: the memory keyspace is SCOPED REFS since the
+ * Phase 10 cutover, so a telegram identity and an account's web identity sit
+ * side by side and a person link makes them one body of knowledge.
  */
 async function identitiesOf(
   userIds: readonly string[],
@@ -85,16 +83,7 @@ async function identitiesOf(
 ): Promise<Map<string, string[]>> {
   const refOf = (id: string) => scopedRef(source, "user", id);
   const linked = await resolveLinkedRefs(userIds.map(refOf));
-  return new Map(
-    userIds.map((id) => {
-      const refs = linked.get(refOf(id)) ?? [];
-      const local = refs.flatMap((ref) => {
-        const parsed = tryParseScopedRef(ref);
-        return parsed && parsed.kind === "user" ? [parsed.id] : [];
-      });
-      return [id, [...new Set([id, ...local])]];
-    }),
-  );
+  return new Map(userIds.map((id) => [id, linked.get(refOf(id)) ?? [refOf(id)]]));
 }
 
 /**
@@ -111,12 +100,39 @@ function peoplePresent(
   const claimed = new Set<string>();
   const people: Array<{ userId: string; identities: string[] }> = [];
   for (const userId of userIds) {
-    if (claimed.has(userId)) continue;
-    const group = identities.get(userId) ?? [userId];
-    for (const identity of group) claimed.add(identity);
+    const group = identities.get(userId) ?? [];
+    // A linked identity already speaking for this person claims them whole.
+    if (group.some((ref) => claimed.has(ref))) continue;
+    for (const ref of group) claimed.add(ref);
     people.push({ userId, identities: group });
   }
   return people;
+}
+
+/**
+ * Human labels for a set of memory keys (scoped refs), best-effort: telegram
+ * refs from the tg directory, web refs from the account roster, anything
+ * else falls back to the ref itself at the call site.
+ */
+async function labelsForRefs(refs: readonly string[], db: StoreDb): Promise<Map<string, string>> {
+  const byRef = new Map<string, string>();
+  const tgIds: string[] = [];
+  const accountIds: string[] = [];
+  for (const ref of new Set(refs)) {
+    const parsed = tryParseScopedRef(ref);
+    if (parsed?.kind !== "user") continue;
+    if (parsed.source === "tg") tgIds.push(parsed.id);
+    else if (parsed.source === "chat") accountIds.push(parsed.id);
+  }
+  const known = await getKnownUsersByIds(db, tgIds);
+  for (const user of known) {
+    byRef.set(scopedRef("tg", "user", user.userId), formatKnownUserLabel(user));
+  }
+  for (const id of accountIds) {
+    const account = await getAccountById(id, db).catch(() => null);
+    if (account) byRef.set(scopedRef("chat", "user", id), account.displayName ?? account.username);
+  }
+  return byRef;
 }
 
 /* --------------------------------------------------------- reply injection */
@@ -165,7 +181,7 @@ export async function getMemoryContext(
      */
     labels?: Record<string, string>;
   },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<MemoryContext | null> {
   const ids: string[] = [];
   if (params.senderId) ids.push(params.senderId);
@@ -208,7 +224,9 @@ export async function getMemoryContext(
         labelBy.get(person.userId) ??
         `User ${person.userId}`,
       // A linked identity of the sender is still the sender.
-      isSender: params.senderId != null && person.identities.includes(params.senderId),
+      isSender:
+        params.senderId != null &&
+        person.identities.includes(scopedRef(params.source ?? "tg", "user", params.senderId)),
       facts,
     };
   });
@@ -250,7 +268,7 @@ export type MemorySubjectResult = { ok: true; userId: string } | { ok: false; er
  */
 export async function resolveMemorySubject(
   params: { person?: string; chatId: string; speakerId: string | null | undefined },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<MemorySubjectResult> {
   const reference = params.person?.trim();
   if (!reference) {
@@ -294,7 +312,7 @@ export async function resolveMemorySubject(
  */
 export async function checkGeneralNoteSubject(
   params: { person?: string; chatId: string },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const reference = params.person?.trim();
   if (!reference) return { ok: true };
@@ -334,7 +352,7 @@ export async function checkGeneralNoteSubject(
  */
 export async function readMemory(
   params: { userId?: string | null; source?: SourceId },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<MemoryMatch[]> {
   const userId = params.userId?.trim();
   if (!userId) return [];
@@ -342,7 +360,9 @@ export async function readMemory(
   // stored under; the model only ever saw the id it asked about, so that is
   // the id the facts come back on.
   const identities =
-    (await identitiesOf([userId], params.source ?? "tg")).get(userId) ?? [userId];
+    (await identitiesOf([userId], params.source ?? "tg")).get(userId) ?? [
+      scopedRef(params.source ?? "tg", "user", userId),
+    ];
   const stored = await getUserMemoriesFor(db, identities);
   return stored.flatMap((document) =>
     splitMemoryFacts(document.content).map((content) => ({
@@ -368,7 +388,7 @@ export async function readMemory(
  */
 export async function searchMemory(
   params: { queries: string[]; limit: number },
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<MemoryMatch[]> {
   const collected = new Map<string, MemoryMatch>();
 
@@ -399,15 +419,26 @@ export async function searchMemory(
  * to the model as a tool error, not thrown at the reply.
  */
 export async function saveMemoryNote(
-  params: { scope: MemoryScope; userId: string | null; content: string; chatId: string | null },
-  db: DrizzleDb = getDb(),
+  params: {
+    scope: MemoryScope;
+    userId: string | null;
+    content: string;
+    chatId: string | null;
+    /** Whose ids these are. Defaults to telegram (v1 callers). */
+    source?: SourceId;
+  },
+  db: StoreDb = getStoreDb(),
 ): Promise<{ ok: true; entry: MemoryEntry } | { ok: false; error: string }> {
+  const source = params.source ?? "tg";
   if (params.scope === "user") {
     const userId = params.userId?.trim();
     if (!userId) {
       return { ok: false, error: "A 'user' memory needs the id of the person it is about." };
     }
-    const known = await getKnownUser(db, userId);
+    // A telegram id must belong to someone the bot has met; a web id must be
+    // an account. Either way a hallucinated id is refused, not stored.
+    const known =
+      source === "chat" ? await getAccountById(userId, db) : await getKnownUser(db, userId);
     if (!known) {
       return {
         ok: false,
@@ -418,9 +449,13 @@ export async function saveMemoryNote(
 
   const entry = await addMemoryEntry(db, {
     scope: params.scope,
-    userId: params.scope === "user" ? params.userId : null,
+    // The keyspace is scoped refs (Phase 10) - convert at the boundary.
+    userId:
+      params.scope === "user" && params.userId
+        ? scopedRef(source, "user", params.userId)
+        : null,
     content: params.content,
-    chatId: params.chatId,
+    chatId: params.chatId ? scopedRef(source, "chat", params.chatId) : null,
   });
   publishEvent(FEATURE.realtimeTopic, { feature: FEATURE.id });
   return { ok: true, entry };
@@ -451,20 +486,19 @@ export interface MemoryView {
   generalPendingNotes: number;
 }
 
-export async function getMemoryView(db: DrizzleDb = getDb()): Promise<MemoryView> {
+export async function getMemoryView(db: StoreDb = getStoreDb()): Promise<MemoryView> {
   const [entries, users, general] = await Promise.all([
     listMemoryEntries(db),
     listUserMemories(db),
     getGeneralMemory(db),
   ]);
 
-  const userIds = [
+  const refs = [
     ...users.map((u) => u.userId),
     ...entries.map((e) => e.userId).filter((id): id is string => id != null),
   ];
-  const known = await getKnownUsersByIds(db, userIds);
-  const labels = new Map(known.map((u) => [u.userId, formatKnownUserLabel(u)]));
-  const labelFor = (userId: string) => labels.get(userId) ?? `User ${userId}`;
+  const labels = await labelsForRefs(refs, db);
+  const labelFor = (ref: string) => labels.get(ref) ?? `User ${ref}`;
 
   const pendingCount = new Map<string, number>();
   for (const entry of entries) {
@@ -488,7 +522,7 @@ export async function getMemoryView(db: DrizzleDb = getDb()): Promise<MemoryView
 }
 
 /** Notes waiting for the next consolidation run — the job card's backlog. */
-export function countPendingNotes(db: DrizzleDb = getDb()): Promise<number> {
+export function countPendingNotes(db: StoreDb = getStoreDb()): Promise<number> {
   return countPendingEntries(db);
 }
 
@@ -518,14 +552,16 @@ async function traced<T>(
 export async function editUserMemory(
   userId: string,
   input: UpdateUserMemory,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<UserMemory> {
   return traced(
     "edit-user-memory",
     `user ${userId}`,
     async (trace) => {
-      const known = await getKnownUser(db, userId);
-      if (!known) throw ApiError.notFound(`No known user with id ${userId}`);
+      const parsed = tryParseScopedRef(userId);
+      if (parsed?.source === "tg" && !(await getKnownUser(db, parsed.id))) {
+        throw ApiError.notFound(`No known user with id ${userId}`);
+      }
 
       const before = await getUserMemory(db, userId);
       // Re-embed the new text rather than keeping the old vector: a stale vector
@@ -546,7 +582,7 @@ export async function editUserMemory(
 }
 
 /** Forget one person: their document and (by cascade) their pending notes. */
-export async function forgetUser(userId: string, db: DrizzleDb = getDb()): Promise<void> {
+export async function forgetUser(userId: string, db: StoreDb = getStoreDb()): Promise<void> {
   return traced(
     "delete-user-memory",
     `user ${userId}`,
@@ -569,7 +605,7 @@ export async function forgetUser(userId: string, db: DrizzleDb = getDb()): Promi
  */
 export async function editGeneralMemory(
   input: UpdateGeneralMemory,
-  db: DrizzleDb = getDb(),
+  db: StoreDb = getStoreDb(),
 ): Promise<GeneralMemory> {
   return traced(
     "edit-general-memory",
@@ -588,7 +624,7 @@ export async function editGeneralMemory(
 }
 
 /** Forget all general knowledge. */
-export async function forgetGeneralMemory(db: DrizzleDb = getDb()): Promise<void> {
+export async function forgetGeneralMemory(db: StoreDb = getStoreDb()): Promise<void> {
   return traced(
     "delete-general-memory",
     "general knowledge",
@@ -606,7 +642,7 @@ export async function forgetGeneralMemory(db: DrizzleDb = getDb()): Promise<void
 }
 
 /** Discard a pending note before the nightly job folds it in. */
-export async function discardMemoryEntry(id: string, db: DrizzleDb = getDb()): Promise<void> {
+export async function discardMemoryEntry(id: string, db: StoreDb = getStoreDb()): Promise<void> {
   return traced(
     "discard-note",
     id,
