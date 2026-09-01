@@ -4,7 +4,9 @@ name: Release
 # on main. Bump the version locally (e.g. `npm run release:patch`) and push to
 # main; this workflow verifies, tags the release, and pushes EVERY per-app image
 # (one per entry in the release job's matrix) to Docker Hub on that one version.
-# No version change -> nothing runs.
+# No version change -> nothing runs. Manual dispatch (Actions -> Release ->
+# Run workflow) forces a release of the CURRENT version - for re-runs and for
+# proving the pipeline on a fresh repo; tagging and image pushes are idempotent.
 on:
   push:
     branches: [main]
@@ -12,6 +14,7 @@ on:
     # confirms the "version" field actually changed before anything ships.
     paths:
       - "package.json"
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
@@ -35,6 +38,11 @@ jobs:
         run: |
           current=$(node -p "require('./package.json').version")
           echo "version=$current" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch -> releasing current version $current."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if git cat-file -e HEAD~1:package.json 2>/dev/null; then
             previous=$(git show HEAD~1:package.json \
               | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
