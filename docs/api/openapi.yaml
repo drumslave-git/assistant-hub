@@ -3344,7 +3344,7 @@ components:
       properties:
         schema:
           type: string
-          const: llm-tg-bot/trace-bundle@1
+          const: assistant-hub/trace-bundle@1
         exportedAt: { type: string, format: date-time }
         traces:
           type: array

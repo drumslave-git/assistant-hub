@@ -162,7 +162,7 @@ describe("buildTraceBundle", () => {
   it("wraps a single trace (with events) in the shared bundle envelope", async () => {
     const id = await seed();
     const bundle = await buildTraceBundle(id);
-    expect(bundle.schema).toBe("llm-tg-bot/trace-bundle@1");
+    expect(bundle.schema).toBe("assistant-hub/trace-bundle@1");
     expect(bundle.exportedAt).toBeDefined();
     expect(bundle.traces).toHaveLength(1);
     expect(bundle.traces[0].id).toBe(id);

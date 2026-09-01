@@ -1,1 +1,0 @@
-ALTER TABLE "scheduled_tasks" DROP COLUMN "timezone";

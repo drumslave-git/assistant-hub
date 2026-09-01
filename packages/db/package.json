@@ -5,7 +5,6 @@
   "description": "Shared database tooling: pg pool singletons, drizzle helpers, and the production migration runner. Each app defines its OWN schema and migration chain on top of this.",
   "exports": {
     ".": "./src/index.ts",
-    "./import": "./src/import.ts",
     "./testing": "./src/testing.ts"
   },
   "scripts": {

@@ -1,1 +1,0 @@
-ALTER TABLE "browser_agent_runs" ADD COLUMN "activity" jsonb DEFAULT '[]'::jsonb NOT NULL;

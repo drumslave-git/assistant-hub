@@ -212,7 +212,7 @@ export type Trace = z.infer<typeof traceSchema>;
 
 /** Downloadable log/trace bundle format shared by every feature's Debug page. */
 export const traceBundleSchema = z.object({
-  schema: z.literal("llm-tg-bot/trace-bundle@1"),
+  schema: z.literal("assistant-hub/trace-bundle@1"),
   exportedAt: z.string().datetime(),
   traces: z.array(traceSchema),
 });

@@ -8,7 +8,6 @@
  * dashboard aggregates, and the web-chat app's own thread shapes. Landing
  * with later phases: source-status events.
  */
-export { DEFAULT_ASSISTANT_ID } from "./assistants";
 export {
   TOOL_DELIVERY_KEY,
   TURN_META_KEY,

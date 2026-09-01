@@ -13,9 +13,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio",
-    "import:v1": "tsx store/import-v1.ts",
-    "import:tg-v1": "tsx store/import-tg-v1.ts"
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.38",

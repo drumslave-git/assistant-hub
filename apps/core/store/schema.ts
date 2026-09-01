@@ -20,8 +20,7 @@ import {
  * The v2 **core store** (PLAN.md, "Data ownership") — the brain's own
  * database: assistants, settings, LLM backend config, memory,
  * self-improvement, tasks, person links, and core-job coverage markers.
- * Fresh database, fresh migration chain (`store/migrations`), populated
- * from the v1 database by `store/import-v1.ts` at cutover.
+ * Fresh database, fresh migration chain (`store/migrations`).
  *
  * Never a foreign key into another app's database: anything that points at a
  * source-owned entity (a telegram user, a web-chat thread) stores a **scoped

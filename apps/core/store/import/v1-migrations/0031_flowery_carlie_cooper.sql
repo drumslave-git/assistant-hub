@@ -1,6 +1,0 @@
-ALTER TABLE "chat_messages" ADD CONSTRAINT "chat_messages_role_check" CHECK ("chat_messages"."role" in ('user', 'assistant'));--> statement-breakpoint
-ALTER TABLE "message_media" ADD CONSTRAINT "message_media_status_check" CHECK ("message_media"."status" in ('pending', 'described', 'unavailable'));--> statement-breakpoint
-ALTER TABLE "period_insights" ADD CONSTRAINT "period_insights_granularity_check" CHECK ("period_insights"."granularity" in ('hour', 'day', 'week', 'month', 'year', 'all'));--> statement-breakpoint
-ALTER TABLE "scheduled_tasks" ADD CONSTRAINT "scheduled_tasks_schedule_kind_check" CHECK ("scheduled_tasks"."schedule_kind" in ('once', 'daily', 'weekly'));--> statement-breakpoint
-ALTER TABLE "users_feedbacks" ADD CONSTRAINT "users_feedbacks_reaction_check" CHECK ("users_feedbacks"."reaction" in ('up', 'down'));--> statement-breakpoint
-ALTER TABLE "users_feedbacks" ADD CONSTRAINT "users_feedbacks_status_check" CHECK ("users_feedbacks"."status" in ('pending', 'awaiting_text', 'completed'));

@@ -1,1 +1,0 @@
-ALTER TABLE "scheduled_tasks" ADD COLUMN "attempts" integer DEFAULT 0 NOT NULL;

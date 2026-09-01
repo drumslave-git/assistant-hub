@@ -39,12 +39,17 @@ identity: AGENTS.md/README/docs descriptions and the openapi title,
 `.env.example`, `build-info.ts` fallback name, both outbound user-agent
 strings, the MCP server/client names, every `Symbol.for("llm-tg-bot.*")`
 global key (now `assistant-hub.*`), and the package-lock name. TODO.md was
-pruned of plain-`done` sections (git history is the archive). Deliberately
-untouched, pending user decisions: the `llm-tg-bot/trace-bundle@1` schema
-literal (a versioned stamp inside already-exported bundles) and the v1
-cutover machinery (`store/import-v1.ts`, `import-tg-v1.ts`,
-`docs/operations/cutover-runbook.md`, `v1-split.md`) — whether production
-starts fresh or still imports v1 data decides its fate.
+pruned of plain-`done` sections (git history is the archive).
+
+Two user decisions (2026-09-01) closed the remainder: **production starts
+fresh — no v1 data import ever** — so the whole cutover machinery was
+deleted (`store/import-v1.ts`, `import-tg-v1.ts`, `store/import/`, the
+`import:v1`/`import:tg-v1` npm scripts, `V1_DATABASE_URL`,
+`docs/operations/cutover-runbook.md`, `v1-split.md`,
+`packages/db/src/import.ts` + its export, `create-database.mjs`, and the
+now-dead `DEFAULT_ASSISTANT_ID` contract); and the trace-bundle schema
+literal was renamed to `assistant-hub/trace-bundle@1` (bundles exported
+before the rename keep the old stamp; nothing re-imports them).
 
 ## A name in the text is not who the message is for (`todo` — improvement, 2026-08-27)
 

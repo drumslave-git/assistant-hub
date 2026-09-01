@@ -1,1 +1,0 @@
-ALTER TABLE "settings" ADD COLUMN "tavily_api_key" text;

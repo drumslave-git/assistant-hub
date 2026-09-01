@@ -10,8 +10,7 @@ import { Pool } from "pg";
  * Testcontainers plumbing for store integration tests
  * (`@assistant-hub/db/testing` — test-only subpath, not the server-only
  * package root). One Postgres container (the production pgvector image), any
- * number of databases created inside it — the v1-split tests need a seeded
- * v1 database and a migrated store side by side.
+ * number of databases created inside it.
  */
 
 /** Same image as production (docker-compose): plain `postgres` has no pgvector. */

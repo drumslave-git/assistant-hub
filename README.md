@@ -83,7 +83,7 @@ other's code — only packages.
 | `apps/core/lib/` | Small shared utilities and pure contracts (error shape, trace types) importable by both client and server. |
 | `apps/core/test/` | Test support (stubs, fixtures). |
 | `apps/tg/` | Telegram transport: stateless pollers that register with the core, forward updates as transport events, perform sends, and host the platform's MCP tools. |
-| `packages/db/` | Shared database tooling (`@assistant-hub/db`): pg pool singletons, the production migration runner (`migrate/`), v1 import plumbing (`/import`), and Testcontainers helpers (`/testing`). The one schema and migration chain live in `apps/core/store/`. |
+| `packages/db/` | Shared database tooling (`@assistant-hub/db`): pg pool singletons, the production migration runner (`migrate/`), and Testcontainers helpers (`/testing`). The one schema and migration chain live in `apps/core/store/`. |
 | `packages/contracts/` | Cross-app zod schemas (`@assistant-hub/contracts`): the source-app contract, scoped refs, bus/queue payloads — populated by the redesign phases. |
 | `packages/ui/` | Shared dashboard components + the typed extension-point registry (`@assistant-hub/ui`) the shell composes from. |
 

@@ -1,1 +1,0 @@
-ALTER TABLE "settings" ADD COLUMN "audio_transcription_mode" text DEFAULT 'transcriptions' NOT NULL;

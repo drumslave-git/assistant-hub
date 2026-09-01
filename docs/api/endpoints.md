@@ -298,7 +298,7 @@ component drives them all. `mood` requires a `chatId`.
 | `POST` | `/api/traces/prune` | `{ beforeMonth: "YYYY-MM" }` | `{ months: string[], traces: number }`. **Destructive** |
 
 `status` is one of `pending`, `running`, `success`, `error`, `skipped`. Bundles carry
-`{ schema: "llm-tg-bot/trace-bundle@1", exportedAt, traces }` and include full event
+`{ schema: "assistant-hub/trace-bundle@1", exportedAt, traces }` and include full event
 payloads — which is to say complete conversation content. Handle accordingly.
 
 ---
