@@ -1,8 +1,8 @@
 # Agent Guide
 
 This repository is **assistant-hub** (GitHub:
-[drumslave-git/llm-tg-bot-nextjs](https://github.com/drumslave-git/llm-tg-bot-nextjs)
-until the repo rename lands): a multi-user assistant platform — accounts run
+[drumslave-git/assistant-hub](https://github.com/drumslave-git/assistant-hub)):
+a multi-user assistant platform — accounts run
 their own AI assistants (personas, Telegram bots, standing tasks, tools) on
 one shared brain, with a web chat and a control/observability dashboard.
 

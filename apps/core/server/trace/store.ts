@@ -43,7 +43,7 @@ const FLUSH_MS = 60_000;
 /** How many months may keep their events in RAM at once (headers always stay). */
 const MAX_FULL_MONTHS = 3;
 
-const STORE_KEY = Symbol.for("llm-tg-bot.trace.store");
+const STORE_KEY = Symbol.for("assistant-hub.trace.store");
 
 /** One correlation-id index entry — enough to rank newest and filter by feature. */
 interface CorrelationEntry {

@@ -27,7 +27,7 @@ import { hostResolvesPublic } from "./resolve-safety";
  */
 
 const USER_AGENT =
-  "Mozilla/5.0 (compatible; LLMTGBot/1.0; +https://github.com/drumslave-git/llm-tg-bot-nextjs)";
+  "Mozilla/5.0 (compatible; AssistantHub/1.0; +https://github.com/drumslave-git/assistant-hub)";
 
 /**
  * Path to a system Chromium binary to launch instead of Playwright's own download.
@@ -43,7 +43,7 @@ interface BrowserStore {
   launching: Promise<Browser> | null;
 }
 
-const STORE_KEY = Symbol.for("llm-tg-bot.link-fetch.chromium");
+const STORE_KEY = Symbol.for("assistant-hub.link-fetch.chromium");
 
 function store(): BrowserStore {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: BrowserStore };

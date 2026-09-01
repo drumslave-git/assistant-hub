@@ -1,7 +1,7 @@
 openapi: 3.1.0
 
 info:
-  title: llm-tg-bot-nextjs dashboard API
+  title: assistant-hub dashboard API
   version: 1.11.4
   description: |
     HTTP surface of the operator dashboard for a Telegram bot driven by an

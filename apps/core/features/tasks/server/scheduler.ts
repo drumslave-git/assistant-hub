@@ -65,7 +65,7 @@ import { getActiveTasksForChat } from "./service";
 const TICK_MS = 30_000;
 
 const FEATURE = FEATURES.tasks;
-const STORE_KEY = Symbol.for("llm-tg-bot.tasks.scheduler");
+const STORE_KEY = Symbol.for("assistant-hub.tasks.scheduler");
 
 /**
  * Collaborators the due-run loop needs. Injected so the whole tick can be

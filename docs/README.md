@@ -1,8 +1,9 @@
 # Documentation
 
-Full documentation for **llm-tg-bot-nextjs** — a Telegram bot driven by an
-OpenAI-compatible LLM, with an operator dashboard for control, configuration and
-observability.
+Full documentation for **assistant-hub** — a multi-user assistant platform:
+accounts run their own AI assistants (personas, Telegram bots, standing tasks,
+tools) on one shared brain (an OpenAI-compatible chat completions API), with a
+web chat and a control/observability dashboard.
 
 Everything here describes the code in this repository. Pending and upcoming
 work — features with their agreed specs and decisions, plus open operational

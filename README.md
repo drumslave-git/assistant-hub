@@ -82,7 +82,6 @@ other's code — only packages.
 | `apps/core/store/` | THE database module: the Drizzle schema (`schema.ts`), the one migration chain (`migrations/`), and the v1 import scripts (`import/`). |
 | `apps/core/lib/` | Small shared utilities and pure contracts (error shape, trace types) importable by both client and server. |
 | `apps/core/test/` | Test support (stubs, fixtures). |
-| `apps/core/store/` | The v2 core-store database module (schema, migrations, v1 import) — the redesign's brain store, beside the v1 `db/` until cutover. |
 | `apps/tg/` | Telegram transport: stateless pollers that register with the core, forward updates as transport events, perform sends, and host the platform's MCP tools. |
 | `packages/db/` | Shared database tooling (`@assistant-hub/db`): pg pool singletons, the production migration runner (`migrate/`), v1 import plumbing (`/import`), and Testcontainers helpers (`/testing`). The one schema and migration chain live in `apps/core/store/`. |
 | `packages/contracts/` | Cross-app zod schemas (`@assistant-hub/contracts`): the source-app contract, scoped refs, bus/queue payloads — populated by the redesign phases. |
@@ -101,8 +100,8 @@ are imported by name (`@assistant-hub/*`).
 Persistence uses [Drizzle ORM](https://orm.drizzle.team) with drizzle-kit
 migrations against Postgres.
 
-- Edit tables in `apps/core/db/schema.ts`, then run `npm run db:generate` and
-  commit the new SQL under `apps/core/db/migrations/`.
+- Edit tables in `apps/core/store/schema.ts`, then run `npm run db:generate` and
+  commit the new SQL under `apps/core/store/migrations/`.
 - Apply migrations with `npm run db:migrate` (drizzle-kit). In deployment this
   same command runs as the container entrypoint step before `next start`, so the
   app never serves against an unmigrated database.

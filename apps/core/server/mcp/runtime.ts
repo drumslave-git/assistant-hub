@@ -52,7 +52,7 @@ interface RegistryStore {
   loading: Promise<BotMcpRegistry> | null;
 }
 
-const STORE_KEY = Symbol.for("llm-tg-bot.mcp.registry");
+const STORE_KEY = Symbol.for("assistant-hub.mcp.registry");
 
 function store(): RegistryStore {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: RegistryStore };

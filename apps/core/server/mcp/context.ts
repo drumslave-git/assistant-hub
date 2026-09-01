@@ -125,7 +125,7 @@ export interface McpToolContext {
   deliveryKind?: "reply" | "send";
 }
 
-const STORE_KEY = Symbol.for("llm-tg-bot.mcp.tool-context");
+const STORE_KEY = Symbol.for("assistant-hub.mcp.tool-context");
 
 /**
  * The one storage for this process, pinned to `globalThis` like every other

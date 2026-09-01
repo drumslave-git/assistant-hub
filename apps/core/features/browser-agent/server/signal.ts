@@ -10,7 +10,7 @@ import "server-only";
 
 type Listener = () => void;
 
-const STORE_KEY = Symbol.for("llm-tg-bot.browser-agent.signal");
+const STORE_KEY = Symbol.for("assistant-hub.browser-agent.signal");
 
 function store(): { listener: Listener | null } {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: { listener: Listener | null } };
