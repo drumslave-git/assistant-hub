@@ -1,13 +1,11 @@
 @import "tailwindcss";
 
 /*
- * Workspace UI packages ship Tailwind classes the automatic scan (rooted in
- * this app) cannot see — list their sources explicitly so their utilities
+ * The workspace UI package ships Tailwind classes the automatic scan (rooted
+ * in this app) cannot see — list its sources explicitly so their utilities
  * land in the build.
  */
 @source "../../../packages/ui/src";
-@source "../../../apps/tg/ui/src";
-@source "../../../apps/chat/ui/src";
 
 /*
  * Class-based dark mode. The app is dark-first (`<html class="dark">`), but the

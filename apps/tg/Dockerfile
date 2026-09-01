@@ -23,7 +23,7 @@ COPY package.json package-lock.json ./
 COPY apps/tg/package.json apps/tg/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/bus/package.json packages/bus/
-COPY packages/db/package.json packages/db/
+COPY packages/media/package.json packages/media/
 COPY packages/service/package.json packages/service/
 RUN npm install --no-audit --no-fund
 
@@ -42,7 +42,7 @@ RUN apk add --no-cache ffmpeg
 COPY --from=deps /app ./
 COPY packages/contracts packages/contracts
 COPY packages/bus packages/bus
-COPY packages/db packages/db
+COPY packages/media packages/media
 COPY packages/service packages/service
 COPY apps/tg apps/tg
 
