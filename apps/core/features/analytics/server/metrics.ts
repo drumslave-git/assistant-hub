@@ -205,8 +205,6 @@ export async function getModels(query: MetricsQuery): Promise<ModelsPayload> {
 /** The most active people in the period, with the tokens their turns cost. */
 export async function getTopUsersCard(
   query: MetricsQuery,
-  // Kept positionally for callers; the labels read the adapter's own handle.
-  _db: StoreDb = getStoreDb(),
   content?: SourceContentClient,
 ): Promise<TopUsersPayload> {
   const { ctx, scope } = await resolvePeriod(query);

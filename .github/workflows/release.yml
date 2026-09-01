@@ -78,9 +78,60 @@ jobs:
       - run: npm run typecheck
       - run: npm run test
 
-  tag:
-    name: Tag the release
+  # A release is all-or-nothing: every image is built first (nothing pushed),
+  # and only when EVERY build succeeded does one job push them all and tag the
+  # commit. One failing image fails the whole release with the registry and the
+  # repo untouched - no half-released version, no dangling tag.
+  build:
+    name: Build ${{ matrix.image }}
     needs: [version, verify]
+    if: needs.version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      # Per-app images, all released together on the same version. Every app
+      # that ships an image adds a matrix entry here - the publish job picks
+      # up whatever this matrix produced.
+      matrix:
+        include:
+          - image: assistant-hub-core
+            dockerfile: apps/core/Dockerfile
+          - image: assistant-hub-tg
+            dockerfile: apps/tg/Dockerfile
+      # Let the other image finish (and warm its cache) even if one fails; the
+      # publish job still refuses to run unless all of them succeeded.
+      fail-fast: false
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          # Not pushed: exported as a tarball for the publish job.
+          outputs: type=docker,dest=/tmp/${{ matrix.image }}.tar
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}
+          # Reuse layers across runs to keep rebuilds fast; scoped per image so
+          # the two builds do not evict each other's layers.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.tar
+          # Only a hand-off to the publish job below; nothing keeps it after.
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: Publish all images and tag
+    needs: [version, build]
     if: needs.version.outputs.changed == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -88,9 +139,50 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-*
+          path: /tmp/images
+          merge-multiple: true
+
+      - name: Load images
+        run: |
+          set -eu
+          for tar in /tmp/images/*.tar; do
+            docker load --input "$tar"
+          done
+          docker image ls --format '{{.Repository}}:{{.Tag}}'
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Every image's version tag goes up before any `latest` moves, so a push
+      # failure mid-way can never leave `latest` pointing at a mixed set.
+      - name: Push version tags
+        run: |
+          set -eu
+          for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=${DOCKERHUB_USERNAME}/*:${VERSION}"); do
+            docker push "$ref"
+          done
+
+      - name: Push latest tags
+        run: |
+          set -eu
+          for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=${DOCKERHUB_USERNAME}/*:${VERSION}"); do
+            latest="${ref%:*}:latest"
+            docker tag "$ref" "$latest"
+            docker push "$latest"
+          done
+
+      # The git tag is the last step: it exists only for a version whose every
+      # image is already in the registry.
       - name: Create and push release tag
         run: |
           tag="v${VERSION}"
@@ -102,44 +194,3 @@ jobs:
             git tag -a "$tag" -m "Release $tag"
             git push origin "$tag"
           fi
-
-  release:
-    name: Publish ${{ matrix.image }}
-    needs: [version, verify, tag]
-    if: needs.version.outputs.changed == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      # Per-app images, all released together on the same version. Every app
-      # that ships an image adds a matrix entry here.
-      matrix:
-        include:
-          - image: assistant-hub-core
-            dockerfile: apps/core/Dockerfile
-          - image: assistant-hub-tg
-            dockerfile: apps/tg/Dockerfile
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
-      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ env.VERSION }}
-            ${{ env.IMAGE }}:latest
-          # Reuse layers across runs to keep rebuilds fast.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

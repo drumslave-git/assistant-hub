@@ -129,32 +129,39 @@ During the overlap window two app processes may briefly co-exist. That is handle
 
 ## Releases
 
-`.github/workflows/release.yml` ships an image whenever the `version` field in
-`package.json` changes on `main`.
+`.github/workflows/release.yml` ships every app image whenever the `version`
+field in `package.json` changes on `main`.
 
 ```bash
 npm run release:patch
 ```
 
 (or `release:minor` / `release:major` — they bump the version without creating a git
-tag), then commit and push to `main`.
+tag), then commit and push to `main`. Actions → Release → *Run workflow* forces a
+release of the current version instead (re-runs, or proving a fresh repo); every
+step below is idempotent, so a manual run is safe to repeat.
 
-The workflow:
+A release is all-or-nothing: nothing reaches Docker Hub and no tag is created
+unless every image built. The workflow:
 
 1. **version** — wakes only when the root `package.json` is touched, then diffs the
-   `version` field against `HEAD~1`. Unchanged → nothing ships.
+   `version` field against `HEAD~1`. Unchanged → nothing ships. A manual dispatch
+   skips the diff and releases the current version.
 2. **verify** — `npm install`, `npm run lint`, `npm run typecheck`, `npm run test`
    (fanned out across the workspaces via turbo. Unit tests only; the integration
    suite needs Docker and is not part of the gate.)
-3. **tag** — creates and pushes the `v<version>` tag if it does not already exist.
-4. **release** — a matrix with one entry per app image (today only
-   `assistant-hub-core` from `apps/core/Dockerfile`) builds and pushes each to
-   Docker Hub as `<user>/<image>:<version>` and `:latest`, with GitHub Actions
-   layer caching. Every image releases on the same version — one bump publishes
-   them all.
+3. **build** — a matrix with one entry per app image (`assistant-hub-core` from
+   `apps/core/Dockerfile`, `assistant-hub-tg` from `apps/tg/Dockerfile`) builds
+   each with GitHub Actions layer caching and hands it to the next job as an
+   artifact — nothing is pushed. One failing image fails the release.
+4. **publish** — runs only when every build succeeded: loads all images, pushes
+   every `<user>/<image>:<version>` first, then moves every `:latest`, and finally
+   creates the `v<version>` git tag (skipped if it already exists). The ordering
+   means a push failure mid-way can never leave `latest` pointing at a mixed set,
+   and a tag exists only for a version whose every image is in the registry.
 
-Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. The tag job
-needs `contents: write` to push the tag.
+Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. The publish
+job needs `contents: write` to push the tag.
 
 Note that `verify` uses `npm install` rather than `npm ci` for the same lockfile
 reason as the Dockerfile.
