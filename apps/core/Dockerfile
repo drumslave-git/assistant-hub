@@ -17,9 +17,12 @@ ENV NEXT_TELEMETRY_DISABLED=1
 FROM base AS deps
 COPY package.json package-lock.json ./
 COPY apps/core/package.json apps/core/
+# One manifest per workspace package core depends on (apps/core/package.json).
+COPY packages/bus/package.json packages/bus/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/db/package.json packages/db/
 COPY packages/media/package.json packages/media/
+COPY packages/service/package.json packages/service/
 COPY packages/ui/package.json packages/ui/
 RUN npm install --no-audit --no-fund
 
