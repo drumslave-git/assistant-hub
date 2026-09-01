@@ -5,6 +5,15 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  {
+    rules: {
+      // Every import must be declared in THIS app's package.json. The root
+      // workspace install links every package regardless, so an undeclared
+      // workspace or npm dependency only fails inside the Docker image, whose
+      // deps stage copies the declared manifests alone.
+      "import/no-extraneous-dependencies": ["error", { includeTypes: true }],
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:

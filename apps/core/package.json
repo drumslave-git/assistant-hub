@@ -30,6 +30,7 @@
     "@grammyjs/types": "^3.28.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ai": "^7.0.56",
+    "bullmq": "^5.66.5",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
     "echarts": "^6.1.0",
