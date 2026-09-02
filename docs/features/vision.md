@@ -65,7 +65,7 @@ one change:
 
 ## Normalization and frames
 
-- **Normalization** (`normalizeImageForChat` — `@assistant-hub/media`, and the
+- **Normalization** (`normalizeImageForChat` — `@assistant-hub-swarm/media`, and the
   transport's `apps/tg/src/media/normalize.ts`): any image — WebP stickers,
   PNGs, oversized photos — is converted to a bounded JPEG via `sharp` (longest
   edge 768 px, under 900 KB), so OpenAI-compatible vision endpoints accept it

@@ -5,12 +5,12 @@ import type {
   InboundMessageEvent,
   MessageDeliveredEvent,
   TransportMessageEvent,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 import {
   applyMigrations,
   startTestPostgres,
   type TestPostgres,
-} from "@assistant-hub/db/testing";
+} from "@assistant-hub-swarm/db/testing";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";

@@ -17,7 +17,7 @@ files.
 | `components/ui/` | The design-system kit | Presentational. No feature logic, no data fetching |
 | `components/layout/` | The responsive app shell: `AppShell`, `Sidebar`, `Topbar`, `nav-config.ts` (the role-filtered navigation), `SystemAlerts` | — |
 | `components/auth/` | `AuthPasswordForm` (setup and login) and `ForcedPasswordChangeForm` (the temporary-password gate) | Rendered outside the shell |
-| `components/chat/` | `ThreadsPage` — the whole web chat at `/chat` | Built from `@assistant-hub/ui` (see below) |
+| `components/chat/` | `ThreadsPage` — the whole web chat at `/chat` | Built from `@assistant-hub-swarm/ui` (see below) |
 | `components/debug/` | The shared Debug views | Every feature composes these |
 | `components/jobs/` | `JobStatusCard` and the pure `job-status.ts` it shares with the server-side registry | Every scheduler-backed feature renders this |
 | `components/realtime/` | The core's `LiveIndicator` (wired to `router.refresh()`), `useLiveRefresh`, and re-exports of the shared stream singleton and `useLiveEvent` | — |
@@ -25,7 +25,7 @@ files.
 | `components/source/` | `SourceUnavailableNotice` — names a source that could not be read above the Users/Groups tables | — |
 | `components/theme/` | The toggle, `useIsDark`, and the pre-hydration script | — |
 | `components/time/` | `Timestamp` (re-exported from the shared package) and `TimezoneProvider` | — |
-| `components/transports/` | `TransportSections` and `TransportConnectionSection` — the assistant editor's schema-driven connection sections | Built from `@assistant-hub/ui` (see below) |
+| `components/transports/` | `TransportSections` and `TransportConnectionSection` — the assistant editor's schema-driven connection sections | Built from `@assistant-hub-swarm/ui` (see below) |
 | `features/*/ui/` | A feature's own components | Composed from the above |
 
 ## The primitives
@@ -61,13 +61,13 @@ files.
 so the last one wins. Use it wherever a component composes a base style with a
 caller-provided `className`.
 
-## The second kit: `@assistant-hub/ui`
+## The second kit: `@assistant-hub-swarm/ui`
 
-`packages/ui` is a workspace package (`@assistant-hub/ui`, exported from
+`packages/ui` is a workspace package (`@assistant-hub-swarm/ui`, exported from
 `packages/ui/src/index.ts`) that holds the primitives and plumbing the dashboard must
 render *identically* outside the core's own component tree. Its `package.json`
 describes it as the shared home the source apps' `ui` subpackages import — never their
-app's server code — and it depends only on `@assistant-hub/contracts`, `clsx`,
+app's server code — and it depends only on `@assistant-hub-swarm/contracts`, `clsx`,
 `tailwind-merge` and `lucide-react`. It holds:
 
 | Export | What |
@@ -80,7 +80,7 @@ app's server code — and it depends only on `@assistant-hub/contracts`, `clsx`,
 
 The core's kit does **not** duplicate any of it. `components/ui/{Badge,Button,Card,
 EmptyState,Field,Input,Label,PageHeader,Slot}.tsx` are one-line re-exports from the
-package ("moved to `@assistant-hub/ui`, Phase 3"), as are `components/time/Timestamp.tsx`,
+package ("moved to `@assistant-hub-swarm/ui`, Phase 3"), as are `components/time/Timestamp.tsx`,
 `components/realtime/{event-stream,useLiveEvent}` and `lib/cn.ts`/`lib/format.ts`;
 `components/realtime/LiveIndicator.tsx` wraps the shared pill with a
 `router.refresh()`. Everything else in `components/ui/` (`Calendar`, `Combobox`,
@@ -96,7 +96,7 @@ Who imports the package directly, as the code stands:
 
 The two kits therefore coexist rather than compete: feature code and pages import
 `@/components/ui`, which is the superset; the two client surfaces that grew up outside
-the core tree import `@assistant-hub/ui` directly. The code shows no other rule, and
+the core tree import `@assistant-hub-swarm/ui` directly. The code shows no other rule, and
 the extension registry the package was built for has since retired (the whole
 navigation is the shell's own), so a new page has no reason to pick the package over
 the barrel unless it needs `apiFetch` or the callback-style `LiveIndicator`.

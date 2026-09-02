@@ -2,7 +2,7 @@ import "server-only";
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type { SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 
 import type { TraceTrigger } from "@/lib/trace";
 

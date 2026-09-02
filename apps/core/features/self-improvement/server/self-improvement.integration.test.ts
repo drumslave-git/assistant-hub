@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { FeedbackRecordedEvent } from "@assistant-hub/contracts";
+import type { FeedbackRecordedEvent } from "@assistant-hub-swarm/contracts";
 
 import { ADDRESSING_CHECK_EVENT } from "@/features/bot-messaging/addressing-trace";
 import {

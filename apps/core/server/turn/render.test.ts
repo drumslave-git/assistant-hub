@@ -2,7 +2,7 @@ import {
   inboundMessageEventSchema,
   type HistoryMessage,
   type InboundMessageEvent,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 import { describe, expect, it } from "vitest";
 
 import {

@@ -1,5 +1,5 @@
 {
-  "name": "@assistant-hub/tg",
+  "name": "@assistant-hub-swarm/tg",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,10 +11,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@assistant-hub/bus": "*",
-    "@assistant-hub/contracts": "*",
-    "@assistant-hub/media": "*",
-    "@assistant-hub/service": "*",
+    "@assistant-hub-swarm/bus": "*",
+    "@assistant-hub-swarm/contracts": "*",
+    "@assistant-hub-swarm/media": "*",
+    "@assistant-hub-swarm/service": "*",
     "@grammyjs/runner": "^2.0.3",
     "@grammyjs/types": "^3.28.0",
     "@hono/node-server": "^1.14.0",

@@ -1,11 +1,11 @@
 import { fileURLToPath } from "node:url";
 
-import type { InboundMessageEvent, ReplyDeliveryEvent } from "@assistant-hub/contracts";
+import type { InboundMessageEvent, ReplyDeliveryEvent } from "@assistant-hub-swarm/contracts";
 import {
   applyMigrations,
   startTestPostgres,
   type TestPostgres,
-} from "@assistant-hub/db/testing";
+} from "@assistant-hub-swarm/db/testing";
 import { drizzle } from "drizzle-orm/node-postgres";
 import sharp from "sharp";
 import { Pool } from "pg";

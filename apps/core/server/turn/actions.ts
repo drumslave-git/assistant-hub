@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getProcessPool, closeProcessPool } from "@assistant-hub/db";
+import { getProcessPool, closeProcessPool } from "@assistant-hub-swarm/db";
 import type { Pool } from "pg";
 
 import { requireEnv } from "@/server/env";

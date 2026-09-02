@@ -4,7 +4,7 @@ import {
   type TransportMessageEvent,
   type TransportReceiver,
   type TransportUpdateEvent,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 import type { Message } from "@grammyjs/types";
 
 import { checkAddressed } from "./addressing";

@@ -31,7 +31,7 @@ RUN npm install --no-audit --no-fund
 # root modules plus per-workspace symlinks — carries over intact.
 FROM deps AS builder
 COPY . .
-RUN npm run build --workspace @assistant-hub/core
+RUN npm run build --workspace @assistant-hub-swarm/core
 
 # --- runner: slim production runtime from Next standalone output ---
 FROM base AS runner

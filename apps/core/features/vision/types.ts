@@ -1,4 +1,4 @@
-import type { SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 
 /**
  * Shared vision types. Client-safe (no server imports) so both the server

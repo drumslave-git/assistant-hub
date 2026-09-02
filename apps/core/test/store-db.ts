@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 
-import { applyMigrations, startTestPostgres, type TestPostgres } from "@assistant-hub/db/testing";
+import { applyMigrations, startTestPostgres, type TestPostgres } from "@assistant-hub-swarm/db/testing";
 import { getTableName, is } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { PgTable } from "drizzle-orm/pg-core";

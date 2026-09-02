@@ -1,4 +1,4 @@
-import type { TransportMedia } from "@assistant-hub/contracts";
+import type { TransportMedia } from "@assistant-hub-swarm/contracts";
 import type { Message } from "@grammyjs/types";
 
 import { detectMessageMedia } from "./detect";

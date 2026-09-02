@@ -1,7 +1,7 @@
 import {
   messageDedupeKey,
   type MessageDeliveredEvent,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 import { runningRoster, type AssistantConnection } from "./connections";
 import type { TgOutbound } from "./outbound";

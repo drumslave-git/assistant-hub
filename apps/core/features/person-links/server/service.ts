@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { parseScopedRef } from "@assistant-hub/contracts";
+import { parseScopedRef } from "@assistant-hub-swarm/contracts";
 
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";

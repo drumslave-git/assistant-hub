@@ -16,10 +16,10 @@ const nextConfig: NextConfig = {
   // Workspace packages ship TypeScript sources (just-in-time packages); Next
   // compiles them as part of this app's build.
   transpilePackages: [
-    "@assistant-hub/contracts",
-    "@assistant-hub/db",
-    "@assistant-hub/tg-ui",
-    "@assistant-hub/ui",
+    "@assistant-hub-swarm/contracts",
+    "@assistant-hub-swarm/db",
+    "@assistant-hub-swarm/tg-ui",
+    "@assistant-hub-swarm/ui",
   ],
   // Inline only name/version for `lib/build-info` — importing package.json from
   // client-reachable code shipped the whole manifest (dependency list and

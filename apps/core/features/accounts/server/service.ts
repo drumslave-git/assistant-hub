@@ -5,7 +5,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
-import { scopedRef } from "@assistant-hub/contracts";
+import { scopedRef } from "@assistant-hub-swarm/contracts";
 
 import { getAssistants, removeAssistant } from "@/features/assistants/server/service";
 import { deleteUserMemory } from "@/features/memory/server/repository";

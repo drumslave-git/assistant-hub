@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
 
-import { LiveIndicator as SharedLiveIndicator } from "@assistant-hub/ui";
+import { LiveIndicator as SharedLiveIndicator } from "@assistant-hub-swarm/ui";
 import type { RealtimeTopic } from "@/lib/realtime";
 
 /**

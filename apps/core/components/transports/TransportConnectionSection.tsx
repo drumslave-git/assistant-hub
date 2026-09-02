@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import type { TransportConfigField } from "@assistant-hub/contracts";
-import { Badge, Button, Field, Input, type BadgeTone } from "@assistant-hub/ui";
+import type { TransportConfigField } from "@assistant-hub-swarm/contracts";
+import { Badge, Button, Field, Input, type BadgeTone } from "@assistant-hub-swarm/ui";
 
 import {
   createConnection,

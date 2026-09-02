@@ -1,6 +1,6 @@
 import "server-only";
 
-import { parseScopedRef, type FeedbackRecordedEvent } from "@assistant-hub/contracts";
+import { parseScopedRef, type FeedbackRecordedEvent } from "@assistant-hub-swarm/contracts";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { FEATURES } from "@/lib/features";

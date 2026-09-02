@@ -1,7 +1,7 @@
 import "server-only";
 
-import { openQueue } from "@assistant-hub/bus";
-import { INBOUND_MESSAGES_QUEUE, type InboundMessageEvent } from "@assistant-hub/contracts";
+import { openQueue } from "@assistant-hub-swarm/bus";
+import { INBOUND_MESSAGES_QUEUE, type InboundMessageEvent } from "@assistant-hub-swarm/contracts";
 import type { Queue } from "bullmq";
 
 import { getEnv } from "@/server/env";

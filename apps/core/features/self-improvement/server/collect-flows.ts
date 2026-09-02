@@ -8,7 +8,7 @@ import {
   type FeedbackRecordedEvent,
   type SourceId,
   type TransportReactionEvent,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 import { publishBusEvent } from "@/server/bus/publisher";
 import { publishEvent } from "@/server/realtime/hub";

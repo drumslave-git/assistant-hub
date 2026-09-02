@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 import { asc, eq, ne, sql } from "drizzle-orm";
 
 import {

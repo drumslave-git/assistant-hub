@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ChatCompletionFunctionTool } from "openai/resources/chat/completions";

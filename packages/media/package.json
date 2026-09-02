@@ -1,5 +1,5 @@
 {
-  "name": "@assistant-hub/media",
+  "name": "@assistant-hub-swarm/media",
   "version": "0.0.0",
   "private": true,
   "description": "Media bytes every app handles the same way: normalizing an image to a bounded JPEG the vision endpoints accept. Shared because the core, tg and chat all had to do it — twice identically before this package existed.",

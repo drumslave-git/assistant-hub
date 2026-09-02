@@ -59,7 +59,7 @@ app's data.
 | `test/` | Stubs, fixtures, the Testcontainers database helper (`test/store-db.ts`) | — |
 
 Path alias: `@/*` maps to `apps/core/`. Workspace packages are imported by name
-(`@assistant-hub/*`).
+(`@assistant-hub-swarm/*`).
 
 ### The import boundary
 

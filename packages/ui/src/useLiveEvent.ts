@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { RealtimeTopic } from "@assistant-hub/contracts";
+import type { RealtimeTopic } from "@assistant-hub-swarm/contracts";
 
 import { subscribeToRealtime } from "./event-stream";
 

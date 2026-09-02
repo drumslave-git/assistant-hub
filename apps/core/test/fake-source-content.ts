@@ -1,4 +1,4 @@
-import type { ContentBucketUnit } from "@assistant-hub/contracts";
+import type { ContentBucketUnit } from "@assistant-hub-swarm/contracts";
 
 import { bucketKeyOfInstant } from "@/features/analytics/period";
 import type {

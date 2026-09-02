@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 
 import type { MediaRecord } from "@/features/vision/server/repository";
 import type { MediaStorePort } from "@/features/vision/server/service";

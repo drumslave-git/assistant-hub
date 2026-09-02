@@ -1,4 +1,4 @@
-import type { ConnectionIdentity } from "@assistant-hub/contracts";
+import type { ConnectionIdentity } from "@assistant-hub-swarm/contracts";
 
 /**
  * One running connection: the assistant it serves and its bot account. Both

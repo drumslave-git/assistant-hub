@@ -3,14 +3,14 @@ import {
   parseScopedRef,
   replyDeliveryEventSchema,
   turnLifecycleEventSchema,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 import {
   openPublisher,
   openSubscriber,
   type BusPublisher,
   type BusSubscription,
-} from "@assistant-hub/bus";
-import { busTraceClient } from "@assistant-hub/service";
+} from "@assistant-hub-swarm/bus";
+import { busTraceClient } from "@assistant-hub-swarm/service";
 
 import type { AssistantConnection } from "./connections";
 import type { TgOutbound } from "./outbound";

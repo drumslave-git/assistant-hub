@@ -80,10 +80,10 @@ the template ([apps/tg/package.json](../../apps/tg/package.json)):
 
 | Dependency | Gives you |
 | --- | --- |
-| `@assistant-hub/contracts` | Every zod schema and type named below, `CONTRACT_MAJOR`, the queue/channel constants, `messageDedupeKey`, `readTurnMeta`, `toolDeliveryResult` |
-| `@assistant-hub/bus` | `openQueue`, `openPublisher`, `openSubscriber` (BullMQ + ioredis, `attempts: 1`) |
-| `@assistant-hub/service` | `requireEnv`/`optionalEnv`, `internalTokenGuard`, `INTERNAL_TOKEN_HEADER`, `serveMcp`, `busTraceClient`, `dashboardRefresh` |
-| `@assistant-hub/media` | `normalizeImageForChat` — bounded JPEG the vision endpoints accept |
+| `@assistant-hub-swarm/contracts` | Every zod schema and type named below, `CONTRACT_MAJOR`, the queue/channel constants, `messageDedupeKey`, `readTurnMeta`, `toolDeliveryResult` |
+| `@assistant-hub-swarm/bus` | `openQueue`, `openPublisher`, `openSubscriber` (BullMQ + ioredis, `attempts: 1`) |
+| `@assistant-hub-swarm/service` | `requireEnv`/`optionalEnv`, `internalTokenGuard`, `INTERNAL_TOKEN_HEADER`, `serveMcp`, `busTraceClient`, `dashboardRefresh` |
+| `@assistant-hub-swarm/media` | `normalizeImageForChat` — bounded JPEG the vision endpoints accept |
 | `hono` + `@hono/node-server` | The HTTP surface. Any framework works, but `serveMcp` is written for Hono's node adapter |
 | `@modelcontextprotocol/sdk` | `McpServer` for the platform tools |
 | Your platform SDK | grammy for Telegram |
@@ -439,7 +439,7 @@ Reference: [apps/tg/src/mcp.ts](../../apps/tg/src/mcp.ts),
 `packages/service/src/mcp.ts`, `packages/contracts/src/tool-meta.ts`.
 
 Serve an `McpServer` at the `mcpPath` you announced, with `serveMcp` from
-`@assistant-hub/service`: one server instance per request, no session ids —
+`@assistant-hub-swarm/service`: one server instance per request, no session ids —
 every call carries its whole context, so nothing is worth keeping alive
 between calls and nothing needs reconciling after a restart.
 
@@ -512,7 +512,7 @@ Most traffic is asynchronous (queue and bus). Two things need an answer:
 ## Step 8 — Traces and live refresh
 
 Tracing is unified and core-owned; a transport never writes trace rows.
-`busTraceClient(<id>, publisher)` from `@assistant-hub/service` gives you a
+`busTraceClient(<id>, publisher)` from `@assistant-hub-swarm/service` gives you a
 recorder: `startTrace({ feature, action, assistantId, trigger: { kind, actor,
 correlationId }, inputSummary })`, then `event(...)`, then one of
 `succeed`/`skip`/`fail`. The whole trace is published on settle as one
@@ -570,7 +570,7 @@ and list it under the core's `depends_on` with `condition: service_started`
 publish the port: the internal API is for the core only.
 
 **Releases.** `.github/workflows/release.yml` builds one image per matrix
-entry and publishes all or none; add `{ image: assistant-hub-<id>,
+entry and publishes all or none; add `{ image: ahw-<id>,
 dockerfile: apps/<id>/Dockerfile }` to the build job's matrix.
 
 **Local development.** Copy `apps/tg/.env.example` to `apps/<id>/.env`

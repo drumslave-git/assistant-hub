@@ -1,5 +1,5 @@
 {
-  "name": "@assistant-hub/contracts",
+  "name": "@assistant-hub-swarm/contracts",
   "version": "0.0.0",
   "private": true,
   "description": "Zod schemas shared across apps: the source-app contract (events, context provider, listing/CRUD API shapes), queue payloads, bus events, scoped entity refs, API DTOs.",

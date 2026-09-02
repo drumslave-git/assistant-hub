@@ -95,12 +95,12 @@ refs (`tg:user:123`), never foreign keys into another app's data.
 | `apps/core/lib/` | Small shared utilities and pure contracts importable by both client and server. |
 | `apps/core/test/` | Test support (stubs, fixtures, the Testcontainers database helper). |
 | `apps/tg/` | The Telegram transport: stateless pollers that register with the core, forward every update as transport events, perform sends, and host the platform's MCP tools. The reference for [adding a transport](docs/development/adding-a-transport.md). |
-| `packages/contracts/` | Cross-app zod schemas (`@assistant-hub/contracts`): scoped refs, transport events, reply delivery and turn lifecycle, the internal APIs, the trace contract, realtime topics. |
-| `packages/bus/` | Redis plumbing (`@assistant-hub/bus`): BullMQ queues with `attempts: 1` and the pub/sub bus. |
-| `packages/service/` | What every transport service needs once (`@assistant-hub/service`): env access, the internal-token guard, serving an MCP server over Hono, the bus trace client. |
-| `packages/media/` | Image normalization to a bounded JPEG (`@assistant-hub/media`), shared by the core and the transports. |
-| `packages/db/` | Shared database tooling (`@assistant-hub/db`): pool helpers, the production migration runner (`migrate/`), Testcontainers helpers (`/testing`). |
-| `packages/ui/` | Shared dashboard components and the live-event hook (`@assistant-hub/ui`). |
+| `packages/contracts/` | Cross-app zod schemas (`@assistant-hub-swarm/contracts`): scoped refs, transport events, reply delivery and turn lifecycle, the internal APIs, the trace contract, realtime topics. |
+| `packages/bus/` | Redis plumbing (`@assistant-hub-swarm/bus`): BullMQ queues with `attempts: 1` and the pub/sub bus. |
+| `packages/service/` | What every transport service needs once (`@assistant-hub-swarm/service`): env access, the internal-token guard, serving an MCP server over Hono, the bus trace client. |
+| `packages/media/` | Image normalization to a bounded JPEG (`@assistant-hub-swarm/media`), shared by the core and the transports. |
+| `packages/db/` | Shared database tooling (`@assistant-hub-swarm/db`): pool helpers, the production migration runner (`migrate/`), Testcontainers helpers (`/testing`). |
+| `packages/ui/` | Shared dashboard components and the live-event hook (`@assistant-hub-swarm/ui`). |
 
 ### Import boundary
 
@@ -108,7 +108,7 @@ Server-only modules (`server/env.ts`, `server/http.ts`, …) import `server-only
 so they cannot be pulled into a client bundle. Pure contracts that the dashboard
 needs to render (`lib/api-error.ts`, `lib/trace.ts`) are intentionally **not**
 server-only. Path alias `@/*` maps to the `apps/core` root; workspace packages
-are imported by name (`@assistant-hub/*`).
+are imported by name (`@assistant-hub-swarm/*`).
 
 ## Database
 

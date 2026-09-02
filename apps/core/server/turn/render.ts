@@ -5,7 +5,7 @@ import {
   type InboundMessageEvent,
   type HistoryMessage,
   type SourceId,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 import {
   TRANSCRIPT_PREAMBLE,

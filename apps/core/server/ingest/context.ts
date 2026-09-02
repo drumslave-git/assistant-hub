@@ -10,7 +10,7 @@ import {
   type SourceId,
   type TransportChat,
   type TransportUser,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { renderMediaSuffix } from "@/features/vision/format";

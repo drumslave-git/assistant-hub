@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 import type { Message } from "@grammyjs/types";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";

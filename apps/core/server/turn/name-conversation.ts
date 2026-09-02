@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { InboundMessageEvent } from "@assistant-hub/contracts";
+import type { InboundMessageEvent } from "@assistant-hub-swarm/contracts";
 
 import { getClassifierRuntime } from "@/features/settings/server/service";
 import { runClassifier } from "@/server/llm/classifier";

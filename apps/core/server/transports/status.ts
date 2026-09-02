@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { OperatorConnection } from "@assistant-hub/contracts";
+import type { OperatorConnection } from "@assistant-hub-swarm/contracts";
 
 import { listConnectionViews, type TransportConnectionView } from "./service";
 

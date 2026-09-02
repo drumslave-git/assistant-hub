@@ -1,6 +1,6 @@
 import "server-only";
 
-import { openSubscriber, type BusSubscription } from "@assistant-hub/bus";
+import { openSubscriber, type BusSubscription } from "@assistant-hub-swarm/bus";
 import {
   BUS_EVENTS_CHANNEL,
   dashboardRefreshEventSchema,
@@ -9,7 +9,7 @@ import {
   replyDeliveryEventSchema,
   traceRecordedEventSchema,
   turnLifecycleEventSchema,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 import { releaseHold } from "@/server/ingest/consumer";
 

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { closeProcessPool, getProcessPool } from "@assistant-hub/db";
+import { closeProcessPool, getProcessPool } from "@assistant-hub-swarm/db";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 

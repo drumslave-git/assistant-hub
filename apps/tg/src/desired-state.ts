@@ -3,8 +3,8 @@ import {
   transportDesiredStateSchema,
   type TransportDesiredState,
   type TransportRegistrationRequest,
-} from "@assistant-hub/contracts";
-import { INTERNAL_TOKEN_HEADER, optionalEnv, requireEnv } from "@assistant-hub/service";
+} from "@assistant-hub-swarm/contracts";
+import { INTERNAL_TOKEN_HEADER, optionalEnv, requireEnv } from "@assistant-hub-swarm/service";
 
 /**
  * Self-registration and desired state (redesign Phase 7, PLAN.md "The

@@ -27,7 +27,7 @@ import { hostResolvesPublic } from "./resolve-safety";
  */
 
 const USER_AGENT =
-  "Mozilla/5.0 (compatible; AssistantHub/1.0; +https://github.com/drumslave-git/assistant-hub)";
+  "Mozilla/5.0 (compatible; AssistantHub/1.0; +https://github.com/assistant-hub-swarm/ahw-core)";
 
 /**
  * Path to a system Chromium binary to launch instead of Playwright's own download.

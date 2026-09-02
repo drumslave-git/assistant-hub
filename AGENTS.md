@@ -1,7 +1,7 @@
 # Agent Guide
 
 This repository is **assistant-hub** (GitHub:
-[drumslave-git/assistant-hub](https://github.com/drumslave-git/assistant-hub)):
+[assistant-hub-swarm/ahw-core](https://github.com/assistant-hub-swarm/ahw-core)):
 a multi-user assistant platform — accounts run
 their own AI assistants (personas, Telegram bots, standing tasks, tools) on
 one shared brain, with a web chat and a control/observability dashboard.
@@ -149,7 +149,7 @@ the broader checks when the change is large enough:
 - `npm run lint`
 - `npm run typecheck`
 - `npm run test` (unit; no Docker needed)
-- `npm run test:integration -w @assistant-hub/core` (Testcontainers;
+- `npm run test:integration -w @assistant-hub-swarm/core` (Testcontainers;
   Docker required)
 - `npm run build`
 

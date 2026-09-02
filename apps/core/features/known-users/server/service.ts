@@ -1,6 +1,6 @@
 import "server-only";
 
-import { parseScopedRef, scopedRef } from "@assistant-hub/contracts";
+import { parseScopedRef, scopedRef } from "@assistant-hub-swarm/contracts";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { getGroupMembers } from "@/features/known-groups/server/repository";

@@ -1,4 +1,4 @@
-import { sourceIdSchema } from "@assistant-hub/contracts";
+import { sourceIdSchema } from "@assistant-hub-swarm/contracts";
 import { z } from "zod";
 
 /**

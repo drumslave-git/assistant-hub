@@ -1,5 +1,5 @@
 {
-  "name": "@assistant-hub/ui",
+  "name": "@assistant-hub-swarm/ui",
   "version": "0.0.0",
   "private": true,
   "description": "Shared dashboard components + the typed extension-point registry the shell composes from. Source apps' ui subpackages import this, never their app's server code.",
@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@assistant-hub/contracts": "*",
+    "@assistant-hub-swarm/contracts": "*",
     "clsx": "^2.1.1",
     "lucide-react": "^1.24.0",
     "tailwind-merge": "^3.6.0"

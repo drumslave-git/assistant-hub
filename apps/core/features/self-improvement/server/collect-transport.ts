@@ -3,7 +3,7 @@ import "server-only";
 import {
   internalSentMenuResponseSchema,
   type SourceId,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 import { internalRequester, sourceApiConfig } from "@/server/source/internal-client";
 

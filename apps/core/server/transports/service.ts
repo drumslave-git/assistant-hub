@@ -9,7 +9,7 @@ import {
   type TransportConfigChangedEvent,
   type TransportDesiredState,
   type TransportRegistrationRequest,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";

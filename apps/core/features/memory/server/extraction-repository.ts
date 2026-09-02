@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { StoreDb } from "@/server/store/db";
-import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
+import { scopedRef, tryParseScopedRef } from "@assistant-hub-swarm/contracts";
 
 import { memoryExtractionDays } from "../../../store/schema";
 import type { SummaryDate } from "@/features/history/summary";

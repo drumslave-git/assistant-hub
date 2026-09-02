@@ -28,7 +28,7 @@ import {
   listSourceChatMessages,
 } from "@/server/source-store/repository";
 import type { SourceMessageRow } from "../../store/schema";
-import type { ContentBucketUnit } from "@assistant-hub/contracts";
+import type { ContentBucketUnit } from "@assistant-hub-swarm/contracts";
 
 /**
  * The conversation content the history/search/summarization/analytics

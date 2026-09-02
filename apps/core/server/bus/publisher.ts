@@ -1,7 +1,7 @@
 import "server-only";
 
-import { openPublisher, type BusPublisher } from "@assistant-hub/bus";
-import { BUS_EVENTS_CHANNEL } from "@assistant-hub/contracts";
+import { openPublisher, type BusPublisher } from "@assistant-hub-swarm/bus";
+import { BUS_EVENTS_CHANNEL } from "@assistant-hub-swarm/contracts";
 
 import { getEnv } from "@/server/env";
 

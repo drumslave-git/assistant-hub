@@ -1,5 +1,5 @@
-import { transportCallbackRequestSchema } from "@assistant-hub/contracts";
-import { INTERNAL_TOKEN_HEADER } from "@assistant-hub/service";
+import { transportCallbackRequestSchema } from "@assistant-hub-swarm/contracts";
+import { INTERNAL_TOKEN_HEADER } from "@assistant-hub-swarm/service";
 
 import { processCallbackPress } from "@/features/self-improvement/server/collect-flows";
 import { collectTransport } from "@/features/self-improvement/server/collect-transport";

@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { openPublisher, openQueue, openWorker, type BusPublisher } from "@assistant-hub/bus";
+import { openPublisher, openQueue, openWorker, type BusPublisher } from "@assistant-hub-swarm/bus";
 import {
   BUS_EVENTS_CHANNEL,
   INBOUND_MESSAGES_QUEUE,
@@ -12,7 +12,7 @@ import {
   type ReplyDeliveryEvent,
   type SourceId,
   type TurnLifecycleEvent,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 import type { Queue, Worker } from "bullmq";
 
 import {

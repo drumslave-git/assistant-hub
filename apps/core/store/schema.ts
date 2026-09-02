@@ -1,4 +1,4 @@
-import { EMBEDDING_DIMENSIONS, type TransportConfigField } from "@assistant-hub/contracts";
+import { EMBEDDING_DIMENSIONS, type TransportConfigField } from "@assistant-hub-swarm/contracts";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -24,7 +24,7 @@ import {
  *
  * Never a foreign key into another app's database: anything that points at a
  * source-owned entity (a telegram user, a web-chat thread) stores a **scoped
- * ref** string (`tg:user:123`, `chat:thread:45` — `@assistant-hub/contracts`).
+ * ref** string (`tg:user:123`, `chat:thread:45` — `@assistant-hub-swarm/contracts`).
  * `*_ref` columns hold scoped refs; source-local details that ride along
  * (telegram message ids, forum-topic thread ids) keep their own columns and
  * are only meaningful to the source the ref names.

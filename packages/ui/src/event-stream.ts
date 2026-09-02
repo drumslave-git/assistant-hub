@@ -1,6 +1,6 @@
 "use client";
 
-import type { RealtimeEvent } from "@assistant-hub/contracts";
+import type { RealtimeEvent } from "@assistant-hub-swarm/contracts";
 
 /**
  * The tab's single connection to the dashboard's realtime stream — shared by

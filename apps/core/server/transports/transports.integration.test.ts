@@ -1,4 +1,4 @@
-import { CONTRACT_MAJOR, type TransportRegistrationRequest } from "@assistant-hub/contracts";
+import { CONTRACT_MAJOR, type TransportRegistrationRequest } from "@assistant-hub-swarm/contracts";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { isApiError } from "@/lib/api-error";

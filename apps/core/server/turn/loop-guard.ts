@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { HistoryMessage, InboundMessageEvent } from "@assistant-hub/contracts";
+import type { HistoryMessage, InboundMessageEvent } from "@assistant-hub-swarm/contracts";
 
 /**
  * The bot-to-bot loop guard (PLAN "Shared-chat behavior"; user decision,

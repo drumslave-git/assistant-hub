@@ -345,7 +345,7 @@ The open questions were answered by the user (2026-08-22) and applied:
    settings singleton holds owner_username / owner_user_id); the core
    receives only the resolved is-owner flag on inbound events.
    `maintenance_mode_enabled` stays core (the gate consuming the flag).
-4. Naming confirmed as explained: `@assistant-hub/*` package scope ahead
+4. Naming confirmed as explained: `@assistant-hub-swarm/*` package scope ahead
    of the Phase 6 repo rename; per-app v2 database modules in
    `<app>/store/`; core's transitional `STORE_DATABASE_URL`; assistants
    keep personality UUIDs.
@@ -357,7 +357,7 @@ Known pitfalls (in addition to the ones under "Phases" below):
   `./data/pg`. The container equivalents moved to `/app/apps/core/data/*`
   because the standalone server chdirs into `apps/core`.
 - `npm run <anything>` at the root fans out via turbo; per-app scripts run
-  with `npm run <script> -w @assistant-hub/core`. The dev server and
+  with `npm run <script> -w @assistant-hub-swarm/core`. The dev server and
   `.claude/launch.json` are unchanged (port 3200).
 - `npm run dev` at the root now starts all three processes — core (3200),
   tg (3210) and chat (3220) — because each app has a `dev` script and
@@ -709,7 +709,7 @@ untouched.
 - [x] **E — UI and API local.** The `/api/chat/*` Route Handlers call
       the local service; media bytes served from the store; the threads
       page moves into the core as a plain component; the nav entry is
-      native to the shell; `@assistant-hub/chat-ui` leaves the extension
+      native to the shell; `@assistant-hub-swarm/chat-ui` leaves the extension
       registry; chat-only DTO schemas move from `packages/contracts`
       into the core feature (cross-app event/send schemas stay).
 - [x] **F — the app is deleted.** `apps/chat` removed entirely;
@@ -734,16 +734,16 @@ them all from one root version bump.
 - [x] The whole current app lives in `apps/core` (moved with `git mv`, no
       rewrites beyond config paths); `npm run dev` still serves the
       dashboard on :3200; `@/*` imports unchanged.
-- [x] `packages/db` (`@assistant-hub/db`) holds the generic Postgres/drizzle
+- [x] `packages/db` (`@assistant-hub-swarm/db`) holds the generic Postgres/drizzle
       tooling (process-global pool singletons keyed by symbol, the
       production migration runner formerly in `docker/migrate`);
       `apps/core/db/pool.ts` consumes it with the same symbol key and
       identical behavior. App schema, drizzle handle, and migration chain
       stay in `apps/core`.
-- [x] `packages/contracts` (`@assistant-hub/contracts`) exists as the
+- [x] `packages/contracts` (`@assistant-hub-swarm/contracts`) exists as the
       documented home for cross-app schemas (source-app contract, scoped
       refs — content lands in Phases 1–2; deliberately exports nothing yet).
-- [x] `packages/ui` (`@assistant-hub/ui`) holds the typed extension-point
+- [x] `packages/ui` (`@assistant-hub-swarm/ui`) holds the typed extension-point
       definitions (`AppExtensions` with nav contributions now; form
       sections / status cards / debug panels / aggregated views typed as
       their first contributor lands) plus `composeNavGroups`; the shell's
@@ -802,7 +802,7 @@ apps/core while v1 still owns `DATABASE_URL`). Import scripts read the v1
 DB via `V1_DATABASE_URL` with plain SQL (no code dependency on the v1
 schema module) and refuse a non-empty target.
 
-- [x] `@assistant-hub/contracts` exports the scoped-ref foundation
+- [x] `@assistant-hub-swarm/contracts` exports the scoped-ref foundation
       (`source:kind:id` — format, parse, zod schema, source ids) and the
       shared `EMBEDDING_DIMENSIONS` constant (moved from `lib/embeddings`,
       which re-exports it); unit tests cover parse/format round-trips.
@@ -999,7 +999,7 @@ Slice notes:
   prefixing, `_meta` arrival, error paths), core unit 1190 green,
   typecheck + lint clean.
 - **D-1 (`82a46ff`)** — `apps/tg` serves `/mcp` (shared
-  `serveMcp` glue in `@assistant-hub/service`, behind the same
+  `serveMcp` glue in `@assistant-hub-swarm/service`, behind the same
   internal-token guard as `/internal`), and `set_message_reaction`
   moved into it with the Telegram knowledge that came with it: the 73
   emoji, the presentation-selector normalization, the mirror gate. The
@@ -1125,11 +1125,11 @@ Slices:
       `/api/chat/threads`, and mounts the app's page generically:
       `/apps/[app]/[[...rest]]` renders whichever app owns the segment,
       so no shell route names "chat". `apps/chat/ui`
-      (`@assistant-hub/chat-ui`) contributes the nav entry and the
+      (`@assistant-hub-swarm/chat-ui`) contributes the nav entry and the
       threads page.
       **Extracted rather than copied a second time** (the second copy is
       exactly what this slice would otherwise have written):
-      `@assistant-hub/service` — bootstrap env, the internal-token guard
+      `@assistant-hub-swarm/service` — bootstrap env, the internal-token guard
       and the source-parameterized bus helpers (trace client, dashboard
       refresh); tg moved onto it and its three thin wrappers are gone.
       Core-side, `server/source/internal-client.ts` resolves one
@@ -1139,7 +1139,7 @@ Slices:
       its connections and owner settings. Page chrome
       (`PageHeader`/`EmptyState`/`Card`) and the timestamp rule
       (`<Timestamp>`, `TimezoneProvider`, the formatters) moved into
-      `@assistant-hub/ui` so an app-contributed page renders instants in
+      `@assistant-hub-swarm/ui` so an app-contributed page renders instants in
       the operator's timezone and looks like the shell's own; core keeps
       every import path via re-exports. Deployment came along: chat's
       Dockerfile, its compose service, `CHAT_API_URL` on the core, the
@@ -1157,7 +1157,7 @@ Slices:
       written, `CHAT_API_URL` added to `apps/core/.env`); the dev server
       has not been restarted, so the core still runs without that
       variable — **the green listing path is verified after the next
-      restart** (`npm run dev -w @assistant-hub/chat` alongside the
+      restart** (`npm run dev -w @assistant-hub-swarm/chat` alongside the
       other two processes).
 - [x] **B — threads and the text turn end to end** (`f81e2b8`). Thread
       CRUD (create with a name + an assistant fixed at creation, rename,
@@ -1222,7 +1222,7 @@ Slices:
       call it belonged to), so the label itself is proven by the bus
       test rather than by a screenshot.
 - [x] **D — images** (`97a6c62`). An upload in a thread is normalized
-      (`@assistant-hub/media`), stored `pending`, and referenced on the
+      (`@assistant-hub-swarm/media`), stored `pending`, and referenced on the
       inbound event exactly as a Telegram photo is, so the core's vision
       pipeline describes it through the per-source media port
       (`sourceMediaStore(source)` — the same lookup shape as the
@@ -1239,7 +1239,7 @@ Slices:
       tg's.
       Also extracted: `normalizeImageForChat` existed twice,
       byte-identical, in core and tg — it is now
-      `@assistant-hub/media`, imported by all three apps.
+      `@assistant-hub-swarm/media`, imported by all three apps.
       Proof: the media round trip in the chat integration suite (upload
       → pending → work list → bytes → write-back → still served
       afterwards), an unreadable upload that answers on the text instead
@@ -1383,12 +1383,12 @@ assistant converted from the active personality, all counts reconciled).
 - [x] Per-assistant connections (`e78cede`): the assistant
       editor mounts source-app sections through the extension registry's
       new `assistantSections` point — `apps/tg/ui`
-      (`@assistant-hub/tg-ui`, the first real registry consumer)
+      (`@assistant-hub-swarm/tg-ui`, the first real registry consumer)
       contributes the Telegram connection section (connect/retoken/
       start/stop/disconnect over the operator connections API, live on
       `status` events via a shell-supplied `refreshSignal`). The shared
       form primitives (cn/Slot/Label/Button/Input/Field/Badge) moved to
-      `@assistant-hub/ui` (its documented purpose; core re-exports keep
+      `@assistant-hub-swarm/ui` (its documented purpose; core re-exports keep
       every import path), with `@source` directives so core's Tailwind
       scans both packages. Core serves thin `/api/telegram/connections`
       proxy routes; the operator client now relays the source's
@@ -1791,7 +1791,7 @@ and stamps `senderIsOwner` on inbound events.
       sampling with thumbnail fallback, voice bytes raw), mirrors
       caption-less media as real turns, and serves the internal media
       API (`/internal/.../media`, `/internal/media/:id[/description]` —
-      contract schemas in `@assistant-hub/contracts`, shared-token auth,
+      contract schemas in `@assistant-hub-swarm/contracts`, shared-token auth,
       describe-then-drop). Core-side: `describeAndStore` gained a
       `MediaStorePort` (default: the v1 DB — behavior unchanged; the
       consumer supplies the tg-API-backed port), and the consumer runs
@@ -1867,7 +1867,7 @@ and stamps `senderIsOwner` on inbound events.
         the core stamps it on write-back. No tg dev DB exists yet
         (.env.example only), so nothing local to migrate.
       - **D-3, operator API**: the shared listing/CRUD contract in
-        `@assistant-hub/contracts` (`operator-api.ts`, source-neutral)
+        `@assistant-hub-swarm/contracts` (`operator-api.ts`, source-neutral)
         served on `/internal`: users (labels + aliases/language PATCH),
         chats (mirror aggregates + group metadata, notes/language
         PATCH), a chat's full mirror with media annotations,
@@ -2223,13 +2223,13 @@ and stamps `senderIsOwner` on inbound events.
   Most of the slice was deciding what NOT to write twice: tg already had
   the env helpers, the internal-token guard, the bus wrappers, the
   operator client and the fetch plumbing, so all five were extracted
-  (`@assistant-hub/service`, `internal-client.ts`, `operator-client.ts`)
+  (`@assistant-hub-swarm/service`, `internal-client.ts`, `operator-client.ts`)
   and tg moved onto them before chat got a line of its own. The core's
   source lookup is now keyed by source id, which is the coupling the
   phase criteria named first. The dashboard mount is generic too — one
   route for whichever app owns `/apps/<app>` — and making an
   app-contributed page look like a shell page meant moving the page
-  chrome and the `<Timestamp>` timezone rule into `@assistant-hub/ui`.
+  chrome and the `<Timestamp>` timezone rule into `@assistant-hub-swarm/ui`.
   Checked in the running dashboard; the full listing path waits on a dev
   server restart, since `CHAT_API_URL` is read at boot.
 
@@ -2342,10 +2342,10 @@ and stamps `senderIsOwner` on inbound events.
 
 - **2026-08-24 (slice D)** — Per-assistant connections
   (`e78cede`): the extension registry gains `assistantSections`
-  and its first real consumer — the new `@assistant-hub/tg-ui`
+  and its first real consumer — the new `@assistant-hub-swarm/tg-ui`
   workspace (`apps/tg/ui`) injects the Telegram connection section into
   the assistant editor; shared form primitives moved to
-  `@assistant-hub/ui`; core proxies `/api/telegram/connections`; the
+  `@assistant-hub-swarm/ui`; core proxies `/api/telegram/connections`; the
   Settings bot-token field retired (per-assistant tokens live in the
   editor — flagged for the user since it removes a Settings control),
   the Overview control went per-connection, and the sidebar summarizes
@@ -2488,7 +2488,7 @@ and stamps `senderIsOwner` on inbound events.
   study done (the injected `BotMessagingDeps` seam splits cleanly —
   inventory in the criteria). Source-app event contract landed in
   contracts (inbound with context + resolved isOwner, reply-delivery,
-  turn lifecycle, queue/channel names) and `@assistant-hub/bus` built on
+  turn lifecycle, queue/channel names) and `@assistant-hub-swarm/bus` built on
   BullMQ/ioredis with the decided `attempts: 1` semantics — both tested,
   the bus against a real Redis (exactly-once, failure stays failed,
   poisoned pub/sub message survives). Compose gained the `redis` service
@@ -2511,12 +2511,12 @@ and stamps `senderIsOwner` on inbound events.
   verification and integration tests updated.
 - **2026-08-21/22 (Phase 1)** — Phase 1 executed and verified: scoped-ref
   foundation + shared `EMBEDDING_DIMENSIONS` + `DEFAULT_ASSISTANT_ID` in
-  `@assistant-hub/contracts`; three store modules with fresh migration
+  `@assistant-hub-swarm/contracts`; three store modules with fresh migration
   chains (`apps/core/store`, `apps/tg/store`, `apps/chat/store` — apps/tg
   and apps/chat created as store-only workspaces, runtimes land in Phases
   2/4); person_links + members in the core store; one-shot per-app import
   scripts with the built-in count-reconciliation + spot-check harness
-  (plumbing shared via `@assistant-hub/db/import`, Testcontainers helpers
+  (plumbing shared via `@assistant-hub-swarm/db/import`, Testcontainers helpers
   via `/testing`); rehearsal workflow documented in
   docs/operations/v1-split.md with a create-database helper. Placement
   calls made in-session and flagged for user confirmation (see Current
@@ -2527,14 +2527,14 @@ and stamps `senderIsOwner` on inbound events.
   above the composite FKs (drizzle-kit orders indexes after constraints).
 - **2026-08-21 (Phase 0)** — `redesign` branch created; Phase 0 executed
   and verified in one session: Turborepo + npm workspaces, the whole app
-  `git mv`-ed into `apps/core`, `@assistant-hub/db` / `contracts` / `ui`
+  `git mv`-ed into `apps/core`, `@assistant-hub-swarm/db` / `contracts` / `ui`
   carved out (pool singleton + migration runner; documented empty
   contracts; extension-point types + `composeNavGroups` with an empty
   registry composed into the shell nav), per-app Docker image
   (`assistant-hub-core`, monorepo standalone) and the release workflow
   reshaped to a tag-once + per-image matrix on the root version. Full
   proof under the Phase 0 acceptance criteria above. Naming decision made
-  in-session: workspace packages use the `@assistant-hub/*` scope ahead of
+  in-session: workspace packages use the `@assistant-hub-swarm/*` scope ahead of
   the Phase 6 repo rename; the root package keeps the v1 name/version so
   build info and the release trigger are unchanged until cutover.
 - **2026-08-21 (traces)** — Tracing unified (user): the core owns all

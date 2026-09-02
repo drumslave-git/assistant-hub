@@ -1,5 +1,5 @@
-import { transportRegistrationRequestSchema } from "@assistant-hub/contracts";
-import { INTERNAL_TOKEN_HEADER } from "@assistant-hub/service";
+import { transportRegistrationRequestSchema } from "@assistant-hub-swarm/contracts";
+import { INTERNAL_TOKEN_HEADER } from "@assistant-hub-swarm/service";
 
 import { isApiError } from "@/lib/api-error";
 import { reconcileManagedConnections } from "@/features/tool-connections/server/managed";

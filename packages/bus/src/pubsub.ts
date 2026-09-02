@@ -7,7 +7,7 @@ import { Redis } from "ioredis";
  * each app's store and the queue, never in the bus.
  *
  * Payloads are JSON. Validation belongs to the consumer (zod schemas from
- * `@assistant-hub/contracts`) — the bus does not interpret what it carries.
+ * `@assistant-hub-swarm/contracts`) — the bus does not interpret what it carries.
  */
 
 export interface BusPublisher {

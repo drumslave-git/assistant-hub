@@ -17,8 +17,8 @@ Four services:
 
 | Service | Image | Notes |
 | --- | --- | --- |
-| `app` | `assistant-hub-core`, built from `apps/core/Dockerfile` (repo-root context) | The dashboard, the web chat and the whole pipeline. Publishes `${PORT:-3200}:3200` |
-| `tg` | `assistant-hub-tg`, built from `apps/tg/Dockerfile` (repo-root context) | The Telegram transport: stateless pollers that register with the core, forward every update as transport events, perform the sends, and host the platform's MCP tools. **No published port** — its internal API is for the core only |
+| `app` | `ahw-core`, built from `apps/core/Dockerfile` (repo-root context) | The dashboard, the web chat and the whole pipeline. Publishes `${PORT:-3200}:3200` |
+| `tg` | `ahw-tg`, built from `apps/tg/Dockerfile` (repo-root context) | The Telegram transport: stateless pollers that register with the core, forward every update as transport events, perform the sends, and host the platform's MCP tools. **No published port** — its internal API is for the core only |
 | `redis` | `redis:7-alpine`, started with `--appendonly yes` | The cross-app bus and the two queues (`transport-updates`, `inbound-messages`). Publishes `${REDIS_PORT:-6379}:6379` |
 | `db` | `pgvector/pgvector:pg17` | The one database. Publishes `${POSTGRES_PORT:-5432}:5432` |
 
@@ -123,7 +123,7 @@ connection.
 
 ## The images
 
-### `assistant-hub-core`
+### `ahw-core`
 
 Multi-stage, from `node:24-alpine`.
 
@@ -163,7 +163,7 @@ intentionally absent from the slim image. The image copies the SQL chain from
 directory so they never touch the app's traced `node_modules`. With `DATABASE_URL`
 unset it warns and exits 0 rather than failing the container.
 
-### `assistant-hub-tg`
+### `ahw-tg`
 
 A plain long-running Node service, also from `node:24-alpine`, two stages:
 
@@ -217,8 +217,9 @@ tag), then commit and push to `main`. Actions → Release → *Run workflow* for
 release of the current version instead (re-runs, or proving a fresh repo); every
 step below is idempotent, so a manual run is safe to repeat.
 
-A release is all-or-nothing: nothing reaches Docker Hub and no tag is created
-unless every image built. The workflow:
+A release is all-or-nothing: nothing reaches the registry and no tag is created
+unless every image built. Images live in the org's GitHub Container Registry as
+`ghcr.io/assistant-hub-swarm/ahw-core` and `ghcr.io/assistant-hub-swarm/ahw-tg`. The workflow:
 
 1. **version** — wakes only when the root `package.json` is touched, then diffs the
    `version` field against `HEAD~1`. Unchanged → nothing ships. A manual dispatch
@@ -226,18 +227,20 @@ unless every image built. The workflow:
 2. **verify** — `npm install`, `npm run lint`, `npm run typecheck`, `npm run test`
    (fanned out across the workspaces via turbo. Unit tests only; the integration
    suite needs Docker and is not part of the gate.)
-3. **build** — a matrix with one entry per app image (`assistant-hub-core` from
-   `apps/core/Dockerfile`, `assistant-hub-tg` from `apps/tg/Dockerfile`) builds
+3. **build** — a matrix with one entry per app image (`ahw-core` from
+   `apps/core/Dockerfile`, `ahw-tg` from `apps/tg/Dockerfile`) builds
    each with GitHub Actions layer caching and hands it to the next job as an
    artifact — nothing is pushed. One failing image fails the release.
 4. **publish** — runs only when every build succeeded: loads all images, pushes
-   every `<user>/<image>:<version>` first, then moves every `:latest`, and finally
+   every `ghcr.io/<org>/<image>:<version>` first, then moves every `:latest`, and finally
    creates the `v<version>` git tag (skipped if it already exists). The ordering
    means a push failure mid-way can never leave `latest` pointing at a mixed set,
    and a tag exists only for a version whose every image is in the registry.
 
-Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. The publish
-job needs `contents: write` to push the tag.
+No registry secrets: the publish job logs in to `ghcr.io` with its own
+`GITHUB_TOKEN` and needs `packages: write` for the push plus `contents: write`
+for the tag. A package's first push makes it private to the org; flip it to
+public in the package's settings once so operators can pull without a token.
 
 Note that `verify` uses `npm install` rather than `npm ci` for the same lockfile
 reason as the Dockerfiles.

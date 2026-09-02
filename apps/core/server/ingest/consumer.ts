@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { openWorker } from "@assistant-hub/bus";
+import { openWorker } from "@assistant-hub-swarm/bus";
 import {
   TRANSPORT_UPDATES_QUEUE,
   inboundMessageEventSchema,
@@ -19,8 +19,8 @@ import {
   type TransportPresenceEvent,
   type TransportReactionEvent,
   type TransportReceiver,
-} from "@assistant-hub/contracts";
-import { normalizeImageForChat } from "@assistant-hub/media";
+} from "@assistant-hub-swarm/contracts";
+import { normalizeImageForChat } from "@assistant-hub-swarm/media";
 import type { Worker } from "bullmq";
 
 import { formatKnownUserLabel } from "@/features/known-users/format";

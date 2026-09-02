@@ -6,8 +6,8 @@ import {
   internalSendPhotosRequestSchema,
   internalSendVoiceRequestSchema,
   type InternalSentPhotosResponse,
-} from "@assistant-hub/contracts";
-import { internalTokenGuard, serveMcp } from "@assistant-hub/service";
+} from "@assistant-hub-swarm/contracts";
+import { internalTokenGuard, serveMcp } from "@assistant-hub-swarm/service";
 import { Hono } from "hono";
 
 import type { AssistantConnection } from "./connections";

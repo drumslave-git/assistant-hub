@@ -1,11 +1,11 @@
-import { openPublisher, type BusPublisher } from "@assistant-hub/bus";
-import { BUS_EVENTS_CHANNEL } from "@assistant-hub/contracts";
-import { dashboardRefresh } from "@assistant-hub/service";
+import { openPublisher, type BusPublisher } from "@assistant-hub-swarm/bus";
+import { BUS_EVENTS_CHANNEL } from "@assistant-hub-swarm/contracts";
+import { dashboardRefresh } from "@assistant-hub-swarm/service";
 import { run, sequentialize, type RunnerHandle } from "@grammyjs/runner";
 import type { MessageReactionUpdated } from "@grammyjs/types";
 import { Bot, HttpError, type Context } from "grammy";
 
-import type { TransportDesiredState } from "@assistant-hub/contracts";
+import type { TransportDesiredState } from "@assistant-hub-swarm/contracts";
 
 import type { AssistantConnection } from "./connections";
 import { forwardCallbackPress } from "./core-client";

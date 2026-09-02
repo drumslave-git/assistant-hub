@@ -4,7 +4,7 @@ import {
   parseScopedRef,
   type ReplyDeliveryEvent,
   type TurnLifecycleEvent,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 import { withTrace } from "@/server/trace";
 

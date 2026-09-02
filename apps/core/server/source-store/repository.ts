@@ -1,8 +1,8 @@
 import "server-only";
 
 import { and, asc, count, eq, gte, inArray, isNull, lt, lte, max, ne } from "drizzle-orm";
-import type { SourceId } from "@assistant-hub/contracts";
-import { messageDedupeKey } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
+import { messageDedupeKey } from "@assistant-hub-swarm/contracts";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 

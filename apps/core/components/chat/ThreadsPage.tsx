@@ -15,7 +15,7 @@ import {
   apiFetch,
   cn,
   useLiveEvent,
-} from "@assistant-hub/ui";
+} from "@assistant-hub-swarm/ui";
 
 import type { ChatThread, ChatThreadMessage, ChatThreadTurn } from "@/features/web-chat/schema";
 

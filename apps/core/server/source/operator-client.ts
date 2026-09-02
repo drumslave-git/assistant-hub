@@ -4,7 +4,7 @@ import type {
   OperatorChat,
   OperatorChatMember,
   OperatorUser,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 /**
  * The source-neutral listing/CRUD contract the dashboard's aggregation

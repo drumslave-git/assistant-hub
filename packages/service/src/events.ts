@@ -7,14 +7,14 @@ import {
   type DashboardRefreshEvent,
   type SourceId,
   type SourceTraceClient,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 
 /**
  * The two things every source app publishes on the bus, parameterized by
  * which source it is — the only difference between one app's wiring and the
  * next's.
  *
- * A `publish` is taken structurally rather than as `@assistant-hub/bus`'s
+ * A `publish` is taken structurally rather than as `@assistant-hub-swarm/bus`'s
  * `BusPublisher` so this package stays out of Redis' way (and tests can hand
  * in an array).
  */

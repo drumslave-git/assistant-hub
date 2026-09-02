@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 
 import { ApiError } from "@/lib/api-error";
 import { getEnv } from "@/server/env";

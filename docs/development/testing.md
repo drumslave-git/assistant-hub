@@ -118,7 +118,7 @@ API.
 const { db, pool, connectionUri, truncate, stop } = await startTestStoreDb();
 ```
 
-Starts a `pgvector/pgvector:pg17` container (through `@assistant-hub/db/testing`'s
+Starts a `pgvector/pgvector:pg17` container (through `@assistant-hub-swarm/db/testing`'s
 `startTestPostgres` — one container, any number of databases inside it), creates a
 database, builds a Drizzle handle, and **runs the real migrations** from
 `apps/core/store/migrations`. That last part is load-bearing: it means the integration

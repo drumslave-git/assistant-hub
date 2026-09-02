@@ -3,7 +3,7 @@ import "server-only";
 import { desc, eq } from "drizzle-orm";
 
 import type { StoreDb } from "@/server/store/db";
-import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
+import { scopedRef, tryParseScopedRef } from "@assistant-hub-swarm/contracts";
 
 import {
   communicationPreferences,

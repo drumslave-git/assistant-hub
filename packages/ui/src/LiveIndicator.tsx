@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import type { RealtimeTopic } from "@assistant-hub/contracts";
+import type { RealtimeTopic } from "@assistant-hub-swarm/contracts";
 
 import { cn } from "./cn";
 import { useLiveEvent } from "./useLiveEvent";

@@ -2,11 +2,11 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import type { SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
-import { INTERNAL_TOKEN_HEADER } from "@assistant-hub/service";
+import { INTERNAL_TOKEN_HEADER } from "@assistant-hub-swarm/service";
 import { publishEvent } from "@/server/realtime/hub";
 import { getEnv } from "@/server/env";
 import {

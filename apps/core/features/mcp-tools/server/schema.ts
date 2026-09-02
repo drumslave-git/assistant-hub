@@ -1,4 +1,4 @@
-import type { SourceId } from "@assistant-hub/contracts";
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 
 /**
  * MCP-tools feature contract. The toolset has two halves: the in-process

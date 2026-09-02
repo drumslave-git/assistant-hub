@@ -3,8 +3,8 @@ import {
   transportMessageLookupResponseSchema,
   type TransportCallbackRequest,
   type TransportMessageLookupResponse,
-} from "@assistant-hub/contracts";
-import { INTERNAL_TOKEN_HEADER, optionalEnv, requireEnv } from "@assistant-hub/service";
+} from "@assistant-hub-swarm/contracts";
+import { INTERNAL_TOKEN_HEADER, optionalEnv, requireEnv } from "@assistant-hub-swarm/service";
 
 /**
  * The transport's client for the core's internal transport API (redesign

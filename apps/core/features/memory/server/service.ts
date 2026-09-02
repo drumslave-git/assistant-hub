@@ -1,6 +1,6 @@
 import "server-only";
 
-import { scopedRef, tryParseScopedRef, type SourceId } from "@assistant-hub/contracts";
+import { scopedRef, tryParseScopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
 
 import { getAccountById } from "@/server/auth/accounts";
 import { getStoreDb, type StoreDb } from "@/server/store/db";

@@ -1,4 +1,4 @@
-import type { TurnLifecycleEvent } from "@assistant-hub/contracts";
+import type { TurnLifecycleEvent } from "@assistant-hub-swarm/contracts";
 import { describe, expect, it } from "vitest";
 
 import { ThreadTurns } from "./turns";

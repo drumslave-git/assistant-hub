@@ -1,9 +1,9 @@
 import "dotenv/config";
 
 import { serve } from "@hono/node-server";
-import { openSubscriber, type BusSubscription } from "@assistant-hub/bus";
-import { BUS_EVENTS_CHANNEL } from "@assistant-hub/contracts";
-import { optionalEnv, requireEnv } from "@assistant-hub/service";
+import { openSubscriber, type BusSubscription } from "@assistant-hub-swarm/bus";
+import { BUS_EVENTS_CHANNEL } from "@assistant-hub-swarm/contracts";
+import { optionalEnv, requireEnv } from "@assistant-hub-swarm/service";
 
 import { createApi } from "./api";
 import { BotManager } from "./bot-manager";

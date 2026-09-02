@@ -330,8 +330,9 @@ runbook with a rollback path (restore backup, redeploy last v1 image).
 
 ## Deployment
 
-Per-app Docker images: `assistant-hub-core`, `assistant-hub-tg`, and one
-per future transport. The release pipeline builds and publishes all of
+Per-app Docker images on the org's GitHub Container Registry:
+`ghcr.io/assistant-hub-swarm/ahw-core`, `ghcr.io/assistant-hub-swarm/ahw-tg`,
+and one per future transport (from its own repository, named after it). The release pipeline builds and publishes all of
 them from the same version bump; compose pins every service to the same
 tag. Compose runs one Postgres database (core's) and one Redis.
 

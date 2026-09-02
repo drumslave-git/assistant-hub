@@ -3,7 +3,9 @@ name: Release
 # Ships new images whenever the "version" field in the ROOT package.json changes
 # on main. Bump the version locally (e.g. `npm run release:patch`) and push to
 # main; this workflow verifies, tags the release, and pushes EVERY per-app image
-# (one per entry in the release job's matrix) to Docker Hub on that one version.
+# (one per entry in the release job's matrix) to the org's GitHub Container
+# Registry (ghcr.io/<owner>/<image>) on that one version. Auth is the job's own
+# GITHUB_TOKEN — no registry secrets to keep.
 # No version change -> nothing runs. Manual dispatch (Actions -> Release ->
 # Run workflow) forces a release of the CURRENT version - for re-runs and for
 # proving the pipeline on a fresh repo; tagging and image pushes are idempotent.
@@ -93,16 +95,16 @@ jobs:
       # up whatever this matrix produced.
       matrix:
         include:
-          - image: assistant-hub-core
+          - image: ahw-core
             dockerfile: apps/core/Dockerfile
-          - image: assistant-hub-tg
+          - image: ahw-tg
             dockerfile: apps/tg/Dockerfile
       # Let the other image finish (and warm its cache) even if one fails; the
       # publish job still refuses to run unless all of them succeeded.
       fail-fast: false
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
     steps:
       - uses: actions/checkout@v5
 
@@ -137,9 +139,11 @@ jobs:
     permissions:
       # Required so the workflow can push the release tag back to the repo.
       contents: write
+      # Required to push images to the org's container registry.
+      packages: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      REGISTRY: ghcr.io/${{ github.repository_owner }}
     steps:
       - uses: actions/checkout@v5
 
@@ -157,25 +161,26 @@ jobs:
           done
           docker image ls --format '{{.Repository}}:{{.Tag}}'
 
-      - name: Log in to Docker Hub
+      - name: Log in to the GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Every image's version tag goes up before any `latest` moves, so a push
       # failure mid-way can never leave `latest` pointing at a mixed set.
       - name: Push version tags
         run: |
           set -eu
-          for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=${DOCKERHUB_USERNAME}/*:${VERSION}"); do
+          for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=${REGISTRY}/*:${VERSION}"); do
             docker push "$ref"
           done
 
       - name: Push latest tags
         run: |
           set -eu
-          for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=${DOCKERHUB_USERNAME}/*:${VERSION}"); do
+          for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=${REGISTRY}/*:${VERSION}"); do
             latest="${ref%:*}:latest"
             docker tag "$ref" "$latest"
             docker push "$latest"

@@ -2,7 +2,7 @@ import {
   readTurnMeta,
   toolDeliveryResult,
   type TurnToolMeta,
-} from "@assistant-hub/contracts";
+} from "@assistant-hub-swarm/contracts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 

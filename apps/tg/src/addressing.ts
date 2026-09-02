@@ -1,4 +1,4 @@
-import type { Addressing } from "@assistant-hub/contracts";
+import type { Addressing } from "@assistant-hub-swarm/contracts";
 import type { Message } from "@grammyjs/types";
 
 /**

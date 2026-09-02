@@ -1,12 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
-import { TURN_META_KEY } from "@assistant-hub/contracts";
+import { TURN_META_KEY } from "@assistant-hub-swarm/contracts";
 import {
   applyMigrations,
   startTestPostgres,
   type TestPostgres,
-} from "@assistant-hub/db/testing";
+} from "@assistant-hub-swarm/db/testing";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
