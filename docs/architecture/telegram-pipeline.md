@@ -350,13 +350,14 @@ verbatim.
 
 ## Stage 7 — delivery
 
-1. **Text.** The core splits a long answer at natural boundaries under
-   Telegram's hard 4096-character limit rather than truncating
-   (`features/bot-messaging/server/reply.ts`) and publishes one
-   `reply.delivery` event per chunk, each carrying the model's **raw**
-   Markdown, the message it answers, and the mirror-checked whitelist of
-   `#<id>` citations that may become links. The transport renders each at its
-   boundary — Telegram converts to its small HTML tag set by construction
+1. **Text.** The core publishes one `reply.delivery` event carrying the
+   whole answer as the model's **raw** Markdown, the message it answers, and
+   the mirror-checked whitelist of `#<id>` citations that may become links.
+   It knows no platform's cap: the transport cuts a long answer at natural
+   boundaries under Telegram's hard 4096-character limit
+   (`apps/tg/src/split.ts`), sends the parts in order, and reports each as
+   its own `message.delivered`. It renders each part at its boundary —
+   Telegram converts to its small HTML tag set by construction
    (`apps/tg/src/telegram-html.ts`) and falls back to a plain text send if
    Telegram still rejects the markup. History, traces and the pipeline all
    keep the raw text.

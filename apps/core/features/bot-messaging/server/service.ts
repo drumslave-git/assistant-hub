@@ -37,7 +37,6 @@ import {
 import { checkAddressed, type AddressResult, type AddressSource, type BotIdentity } from "./addressing";
 import { checkMaintenance, type BotPolicy } from "./policy";
 import { buildAddressingHint, buildSystemPrompt, hasPersonality } from "./prompt";
-import { splitReply } from "./reply";
 
 /**
  * Bot-messaging domain service — the boundary the Telegram runtime calls for
@@ -1002,7 +1001,7 @@ export async function handleIncomingMessage(
       // this judges whether it is an answer at all. A thinking model that stops
       // using its thought channel emits its working-out as the reply — fluent,
       // on topic, and indistinguishable downstream (the honesty gate passes it,
-      // splitReply cheerfully cuts it into three messages). The checks are
+      // the transport cheerfully delivers it). The checks are
       // mechanical and the evidence is measured; see `reply-integrity.ts`.
       let integrity = checkReplyIntegrity({
         content: reply.content,
@@ -1213,40 +1212,35 @@ export async function handleIncomingMessage(
         return { status: "replied", text: reply.content };
       }
 
-      // A long answer is split at natural boundaries and delivered as several
-      // messages — Telegram caps one message at 4096 chars, and truncating
-      // silently lost content.
-      const chunks = splitReply(reply.content);
-      if (chunks.length === 0) chunks.push("");
-      const outgoing = chunks.join("\n\n");
+      // The whole answer goes out as ONE delivery. The core knows no
+      // platform's message cap: the transport cuts a long text at natural
+      // boundaries on its side and reports every part (user decision,
+      // 2026-09-02 — the core says what to deliver, never how).
+      const outgoing = reply.content.trim();
       // A voice turn delivers through the TTS path when wired (voice-to-voice,
       // with its own internal text fallback); everything else sends text.
       const deliver = deps.sendVoiceReply ?? deps.sendReply;
-      for (const [index, chunk] of chunks.entries()) {
-        const sent = await deliver(chunk);
-        // 5. Delivered message(s) — full content (the spoken text, when voice).
-        const label = sent.asVoice ? "send voice message" : "send message";
-        await trace.event({
-          type: "output",
-          level: "success",
-          message:
-            chunks.length > 1 ? `${label} (part ${index + 1}/${chunks.length})` : label,
-          data: { content: chunk, messageId: sent.messageId, asVoice: Boolean(sent.asVoice) },
-        });
-        // Mirror each delivered chunk into history under its own message id
-        // (best-effort — never fail a delivered reply because persistence
-        // hiccupped). A null id means the owning source app mirrors the
-        // delivery itself (queue-consumer path) — nothing to record here.
-        if (sent.messageId != null) {
-          try {
-            await deps.recordReply({
-              content: chunk,
-              telegramMessageId: sent.messageId,
-              replyToMessageId: incoming.messageId,
-            });
-          } catch {
-            // swallow — the reply was delivered; the mirror is a side record
-          }
+      const sent = await deliver(outgoing);
+      // 5. Delivered message — full content (the spoken text, when voice).
+      await trace.event({
+        type: "output",
+        level: "success",
+        message: sent.asVoice ? "send voice message" : "send message",
+        data: { content: outgoing, messageId: sent.messageId, asVoice: Boolean(sent.asVoice) },
+      });
+      // Mirror the delivery into history under its message id (best-effort —
+      // never fail a delivered reply because persistence hiccupped). A null
+      // id means the owning source app mirrors the delivery itself
+      // (queue-consumer path) — nothing to record here.
+      if (sent.messageId != null) {
+        try {
+          await deps.recordReply({
+            content: outgoing,
+            telegramMessageId: sent.messageId,
+            replyToMessageId: incoming.messageId,
+          });
+        } catch {
+          // swallow — the reply was delivered; the mirror is a side record
         }
       }
       await trace.succeed({ outputSummary: outgoing });

@@ -14,7 +14,7 @@ import { busTraceClient } from "@assistant-hub/service";
 
 import type { AssistantConnection } from "./connections";
 import type { TgOutbound } from "./outbound";
-import { publishDelivered } from "./send";
+import { sendChatMessage } from "./send";
 import type { UpdatePublisher } from "./updates";
 
 /**
@@ -124,51 +124,57 @@ export async function startDeliveryConsumer(input: {
         const linkableMessageIds = (event.linkableSourceMessageIds ?? [])
           .map((id) => Number(id))
           .filter((id) => Number.isFinite(id));
-        const sent = await input.senderFor(event.assistantId).sendMessage(chatId, event.text, {
-          replyToMessageId,
-          threadId: event.threadId != null ? Number(event.threadId) : null,
-          silent: event.silent,
-          linkableMessageIds,
-        });
+        // The whole answer arrives; the split under Telegram's cap, each
+        // send and the delivered report per part (the core's ingest mirrors
+        // and cross-feeds off those) all happen in the one send function.
+        const sent = await sendChatMessage(
+          {
+            sender: input.senderFor(event.assistantId),
+            publisher: input.updates,
+            running: input.running,
+            onReportFailure: (messageId, error) => {
+              onError(`delivered report ${chatId}:${messageId}`, error);
+              trace.event({
+                message: "delivered report failed (message already delivered)",
+                type: "db",
+                level: "warn",
+                data: {
+                  messageId,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              });
+            },
+          },
+          {
+            chatId,
+            assistantId: event.assistantId,
+            text: event.text,
+            replyToMessageId,
+            threadId: event.threadId != null ? Number(event.threadId) : null,
+            silent: event.silent,
+            linkableMessageIds,
+          },
+        );
         // Telegram drops a reply target it will not attach and delivers the
         // message anyway (`allow_sending_without_reply`). Said out loud here.
         const replyTargetDropped = replyToMessageId != null && sent.replyToMessageId == null;
+        const parts = sent.messageIds.length > 1 ? ` as ${sent.messageIds.length} messages` : "";
         trace.event({
           message: replyTargetDropped
-            ? "reply sent — Telegram did not attach the reply target"
-            : "reply sent",
+            ? `reply sent${parts} — Telegram did not attach the reply target`
+            : `reply sent${parts}`,
           type: "external_call",
           level: replyTargetDropped ? "warn" : "success",
           data: {
             messageId: sent.messageId,
+            messageIds: sent.messageIds,
             silent: event.silent,
             linkableMessageIds,
             requestedReplyToMessageId: replyToMessageId,
             replyToMessageId: sent.replyToMessageId,
           },
         });
-        // The core's ingest mirrors and cross-feeds off this report.
-        await publishDelivered(
-          { publisher: input.updates, running: input.running },
-          {
-            chatId,
-            assistantId: event.assistantId,
-            messageId: sent.messageId,
-            content: event.text,
-            replyToMessageId: sent.replyToMessageId,
-            threadId: event.threadId != null ? Number(event.threadId) : null,
-            silent: event.silent,
-          },
-        ).catch((error) => {
-          onError(`delivered report ${chatId}:${sent.messageId}`, error);
-          trace.event({
-            message: "delivered report failed (message already delivered)",
-            type: "db",
-            level: "warn",
-            data: { error: error instanceof Error ? error.message : String(error) },
-          });
-        });
-        await trace.succeed({ outputSummary: `delivered ${chatId}:${sent.messageId}` });
+        await trace.succeed({ outputSummary: `delivered ${chatId}:${sent.messageIds.join(",")}` });
       } catch (error) {
         await trace.fail(error);
         throw error;

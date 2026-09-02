@@ -1,28 +1,14 @@
 /**
- * Reply formatting for Telegram delivery.
- *
- * v1 sends replies as plain text (no `parse_mode`) — correct and safe for any
- * model output. Rich markdown/HTML rendering is a later enhancement. The only
- * hard rule here is Telegram's 4096-character per-message limit: a long answer
- * is split at natural boundaries ({@link splitReply}) and delivered as several
- * messages rather than silently truncated.
+ * Telegram caps one message at 4096 UTF-16 code units. The core does not
+ * know that — it says what to deliver and the transport decides how (user
+ * decision, 2026-09-02) — so a long answer is cut HERE, at natural boundaries
+ * (paragraph → line → sentence → word), and delivered as a short sequence of
+ * messages rather than truncated or refused. Every part is reported as its
+ * own `message.delivered`, so the mirror holds the whole answer.
  */
 
 /** Telegram's maximum message length, in UTF-16 code units. */
 export const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
-
-const ELLIPSIS = "\n…";
-
-/**
- * Trim and truncate reply text to Telegram's length limit — for single-message
- * contexts (scheduled-task fires, whose trace correlates on the one delivered
- * message id). The conversational reply path splits instead ({@link splitReply}).
- */
-export function formatReply(text: string): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= TELEGRAM_MAX_MESSAGE_LENGTH) return trimmed;
-  return trimmed.slice(0, TELEGRAM_MAX_MESSAGE_LENGTH - ELLIPSIS.length) + ELLIPSIS;
-}
 
 /**
  * Where to cut the next chunk: the last paragraph break inside the limit, else
@@ -52,12 +38,11 @@ function findCut(text: string): number {
 }
 
 /**
- * Split reply text into Telegram-sized messages at natural boundaries
- * (paragraph → line → sentence → word), so a long answer is delivered whole
- * as a short sequence of messages instead of being cut off. Empty input
- * yields no chunks.
+ * Split text into Telegram-sized messages at natural boundaries, so a long
+ * answer is delivered whole as a short sequence of messages instead of being
+ * cut off. Empty input yields no chunks.
  */
-export function splitReply(text: string): string[] {
+export function splitMessage(text: string): string[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
   if (trimmed.length <= TELEGRAM_MAX_MESSAGE_LENGTH) return [trimmed];

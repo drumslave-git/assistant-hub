@@ -363,10 +363,13 @@ Markdown to its small HTML tag set by construction
 ([apps/tg/src/telegram-html.ts](../../apps/tg/src/telegram-html.ts)) and
 falls back to a plain-text send when the platform still rejects the markup —
 that fallback triggers only on a parse error, because any other retry could
-double-deliver. You do not split: the core already cuts a long answer at
-natural boundaries under Telegram's 4096-character cap and publishes one
-`reply.delivery` per chunk (`features/bot-messaging/server/reply.ts`). A
-platform with a smaller cap has to split on its own side.
+double-deliver. **You split.** The core publishes the whole answer as one
+`reply.delivery` and knows no platform's cap (user decision, 2026-09-02):
+cut a long text at natural boundaries under yours (Telegram:
+[apps/tg/src/split.ts](../../apps/tg/src/split.ts), paragraph → line →
+sentence → word), send the parts in order with the same reply target, and
+report every part as `message.delivered` so the mirror holds the whole
+answer.
 
 After the send: publish `message.delivered`, and record the delivery as a
 trace (`feature: "bot-messaging"`, `action: "deliver"`) on the event's
@@ -613,7 +616,7 @@ reply-author recognition, what is dropped) and `apps/tg/src/addressing.test.ts`
 | Normalizing a message into `transport.message`, media, receivers | `src/inbound.ts`, `src/media/*` |
 | Structural addressing verdicts | `src/addressing.ts` |
 | Queue publisher, envelope, seen-cache | `src/updates.ts` |
-| The one send + `message.delivered` report | `src/send.ts` |
+| The one send: split under the cap, each part sent and reported as `message.delivered` | `src/send.ts`, `src/split.ts` |
 | Bus consumer: reply delivery, typing loops, deliver trace | `src/delivery.ts` |
 | Platform sends (HTML render, link whitelist, files by mime, menus, reactions) | `src/outbound.ts`, `src/telegram-html.ts`, `src/telegram.ts` |
 | HTTP surface: health, `/internal/*`, `/mcp` | `src/api.ts` |
@@ -641,7 +644,6 @@ each is being widened under the "Transport SDK" entry in `docs/TODO.md`:
 | Vision gallery and backfill rows | `apps/core/features/vision/server/repository.ts` (`"tg"`) | Media is stored and described per source; the gallery view lists Telegram |
 | Scoped-ref defaults | `features/memory`, `features/tasks`, `features/self-improvement` build `tg:user:` / `tg:chat:` refs where a source is not supplied | Turn-time reads pass the source; some dashboard-driven writes assume Telegram |
 | Timed task fires | `features/tasks/server/fire.ts` binds the fire's tool context to `source: "tg"` (the task store hands out raw Telegram ids) | A scheduled or interval task always delivers through Telegram's `send_message`; message-triggered tasks run on the turn's own source and are unaffected |
-| Reply splitting | `features/bot-messaging/server/reply.ts` cuts a long answer at 4096 characters before publishing `reply.delivery` | Your platform's own cap is yours to enforce; the core-side cut moves to the Telegram transport |
 
 Each of these is a lookup keyed by a literal, not a branch on platform
 behaviour; widening one means iterating the registered transports instead.

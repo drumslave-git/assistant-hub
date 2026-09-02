@@ -26,7 +26,6 @@ failure modes.
 | `server/exclusions-repository.ts` | Data access | Reads consumed by the analyzer; writes owned by self-improvement |
 | `server/policy.ts` | Pure | The maintenance-mode decision over the event's `sender.isOwner` |
 | `server/prompt.ts` | Pure | System-prompt composition, time context, group addressing hint |
-| `server/reply.ts` | Pure | The split at natural boundaries under Telegram's 4096-char cap |
 | `server/reply-integrity.ts` | Pure | Is the answer a reply at all — the mechanical checks and the correction |
 | `server/action-claim.ts` | Prompt/parse pure, caller owns the call | The honesty gate over a drafted reply |
 | `addressing-trace.ts` | Pure | The addressing event's name and payload, shared by writer and reader |
@@ -218,9 +217,9 @@ rather than being sent the notes or left in silence.
 ## Delivery
 
 - The core keeps the model's **raw text**: history, traces and the pipeline all
-  see it unrendered. A long answer is split at natural boundaries
-  (`server/reply.ts`, never truncated) and each chunk leaves as its own
-  `reply.delivery` event.
+  see it unrendered. A long answer leaves whole as one `reply.delivery`; the
+  core knows no platform's cap, so the transport splits it under its own
+  (Telegram: `apps/tg/src/split.ts`, never truncated) and reports every part.
 - Markdown → Telegram HTML at the transport boundary only
   (`apps/tg/src/telegram-html.ts`). Telegram's HTML mode accepts a small tag
   set and rejects the entire send otherwise, so conversion is by-construction

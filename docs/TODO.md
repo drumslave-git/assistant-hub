@@ -129,11 +129,23 @@ Any core edit for a new source id is a bug.
      `server/transports` (new, 3 tests), `server/ingest`,
      `features/tool-connections` (36 passed). Not run: a live boot of core +
      tg after the change (no dev server was up); `npm run build`.
-   - **Remaining (`todo`):** reply splitting moves to `apps/tg`; the Overview
-     card, the content plane (`server/source/tg-content.ts`), the curated
-     known-users/known-groups pages, the vision repository, the scoped-ref
-     defaults in memory/tasks/self-improvement, and the timed task fire
-     become lookups over the registered transports.
+   - **The core stops splitting replies (`done`, 2026-09-02).** The core
+     publishes the whole answer as one `reply.delivery`
+     (`features/bot-messaging/server/service.ts`; `reply.ts` and its test are
+     gone). The Telegram transport cuts under its cap in `apps/tg/src/split.ts`
+     and `sendChatMessage` (`src/send.ts`) sends every part with the same
+     reply target and reports each as `message.delivered`; the delivery
+     consumer, the internal message route, the voice text-fallback and the
+     MCP delivery tools all go through it (`SentChatMessage.messageIds`
+     lists the parts, `messageId` is the first). Docs: the manual's Step 4
+     ("You split"), `telegram-pipeline.md` Stage 7, `features/bot-messaging.md`.
+     Proof: `npm run typecheck` (8/8), `npm run lint`, `npm run test` (tg 44
+     incl. `split.test.ts` + `send.test.ts`, core 1175). Not run live.
+   - **Remaining (`todo`):** the Overview card, the content plane
+     (`server/source/tg-content.ts`), the curated known-users/known-groups
+     pages, the vision repository, the scoped-ref defaults in
+     memory/tasks/self-improvement, and the timed task fire become lookups
+     over the registered transports.
 2. **SDK package**: `packages/transport-sdk` (build with tsc/tsup to
    `dist/`, `exports` on the built files, semver, `publishConfig` for GitHub
    Packages); the zod → JSON Schema and OpenAPI generators + CI drift check;

@@ -115,15 +115,22 @@ export function createApi(input: {
     } catch {
       // The voice bubble was refused — the answer still arrives, as text.
       try {
-        sent = await sender.sendMessage(chatId, body.text, { replyToMessageId, threadId });
+        // The text path splits under the cap and reports itself.
+        sent = await sendChatMessage(sendDeps(c), {
+          chatId,
+          assistantId: assistantIdOf(c),
+          text: body.text,
+          replyToMessageId,
+          threadId,
+        });
         asVoice = false;
       } catch (err) {
         return c.json({ error: { message: errorText(err) } }, 502);
       }
     }
     // The report records the spoken text — what history, search, and the
-    // next turn's window read.
-    await publishDelivered(
+    // next turn's window read. (The text fallback reported itself.)
+    if (asVoice) await publishDelivered(
       { publisher: input.updates, running: input.running },
       {
         chatId,
