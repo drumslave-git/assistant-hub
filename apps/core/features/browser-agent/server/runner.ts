@@ -270,7 +270,7 @@ async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
     feature: FEATURE.id,
     action: "run",
     trigger: {
-      kind: run.chatId ? "telegram" : "dashboard",
+      kind: run.chatId ? "transport" : "dashboard",
       actor: run.chatId ?? "dashboard",
       correlationId: run.id,
     },

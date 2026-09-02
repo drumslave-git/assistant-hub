@@ -1,6 +1,8 @@
 import { z } from "zod";
 
-import { SOURCE_IDS, scopedRefSchema } from "./scoped-ref";
+import { scopedRefSchema, sourceIdSchema } from "./scoped-ref";
+
+export { sourceIdSchema };
 
 /**
  * The source-app contract's event shapes (PLAN.md, "The source-app contract"
@@ -22,8 +24,6 @@ import { SOURCE_IDS, scopedRefSchema } from "./scoped-ref";
  * drift; every event carries the `correlationId` that ties a turn's
  * cross-app flow into one trace.
  */
-
-export const sourceIdSchema = z.enum(SOURCE_IDS);
 
 /** Fields every cross-app event shares. */
 export const eventEnvelopeSchema = z.object({

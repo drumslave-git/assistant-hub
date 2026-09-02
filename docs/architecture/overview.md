@@ -263,7 +263,7 @@ consumer.
 | Decision | Rationale |
 | --- | --- |
 | Stateless transports, one store in the core (Phase 7, 2026-08-30) | A transport is a translation layer; storing conversations in two places was two sources of truth. The core owns the mirror, presence, context composition and the cross-feed |
-| A transport connects with no core change | Registration announces its config schemas; the dashboard renders them; platform actions are the transport's own MCP tools. The remaining literal registries are listed in [Adding a transport](../development/adding-a-transport.md#before-you-start-the-core-touchpoints) |
+| A transport connects with no core change | Registration announces its config schemas; the dashboard renders them; platform actions are the transport's own MCP tools. The source id is whatever registers (validated by shape, checked against the registration table at runtime — no list in the core); the one handshake is the contract major. Dashboard surfaces still keyed on Telegram are tracked in `docs/TODO.md` and listed in [Adding a transport](../development/adding-a-transport.md#known-telegram-only-surfaces) |
 | Redis queue with `attempts: 1` (user decision, 2026-08-22) | The queue never retries on its own. A failed turn is re-enqueued only when it performed no action yet — the turn runner alone can know that |
 | Telegram long polling in the transport, not a webhook | A self-hosted bot behind NAT has no public URL |
 | Per-chat sequential, cross-chat concurrent (user decision, 2026-07-20) | Kept at every stage: the poller's `sequentialize`, the ingest's per-chat chains, the turn consumer's per-chat chains |

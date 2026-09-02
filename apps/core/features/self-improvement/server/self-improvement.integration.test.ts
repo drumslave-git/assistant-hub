@@ -203,7 +203,7 @@ describe("self-reflection (reflectOnFeedback)", () => {
     const trace = await startTrace({
       feature: "bot-messaging",
       action: "reply",
-      trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+      trigger: { kind: "transport", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
     });
     await trace.event({
       type: "llm_request",
@@ -594,7 +594,7 @@ describe("feedback.recorded consumer", () => {
     const trace = await startTrace({
       feature: "bot-messaging",
       action: "reply",
-      trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+      trigger: { kind: "transport", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
     });
     await trace.event({
       type: "llm_response",
@@ -651,7 +651,7 @@ describe("addressing report (👎 → \"Wasn't talking to you\")", () => {
     const trace = await startTrace({
       feature: "bot-messaging",
       action: "reply",
-      trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+      trigger: { kind: "transport", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
     });
     await trace.event({
       type: "step",

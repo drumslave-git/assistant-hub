@@ -5,7 +5,7 @@ import { scopedRef, tryParseScopedRef } from "@assistant-hub/contracts";
 import { getUserMemoriesFor } from "@/features/memory/server/repository";
 import { forgetUser } from "@/features/memory/server/service";
 import { resolveLinkedRefs } from "@/features/person-links/server/service";
-import { directorySourceLabel, listDirectoryUsers } from "@/server/source/directory";
+import { listDirectoryUsers, sourceLabelOf, sourceLabels } from "@/server/source/directory";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
@@ -63,6 +63,7 @@ export async function getProfileIdentities(accountId: string): Promise<ProfileId
   } catch {
     // Labels are decoration; the refs still render.
   }
+  const sourceNames = await sourceLabels();
   return refs.flatMap((ref) => {
     const parsed = tryParseScopedRef(ref);
     if (!parsed) return [];
@@ -70,7 +71,7 @@ export async function getProfileIdentities(accountId: string): Promise<ProfileId
       {
         ref,
         source: parsed.source,
-        sourceLabel: directorySourceLabel(parsed.source),
+        sourceLabel: sourceLabelOf(sourceNames, parsed.source),
         label: labels.get(ref) ?? null,
         self: ref === ownRef,
       },

@@ -21,6 +21,11 @@ export interface TransportSummary {
   enabled: boolean;
   /** Whether the transport has announced itself (an empty URL = never). */
   registered: boolean;
+  /** The contract major it announced. */
+  contractMajor: number;
+  /** False when this core speaks another contract major; `refusedReason` says so. */
+  compatible: boolean;
+  refusedReason: string | null;
   connectionConfigSchema: TransportConfigField[];
   transportConfigSchema: TransportConfigField[];
   configPreview: Record<string, string>;

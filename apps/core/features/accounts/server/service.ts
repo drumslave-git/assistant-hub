@@ -182,7 +182,7 @@ async function announceTransports(trace: TraceRecorder): Promise<void> {
   try {
     const transports = await listTransports();
     for (const transport of transports) {
-      await announceTransportChange(transport.id as "tg" | "chat");
+      await announceTransportChange(transport.id);
     }
   } catch (err) {
     await trace.event({

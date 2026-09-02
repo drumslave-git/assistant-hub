@@ -432,7 +432,7 @@ export async function describeAndStore(
           feature: feature.id,
           action: isVoice ? "transcribe" : "describe",
           trigger: {
-            kind: "telegram",
+            kind: "transport",
             actor: params.chatId,
             correlationId: `${params.chatId}:${params.telegramMessageId}`,
           },
@@ -696,10 +696,10 @@ function toView(record: MediaRecord, source: SourceId): MediaView {
  * running none of them throws for the caller (the vision page renders its
  * unavailable state) rather than silently listing nothing.
  */
-function requireMediaSources() {
-  const sources = mediaSources();
+async function requireMediaSources() {
+  const sources = await mediaSources();
   if (sources.length === 0) {
-    throw new Error("no media source is configured (TG_API_URL)");
+    throw new Error("no media source is registered");
   }
   return sources;
 }
@@ -711,7 +711,7 @@ function requireMediaSources() {
  */
 export async function listMedia(limit = 100): Promise<MediaView[]> {
   const perSource = await Promise.all(
-    requireMediaSources().map(async (source) =>
+    (await requireMediaSources()).map(async (source) =>
       source
         .listRecent(limit)
         .then((rows) => rows.map((row) => toView(row, source.source)))
@@ -726,7 +726,7 @@ export async function listMedia(limit = 100): Promise<MediaView[]> {
 
 /** One media row by id (dashboard detail), or null. Ids are unique per source. */
 export async function getMediaDetail(id: string): Promise<MediaRecord | null> {
-  for (const source of requireMediaSources()) {
+  for (const source of await requireMediaSources()) {
     const found = await source.store.getById(id).catch(() => null);
     if (found) return found;
   }
@@ -736,7 +736,7 @@ export async function getMediaDetail(id: string): Promise<MediaRecord | null> {
 /** Count of media rows still awaiting a description (backfill backlog size). */
 export async function getPendingMediaCount(): Promise<number> {
   const counts = await Promise.all(
-    requireMediaSources().map((source) => source.countPending().catch(() => 0)),
+    (await requireMediaSources()).map((source) => source.countPending().catch(() => 0)),
   );
   return counts.reduce((total, count) => total + count, 0);
 }

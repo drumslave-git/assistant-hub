@@ -1277,6 +1277,13 @@ export const transports = pgTable("transports", {
   config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
   /** Admin switch: a disabled transport's events are ignored and it gets no state. */
   enabled: boolean("enabled").notNull().default(true),
+  /**
+   * The wire-contract major the transport announced (`CONTRACT_MAJOR` of the
+   * SDK it was built with). A row whose major differs from this core's is
+   * registered but refused: it gets no desired state, its events are dropped,
+   * and the roster shows why (user decision, 2026-09-02).
+   */
+  contractMajor: integer("contract_major").notNull().default(1),
   registeredAt: timestamp("registered_at", { withTimezone: true }).notNull().defaultNow(),
   /** Stamped on every registration/heartbeat — the reachability signal. */
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),

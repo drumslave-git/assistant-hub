@@ -53,11 +53,18 @@ export function TransportSections({
           <h3 className="text-sm font-semibold tracking-tight">
             {transport.name} connection
           </h3>
-          <TransportConnectionSection
-            transport={transport}
-            assistantId={assistantId}
-            refreshSignal={refreshSignal}
-          />
+          {transport.compatible ? (
+            <TransportConnectionSection
+              transport={transport}
+              assistantId={assistantId}
+              refreshSignal={refreshSignal}
+            />
+          ) : (
+            <p className="text-sm text-danger">
+              Refused: {transport.refusedReason}. Nothing can connect through it until the
+              versions agree.
+            </p>
+          )}
         </div>
       ))}
     </>

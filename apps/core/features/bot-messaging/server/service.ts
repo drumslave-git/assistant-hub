@@ -538,7 +538,7 @@ export async function startReplyTrace(input: {
     trigger: {
       // The way in, named honestly: a web-thread turn is not a telegram one,
       // and Debug filters on this.
-      kind: input.source === "chat" ? "chat" : "telegram",
+      kind: input.source === "chat" ? "chat" : "transport",
       actor: input.fromId ?? input.chatId,
       correlationId: input.correlationId ?? `${input.chatId}:${input.messageId}`,
     },

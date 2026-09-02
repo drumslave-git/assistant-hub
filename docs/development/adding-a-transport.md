@@ -51,28 +51,25 @@ transport's own HTTP surface, and the core's internal transport API. All HTTP
 in both directions is authenticated by one shared secret,
 `INTERNAL_API_TOKEN`, sent as the `x-internal-token` header.
 
-## Before you start: the core touchpoints
+## Before you start: what the core knows about you
 
-The design goal is a transport that connects with zero core changes, and the
-runtime path (registration, ingest, turn pipeline, delivery, tool scoping,
-outbound port) is source-agnostic. A few registries are still literal lists,
-so today a new source id needs these one-line additions in the core, in one
-commit:
+Nothing, until you register. There is no list of transports anywhere in the
+core (user decision, 2026-09-02): the source id you announce is accepted as
+long as it has the right shape, and every runtime lookup over "the sources"
+— the ingest's source check, the managed tool connections, the Users and
+Groups roster, the media backfill and gallery, the app-scope select on the
+Tools page — reads the registration table. A transport connects to a running
+core with **zero core edits**; if you find yourself editing a core file to
+make your transport appear, that is a core bug — file it.
 
-| File | What to add | Why |
+Two things are checked when you register:
+
+| Check | Rule | On failure |
 | --- | --- | --- |
-| `packages/contracts/src/scoped-ref.ts` | Your id in `SOURCE_IDS` | Every event schema validates `source` against it; every internal route answers 400 `unknown transport` for anything else; scoped refs (`<source>:user:<id>`) will not parse |
-| `apps/core/features/tool-connections/server/managed.ts` | Your id in `TRANSPORT_SOURCE_IDS` | The boot-time and registration-time reconcile that turns your MCP server into a managed tool connection iterates this list |
-| `apps/core/server/source/directory.ts` | An entry in `DIRECTORY_SOURCES` using `sourceDirectoryClient(id)` | The Users and Groups pages list people per source from this roster |
-| `apps/core/features/tool-connections/ui/ConnectionsManager.tsx` | An `<option>` in the "Where it applies" select | The app-scope dropdown for operator-added tool connections is a static list |
-| `packages/contracts/src/trace.ts` and `apps/core/lib/trace.ts` | A trigger `kind` for your platform, or reuse `telegram` | The trace trigger kind is an enum; the ingest stamps `telegram` on transport-originated traces today |
+| **Source id** | `^[a-z][a-z0-9-]{0,31}$` — short, lowercase, stable. It becomes the prefix of every scoped ref (`signal:user:123`), the slug of your MCP tools (`signal__send_message`), the `source` on every event and the `transports.id` row. It cannot change later without rewriting stored refs | 400 `a transport registration is required` |
+| **Contract major** | `contractMajor` must equal the core's `CONTRACT_MAJOR` (exported by the contracts package; `1` today). It is bumped when an event, an internal route or the registration shape changes incompatibly | 409 naming both majors. The row is still upserted so the assistant editor shows the refusal next to your name; you get no desired state and your events are dropped until either side updates |
 
-Pick a **source id**: short, lowercase, stable — it becomes the prefix of
-every scoped ref (`tg:user:123`), the slug of your MCP tools
-(`tg__reply_to_message`), the `source` on every event, and the value of the
-`transports.id` row. It cannot change later without rewriting stored refs.
-
-Also know what is Telegram-only in the dashboard today, so you set
+Also know what is still Telegram-only in the dashboard today, so you set
 expectations right: see [Known Telegram-only surfaces](#known-telegram-only-surfaces)
 at the end.
 
@@ -83,7 +80,7 @@ the template ([apps/tg/package.json](../../apps/tg/package.json)):
 
 | Dependency | Gives you |
 | --- | --- |
-| `@assistant-hub/contracts` | Every zod schema and type named below, the queue/channel constants, `messageDedupeKey`, `readTurnMeta`, `toolDeliveryResult` |
+| `@assistant-hub/contracts` | Every zod schema and type named below, `CONTRACT_MAJOR`, the queue/channel constants, `messageDedupeKey`, `readTurnMeta`, `toolDeliveryResult` |
 | `@assistant-hub/bus` | `openQueue`, `openPublisher`, `openSubscriber` (BullMQ + ioredis, `attempts: 1`) |
 | `@assistant-hub/service` | `requireEnv`/`optionalEnv`, `internalTokenGuard`, `INTERNAL_TOKEN_HEADER`, `serveMcp`, `busTraceClient`, `dashboardRefresh` |
 | `@assistant-hub/media` | `normalizeImageForChat` — bounded JPEG the vision endpoints accept |
@@ -131,8 +128,9 @@ Reference: [apps/tg/src/desired-state.ts](../../apps/tg/src/desired-state.ts),
 
 ```jsonc
 {
-  "id": "tg",                       // your source id
+  "id": "tg",                       // your source id — any slug of the right shape
   "name": "Telegram",               // what the dashboard calls you
+  "contractMajor": 1,               // CONTRACT_MAJOR of the contracts package you built against
   "baseUrl": "http://tg:3210",      // SELF_URL — the core calls you here
   "mcpPath": "/mcp",                // or null if you host no tools
   "connectionConfigSchema": [       // one section per assistant, in the editor
@@ -146,7 +144,10 @@ Reference: [apps/tg/src/desired-state.ts](../../apps/tg/src/desired-state.ts),
 Field kinds are `text`, `secret` (rendered as a password input, previewed as
 `…last4`) and `boolean`. The core upserts the `transports` row: your announced
 identity always follows the code, while the admin's `enabled` flag and the
-stored config blobs survive every re-registration. Registering also triggers
+stored config blobs survive every re-registration. A `contractMajor` the core
+does not speak is answered 409 (the row is kept, marked refused); retry on
+the same interval as a connection failure — the operator will update one
+side or the other. Registering also triggers
 the managed tool-connection reconcile (Step 6), and the response **is** your
 desired state, so registration doubles as the boot-time fetch.
 
@@ -623,21 +624,24 @@ reply-author recognition, what is dropped) and `apps/tg/src/addressing.test.ts`
 ## Known Telegram-only surfaces
 
 The runtime contract is generic and a second transport's turns run end to
-end: its messages land in `source_messages` under its own source id, its
-history window is composed from its own rows, memory and owner rights resolve
-through scoped refs, and its tools are scoped to its own turns. What is still
-literally Telegram in the core today, so you know what a new transport's
-operator will and will not see:
+end: it registers under its own id, its messages land in `source_messages`
+under that id, its history window is composed from its own rows, memory and
+owner rights resolve through scoped refs, its tools are scoped to its own
+turns, and it is listed wherever the core enumerates sources (the managed
+tool connections, the Users and Groups roster, the media backfill and
+gallery, the app-scope select). What is still literally Telegram in the core
+today, so you know what a new transport's operator will and will not see —
+each is being widened under the "Transport SDK" entry in `docs/TODO.md`:
 
 | Surface | Where | Effect on a second transport |
 | --- | --- | --- |
 | Overview bot-status card | `apps/core/server/transports/status.ts` (`"tg"`) | Only Telegram connections summarize into the card |
-| History, search, summaries, analytics content plane | `apps/core/server/source/tg-content.ts` (`SOURCE = "tg"`, user decision 2026-08-27) | The History and Analytics pages, the nightly summaries and the search index read Telegram rows only |
-| Users and Groups directories | `apps/core/features/known-users`, `known-groups` (`SOURCE = "tg"`), plus `DIRECTORY_SOURCES` | Your people are mirrored in `source_users`, but the pages and the roster lookups target Telegram until the directory entry exists |
+| History, search, summaries, analytics content plane | `apps/core/server/source/tg-content.ts` (`SOURCE = "tg"`) | The History and Analytics pages, the nightly summaries and the search index read Telegram rows only |
+| Curated Users and Groups pages | `apps/core/features/known-users`, `known-groups` (`SOURCE = "tg"`) | Your people and chats are in the roster, but the curated pages (aliases, notes, languages) edit Telegram rows |
 | Vision gallery and backfill rows | `apps/core/features/vision/server/repository.ts` (`"tg"`) | Media is stored and described per source; the gallery view lists Telegram |
 | Scoped-ref defaults | `features/memory`, `features/tasks`, `features/self-improvement` build `tg:user:` / `tg:chat:` refs where a source is not supplied | Turn-time reads pass the source; some dashboard-driven writes assume Telegram |
 | Timed task fires | `features/tasks/server/fire.ts` binds the fire's tool context to `source: "tg"` (the task store hands out raw Telegram ids) | A scheduled or interval task always delivers through Telegram's `send_message`; message-triggered tasks run on the turn's own source and are unaffected |
-| Trace trigger kind | `kind: "telegram"` in the ingest and in feature services | Traces from another platform are labelled as Telegram-triggered until a kind is added |
+| Reply splitting | `features/bot-messaging/server/reply.ts` cuts a long answer at 4096 characters before publishing `reply.delivery` | Your platform's own cap is yours to enforce; the core-side cut moves to the Telegram transport |
 
 Each of these is a lookup keyed by a literal, not a branch on platform
 behaviour; widening one means iterating the registered transports instead.

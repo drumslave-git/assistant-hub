@@ -308,7 +308,14 @@ export const transportConfigFieldSchema = z.object({
  * transport's desired state, so registration doubles as the boot-time fetch.
  */
 export const transportRegistrationRequestSchema = z.object({
+  /** The transport's own source id — any slug; the core accepts what registers. */
   id: sourceIdSchema,
+  /**
+   * The contract major this transport was built against (`CONTRACT_MAJOR`
+   * of the SDK it imports). A core that speaks another major refuses the
+   * registration with a reason instead of silently dropping the events.
+   */
+  contractMajor: z.number().int().positive(),
   name: z.string().min(1),
   /** The transport's internal API base URL, reachable from the core. */
   baseUrl: z.string().min(1),

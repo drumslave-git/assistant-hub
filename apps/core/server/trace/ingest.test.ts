@@ -19,7 +19,7 @@ function sourceTrace(over: Partial<SourceTrace> = {}): SourceTrace {
     feature: "bot-messaging",
     action: "deliver",
     status: "success",
-    trigger: { kind: "telegram", actor: "-500", correlationId: "-500:7" },
+    trigger: { kind: "transport", actor: "-500", correlationId: "-500:7" },
     startedAt: "2026-08-24T10:00:00.000Z",
     finishedAt: "2026-08-24T10:00:01.000Z",
     inputSummary: "the reply text",
@@ -54,7 +54,7 @@ describe("ingestSourceTrace", () => {
       finishedAt: "2026-08-24T10:00:01.000Z",
       inputSummary: "the reply text",
       outputSummary: "delivered -500:41",
-      trigger: { kind: "telegram", actor: "-500", correlationId: "-500:7" },
+      trigger: { kind: "transport", actor: "-500", correlationId: "-500:7" },
     });
     expect(detail?.events).toHaveLength(1);
     expect(detail?.events[0]).toMatchObject({
@@ -89,7 +89,7 @@ describe("ingestSourceTrace — assistant scoping", () => {
     // tg stamps the connection's assistant on inbound / delivery / feedback
     // traces; the cross-app flow must stay filterable by whose bot it was.
     ingestSourceTrace(sourceTrace({ assistantId: "assistant-a" }));
-    ingestSourceTrace(sourceTrace({ assistantId: "assistant-b", trigger: { kind: "telegram" } }));
+    ingestSourceTrace(sourceTrace({ assistantId: "assistant-b", trigger: { kind: "transport" } }));
 
     const mine = await getTraceList({ assistantId: "assistant-a" });
     expect(mine.total).toBe(1);

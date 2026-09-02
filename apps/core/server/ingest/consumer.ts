@@ -32,6 +32,7 @@ import { collectTransport } from "@/features/self-improvement/server/collect-tra
 import { redeemLinkCode, selfLinkReplyText } from "@/features/accounts/server/self-link";
 import { getEnv } from "@/server/env";
 import { publishEvent } from "@/server/realtime/hub";
+import { isRegisteredTransport } from "@/server/transports/service";
 import {
   appendSourceMessage,
   applySourceMessageEdit,
@@ -344,7 +345,7 @@ async function handleTransportMessage(event: TransportMessageEvent): Promise<voi
         action: "inbound",
         assistantId: event.receivedBy,
         trigger: {
-          kind: "telegram",
+          kind: "transport",
           actor: event.sender.userId,
           correlationId: turnCorrelationId(
             chatId,
@@ -614,7 +615,7 @@ async function handleReaction(event: TransportReactionEvent): Promise<void> {
       action: "collect-feedback",
       assistantId: event.assistantId,
       trigger: {
-        kind: "telegram",
+        kind: "transport",
         actor: event.user.userId,
         correlationId: `${event.chat.id}:${event.sourceMessageId}`,
       },
@@ -684,6 +685,16 @@ export async function releaseHold(
 /** Handle one transport update (exported for the ingest's tests). */
 export async function processTransportUpdate(payload: unknown): Promise<void> {
   const event = transportUpdateEventSchema.parse(payload);
+  // The source id is whatever registered (open ids, 2026-09-02): the shape
+  // was checked by the schema, the registration is checked here. An update
+  // from a transport that never registered, or that speaks another contract
+  // major, fails its job rather than seeding rows under an unknown source.
+  if (!(await isRegisteredTransport(event.source))) {
+    throw new Error(
+      `transport update from "${event.source}" dropped: no transport with that id is registered ` +
+        "with this core on its contract major",
+    );
+  }
   switch (event.type) {
     case "transport.message":
       return handleTransportMessage(event);

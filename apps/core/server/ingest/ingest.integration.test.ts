@@ -62,6 +62,14 @@ beforeAll(async () => {
   pool = new Pool({ connectionString: url });
   db = drizzle(pool, { schema: storeSchema });
   holder.db = db;
+  // The ingest accepts updates only from a registered transport; the suite
+  // speaks as "tg", so register it once (the per-test truncate spares it).
+  await db.insert(storeSchema.transports).values({
+    id: "tg",
+    name: "Telegram",
+    baseUrl: "http://tg:3210",
+    mcpPath: "/mcp",
+  });
 });
 
 afterAll(async () => {

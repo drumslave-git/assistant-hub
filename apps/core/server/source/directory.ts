@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  WEB_CHAT_SOURCE,
   parseScopedRef,
   scopedRef,
   type OperatorChat,
@@ -13,6 +14,7 @@ import { ApiError, isApiError } from "@/lib/api-error";
 
 import { webChatDirectoryClient } from "@/features/web-chat/server/directory";
 import { sourceDirectoryClient } from "@/server/source-store/directory-client";
+import { listCompatibleTransports } from "@/server/transports/service";
 
 import type { SourceDirectoryClient } from "./operator-client";
 
@@ -40,15 +42,39 @@ export interface DirectorySource {
 }
 
 /**
- * Registered sources, in the order the dashboard lists them. Every entry
- * answers from the core's own tables since Phase 7 (the web chat's since the
- * Phase 6 dissolve, telegram's since the de-storing) — same contract, no
- * HTTP, never unconfigured.
+ * The sources this deployment runs, in the order the dashboard lists them:
+ * every transport registered on this core's contract major (labelled with
+ * the name it announced), then the web chat. Read from the registration
+ * table per call — a transport that came up a minute ago is listed without
+ * any core change. Every entry answers from the core's own tables since
+ * Phase 7 — same contract, no HTTP, never unconfigured.
  */
-export const DIRECTORY_SOURCES: readonly DirectorySource[] = [
-  { id: "tg", label: "Telegram", client: () => sourceDirectoryClient("tg") },
-  { id: "chat", label: "Web chat", client: webChatDirectoryClient },
-];
+export async function directorySources(): Promise<DirectorySource[]> {
+  const transports = await listCompatibleTransports();
+  return [
+    ...transports.map((row) => ({
+      id: row.id,
+      label: row.name,
+      client: () => sourceDirectoryClient(row.id),
+    })),
+    { id: WEB_CHAT_SOURCE, label: "Web chat", client: webChatDirectoryClient },
+  ];
+}
+
+/** Human labels of every source keyed by id — resolve once, label many refs. */
+export async function sourceLabels(): Promise<Map<string, string>> {
+  return new Map((await directorySources()).map((source) => [source.id, source.label]));
+}
+
+/** A source's label from a resolved map; an id nothing registered reads as itself. */
+export function sourceLabelOf(labels: ReadonlyMap<string, string>, source: SourceId): string {
+  return labels.get(source) ?? source;
+}
+
+/** One source's label, for the single-ref reads. */
+export async function sourceLabel(source: SourceId): Promise<string> {
+  return sourceLabelOf(await sourceLabels(), source);
+}
 
 /** Where a directory row came from, carried on every entry. */
 export interface DirectoryOrigin {
@@ -137,10 +163,10 @@ async function aggregate<Row, Out>(
 
 /** Every person every source knows, newest activity first. */
 export async function listDirectoryUsers(
-  sources: readonly DirectorySource[] = DIRECTORY_SOURCES,
+  sources?: readonly DirectorySource[],
 ): Promise<DirectoryListing<DirectoryUser>> {
   const listing = await aggregate<OperatorUser, DirectoryUser>(
-    sources,
+    sources ?? (await directorySources()),
     (client) => client.listUsers(),
     (row, origin) => ({ ...row, ...origin }),
     "user",
@@ -152,10 +178,10 @@ export async function listDirectoryUsers(
 
 /** Every conversation every source carries, newest activity first. */
 export async function listDirectoryChats(
-  sources: readonly DirectorySource[] = DIRECTORY_SOURCES,
+  sources?: readonly DirectorySource[],
 ): Promise<DirectoryListing<DirectoryChat>> {
   const listing = await aggregate<OperatorChat, DirectoryChat>(
-    sources,
+    sources ?? (await directorySources()),
     (client) => client.listChats(),
     (row, origin) => ({ ...row, ...origin }),
     "chat",
@@ -166,8 +192,11 @@ export async function listDirectoryChats(
 }
 
 /** The source that owns a scoped ref, or a legible 503 when it cannot be reached. */
-export function requireDirectorySource(source: SourceId, action: string): SourceDirectoryClient {
-  const registered = DIRECTORY_SOURCES.find((entry) => entry.id === source);
+export async function requireDirectorySource(
+  source: SourceId,
+  action: string,
+): Promise<SourceDirectoryClient> {
+  const registered = (await directorySources()).find((entry) => entry.id === source);
   if (!registered) {
     throw ApiError.badRequest(`unknown source "${source}" — ${action}`);
   }
@@ -180,18 +209,13 @@ export function requireDirectorySource(source: SourceId, action: string): Source
   return client;
 }
 
-/** Human label of a registered source, for messages and listings. */
-export function directorySourceLabel(source: SourceId): string {
-  return DIRECTORY_SOURCES.find((entry) => entry.id === source)?.label ?? source;
-}
-
 /** One conversation by scoped ref, tagged with its origin, or null. */
 export async function getDirectoryChat(chatRef: string): Promise<DirectoryChat | null> {
   const { source, id } = parseScopedRef(chatRef);
-  const client = requireDirectorySource(source, "the chat cannot be read");
+  const client = await requireDirectorySource(source, "the chat cannot be read");
   const chat = await client.getChat(id);
   if (!chat) return null;
-  return { ...chat, source, sourceLabel: directorySourceLabel(source), ref: chatRef };
+  return { ...chat, source, sourceLabel: await sourceLabel(source), ref: chatRef };
 }
 
 /**
@@ -201,12 +225,13 @@ export async function getDirectoryChat(chatRef: string): Promise<DirectoryChat |
  */
 export async function listDirectoryChatMembers(chatRef: string): Promise<DirectoryChatMember[]> {
   const { source, id } = parseScopedRef(chatRef);
-  const client = requireDirectorySource(source, "the members cannot be read");
+  const client = await requireDirectorySource(source, "the members cannot be read");
   const members = await client.listChatMembers(id);
+  const label = await sourceLabel(source);
   return members.map((member) => ({
     ...member,
     source,
-    sourceLabel: directorySourceLabel(source),
+    sourceLabel: label,
     ref: scopedRef(source, "user", member.id),
   }));
 }
@@ -224,7 +249,7 @@ export async function writeSourceUser(
   input: { aliases: string[] } | { language: string | null },
 ): Promise<void> {
   const { source, id } = parseScopedRef(userRef);
-  const client = requireDirectorySource(source, "the edit cannot be saved");
+  const client = await requireDirectorySource(source, "the edit cannot be saved");
   await client.updateUser(id, input);
 }
 
@@ -234,6 +259,6 @@ export async function writeSourceChat(
   input: { notes: string | null } | { language: string | null },
 ): Promise<void> {
   const { source, id } = parseScopedRef(chatRef);
-  const client = requireDirectorySource(source, "the edit cannot be saved");
+  const client = await requireDirectorySource(source, "the edit cannot be saved");
   await client.updateChat(id, input);
 }

@@ -171,7 +171,7 @@ describe("addAliasByReference", () => {
 
     const result = await addAliasByReference(
       { chatId: CHAT, reference: "alice", aliases: ["Ali"] },
-      { kind: "telegram", actor: CHAT },
+      { kind: "transport", actor: CHAT },
       ctx.db,
     );
     expect(result).toMatchObject({ status: "updated", added: ["Ali"] });
@@ -185,7 +185,7 @@ describe("addAliasByReference", () => {
     await seedParticipant({ userId: "1", username: "alice", firstName: "Alice", lastName: null });
     const result = await addAliasByReference(
       { chatId: CHAT, reference: "charlie", aliases: ["C"] },
-      { kind: "telegram", actor: CHAT },
+      { kind: "transport", actor: CHAT },
       ctx.db,
     );
     expect(result).toEqual({ status: "not_found" });
@@ -198,7 +198,7 @@ describe("addAliasByReference", () => {
     await seedParticipant({ userId: "2", username: "alice_b", firstName: "Alice", lastName: "Brown" });
     const result = await addAliasByReference(
       { chatId: CHAT, reference: "Alice", aliases: ["Ali"] },
-      { kind: "telegram", actor: CHAT },
+      { kind: "transport", actor: CHAT },
       ctx.db,
     );
     expect(result).toEqual({ status: "ambiguous", count: 2 });
@@ -208,7 +208,7 @@ describe("addAliasByReference", () => {
     await seedParticipant({ userId: "1", username: "alice", firstName: "Alice", lastName: null });
     const result = await addAliasByReference(
       { chatId: CHAT, reference: "alice", aliases: ["Alice", "@alice"] },
-      { kind: "telegram", actor: CHAT },
+      { kind: "transport", actor: CHAT },
       ctx.db,
     );
     expect(result.status).toBe("noop");
@@ -219,7 +219,7 @@ describe("addAliasByReference", () => {
     await seedParticipant({ userId: "9", username: "alice", firstName: "Alice", lastName: null }, "-999");
     const result = await addAliasByReference(
       { chatId: CHAT, reference: "alice", aliases: ["Ali"] },
-      { kind: "telegram", actor: CHAT },
+      { kind: "transport", actor: CHAT },
       ctx.db,
     );
     expect(result).toEqual({ status: "not_found" });

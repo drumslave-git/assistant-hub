@@ -38,9 +38,9 @@ function scheduler(): IdleScheduler {
         // The pending rows live with the owning source since the split, and
         // pictures arrive wherever people are — every configured source gets
         // a pass, in registry order.
-        const sources = mediaSources();
+        const sources = await mediaSources();
         if (sources.length === 0) {
-          return { summary: "no media source configured (TG_API_URL)" };
+          return { summary: "no media source is registered" };
         }
         const deps = await resolveDescribeDeps("background").catch(() => null);
         if (!deps) return { summary: "LLM not configured" };

@@ -101,7 +101,7 @@ export async function redeemLinkCode(
     {
       feature: FEATURE.id,
       action: "self-link",
-      trigger: { kind: "telegram", actor: input.senderRef },
+      trigger: { kind: "transport", actor: input.senderRef },
       inputSummary: `code from ${input.senderRef}`,
     },
     async (trace): Promise<SelfLinkOutcome> => {

@@ -59,7 +59,7 @@ export async function handleFeedbackRecorded(
     feature: FEATURE.id,
     action: "recorded",
     trigger: {
-      kind: "telegram",
+      kind: "transport",
       actor: parseScopedRef(event.feedback.userRef).id,
       correlationId: event.correlationId,
     },

@@ -1,15 +1,18 @@
 import { transportRegistrationRequestSchema } from "@assistant-hub/contracts";
 import { INTERNAL_TOKEN_HEADER } from "@assistant-hub/service";
 
+import { isApiError } from "@/lib/api-error";
 import { reconcileManagedConnections } from "@/features/tool-connections/server/managed";
 import { getEnv } from "@/server/env";
 import { registerTransport } from "@/server/transports/service";
 
 /**
  * Transport self-registration (PLAN.md "The transport contract"): a
- * transport announces itself at boot and receives its desired state in the
- * same round trip. Adding a transport to a running core is deploying one
- * container that calls this — no core change.
+ * transport announces itself at boot — any source id it picked — and
+ * receives its desired state in the same round trip. Adding a transport to a
+ * running core is deploying one container that calls this; the core has no
+ * list to extend. The one thing checked is the contract major: a mismatch is
+ * registered (so the roster can show why) and refused with 409.
  */
 export async function POST(request: Request): Promise<Response> {
   const token = getEnv().INTERNAL_API_TOKEN;
@@ -25,7 +28,16 @@ export async function POST(request: Request): Promise<Response> {
       { status: 400 },
     );
   }
-  const desired = await registerTransport(parsed.data);
+  let desired;
+  try {
+    desired = await registerTransport(parsed.data);
+  } catch (err) {
+    if (isApiError(err)) {
+      console.error(`transport '${parsed.data.id}' refused: ${err.message}`);
+      return Response.json({ error: { message: err.message } }, { status: err.status });
+    }
+    throw err;
+  }
   console.log(`transport '${parsed.data.id}' registered from ${parsed.data.baseUrl}`);
   // The transport's MCP server just became reachable (or moved): bring its
   // managed tool connection and snapshot in line without waiting for a core

@@ -29,7 +29,7 @@ describe("createSourceTraceRecorder", () => {
     const trace = traces.startTrace({
       feature: "bot-messaging",
       action: "inbound",
-      trigger: { kind: "telegram", actor: "100", correlationId: "-500:7" },
+      trigger: { kind: "transport", actor: "100", correlationId: "-500:7" },
       inputSummary: "hello",
     });
     trace.event({ message: "mirrored", type: "db" });
@@ -59,7 +59,7 @@ describe("createSourceTraceRecorder", () => {
     const trace = traces.startTrace({
       feature: "bot-messaging",
       action: "inbound",
-      trigger: { kind: "telegram" },
+      trigger: { kind: "transport" },
     });
     trace.event({ message: "mirrored" });
     expect(published).toHaveLength(0);
@@ -70,7 +70,7 @@ describe("createSourceTraceRecorder", () => {
     const trace = traces.startTrace({
       feature: "bot-messaging",
       action: "inbound",
-      trigger: { kind: "telegram" },
+      trigger: { kind: "transport" },
     });
     await trace.succeed();
     await trace.fail(new Error("late"));
@@ -83,7 +83,7 @@ describe("createSourceTraceRecorder", () => {
     const trace = traces.startTrace({
       feature: "self-improvement",
       action: "collect-feedback",
-      trigger: { kind: "telegram", correlationId: "-500:9" },
+      trigger: { kind: "transport", correlationId: "-500:9" },
     });
     await trace.fail(new Error("menu send refused"));
 
@@ -102,7 +102,7 @@ describe("createSourceTraceRecorder", () => {
     expect(published[0].trace.trigger.correlationId).toBe(published[0].correlationId);
 
     await traces
-      .startTrace({ feature: "f", action: "a", trigger: { kind: "telegram" } })
+      .startTrace({ feature: "f", action: "a", trigger: { kind: "transport" } })
       .succeed({ correlationId: "-500:41" });
     expect(published[1].correlationId).toBe("-500:41");
   });

@@ -54,8 +54,13 @@ vi.mock("@/server/transports/service", async (importOriginal) => {
     ...actual,
     getTransport: async (source: string) =>
       source === "tg" && config.url
-        ? { id: "tg", name: "Telegram", baseUrl: config.url, mcpPath: "/mcp", enabled: true }
+        ? { id: "tg", name: "Telegram", baseUrl: config.url, mcpPath: "/mcp", enabled: true, contractMajor: 1 }
         : null,
+    // The roster the reconcile walks: tg is always registered here; whether
+    // it is reachable is `config.url` (null = never announced a URL).
+    listCompatibleTransports: async () => [
+      { id: "tg", name: "Telegram", baseUrl: config.url ?? "", mcpPath: "/mcp", enabled: true, contractMajor: 1 },
+    ],
   };
 });
 

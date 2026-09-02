@@ -1,0 +1,1 @@
+ALTER TABLE "transports" ADD COLUMN "contract_major" integer DEFAULT 1 NOT NULL;

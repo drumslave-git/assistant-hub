@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { and, asc, eq } from "drizzle-orm";
 import {
+  CONTRACT_MAJOR,
   type SourceId,
   type TransportConfigChangedEvent,
   type TransportDesiredState,
@@ -51,6 +52,7 @@ export async function registerTransport(
       name: request.name,
       baseUrl: request.baseUrl,
       mcpPath: request.mcpPath,
+      contractMajor: request.contractMajor,
       connectionConfigSchema: request.connectionConfigSchema,
       transportConfigSchema: request.transportConfigSchema,
       lastSeenAt: new Date(),
@@ -64,6 +66,7 @@ export async function registerTransport(
         name: request.name,
         baseUrl: request.baseUrl,
         mcpPath: request.mcpPath,
+        contractMajor: request.contractMajor,
         connectionConfigSchema: request.connectionConfigSchema,
         transportConfigSchema: request.transportConfigSchema,
         lastSeenAt: new Date(),
@@ -71,7 +74,25 @@ export async function registerTransport(
       },
     });
   publishEvent("status");
+  // Registered either way — the roster must be able to say WHY a transport
+  // is refused — but a mismatched contract gets no state and no events.
+  if (request.contractMajor !== CONTRACT_MAJOR) {
+    throw ApiError.conflict(incompatibilityReason(request.id, request.contractMajor));
+  }
   return desiredTransportState(request.id, db);
+}
+
+/** Whether this core speaks the contract major a transport announced. */
+export function transportCompatible(row: Pick<TransportRow, "contractMajor">): boolean {
+  return row.contractMajor === CONTRACT_MAJOR;
+}
+
+/** The reason a refused transport sees, and the roster shows. */
+export function incompatibilityReason(id: string, contractMajor: number): string {
+  return (
+    `transport "${id}" speaks contract major ${contractMajor}; this core speaks ${CONTRACT_MAJOR} — ` +
+    "update whichever side is behind"
+  );
 }
 
 /** The desired state one transport reconciles from. */
@@ -81,6 +102,9 @@ export async function desiredTransportState(
 ): Promise<TransportDesiredState> {
   const row = await getTransport(id, db);
   if (!row) throw ApiError.notFound(`transport "${id}" is not registered`);
+  if (!transportCompatible(row)) {
+    throw ApiError.conflict(incompatibilityReason(row.id, row.contractMajor));
+  }
   const connections = await db
     .select()
     .from(assistantTransports)
@@ -112,6 +136,27 @@ export async function getTransport(
 /** Every registered transport, oldest first (the dashboard's roster). */
 export async function listTransports(db: StoreDb = getStoreDb()): Promise<TransportRow[]> {
   return db.select().from(transports).orderBy(asc(transports.registeredAt));
+}
+
+/**
+ * The transports this core can actually run: registered AND on its contract
+ * major. Every runtime lookup over "the sources" (managed tool connections,
+ * the directory roster, the media fan-out, the ingest's source check) reads
+ * this — a source id is whatever registered, never a compiled-in list.
+ */
+export async function listCompatibleTransports(
+  db: StoreDb = getStoreDb(),
+): Promise<TransportRow[]> {
+  return (await listTransports(db)).filter(transportCompatible);
+}
+
+/** Whether events tagged with this source may be ingested. */
+export async function isRegisteredTransport(
+  source: string,
+  db: StoreDb = getStoreDb(),
+): Promise<boolean> {
+  const row = await getTransport(source, db);
+  return row !== null && transportCompatible(row);
 }
 
 /** Announce a desired-state change; the transport refetches and reconciles. */

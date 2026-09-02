@@ -130,8 +130,9 @@ opened with.
 ## Transports
 
 The dashboard-facing side of the transport contract: the registered transports
-and each assistant's connection on them. `{id}` is a source id (`tg`, `chat`);
-an unknown one is `bad_request`, a known but never-registered one `not_found`.
+and each assistant's connection on them. `{id}` is a source id — any slug of
+the right shape (`^[a-z][a-z0-9-]{0,31}$`); a malformed one is `bad_request`,
+a well-formed one that never registered `not_found`.
 The transport itself registers and reconciles over the
 [internal transport API](#internal-transport-api).
 
@@ -144,9 +145,11 @@ The transport itself registers and reconciles over the
 | `PATCH` | `/api/transports/{id}/connections/{connectionId}` | account | `{ config?: object (shallow merge), enabled?: boolean }`, ≥1 | `{ connection: { id, enabled } }` |
 | `DELETE` | `/api/transports/{id}/connections/{connectionId}` | account | — | `{ deleted: true }` |
 
-`TransportView` = `{ id, name, enabled, registered, lastSeenAt,
-connectionConfigSchema, transportConfigSchema, configPreview, updatedAt }`;
-`registered` is false until the transport has announced itself. The two
+`TransportView` = `{ id, name, enabled, registered, contractMajor, compatible,
+refusedReason, lastSeenAt, connectionConfigSchema, transportConfigSchema,
+configPreview, updatedAt }`; `registered` is false until the transport has
+announced itself, `compatible` is false (and `refusedReason` names both
+majors) when it announced a contract major this core does not speak. The two
 schemas are lists of `TransportConfigField` =
 `{ key, label, kind: "text" \| "secret" \| "boolean", help?, required? }` -
 the dashboard renders its forms from them, and the `config` blobs a caller

@@ -159,11 +159,14 @@ export {
   type SenderInfo,
   type TurnLifecycleEvent,
 } from "./source-events";
+export { CONTRACT_MAJOR } from "./contract-version";
 export {
   REF_KINDS,
-  SOURCE_IDS,
+  SOURCE_ID_PATTERN,
+  WEB_CHAT_SOURCE,
   formatScopedRef,
   isScopedRef,
+  isSourceId,
   parseScopedRef,
   scopedRef,
   scopedRefSchema,

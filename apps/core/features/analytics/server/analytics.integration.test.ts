@@ -84,7 +84,7 @@ async function seedLlmCall(input: {
     const trace = await startTrace({
       feature: input.feature ?? "bot-messaging",
       action: input.action ?? "reply",
-      trigger: { kind: "telegram", actor: input.actor, correlationId: input.correlationId },
+      trigger: { kind: "transport", actor: input.actor, correlationId: input.correlationId },
     });
     await trace.event({
       type: "llm_response",

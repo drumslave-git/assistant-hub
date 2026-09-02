@@ -14,7 +14,7 @@ function traceWith(events: Partial<TraceEvent>[]): Trace {
     feature: "bot-messaging",
     action: "reply",
     status: "success",
-    trigger: { kind: "telegram" },
+    trigger: { kind: "transport" },
     startedAt: new Date().toISOString(),
     finishedAt: null,
     error: null,

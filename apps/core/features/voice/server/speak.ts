@@ -40,7 +40,7 @@ export async function synthesizeVoiceReply(params: {
       // The way in, named honestly — a web thread's voice reply is not a
       // telegram one, and Debug filters on this.
       trigger: {
-        kind: params.source === "chat" ? "chat" : "telegram",
+        kind: params.source === "chat" ? "chat" : "transport",
         actor: params.chatId,
         correlationId: params.correlationId,
       },

@@ -113,7 +113,7 @@ export async function startDeliveryConsumer(input: {
         feature: "bot-messaging",
         action: "deliver",
         assistantId: event.assistantId,
-        trigger: { kind: "telegram", actor: chatId, correlationId: event.correlationId },
+        trigger: { kind: "transport", actor: chatId, correlationId: event.correlationId },
         inputSummary: event.text,
       });
       try {

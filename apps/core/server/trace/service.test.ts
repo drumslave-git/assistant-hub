@@ -18,7 +18,7 @@ import { startTrace, type StartTraceInput } from "./recorder";
 const baseInput: StartTraceInput = {
   feature: "bot-messaging",
   action: "reply",
-  trigger: { kind: "telegram", actor: "chat:1" },
+  trigger: { kind: "transport", actor: "chat:1" },
   inputSummary: "hello",
 };
 

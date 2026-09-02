@@ -192,7 +192,7 @@ export function tryGetToolContext(): McpToolContext | null {
  */
 export function toolContextTrigger(ctx: McpToolContext): TraceTrigger {
   return {
-    kind: ctx.source === "chat" ? "chat" : "telegram",
+    kind: ctx.source === "chat" ? "chat" : "transport",
     actor: ctx.userId ?? ctx.chatId,
     correlationId: ctx.correlationId ?? ctx.chatId,
   };

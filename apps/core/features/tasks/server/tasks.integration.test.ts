@@ -66,7 +66,7 @@ beforeEach(async () => {
 const ASSISTANT = "assistant-1";
 
 const trigger = { kind: "dashboard" } as const;
-const chatTrigger = { kind: "telegram", actor: "100", correlationId: "100" } as const;
+const chatTrigger = { kind: "transport", actor: "100", correlationId: "100" } as const;
 
 /** A group chat id (negative) and DM ids (positive, equal to the user id). */
 const GROUP = "-1001";

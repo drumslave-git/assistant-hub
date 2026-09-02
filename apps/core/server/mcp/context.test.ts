@@ -54,12 +54,12 @@ describe("toolContextTrigger", () => {
   it("stamps the turn's correlation so tool-driven traces join their turn's flow", () => {
     expect(
       toolContextTrigger({ chatId: "100", userId: "77", correlationId: "100:41" }),
-    ).toEqual({ kind: "telegram", actor: "77", correlationId: "100:41" });
+    ).toEqual({ kind: "transport", actor: "77", correlationId: "100:41" });
   });
 
   it("falls back to the chat id when the context carries no correlation", () => {
     expect(toolContextTrigger({ chatId: "100" })).toEqual({
-      kind: "telegram",
+      kind: "transport",
       actor: "100",
       correlationId: "100",
     });

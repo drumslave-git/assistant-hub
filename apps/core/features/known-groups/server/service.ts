@@ -130,7 +130,7 @@ async function traceGroupCapture(
     {
       feature: FEATURE.id,
       action,
-      trigger: { kind: "telegram", actor: params.userId ?? params.chatId },
+      trigger: { kind: "transport", actor: params.userId ?? params.chatId },
       inputSummary: label,
     }
   );

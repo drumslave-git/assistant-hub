@@ -1,4 +1,5 @@
 import {
+  CONTRACT_MAJOR,
   transportDesiredStateSchema,
   type TransportDesiredState,
   type TransportRegistrationRequest,
@@ -22,6 +23,7 @@ export function registrationRequest(port: number): TransportRegistrationRequest 
   return {
     id: "tg",
     name: "Telegram",
+    contractMajor: CONTRACT_MAJOR,
     baseUrl: (optionalEnv("SELF_URL") ?? `http://localhost:${port}`).replace(/\/$/, ""),
     mcpPath: "/mcp",
     connectionConfigSchema: [

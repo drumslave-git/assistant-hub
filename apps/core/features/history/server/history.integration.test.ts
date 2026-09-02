@@ -92,7 +92,7 @@ describe("getChatHistory", () => {
     const trace = await startTrace({
       feature: "bot-messaging",
       action: "reply",
-      trigger: { kind: "telegram", actor: "100", correlationId: `${CHAT}:10` },
+      trigger: { kind: "transport", actor: "100", correlationId: `${CHAT}:10` },
     });
     await trace.succeed();
 

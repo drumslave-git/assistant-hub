@@ -115,7 +115,7 @@ describe("trace correlation", () => {
 
     expect(service.createTaskFromChat).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ kind: "telegram", actor: "77", correlationId: "100:41" }),
+      expect.objectContaining({ kind: "transport", actor: "77", correlationId: "100:41" }),
     );
   });
 });

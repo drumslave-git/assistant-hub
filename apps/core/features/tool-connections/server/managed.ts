@@ -9,8 +9,11 @@ import type { TraceTrigger } from "@/lib/trace";
 import { INTERNAL_TOKEN_HEADER } from "@assistant-hub/service";
 import { publishEvent } from "@/server/realtime/hub";
 import { getEnv } from "@/server/env";
-import { getTransport } from "@/server/transports/service";
-import { directorySourceLabel } from "@/server/source/directory";
+import {
+  getTransport,
+  listCompatibleTransports,
+  transportCompatible,
+} from "@/server/transports/service";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { withTrace } from "@/server/trace";
 import type { TraceRecorder } from "@/server/trace/recorder";
@@ -51,9 +54,6 @@ import { appliedTools } from "./service";
 
 const FEATURE = FEATURES["tool-connections"];
 
-/** The sources whose MCP server lives in a separate transport app. */
-const TRANSPORT_SOURCE_IDS: readonly SourceId[] = ["tg"];
-
 /** What a source app's connection looks like when configuration is complete. */
 interface ManagedDesired {
   source: SourceId;
@@ -65,8 +65,9 @@ interface ManagedDesired {
 
 /**
  * The desired connection for one source, or null when it has not registered
- * (or announces no MCP server). Resolved from the transport's registration
- * row since Phase 7 — the endpoint is `baseUrl + mcpPath` as announced.
+ * (or announces no MCP server, or speaks another contract major). Resolved
+ * from the transport's registration row since Phase 7 — the endpoint is
+ * `baseUrl + mcpPath` and the name is the one it announced.
  */
 export async function desiredManagedConnection(
   source: SourceId,
@@ -74,11 +75,11 @@ export async function desiredManagedConnection(
   const token = getEnv().INTERNAL_API_TOKEN;
   if (!token) return null;
   const row = await getTransport(source).catch(() => null);
-  if (!row || !row.baseUrl || !row.mcpPath) return null;
+  if (!row || !row.baseUrl || !row.mcpPath || !transportCompatible(row)) return null;
   return {
     source,
     slug: source,
-    name: `${directorySourceLabel(source)} tools`,
+    name: `${row.name} tools`,
     endpointUrl: `${row.baseUrl.replace(/[/]$/, "")}${row.mcpPath}`,
     authHeaders: { [INTERNAL_TOKEN_HEADER]: token },
   };
@@ -163,7 +164,8 @@ export async function reconcileManagedConnections(
     { feature: FEATURE.id, action: "reconcile-managed", trigger, inputSummary: "source apps" },
     async (trace) => {
       const summary: string[] = [];
-      for (const source of TRANSPORT_SOURCE_IDS) {
+      // Whatever registered on this contract major — no compiled-in list.
+      for (const { id: source } of await listCompatibleTransports(db)) {
         const record = await reconcileOne(db, source, trace);
         if (!record) {
           summary.push(`${source}: not deployed`);

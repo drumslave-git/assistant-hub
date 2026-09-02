@@ -80,7 +80,7 @@ export async function nameConversation(input: {
     action: "name-conversation",
     assistantId: event.assistantId,
     trigger: {
-      kind: event.source === "chat" ? "chat" : "telegram",
+      kind: event.source === "chat" ? "chat" : "transport",
       actor: chatId,
       correlationId: event.correlationId,
     },

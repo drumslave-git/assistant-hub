@@ -131,7 +131,7 @@ async function traceUserCapture(
     {
       feature: FEATURE.id,
       action: added ? "capture-user" : "update-profile",
-      trigger: { kind: "telegram", actor: profile.userId },
+      trigger: { kind: "transport", actor: profile.userId },
       inputSummary: label,
     }
   );

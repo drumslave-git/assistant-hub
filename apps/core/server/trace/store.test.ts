@@ -29,7 +29,7 @@ import { startTrace, type StartTraceInput } from "./recorder";
 const baseInput: StartTraceInput = {
   feature: "bot",
   action: "reply",
-  trigger: { kind: "telegram", actor: "chat:1", correlationId: "update:9" },
+  trigger: { kind: "transport", actor: "chat:1", correlationId: "update:9" },
   inputSummary: "hello",
 };
 
@@ -68,7 +68,7 @@ describe("recorder → store", () => {
     expect(stored!.outputSummary).toBe("hi there");
     expect(stored!.relatedIds).toEqual({ messages: ["m1"] });
     expect(stored!.trigger).toEqual({
-      kind: "telegram",
+      kind: "transport",
       actor: "chat:1",
       correlationId: "update:9",
     });
@@ -282,21 +282,21 @@ describe("listTraces / listFeatures", () => {
     const reply = await startTrace({
       ...baseInput,
       feature: "bot-messaging",
-      trigger: { kind: "telegram", actor: "77", correlationId: turnCorr },
+      trigger: { kind: "transport", actor: "77", correlationId: turnCorr },
     });
     await reply.succeed();
     const toolCall = await startTrace({
       ...baseInput,
       feature: "mcp-tools-tasks",
       action: "tasks_create",
-      trigger: { kind: "telegram", actor: "100", correlationId: turnCorr },
+      trigger: { kind: "transport", actor: "100", correlationId: turnCorr },
     });
     await toolCall.succeed();
     const create = await startTrace({
       ...baseInput,
       feature: "tasks",
       action: "create",
-      trigger: { kind: "telegram", actor: "77", correlationId: turnCorr },
+      trigger: { kind: "transport", actor: "77", correlationId: turnCorr },
     });
     await create.succeed({ relatedIds: { tasks: ["task-9"] } });
     // The fire opens on the task id and settles correlated to what it sent.
@@ -353,7 +353,7 @@ function traceLine(id: string, startedAt: string, feature = "bot"): Trace {
     feature,
     action: "reply",
     status: "success",
-    trigger: { kind: "telegram", correlationId: `corr:${id}` },
+    trigger: { kind: "transport", correlationId: `corr:${id}` },
     startedAt,
     finishedAt: startedAt,
     error: null,
@@ -560,20 +560,20 @@ describe("getLatestTraceIdsByCorrelation", () => {
     const older = await startTrace({
       ...baseInput,
       feature: "bot-messaging",
-      trigger: { kind: "telegram", correlationId: "c:1" },
+      trigger: { kind: "transport", correlationId: "c:1" },
     });
     await older.succeed();
     const newer = await startTrace({
       ...baseInput,
       feature: "bot-messaging",
-      trigger: { kind: "telegram", correlationId: "c:1" },
+      trigger: { kind: "transport", correlationId: "c:1" },
     });
     await newer.succeed();
     // A different feature keyed on the same message must not win the scoped lookup.
     const feedback = await startTrace({
       ...baseInput,
       feature: "user-feedback",
-      trigger: { kind: "telegram", correlationId: "c:1" },
+      trigger: { kind: "transport", correlationId: "c:1" },
     });
     await feedback.succeed();
 

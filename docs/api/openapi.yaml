@@ -1439,7 +1439,7 @@ paths:
       x-access: admin
       summary: Every person every source knows
       description: |
-        Aggregated across the registered sources (`tg`, `chat`), newest activity
+        Aggregated across the registered transports and the web chat, newest activity
         first, each entry tagged with its origin and scoped ref. A source that
         could not be read comes back under `unavailable` with its reason rather
         than as an empty list.
@@ -3025,12 +3025,15 @@ paths:
         - internalToken: []
       summary: Transport self-registration
       description: |
-        A transport announces itself at boot: its id, name, base URL, MCP path
-        and config-field schemas. The core upserts the registration (the
-        admin's `enabled` flag and stored config blobs survive every
-        re-registration), kicks the managed tool-connection reconcile, and
-        answers with the transport's desired state - so registration doubles
-        as the boot-time fetch.
+        A transport announces itself at boot: its id (any slug of the right
+        shape - there is no list in the core to extend), name, base URL, MCP
+        path, contract major and config-field schemas. The core upserts the
+        registration (the admin's `enabled` flag and stored config blobs
+        survive every re-registration), kicks the managed tool-connection
+        reconcile, and answers with the transport's desired state - so
+        registration doubles as the boot-time fetch. A contract major this
+        core does not speak is refused with 409 naming both majors; the row
+        is kept so the dashboard shows the refusal.
       requestBody:
         required: true
         content:
@@ -3044,6 +3047,11 @@ paths:
               schema: { $ref: "#/components/schemas/TransportDesiredState" }
         "400": { $ref: "#/components/responses/InternalBadRequest" }
         "401": { $ref: "#/components/responses/InternalUnauthorized" }
+        "409":
+          description: The transport announced a contract major this core does not speak (the message names both)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InternalError" }
 
   /api/internal/transports/{id}/desired:
     parameters:
@@ -3399,11 +3407,11 @@ components:
     # -- scalars --
     SourceId:
       type: string
-      enum: [tg, chat]
-      description: A source app - the transport (`tg`) or the built-in web chat (`chat`).
+      pattern: '^[a-z][a-z0-9-]{0,31}$'
+      description: A source id - the slug a transport registered under (`tg`, `signal`, ...) or the built-in web chat (`chat`). Open by design - the core keeps no list; registration is checked at runtime.
     ScopedRef:
       type: string
-      pattern: '^(tg|chat):(user|chat|thread|message):.+$'
+      pattern: '^[a-z][a-z0-9-]{0,31}:(user|chat|thread|message):.+$'
       description: A cross-app pointer `source:kind:id` - `tg:user:123`, `tg:chat:-100123`, `chat:user:<accountId>`.
     ConfigBlob:
       type: object
@@ -3694,12 +3702,15 @@ components:
     TransportView:
       type: object
       required:
-        [id, name, enabled, registered, lastSeenAt, connectionConfigSchema, transportConfigSchema, configPreview, updatedAt]
+        [id, name, enabled, registered, contractMajor, compatible, refusedReason, lastSeenAt, connectionConfigSchema, transportConfigSchema, configPreview, updatedAt]
       properties:
         id: { $ref: "#/components/schemas/SourceId" }
         name: { type: string }
         enabled: { type: boolean }
         registered: { type: boolean, description: Whether the transport has announced itself (a never-registered row has no base URL). }
+        contractMajor: { type: integer, description: The wire-contract major the transport announced. }
+        compatible: { type: boolean, description: False when this core speaks another contract major; the transport is registered but refused. }
+        refusedReason: { type: [string, "null"], description: Why the transport is refused, naming both majors; null when compatible. }
         lastSeenAt: { type: string, format: date-time }
         connectionConfigSchema:
           type: array
@@ -3738,10 +3749,11 @@ components:
             - type: "null"
     TransportRegistrationRequest:
       type: object
-      required: [id, name, baseUrl, mcpPath, connectionConfigSchema, transportConfigSchema]
+      required: [id, name, contractMajor, baseUrl, mcpPath, connectionConfigSchema, transportConfigSchema]
       properties:
         id: { $ref: "#/components/schemas/SourceId" }
         name: { type: string, minLength: 1, description: What the dashboard calls the transport. }
+        contractMajor: { type: integer, minimum: 1, description: "The contract major the transport was built against (`CONTRACT_MAJOR` of the contracts package). A core that speaks another major refuses with 409." }
         baseUrl: { type: string, minLength: 1, description: "The transport's internal API base URL, reachable from the core." }
         mcpPath: { type: [string, "null"], description: "Path of the transport's MCP server on that base, or null." }
         connectionConfigSchema:

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { SOURCE_IDS, type SourceId } from "@assistant-hub/contracts";
+import { WEB_CHAT_SOURCE, type SourceId } from "@assistant-hub/contracts";
 
 import type { MediaStorePort } from "@/features/vision/server/service";
 import type { MediaRecord } from "@/features/vision/server/repository";
@@ -9,6 +9,7 @@ import {
   sourceStoreMediaBrowse,
   sourceStoreMediaPort,
 } from "@/server/source-store/media-port";
+import { listCompatibleTransports } from "@/server/transports/service";
 
 /**
  * A source's media as the pipeline's {@link MediaStorePort} — in-process for
@@ -25,7 +26,7 @@ import {
  * live here.
  */
 export function sourceMediaStore(source: SourceId): MediaStorePort | null {
-  if (source === "chat") return webChatMediaStore();
+  if (source === WEB_CHAT_SOURCE) return webChatMediaStore();
   return sourceStoreMediaPort(source);
 }
 
@@ -46,19 +47,22 @@ export interface SourceMediaBrowse {
 
 /** One source's browse surface — in-process for every source since Phase 7. */
 export function sourceMediaBrowse(source: SourceId): SourceMediaBrowse | null {
-  if (source === "chat") {
+  if (source === WEB_CHAT_SOURCE) {
     return { source, store: webChatMediaStore(), ...webChatMediaBrowse };
   }
   return { source, store: sourceStoreMediaPort(source), ...sourceStoreMediaBrowse(source) };
 }
 
 /**
- * Every source this deployment runs, in registry order. The backfill and the
- * dashboard gallery work across all of them: pictures arrive wherever people
- * are, and neither surface should have to know which app that was.
+ * Every source this deployment runs: the transports registered on this
+ * core's contract major, then the web chat. The backfill and the dashboard
+ * gallery work across all of them: pictures arrive wherever people are, and
+ * neither surface should have to know which app that was — nor does this
+ * module: the roster is whatever registered.
  */
-export function mediaSources(): SourceMediaBrowse[] {
-  return SOURCE_IDS.map((source) => sourceMediaBrowse(source)).filter(
-    (browse): browse is SourceMediaBrowse => browse !== null,
-  );
+export async function mediaSources(): Promise<SourceMediaBrowse[]> {
+  const transports = await listCompatibleTransports();
+  return [...transports.map((row) => row.id), WEB_CHAT_SOURCE]
+    .map((source) => sourceMediaBrowse(source))
+    .filter((browse): browse is SourceMediaBrowse => browse !== null);
 }

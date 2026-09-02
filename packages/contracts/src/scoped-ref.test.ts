@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatScopedRef,
   isScopedRef,
+  isSourceId,
   parseScopedRef,
   scopedRef,
   scopedRefSchema,
@@ -30,9 +31,18 @@ describe("scoped refs", () => {
     });
   });
 
-  it("rejects unknown sources and kinds, missing parts, empty ids", () => {
+  it("accepts any well-formed source slug — a transport picks its own id", () => {
+    expect(parseScopedRef("signal:user:1")).toEqual({ source: "signal", kind: "user", id: "1" });
+    expect(scopedRefSchema.parse("discord-eu:chat:42")).toBe("discord-eu:chat:42");
+    expect(isSourceId("matrix")).toBe(true);
+  });
+
+  it("rejects malformed sources, unknown kinds, missing parts, empty ids", () => {
     for (const bad of [
-      "signal:user:1",
+      "Signal:user:1",
+      "1tg:user:1",
+      "tg_x:user:1",
+      ":user:1",
       "tg:project:1",
       "tg:user:",
       "tg:user",
@@ -47,8 +57,9 @@ describe("scoped refs", () => {
     }
   });
 
-  it("refuses to format an empty id", () => {
+  it("refuses to format an empty id or a malformed source", () => {
     expect(() => formatScopedRef({ source: "tg", kind: "user", id: "" })).toThrow();
+    expect(() => formatScopedRef({ source: "Signal", kind: "user", id: "1" })).toThrow();
   });
 
   it("validates through the zod schema", () => {

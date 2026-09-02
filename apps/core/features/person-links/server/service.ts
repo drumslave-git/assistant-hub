@@ -9,7 +9,7 @@ import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { getEnv } from "@/server/env";
 import { publishEvent } from "@/server/realtime/hub";
-import { directorySourceLabel, listDirectoryUsers } from "@/server/source/directory";
+import { listDirectoryUsers, sourceLabelOf, sourceLabels } from "@/server/source/directory";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { withTrace } from "@/server/trace";
 import {
@@ -42,7 +42,11 @@ const FEATURE = FEATURES["person-links"];
  * directory page; a ref no source currently knows keeps a null label and is
  * rendered as the bare ref rather than as an invented name.
  */
-function toClient(records: PersonLinkRecord[], labels: Map<string, string>): PersonLink[] {
+function toClient(
+  records: PersonLinkRecord[],
+  labels: Map<string, string>,
+  sourceNames: Map<string, string>,
+): PersonLink[] {
   return records.map((record) => ({
     id: record.id,
     note: record.note,
@@ -53,7 +57,7 @@ function toClient(records: PersonLinkRecord[], labels: Map<string, string>): Per
       return {
         userRef: member.userRef,
         source,
-        sourceLabel: directorySourceLabel(source),
+        sourceLabel: sourceLabelOf(sourceNames, source),
         label: labels.get(member.userRef) ?? null,
         addedAt: member.addedAt,
       };
@@ -70,14 +74,14 @@ async function directoryLabels(): Promise<Map<string, string>> {
 /** Every person link, oldest first, with its identities resolved. */
 export async function getPersonLinks(db: StoreDb = getStoreDb()): Promise<PersonLink[]> {
   const [records, labels] = await Promise.all([listPersonLinks(db), directoryLabels()]);
-  return toClient(records, labels);
+  return toClient(records, labels, await sourceLabels());
 }
 
 /** One link, resolved. Throws when it is gone. */
 async function readOne(id: string, db: StoreDb): Promise<PersonLink> {
   const record = await getPersonLink(db, id);
   if (!record) throw ApiError.notFound("Unknown person link");
-  return toClient([record], await directoryLabels())[0];
+  return toClient([record], await directoryLabels(), await sourceLabels())[0];
 }
 
 /**

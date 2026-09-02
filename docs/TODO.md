@@ -32,6 +32,131 @@ the archive. Commit-on-main is back in force. Entries below dated before
 2026-08-21 predate the redesign — re-check their file paths against the
 current tree before acting on them.
 
+## Transport SDK: a new transport with zero core edits (`in-progress`, opened 2026-09-02)
+
+**Problem (user, 2026-09-02).** `docs/PLAN.md` and the overview promise that a
+transport connects "without any core change", while
+`docs/development/adding-a-transport.md` opens with a table of five core files
+to edit and closes with seven Telegram-only surfaces. Both cannot stand. The
+gap is structural, not a few lists: the source id is a compile-time enum
+(`SOURCE_IDS = ["tg", "chat"]` in `packages/contracts/src/scoped-ref.ts`)
+enforced by every event schema, every scoped ref, the tool app-scope, the
+trace source and the registration request itself, so a container announcing
+`id: "signal"` gets 400 from `/api/internal/transports/register` and retries
+forever. The four packages a transport imports are private, unversioned and
+export raw TypeScript, so nothing can be developed in another repository. The
+release workflow publishes images to Docker Hub that `docker-compose.yml`
+never references (it builds from source), so an operator has no image-based
+service to copy.
+
+**Target flow (user).** Someone develops a transport (any repo, any language);
+publishes a Docker image; the core's owner adds one `image:` service to
+compose; the transport self-registers and appears in the dashboard; done.
+Any core edit for a new source id is a bug.
+
+**Decisions (asked 2026-09-02, all answered by the user):**
+
+- Transport ↔ core coupling stays **Redis + HTTP** as today (queue, bus,
+  internal APIs). No HTTP-only rewrite.
+- A transport **self-registers and appears enabled**; no admin pre-declare,
+  no pairing code, no per-transport token (the shared `INTERNAL_API_TOKEN`
+  stays). The admin on/off switch (entry below) remains a separate, optional
+  item.
+- The transport **picks its own source id** (short lowercase slug). The core
+  accepts unknown ids at registration and validates every event's `source`
+  at runtime against the registered transports. `chat` stays the one
+  built-in in-process source. Scoped refs parse any slug prefix.
+- **No capability flags and no platform limits in the core.** The core says
+  what to deliver; the transport decides how. Reply splitting at Telegram's
+  4096 chars leaves `features/bot-messaging/server/reply.ts` and moves into
+  the Telegram transport; the feedback menu, voice, photos and files stay
+  internal-API calls a transport renders however its platform allows.
+- **Every dashboard surface is source-generic**: History, Analytics, search,
+  summaries, Users, Groups, the Vision gallery, the Overview bot card, the
+  tool app-scope select, the directory roster, the trace trigger kind and the
+  timed task fire iterate the registered transports instead of the `"tg"`
+  literal. This **reverses the 2026-08-27 decision** that the content plane is
+  Telegram-only.
+- **One published package, `@assistant-hub/transport-sdk`**, bundling the
+  contracts, the queue/bus helpers, the token guard, `serveMcp`, the trace
+  client, dashboard refresh and image normalization. Built output (ESM +
+  d.ts), not raw sources.
+- Registry: **GitHub Packages**. Scope `@assistant-hub`, which GitHub only
+  allows when the owning account is named `assistant-hub`: the user will
+  **create a GitHub organization `assistant-hub` and transfer the repo**
+  into it (manual, user-side; blocks the first publish, not the code).
+- The wire contract also ships language-neutral: **JSON Schema** generated
+  from the zod event schemas and **OpenAPI** for the internal routes in both
+  directions, committed under `docs/api/` and checked in CI against the
+  source so they cannot drift.
+- **SDK semver with a contract-major handshake**: registration carries the
+  contract major; a core that does not speak it refuses with a reason that
+  shows on the dashboard's transport roster (never a silent drop).
+- Compose ships **pinned published images** for core and tg with a
+  `docker-compose.dev.yml` override that builds from source; the core stops
+  `depends_on` any transport.
+- **`apps/tg` moves to its own repository** on the published SDK, with its
+  own release workflow and image; this repo keeps the core and the SDK.
+- **Proof**: the Telegram transport building, publishing and running from a
+  separate repository on the published SDK, image and compose — **plus a
+  Discord transport** in a third repository as the second platform.
+
+**Order of work (user): core first, then SDK, then compose, then the tg split.**
+
+1. **Core accepts any transport** (`in-progress`).
+   - **Registration is open (`done`, 2026-09-02).** `SourceId` is a slug
+     (`SOURCE_ID_PATTERN`, `isSourceId`, `WEB_CHAT_SOURCE`; `SOURCE_IDS` is
+     gone), `sourceIdSchema` checks shape only, scoped refs parse any slug
+     prefix. Registration carries `contractMajor` (`CONTRACT_MAJOR` in
+     `packages/contracts/src/contract-version.ts`; `transports.contract_major`,
+     migration `0014_brainy_starhawk`): a mismatch is upserted then refused
+     409 by name (`incompatibilityReason`), gets no desired state, and its
+     events fail at ingest (`isRegisteredTransport` in
+     `server/ingest/consumer.ts`); the roster (`GET /api/transports`) carries
+     `contractMajor`/`compatible`/`refusedReason` and the assistant editor
+     shows "Refused: …" in place of the connection section. The literal
+     registries are lookups now: `reconcileManagedConnections` walks
+     `listCompatibleTransports()` (name from the row), `directorySources()`
+     replaces `DIRECTORY_SOURCES` (`sourceLabels`/`sourceLabelOf` replace the
+     sync label), `mediaSources()` is async over the roster, the Tools page
+     app-scope select lists the registered transports. Trace trigger kind
+     `transport` replaces `telegram` (legacy value kept readable). `apps/tg`
+     announces `CONTRACT_MAJOR`. Docs: the manual's "Before you start" is the
+     open-registration rule; OpenAPI `SourceId`/`ScopedRef` are patterns;
+     `TransportView`/`TransportRegistrationRequest` carry the new fields.
+     Proof: `npm run lint`, `npm run typecheck` (8/8), `npm run test`
+     (contracts 16, service 3, tg 36, core 1182 passed), integration
+     `server/transports` (new, 3 tests), `server/ingest`,
+     `features/tool-connections` (36 passed). Not run: a live boot of core +
+     tg after the change (no dev server was up); `npm run build`.
+   - **Remaining (`todo`):** reply splitting moves to `apps/tg`; the Overview
+     card, the content plane (`server/source/tg-content.ts`), the curated
+     known-users/known-groups pages, the vision repository, the scoped-ref
+     defaults in memory/tasks/self-improvement, and the timed task fire
+     become lookups over the registered transports.
+2. **SDK package**: `packages/transport-sdk` (build with tsc/tsup to
+   `dist/`, `exports` on the built files, semver, `publishConfig` for GitHub
+   Packages); the zod → JSON Schema and OpenAPI generators + CI drift check;
+   a `publish` job in `release.yml` gated like the images; the manual
+   rewritten for an author with no repo access (install the SDK, implement
+   the contract, build an image, publish).
+3. **Compose on images**: `image:` lines pinned to the released version,
+   `docker-compose.dev.yml` for source builds, `depends_on: tg` removed,
+   README + `docs/operations/deployment.md` updated with the "add a
+   transport" recipe.
+4. **tg split**: new repository for the Telegram transport consuming
+   `@assistant-hub/transport-sdk`, its own release workflow and image;
+   `apps/tg` deleted here; the manual points at it as the worked example.
+5. **Discord transport** in its own repository (second proof).
+
+**Blocked on the user (manual, outside the repo):** create the GitHub org
+`assistant-hub` and transfer `drumslave-git/assistant-hub` into it; create
+the tg and Discord repositories under the org when phases 4 and 5 start.
+Phases 1–3 do not wait for this.
+
+**Supersedes** the "Telegram-only surfaces in the core" entry under Other
+open items (its list is phase 1's checklist; prune it when phase 1 lands).
+
 ## Documentation overhaul for the two-app platform + the transport manual (`done`, 2026-09-02)
 
 The docs still described the pre-redesign app: one Next.js process with an

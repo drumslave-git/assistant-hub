@@ -2,7 +2,7 @@
 
 import { Plug, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   Badge,
@@ -23,6 +23,7 @@ import {
   useConfirm,
 } from "@/components/ui";
 import { Timestamp } from "@/components/time/Timestamp";
+import { fetchTransports, type TransportSummary } from "@/components/transports/api";
 import type { ApiErrorBody } from "@/lib/api-error";
 import { MAX_CONNECTIONS, type ToolConnection } from "../server/schema";
 
@@ -108,6 +109,22 @@ function ConnectionDialog({
       : [{ name: "", value: "" }],
   );
   const [appScope, setAppScope] = useState<string>(connection?.appScope ?? "");
+  // The scope options are the registered transports plus the web chat — the
+  // roster, never a list typed into the form.
+  const [transports, setTransports] = useState<TransportSummary[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchTransports()
+      .then((rows) => {
+        if (!cancelled) setTransports(rows);
+      })
+      .catch(() => {
+        // The select still offers "every source" and the web chat.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [allAssistants, setAllAssistants] = useState(connection?.allAssistants ?? true);
   const [assistantIds, setAssistantIds] = useState<string[]>(connection?.assistantIds ?? []);
   const [busy, setBusy] = useState(false);
@@ -288,7 +305,14 @@ function ConnectionDialog({
           {({ id }) => (
             <Select id={id} value={appScope} onChange={(e) => setAppScope(e.target.value)}>
               <option value="">Every source</option>
-              <option value="tg">Telegram turns only</option>
+              {transports.map((transport) => (
+                <option key={transport.id} value={transport.id}>
+                  {transport.name} turns only
+                </option>
+              ))}
+              {appScope !== "" && !transports.some((transport) => transport.id === appScope) && appScope !== "chat" ? (
+                <option value={appScope}>{appScope} turns only</option>
+              ) : null}
               <option value="chat">Web chat turns only</option>
             </Select>
           )}

@@ -12,7 +12,7 @@ import { startTrace, type StartTraceInput } from "./trace/recorder";
 const reply: StartTraceInput = {
   feature: "bot-messaging",
   action: "reply",
-  trigger: { kind: "telegram", actor: "user-1", correlationId: "chat-1:10" },
+  trigger: { kind: "transport", actor: "user-1", correlationId: "chat-1:10" },
   inputSummary: "hello",
 };
 
@@ -45,7 +45,7 @@ describe("getOverviewActivity", () => {
   it("counts the window's workload and tokens", async () => {
     await seedReply({}, { promptTokens: 100, completionTokens: 20 });
     await seedReply(
-      { trigger: { kind: "telegram", actor: "user-2", correlationId: "chat-1:11" } },
+      { trigger: { kind: "transport", actor: "user-2", correlationId: "chat-1:11" } },
       { promptTokens: 50, completionTokens: 5 },
     );
     await seedReply({}, { fail: true });

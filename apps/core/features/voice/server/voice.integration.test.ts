@@ -244,7 +244,7 @@ describe("describeAndStore — voice dispatch", () => {
     const parent = await startTrace({
       feature: "bot-messaging",
       action: "reply",
-      trigger: { kind: "telegram", actor: "5", correlationId: "5:74" },
+      trigger: { kind: "transport", actor: "5", correlationId: "5:74" },
     });
     const result = await describeAndStore(
       { chatId: "5", telegramMessageId: 74 },
