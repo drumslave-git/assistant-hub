@@ -19,7 +19,7 @@ its own trace shape; add an event type here instead.
 | `feature` | Must be a registered id from `lib/features.ts` |
 | `action` | e.g. `reply`, `summarize`, `test-connection`, or the tool name |
 | `status` | `pending` \| `running` \| `success` \| `error` \| `skipped` |
-| `trigger` | `{ kind, actor?, correlationId? }` — `kind` is `telegram` \| `dashboard` \| `cron` \| `system` \| `api` \| `test` |
+| `trigger` | `{ kind, actor?, correlationId? }` — `kind` is `telegram` \| `chat` \| `dashboard` \| `cron` \| `system` \| `api` \| `test` |
 | `startedAt`, `finishedAt` | |
 | `inputSummary`, `outputSummary` | Short human summaries |
 | `error` | `{ code?, message }` when `status = 'error'` |
@@ -187,7 +187,7 @@ known at the end (a created row's id).
 | Traced | Not traced |
 | --- | --- |
 | Every handled message, and every message the LLM was asked about and then not answered | Group chatter rejected by the cheap deterministic checks |
-| Every operator mutation (settings, aliases, notes, personalities, tasks, memory edits, prune) | Passive capture: `known_users` upserts, the `chat_messages` mirror, vision ingest |
+| Every operator mutation (settings, aliases, notes, assistants, connections, tasks, memory edits, prune) | Passive capture: `source_users` upserts, the `source_messages` mirror, media ingest |
 | Every MCP tool call (twice — inline and its own scope) | Cheap reads |
 | Every background job run | |
 | Every auth attempt (setup/login) | |
@@ -231,9 +231,15 @@ bodies (complete LLM payloads) in the heap forever:
 
 Range reads load only the months their range intersects.
 
-The store is a `globalThis` singleton so the writers (feature, route and poller
-bundles) and the boot-owned flush timer share one instance across Next bundles and
-dev hot-reload.
+The store is a `globalThis` singleton so the writers (feature, route and queue
+consumer bundles) and the boot-owned flush timer share one instance across Next
+bundles and dev hot-reload.
+
+Traces recorded in a transport service arrive over the bus: the transport
+buffers the whole action and publishes one `trace.recorded` event on settle
+(`packages/contracts/src/trace.ts`), and the core's events consumer hands it to
+`server/trace/ingest.ts`, which writes it into the same store. There is one
+trace store and one Debug explorer for every app.
 
 ### The header index
 
@@ -336,21 +342,26 @@ Every data-display page live-updates. No page requires a manual refresh.
 
 ```
 service ──publishEvent(topic)──► server/realtime/hub.ts (globalThis singleton)
-                                          │ subscribe()
-                                          ▼
-                              GET /api/events  (SSE, force-dynamic)
-                                          │
-                    components/realtime/event-stream.ts  (one EventSource per tab)
-                                    ├── useLiveRefresh() → router.refresh()
-                                    └── useLiveEvent()   → re-fetch
+                                          ▲       │ subscribe()
+transport ──`dashboard.refresh`──► bus ───┘       ▼
+           (server/source/events-consumer.ts)   GET /api/events  (SSE, force-dynamic)
+                                                  │
+                            components/realtime/event-stream.ts  (one EventSource per tab)
+                                            ├── useLiveRefresh() → router.refresh()
+                                            └── useLiveEvent()   → re-fetch
 ```
 
 ### The contract
 
-`lib/realtime.ts`: an event is `{ topic, feature?, at }` — deliberately tiny, a
-notification rather than a payload. Topics: `traces`, `bot`, `status`, `history`,
-`users`, `groups`, `vision`, `tasks`, `feedback`, `memory`, `analytics`,
-`browser`.
+`lib/realtime.ts` (re-exported from `packages/contracts`, because transports
+name the topics they invalidate): an event is `{ topic, feature?, at }` —
+deliberately tiny, a notification rather than a payload. Topics: `traces`,
+`bot`, `status`, `history`, `users`, `groups`, `vision`, `tasks`, `feedback`,
+`memory`, `analytics`, `browser`, `assistants`, `threads`, `tools`, `accounts`.
+
+A transport pings the hub through the bus: a `dashboard.refresh` event naming
+topics (the tg app sends `status` on every poller state change). The events
+consumer re-publishes only names this dashboard actually serves.
 
 ### One connection per tab
 

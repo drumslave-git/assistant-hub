@@ -32,6 +32,59 @@ the archive. Commit-on-main is back in force. Entries below dated before
 2026-08-21 predate the redesign — re-check their file paths against the
 current tree before acting on them.
 
+## Documentation overhaul for the two-app platform + the transport manual (`done`, 2026-09-02)
+
+The docs still described the pre-redesign app: one Next.js process with an
+in-process Telegram poller, one operator password, a global owner, the
+`personalities` feature, and the v1 table names. Three read-only audits
+(architecture/setup, features, operations/API/development) listed every stale
+claim against the code; everything under `docs/` was then rewritten or
+patched, and the transport contract got its own manual.
+
+**New:** `docs/development/adding-a-transport.md` — the transport contract
+step by step with `apps/tg` as the worked example (registration and desired
+state, the `transport-updates` events and stream rules, delivery and
+lifecycle consumption, the `/internal/*` and `/mcp` surfaces, the `_meta`
+turn binding, traces and live refresh, Dockerfile/compose/release, a verify
+checklist, a file-to-duty map of `apps/tg`, and the honest list of core
+registries and Telegram-only surfaces). Also new: `docs/features/assistants.md`
+(replaces `personalities.md`, deleted), `accounts.md`, `web-chat.md`,
+`tool-connections.md`.
+
+**Rewritten:** `docs/README.md`, `docs/getting-started.md`,
+`docs/configuration.md`, `docs/architecture/{overview,telegram-pipeline,
+security,data-model}.md`, `docs/operations/*` (all five),
+`docs/development/{contributing,testing,ui-kit}.md`, `docs/api/*`
+(87 route files / 114 operations documented in both `endpoints.md` and
+`openapi.yaml`, access level per operation, the internal-token family),
+`docs/features/README.md`, root `README.md`. **Patched:**
+`docs/architecture/{background-jobs,observability,llm-and-mcp}.md`, every
+remaining `docs/features/*.md`, `AGENTS.md` (pointer to the manual).
+Conventions now stated in `docs/README.md`: paths are relative to `apps/core/`
+unless they start with `apps/` or `packages/`; admin/user roles and owner
+rights replace "operator" and "owner".
+
+**Proof:** a relative-link and anchor checker over all 47 markdown files under
+`docs/` plus `README.md`/`AGENTS.md` reports 0 broken links; `openapi.yaml`
+parses with `js-yaml` and every `$ref` resolves; a stale-identifier sweep
+(old table names, `telegramBotToken`, `ownerUserId`, `/personalities`,
+`server/telegram/`, `test/simulate`, …) is clean outside the historical
+records (`PLAN.md`, `PROGRESS.md`, this file). No code changed, so lint /
+typecheck / test were not run for this entry.
+
+**Found on the way (recorded under "Other open items"):** the Overview bot
+control calls routes that no longer exist; the transport on/off switch has no
+route or UI; the list of Telegram-only surfaces a second transport would hit.
+
+**Remaining risks:** API shapes were read from the handlers and zod schemas,
+not exercised against a running server. `GET /api/chat/media/{id}` checks the
+session only, not thread ownership (documented as such — decide whether a
+user-role account should be able to fetch another account's media by id).
+Two carried-over statements were not re-verified: group notes "≤ 2000 chars",
+and the exact `observability.md#one-connection-per-tab` anchor text. The
+transport's env does not honour `<NAME>_FILE` variants (documented as
+core-only).
+
 ## Post-move cleanup (`done`, 2026-09-01)
 
 After the repo move, a naming sweep replaced the old `llm-tg-bot(-nextjs)`
@@ -3385,6 +3438,49 @@ the operator note below about `OLLAMA_NUM_PARALLEL`/context sizing.
   grow (summaries days behind), consider a fairness valve.
 
 ## Other open items
+
+- **Overview bot control calls routes that no longer exist (`todo`; code bug
+  found during the documentation audit, 2026-09-01)** —
+  `features/bot-messaging/ui/BotControl.tsx` fetches
+  `/api/telegram/connections` and `/api/telegram/connections/{id}`, but no
+  `app/api/telegram/**` route survived the transport split; the live routes
+  are `GET /api/transports/{id}/connections?assistantId=` and
+  `PATCH|DELETE /api/transports/{id}/connections/{connectionId}` (transport id
+  `tg`). The Overview card's Start/Stop therefore 404s. Fix: point the
+  component at the transport routes, or reuse
+  `components/transports/TransportConnectionSection.tsx` rather than keep a
+  second copy of the same control. Verify in the browser, then lint /
+  typecheck / test.
+
+- **A transport's admin on/off switch has no route or UI (`todo`, 2026-09-01)**
+  — `server/transports/service.ts` has `setTransportEnabled` and the
+  `transports.enabled` column folds into the desired state (a disabled
+  transport runs nothing), but nothing calls it: there is no `PATCH
+  /api/transports/{id}` and no control on the dashboard, so the column stays
+  at its default. PLAN.md's "appears in the dashboard, where an admin enables
+  it" is unimplemented. Small: one account-level route gated to admins plus a
+  toggle where the registered transports are listed.
+
+- **Telegram-only surfaces in the core (`todo` — needed before a second
+  transport is useful to an operator; recorded 2026-09-01)** — the runtime
+  contract is source-agnostic (registration, ingest, turn pipeline, delivery,
+  tool scoping, outbound port), but several dashboard and content surfaces are
+  keyed by the literal `"tg"`: the Overview bot card
+  (`server/transports/status.ts`), the history/search/summaries/analytics
+  content plane (`server/source/tg-content.ts`, user decision 2026-08-27 that
+  the content plane is Telegram-only), the Users/Groups directories
+  (`features/known-users`, `features/known-groups`, `DIRECTORY_SOURCES`), the
+  vision gallery (`features/vision/server/repository.ts`), scoped-ref defaults
+  in memory/tasks/self-improvement writes, timed task fires
+  (`features/tasks/server/fire.ts` binds `source: "tg"`, so a scheduled task
+  always delivers through Telegram), the trace trigger kind
+  (`"telegram"`), and three literal registries a new source id must be added
+  to (`SOURCE_IDS`, `TRANSPORT_SOURCE_IDS`, the app-scope select in
+  `ConnectionsManager.tsx`). The full list with file paths is in
+  `docs/development/adding-a-transport.md` ("Known Telegram-only surfaces").
+  Widening each is a lookup over the registered transports instead of a
+  literal; decide with the user whether to do it ahead of a second transport
+  or alongside one.
 
 - **Local Telegram Bot API server (`todo`; operator-requested, 2026-08-01)** —
   the standard Bot API caps bot uploads at 50 MB, which is what forces the

@@ -74,7 +74,8 @@ written into it; and that facts must be self-contained.
 
 One carve-out (2026-08-19): what a person in this chat is *called* — a nickname,
 "call me X", "when I say X I mean Y" — is explicitly **not** saved here, because
-name recognition reads the known-users alias table, never memory; the description
+name recognition reads the directory's aliases (`source_users.aliases`; an
+account's on `accounts.aliases`), never memory; the description
 points the model at the alias-recording tool instead. Live tool-selection testing
 had shown the exact opposite choice 6/6 times (the mapping request landed in
 `memory_save` and the alias table never learned the name); the boundary is pinned
@@ -103,7 +104,7 @@ reuses the tool's durability policy (`DURABLE_FACT_KINDS` et al.) rather than
 restating it — the same sentence must be worth remembering whether or not the bot
 happened to be spoken to.
 
-Markers: `memory_extraction_days`, unique on `(chat_id, extraction_date)`, holding
+Markers: `memory_extraction_days`, unique on `(chat_ref, extraction_date)`, holding
 the message count at processing time. A deliberate twin of `chat_summary_days`, kept
 separate so the two jobs fail, re-run and backfill independently.
 
@@ -147,26 +148,28 @@ document from sprawling.
 A read collects the documents of every identity the operator has declared to be
 the same human (person links — see
 [users and groups](known-users-and-groups.md)). Both the injected context and
-the `memory_recall` tool resolve that way, so a fact learned from someone's
+the `memory_get` / `memory_search` tools resolve that way (`resolveLinkedRefs`),
+so a fact learned from someone's
 telegram account is theirs when they reach the bot by any other identity; two
 linked identities present in one group are one person in the prompt, named
 once by the identity actually there.
 
 Reads only. A fact is still stored under the identity that was named, and
 consolidation still merges per identity — links do not rewrite what is stored,
-they decide whose documents a read collects. Without the v2 core store (the
-transitional `STORE_DATABASE_URL`, optional until the Phase 6 cutover) every
-identity resolves to itself and memory behaves exactly as it did before links
-existed.
+they decide whose documents a read collects. Memory documents and person links
+live side by side in the one core store, keyed by scoped refs (`tg:user:123`,
+`chat:user:<accountId>` — an account's own web identity). An account reads and
+deletes the documents under its own identities on `/profile`
+([Accounts](accounts.md)).
 
 ## Data
 
 | Table | Notes |
 | --- | --- |
-| `memory_entries` | The pending queue. A `check` enforces that a `user` note names its person and a `general` note does not |
-| `user_memories` | PK is `user_id`; `embedding vector(1024)` with an HNSW cosine index |
+| `memory_entries` | The pending queue: `user_ref` (the person, a scoped ref) and `origin_chat_ref` (provenance). A `check` enforces that a `user` note names its person and a `general` note does not |
+| `user_memories` | PK is `user_ref` — a scoped ref, never a source-local id; `embedding vector(1024)` with an HNSW cosine index |
 | `general_memories` | Singleton row. Never searched, always injected in full |
-| `memory_extraction_days` | Per-day extraction markers |
+| `memory_extraction_days` | Per-day extraction markers, keyed by `chat_ref` |
 
 Embeddings are optional and only affect `user` memory (general is never searched).
 With none configured, memory is still stored and still injected — only
@@ -208,7 +211,8 @@ collapsing them into one number would hide which half is behind.
 
 `GET /api/memory` (aggregate view + job info), `POST /api/memory/run`
 (fire-and-forget), `DELETE /api/memory/entries/{id}`,
-`PATCH|DELETE /api/memory/users/{userId}`, `PATCH|DELETE /api/memory/general`.
+`PATCH|DELETE /api/memory/users/{userId}` (`userId` is the scoped ref),
+`PATCH|DELETE /api/memory/general`.
 
 There is no id in the general path and no `POST`: general knowledge is one
 document, so writing it is an upsert and there is nothing to address individually.
@@ -228,7 +232,7 @@ Tuesday" must be able to filter to that half alone.
 
 Unit: `prompt.test.ts`, `extract-prompt.test.ts`, `format.test.ts`.
 Integration: `server/memory.integration.test.ts` and
-`server/memory-links.integration.test.ts` (reads through person links, both
-databases on one container). Extraction and consolidation take injected
+`server/memory-links.integration.test.ts` (reads through person links, one
+database). Extraction and consolidation take injected
 collaborators, so the whole flow is driven against a real database with a
 deterministic model — no LLM, no network.

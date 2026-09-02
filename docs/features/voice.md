@@ -7,11 +7,15 @@ user, 2026-07-23)
 Both directions of speech: the bot hears voice messages, and — when a speech
 endpoint is configured — answers with one.
 
-Voice rides the vision media pipeline (`message_media`, `kind = 'voice'`).
+Voice rides the vision media pipeline (`source_media` for a transport's
+messages, `web_media` for the web chat's, `kind = 'voice'`).
 
 ## Hearing: voice → text
 
-1. A `voice` message is detected by the shared media detector.
+1. A `voice` message is detected by the transport's media detector
+   (`apps/tg/src/media/detect.ts`); the raw OGG/Opus bytes ride the update event
+   and the core's ingest stores them as a pending media row. A web-chat voice
+   note (`audio/webm`, as the browser records it) is stored raw the same way.
 2. It is transcribed **eagerly** — before the reply flow starts, with its own typing
    loop, because the transcript is what everything downstream reads.
 3. The transcript becomes the message's **effective text**: addressing, the current
@@ -35,9 +39,12 @@ reply the transcription failed while a transcript exists.
 
 Audio must be transcoded: Telegram delivers voice as OGG/Opus, which
 OpenAI-compatible `input_audio` parts do not accept (the spec allows only `wav` and
-`mp3`). `server/media/audio.ts` converts to **16 kHz mono WAV** — whisper-class
-models' native rate and the most universally decodable container — on the shared
-system-ffmpeg runner.
+`mp3`). `server/media/audio.ts` converts any container ffmpeg reads to
+**16 kHz mono WAV** — whisper-class models' native rate and the most universally
+decodable container — on the core's system-ffmpeg runner
+(`server/media/ffmpeg.ts`). The transport ships a runner of its own
+(`apps/tg/src/media/ffmpeg.ts`) for its frame sampling; transcoding for
+transcription happens in the core, where the transcribe models run.
 
 ### Two transcription backends
 
@@ -82,7 +89,14 @@ distinction before anyone could ask for it.
 ## Speaking: text → voice
 
 `features/voice/server/speak.ts`: reply text → MP3 on the configured speech
-endpoint → OGG/Opus for Telegram's `sendVoice`.
+endpoint → OGG/Opus. The audio then crosses the owning source's outbound port
+(`server/turn/source-outbound.ts`): for Telegram, `POST /internal/chats/:chatId/voice`
+on the transport, which performs `sendVoice` (`apps/tg/src/outbound.ts`) and
+falls back to a text send of the spoken words when Telegram refuses the voice
+bubble, reporting `asVoice: false`; the web chat stores the audio on the
+assistant message and plays it in the thread (`asVoice` is always true there).
+Synthesis or the call failing degrades to the plain text reply — the answer
+always arrives.
 
 The second conversion is required in the other direction: speech endpoints answer
 `/v1/audio/speech` with MP3 (the one format every implementation serves), while
@@ -108,14 +122,19 @@ Both have their own Settings tab and probe button.
 
 Audio bytes get the same treatment as image bytes: `sanitizeMessagesForTrace`
 replaces an `input_audio` payload with a compact format-and-size marker. The real
-audio is in `message_media` while the row is pending.
+audio is in `source_media_blobs` while the row is pending (a web note's stays in
+`web_media_blobs`).
 
 ## Data
 
-No tables of its own. A voice message is a `message_media` row with
-`kind = 'voice'`, whose `description` holds the transcript.
+No tables of its own. A voice message is a `source_media` (or `web_media`) row
+with `kind = 'voice'`, whose `description` holds the transcript.
 
 ## Tests
 
 Unit: `format.test.ts` (how audio becomes a model content part, how a transcript
-reads in the reply turn). Integration: `server/voice.integration.test.ts`.
+reads in the reply turn). Integration: `server/voice.integration.test.ts`, plus
+the voice turns in `server/turn/turn-consumer.integration.test.ts` (answered from
+the transcript with the name check re-run on the words; delivered as a voice
+bubble through the source's API; degraded to text when synthesis is
+unavailable).

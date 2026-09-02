@@ -15,12 +15,17 @@ files.
 | Directory | Contents | Rule |
 | --- | --- | --- |
 | `components/ui/` | The design-system kit | Presentational. No feature logic, no data fetching |
-| `components/layout/` | The responsive app shell: sidebar, drawer, top bar, nav config, system alerts | — |
+| `components/layout/` | The responsive app shell: `AppShell`, `Sidebar`, `Topbar`, `nav-config.ts` (the role-filtered navigation), `SystemAlerts` | — |
+| `components/auth/` | `AuthPasswordForm` (setup and login) and `ForcedPasswordChangeForm` (the temporary-password gate) | Rendered outside the shell |
+| `components/chat/` | `ThreadsPage` — the whole web chat at `/chat` | Built from `@assistant-hub/ui` (see below) |
 | `components/debug/` | The shared Debug views | Every feature composes these |
-| `components/jobs/` | `JobStatusCard` | Every scheduler-backed feature renders this |
-| `components/realtime/` | The SSE stream singleton and its two hooks | — |
-| `components/time/` | `Timestamp` and `TimezoneProvider` | — |
-| `components/theme/` | The toggle and the pre-hydration script | — |
+| `components/jobs/` | `JobStatusCard` and the pure `job-status.ts` it shares with the server-side registry | Every scheduler-backed feature renders this |
+| `components/realtime/` | The core's `LiveIndicator` (wired to `router.refresh()`), `useLiveRefresh`, and re-exports of the shared stream singleton and `useLiveEvent` | — |
+| `components/search/` | `SearchBox` — the top bar's message search (admin only) | — |
+| `components/source/` | `SourceUnavailableNotice` — names a source that could not be read above the Users/Groups tables | — |
+| `components/theme/` | The toggle, `useIsDark`, and the pre-hydration script | — |
+| `components/time/` | `Timestamp` (re-exported from the shared package) and `TimezoneProvider` | — |
+| `components/transports/` | `TransportSections` and `TransportConnectionSection` — the assistant editor's schema-driven connection sections | Built from `@assistant-hub/ui` (see below) |
 | `features/*/ui/` | A feature's own components | Composed from the above |
 
 ## The primitives
@@ -32,6 +37,7 @@ files.
 | `Calendar` | Selects a **period**, not an instant — day, week (returns its Monday), month, or year — and marks which periods hold data. Presentational and generic |
 | `Card` + `CardHeader/Title/Description/Content/Footer/Action` | The standard surface. `interactive` adds hover affordance; `muted` is the recessed surface for nested panels |
 | `Checkbox`, `Switch` | Native inputs, peer-styled, so they work in plain forms without client JS |
+| `Combobox` | Searchable select: a text input that filters a dropdown of options, built for long model lists. Default mode commits only a picked option (typed text is a filter and reverts on close); `freeText` commits every keystroke for endpoints whose model ids cannot be listed. A committed value is always clearable — every consumer gives `""` its own meaning |
 | `EmptyState` | The one "nothing here yet" — icon, title, description, action slot |
 | `Field` | Labelled form row: wires `htmlFor`/`id`/`aria-describedby` and renders either a hint or an error |
 | `Input`, `Textarea`, `Select`, `Label` | Form controls. `Select` is a native select with a chevron affordance |
@@ -55,12 +61,52 @@ files.
 so the last one wins. Use it wherever a component composes a base style with a
 caller-provided `className`.
 
+## The second kit: `@assistant-hub/ui`
+
+`packages/ui` is a workspace package (`@assistant-hub/ui`, exported from
+`packages/ui/src/index.ts`) that holds the primitives and plumbing the dashboard must
+render *identically* outside the core's own component tree. Its `package.json`
+describes it as the shared home the source apps' `ui` subpackages import — never their
+app's server code — and it depends only on `@assistant-hub/contracts`, `clsx`,
+`tailwind-merge` and `lucide-react`. It holds:
+
+| Export | What |
+| --- | --- |
+| `Badge`, `Button`, `Card` family, `EmptyState`, `Field`, `Input` (+ `fieldBase`), `Label`, `PageHeader`, `Slot` | The presentational primitives, one copy |
+| `cn` | The class merger |
+| `subscribeToRealtime` (`event-stream.ts`), `useLiveEvent`, `LiveIndicator` | The one-connection-per-tab SSE stream, its hook, and the pill — `LiveIndicator` here takes an `onEvent` callback |
+| `Timestamp`, `TimezoneProvider`, `useTimezone`, `formatTime`, `formatTimestamp` | The one way to render an instant |
+| `apiFetch`, `readApiError`, `ApiOkBody`, `ApiErrorBody` | The dashboard's one response envelope (`{ data }` / `{ error: { message } }`) and a fetch that unwraps it |
+
+The core's kit does **not** duplicate any of it. `components/ui/{Badge,Button,Card,
+EmptyState,Field,Input,Label,PageHeader,Slot}.tsx` are one-line re-exports from the
+package ("moved to `@assistant-hub/ui`, Phase 3"), as are `components/time/Timestamp.tsx`,
+`components/realtime/{event-stream,useLiveEvent}` and `lib/cn.ts`/`lib/format.ts`;
+`components/realtime/LiveIndicator.tsx` wraps the shared pill with a
+`router.refresh()`. Everything else in `components/ui/` (`Calendar`, `Combobox`,
+`Modal`, `Tabs`, `Table`, `Fab`, …) exists only in the core.
+
+Who imports the package directly, as the code stands:
+
+| Importer | Why |
+| --- | --- |
+| `components/chat/ThreadsPage.tsx` | The web chat — a page that was an app-contributed extension before the chat dissolve (Phase 6), fetching on the client with `apiFetch` and refreshing through `LiveIndicator`'s `onEvent` |
+| `components/transports/TransportConnectionSection.tsx` | The assistant editor's transport section — the surface that replaced the transport apps' hand-written `ui` packages (Phase 7) |
+| The re-export files above | To keep the app-local import paths stable |
+
+The two kits therefore coexist rather than compete: feature code and pages import
+`@/components/ui`, which is the superset; the two client surfaces that grew up outside
+the core tree import `@assistant-hub/ui` directly. The code shows no other rule, and
+the extension registry the package was built for has since retired (the whole
+navigation is the shell's own), so a new page has no reason to pick the package over
+the barrel unless it needs `apiFetch` or the callback-style `LiveIndicator`.
+
 ## Non-negotiable conventions
 
 ### Timestamps
 
 ```tsx
-<Timestamp value={row.createdAt} />
+<Timestamp iso={row.createdAt} />
 ```
 
 Every rendered instant goes through `<Timestamp>`. It formats in the **operator's
@@ -112,9 +158,9 @@ from a Server Component.
 ### Honest status
 
 Never render "configured" from the presence of a value. Probe: connect to the database,
-call the endpoint, open the file for append. `/settings` reads the row for real on the
-server and shows the actual error if that read fails, rather than a misleading
-"looks fine".
+call the endpoint, open the file for append, fetch the transport's `/health`.
+`/settings` reads the row for real on the server and shows the actual error if that
+read fails, rather than a misleading "looks fine".
 
 ### Background failures must be visible
 
@@ -123,8 +169,8 @@ status card — or, for the class of failure that silently destroys data, to
 `components/layout/SystemAlerts.tsx`.
 
 That surface is deliberately reserved. Today it carries exactly one thing: the trace
-write path. Per-feature degradations (LLM down, bot stopped) stay on their own pages.
-The banner must stay rare to stay loud.
+write path. Per-feature degradations (LLM down, a bot stopped, a transport not
+registered) stay on their own pages. The banner must stay rare to stay loud.
 
 ### Extract before the second copy
 
@@ -135,29 +181,35 @@ not to.
 
 The Settings form is the worked example: it once carried three hand-rolled copies of the
 probe flow and five of the write-only secret input. Those are now two hooks in
-`features/settings/ui/connection.ts` and one section shell.
+`features/settings/ui/connection.ts` and one section shell (`RoleSection`) that all
+nine role cards render through.
 
 ### The floating action button
 
 A page with **one** unambiguous main action renders it as a `Fab` instead of an inline
-button (user decision, 2026-08-14). Today that is five pages:
+button (user decision, 2026-08-14). Today that is eight consumers:
 
-| Page | Action |
-| --- | --- |
-| `/settings` | Save settings |
-| `/backends` | Create backend |
-| `/personalities` | Create personality |
-| `/tasks` | Create task |
-| `/browser` | Start run |
+| Page | Consumer | Action |
+| --- | --- | --- |
+| `/settings` | `features/settings/ui/SettingsForm.tsx` | Save settings (hidden on the Security tab, which has its own button) |
+| `/backends` | `features/backends/ui/BackendsManager.tsx` | New backend |
+| `/assistants` | `features/assistants/ui/AssistantsManager.tsx` | New assistant (disabled with a `status` pill at the limit) |
+| `/accounts` | `features/accounts/ui/AccountsManager.tsx` | Create account |
+| `/users` → Linked people tab | `features/person-links/ui/PersonLinksManager.tsx` | Link identities |
+| `/tools` → Connections tab | `features/tool-connections/ui/ConnectionsManager.tsx` | New connection (disabled at the limit) |
+| `/tasks` | `features/tasks/ui/TasksManager.tsx` | Create task |
+| `/browser` | `features/browser-agent/ui/NewRunForm.tsx` | Start run |
 
 The rule is "one unambiguous action", not "every page". Pages deliberately left without
 one: `/history/transfer` (import *and* export are both the point), `/debug` (a bundle
 download and a destructive prune — a floating button is the wrong home for the second),
-`/jobs` (every action belongs to a row, not the page), and `/` (its only action is the
-bot start/stop toggle, which belongs beside the status it reflects). Inventing a winner
-on those pages would mean promoting one action for the sake of consistency.
+`/jobs` (every action belongs to a row, not the page), `/profile` (four cards, each
+with its own save), `/chat` (the composer *is* the action) and `/` (its only actions
+are the per-connection start/stop buttons, which belong beside the status they
+reflect). Inventing a winner on those pages would mean promoting one action for the
+sake of consistency.
 
-Mechanics worth knowing before adding a seventh:
+Mechanics worth knowing before adding a ninth:
 
 - It **replaces** the inline button. Two live copies of one action means two places
   showing its state and a reader working out whether they differ.
@@ -202,20 +254,21 @@ The convention for a CRUD page: **one** dialog component serving create *and*
 edit, mounted only while open and `key`ed by its target, so its fields are seeded
 once per opening and never carry the previous row's text. The two paths then
 cannot drift apart — where they genuinely differ (a backend edit sends a
-changed-only patch; a task's chat is fixed after creation) the difference is
-visible in one file.
+changed-only patch; a task's chat is fixed after creation; an assistant's transport
+sections mount only once it exists) the difference is visible in one file.
 
 On a tabbed page, put the `Fab` and the dialog **inside the owning tab's panel**.
 `Tabs` keeps inactive panels mounted but `hidden`, which takes a `fixed` child out
 of rendering too — so the Fab correctly disappears on tabs that don't own it, with
-no extra wiring.
+no extra wiring. The Users page (Linked people) and the Tools page (Connections) both
+work this way.
 
 `useConfirm` replaces `window.confirm()` for destructive actions. Beyond looking
 like the rest of the dashboard, the reason it had to go: browsers let a user
 suppress the native dialog for the session, so a delete guard can silently stop
 appearing and nobody notices it left. Give the confirmation the fact that makes it
-worth reading — which roles use the backend, the task's own instruction — not
-"Are you sure?".
+worth reading — which roles use the backend, the task's own instruction, that
+deleting an assistant stops the bot it ran — not "Are you sure?".
 
 ## Theming
 
@@ -258,5 +311,6 @@ transitions (reduced-motion). Prefer `motion-reduce` variants and verify via the
 snapshot / DOM inspection rather than relying on an animation being visible in a
 screenshot.
 
-The dev server runs on port **3200**. Never delete `.next` or run a production build
-while it is live — that kills the running server.
+The dev server runs on port **3200** (the transport on **3210**; root `npm run dev`
+starts both). Never delete `.next` or run a production build while it is live — that
+kills the running server.

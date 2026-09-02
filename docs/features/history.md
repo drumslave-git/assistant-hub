@@ -1,7 +1,8 @@
 # History
 
-**Feature ids:** `history`, `history-summaries` · **Dashboard:** `/history`,
-`/search` · **SSE topic:** `history` · **Priority 3**
+**Feature ids:** `history`, `history-summaries`, `history-index`,
+`mcp-tools-history` · **Dashboard:** `/history`, `/search` · **SSE topic:**
+`history`
 
 Two layers of conversation memory with opposite properties:
 
@@ -12,17 +13,31 @@ Two layers of conversation memory with opposite properties:
 
 ## The mirror
 
-`chat_messages` is a 1:1 mirror of every chat the bot sees. The runtime records
-**every** human message passively — including un-addressed group chatter — and
-every delivered reply. Edits and deletes are mirrored as flags.
+`source_messages` is a 1:1 mirror of every chat the bot sees, for every
+transport, keyed by a `source` discriminator plus source-local text ids. The
+ingest (`server/ingest/consumer.ts`) records **every** human message the
+transport forwards — including un-addressed group chatter — and every
+delivered reply, from the transport's `message.delivered` report. Edits and
+deletes are mirrored as flags. Uniqueness is on `(source, dedupe_key)`, a
+stream identity the transport computes (`g:<chat>:<msg>` for a group's shared
+stream, `d:<chat>:<assistant>:<msg>` for per-bot direct-chat streams), so a
+re-delivered update is a no-op without the core knowing the platform's stream
+rules; `(source, chat_id, source_message_id)` is indexed for the lookups.
 
-The mirror is also the anchor for media: `message_media` has a FK onto
-`(chat_id, telegram_message_id)`, so mirroring must succeed before media can be
-stored. And it carries the live-processing semaphore (`processed`, user decision
-2026-07-27): the live pipeline mirrors with `false` and releases to `true` in a
-`finally`, which is what keeps the vision backfill off media the reply is still
-working on. Non-live writers (imports, restores, assistant replies) always land
-released.
+Media rides beside the mirror, not on it: `source_media` is unique on
+`(source, chat_id, source_message_id)` and carries **no foreign key** onto the
+message row. The ingest still mirrors first and stores media second, as an
+ordering, not a constraint. The mirror carries the live-processing semaphore
+(`processed`, user decision 2026-07-27): the ingest mirrors with `false` and
+the turn's settle releases it to `true`, which is what keeps the vision
+backfill off media the reply is still working on. Non-live writers (imports,
+assistant replies) always land released.
+
+The content plane — the History and Search pages, the summaries, the search
+index and the analytics charts — reads Telegram rows only
+(`server/source/tg-content.ts`, `SOURCE = "tg"`, user decision 2026-08-27);
+the web chat keeps its transcripts in its own `web_*` tables
+([Web chat](web-chat.md)).
 
 Passive capture is high-volume and intentionally **untraced**: the mirror itself is
 the record. Mutating operations (a CSV import) are traced end to end.
@@ -51,8 +66,10 @@ The window is 24 hours (`HISTORY_WINDOW_MS`).
 
 ### The bot's own reactions
 
-When `set_message_reaction` lands a reaction, it is recorded **on the target
-message's history record** — `chat_messages.bot_reaction` / `bot_reacted_at`,
+When the transport's `set_message_reaction` tool lands a reaction, it reports
+it as a `transport.bot-reaction` event and the ingest records it **on the
+target message's history record** — `source_messages.bot_reaction` /
+`bot_reacted_at`,
 state of the row like `edited_at` (user decision, 2026-08-15: a reaction is a
 history record, not a separate table). Telegram gives a bot one reaction per
 message, so the columns hold the current badge: a re-react replaces it,
@@ -84,9 +101,10 @@ the LLM into a handful of self-contained topics, each embedded and each carrying
 Telegram ids it came from: search finds the topic, the ids lead back to the exact
 original messages.
 
-Data: `chat_summaries` (one row per topic, with `embedding vector(1024)`) and
-`chat_summary_days` (the per-day processing marker holding the message count at
-processing time).
+Data: `source_summaries` (one row per topic, with `embedding vector(1024)` and
+the source-local `message_ids` it came from — no FK, deliberately) and
+`chat_summary_days` (the per-day processing marker, keyed by scoped chat ref,
+holding the message count at processing time).
 
 Search is **hybrid**: an HNSW cosine index on the embedding, plus a GIN full-text
 index on `to_tsvector('simple', content)`. Each query is searched independently
@@ -119,9 +137,9 @@ not embedded, so semantic recall is unavailable. The job card says so.
 
 ## Tools
 
-Four MCP tools under `mcp-tools-history`. (Pointing a reply *at* something they
-found is a separate tool owned by bot-messaging — see
-[llm-and-mcp](../architecture/llm-and-mcp.md#bot-messaging--mcp-tools-bot-messaging).)
+Four MCP tools under `mcp-tools-history`. (Replying to a message or reacting
+to one is the transport's own tool — see
+[LLM and MCP](../architecture/llm-and-mcp.md#telegram--the-transports-own-server-mcp-tools-connections).)
 The chat is bound per turn, so a tool
 only ever reads the current conversation — the model does not pass (and cannot
 pick) a chat id.
@@ -140,7 +158,7 @@ actually said instead of trusting a summary's paraphrase.
 
 ### How `history_search` finds a photo
 
-It searches the [search index](#search-index), not `chat_messages`, and fuses
+It searches the [search index](#search-index), not `source_messages`, and fuses
 three pools by reciprocal rank (k=60, the same scheme `history_recall_topics`
 uses):
 
@@ -148,7 +166,7 @@ uses):
 | --- | --- | --- |
 | Vector, over the index's embedding | Paraphrase, another language, and **what a picture shows** | Exact rare tokens |
 | Full text, over the index's content | Names, error codes, exact tokens | Anything phrased differently |
-| Substring, over `chat_messages.content` | What was typed, including a message sent minutes ago | Media; anything not typed |
+| Substring, over `source_messages.content` | What was typed, including a message sent minutes ago | Media; anything not typed |
 
 The third pool is the tool's original behaviour and stays because it is the only
 one reading the mirror directly: a message sent since the last indexing run has no
@@ -177,14 +195,16 @@ rather than a silently widened search.
 
 ### Search index
 
-`chat_message_search` holds each message's searchable text — its own words **plus
-its media annotation** — and that text's embedding. Built by an idle background
-job; see [background jobs](../architecture/background-jobs.md#message-search-index)
+`source_message_search` holds each message's searchable text — its own words
+**plus its media annotation** — and that text's embedding. Built by an idle
+background job traced under `history-index` (`server/index-scheduler.ts`,
+`server/index-messages.ts`); see
+[background jobs](../architecture/background-jobs.md#message-search-index)
 for the staleness rule and the rebuild endpoint.
 
-The point of it: an uncaptioned photo is a `chat_messages` row whose `content` is
-`''`. No lexical search over the mirror can ever find it, however it is phrased.
-What the picture shows lives in `message_media.description`, and joining the two
+The point of it: an uncaptioned photo is a `source_messages` row whose `content`
+is `''`. No lexical search over the mirror can ever find it, however it is phrased.
+What the picture shows lives in `source_media.description`, and joining the two
 into one indexed string is what makes "find the photo of the front door"
 answerable at all. The same applies to a video, a GIF, a sticker, and a voice
 message (whose transcript plays the role of the description).
@@ -252,9 +272,10 @@ Canonical columns, in export order:
 Each field carries aliases so a foreign export auto-detects its mapping. An export
 writes the canonical header, so it round-trips straight back through the import.
 
-**Import is idempotent, not destructive.** The mirror's unique
-`(chat_id, telegram_message_id)` key means writes skip rows that already exist, so
-a partially-applied file can be safely re-run. Export includes deleted rows,
+**Import is idempotent, not destructive.** Imported rows get the group-stream
+dedupe key of their `(chat_id, telegram_message_id)`, and the mirror's unique
+`(source, dedupe_key)` index means writes skip rows that already exist, so a
+partially-applied file can be safely re-run. Export includes deleted rows,
 flagged.
 
 Importing also **resets the analytics insight scan floor**, so arbitrarily old
@@ -265,13 +286,15 @@ imported hours are picked up by the next insight run.
 | Setting | Effect |
 | --- | --- |
 | Chat backend + `model` | Required for the summarization job |
-| `embeddingBaseUrl`/`embeddingModel` | Without them, summaries are written but not embedded — no semantic recall |
+| `embeddingBackendId`/`embeddingModel` | Without a model, summaries are written but not embedded — no semantic recall (the backend defaults to the chat backend) |
 | `dailyJobsRunTime`, `timezone` | When the job runs, and where the chat-day boundaries fall |
 
 ## API
 
 `GET /api/history/summaries`, `POST /api/history/summaries/run` (fire-and-forget),
-`GET /api/history/export?chatId=`, `POST /api/history/import`.
+`GET /api/history/export?chatId=`, `POST /api/history/import`, and the search
+index's `GET|POST|DELETE /api/history/search-index` (status, "Index now", and
+empty-and-rebuild).
 
 ## Tracing
 
@@ -279,11 +302,13 @@ imported hours are picked up by the next insight run.
 | --- | --- |
 | `history` | `import` (CSV), plus mutating edits |
 | `history-summaries` | The summarization run, per chat-day |
+| `history-index` | The search-index runs |
+| `mcp-tools-history` | Every call of the four tools |
 
 ## Tests
 
 Unit: `csv.test.ts`, `summary.test.ts`, `server/format.test.ts`,
-`server/batched-completion.test.ts`.
+`server/batched-completion.test.ts`, `server/mcp-tools.test.ts`.
 Integration: `server/history.integration.test.ts`,
 `server/search-index.integration.test.ts` (the index, the hybrid search and the
 dashboard's cross-chat search), `server/summarize.integration.test.ts`,

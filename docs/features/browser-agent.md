@@ -1,6 +1,6 @@
 # Browser agent
 
-**Feature ids:** `browser-agent`, `mcp-tools-browser-agent` ·
+**Feature ids:** `browser-agent`, `mcp-tools-browser-agent`, `ytdlp-updater` ·
 **Dashboard:** `/browser` · **SSE topic:** `browser` · **Priority 13**
 
 A sub-agent that drives a **real browser** to accomplish a goal: search, navigate,
@@ -61,8 +61,12 @@ carve-outs for "a commodity live value" and "a general lookup" are gone, and tho
 requests now browse too.
 
 Anyone may start a run. The **download tools inside the run** are gated to runs
-carrying the owner's rights, resolved at enqueue time — not at call time, and not
-from anything the model says. Those rights are either the sender's own or lent by
+carrying owner rights, resolved at enqueue time — not at call time, and not
+from anything the model says: `browse_web` reads the bound turn context's
+`senderIsOwner` (the source's stamp — the assistant's owning account or an
+admin, see [Accounts](accounts.md#owner-rights)) and `authorityIsOwner` (a
+matched standing rule's), and stores the verdict on the run row as `is_owner`
+and `restricted`; the download tools check the run's flags, never an owner id. Those rights are either the sender's own or lent by
 a standing chat rule ("rule creator beats message source"). A run is marked
 **`restricted`** when a rule drove it in a group chat — the owner's own message
 included — or when the rule lent the sender rights they did not hold; only the
@@ -284,11 +288,15 @@ file-then-recap flow repeated the same filename twice and spammed the chat):
   caption**, so the chat gets one message carrying both the file and what the
   agent has to say. On an owner-started run, files over the limit are announced
   (silently, by name) the moment they land.
-- Files are sent **as the media they are**: an MP4/QuickTime video goes out via
-  `sendVideo` (playable straight in Telegram, streaming enabled), an MP3/M4A via
-  `sendAudio` (music player), anything else as a document. A container Telegram
-  rejects as media falls back to a document send. Captions render like any bot
-  message (HTML with a plain-text fallback).
+- The runner hands each file to the owning source's outbound port
+  (`sendFile` in `server/turn/source-outbound.ts` — the transport's
+  `POST /internal/chats/:chatId/files`, allowed 500 s for Telegram's own
+  upload; the web chat keeps the file on the message). The transport sends
+  files **as the media they are** (`apps/tg/src/outbound.ts`): an
+  MP4/QuickTime video goes out via `sendVideo` (playable straight in Telegram,
+  streaming enabled), an MP3/M4A via `sendAudio` (music player), anything else
+  as a document. A container Telegram rejects as media falls back to a document
+  send. Captions render like any bot message (HTML with a plain-text fallback).
 - The combined form needs one staged file and a report that fits Telegram's
   1024-character caption cap. Otherwise each staged file goes out under its own
   filename line and the report follows as text. The report's recap section lists
@@ -329,8 +337,9 @@ file-then-recap flow repeated the same filename twice and spammed the chat):
 - The chat model's own "on it" reply — sent when `browse_web` enqueues the run —
   is treated as a **transient acknowledgement** (user decision, 2026-08-01): it is
   delivered silently (no notification ping; the run's report is the notification)
-  and **deleted from the chat once the run settles**, its history-mirror row
-  soft-deleted with it. A run that finishes before the acknowledgement is even
+  and **deleted from the chat once the run settles** through the port's
+  `deleteMessage` (the transport's `DELETE /internal/chats/:chatId/messages/:messageId`),
+  its mirror row soft-deleted by the core with it. A run that finishes before the acknowledgement is even
   delivered deletes it on arrival. The tracking is in-memory (`server/ack.ts`,
   the same `globalThis` pattern as the enqueue signal); a restart mid-run merely
   leaves one acknowledgement standing.
@@ -445,7 +454,7 @@ directly, mirroring the conversational tool without needing Telegram.
 | Setting | Effect |
 | --- | --- |
 | Browser role (`browserBackendId`/`browserModel`, chat backend + model by default) | Without a resolvable connection a run settles as a failure |
-| `ownerUserId` | Only runs with the owner's rights (their own, or lent by a standing rule) may download |
+| Owner rights (the assistant's owning account + admins, stamped on the turn as `sender.isOwner`) | Only runs carrying owner rights (the sender's own, or lent by a standing rule) may download — read from `browser_agent_runs.is_owner` / `restricted`, stamped at enqueue |
 | `browserDownloadLimitGb` | Hard ceiling on any single download (1–100, default 10) |
 
 The chat-attach ceiling is fixed at 50 MB — Telegram's bot upload limit

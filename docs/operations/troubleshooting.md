@@ -5,14 +5,18 @@ because guessing is exactly what the trace archive exists to avoid.
 
 ## Start here
 
-1. **Overview** (`/`) — six real probes: database, LLM endpoint, model, bot, trace
-   storage, downloads. Any red one explains most downstream symptoms.
+1. **Overview** (`/`) — real probes in three groups. Core: database, LLM endpoint,
+   model, and **Telegram bots** (a summary of every bot connection, read from the
+   transport's `/health`). Model roles: one card per optional role. Storage: trace
+   storage, downloads. Any red Core card explains most downstream symptoms.
 2. **`/jobs`** — every background job's *notice* field: the reason a job is currently
    not doing its work.
 3. **`/debug`** — the trace for the specific thing that went wrong. Filter by feature
    (see the table at the end of the [operator guide](operator-guide.md#debug-debug)).
-4. **Server log** — the only place an unexpected `internal_error`'s real cause appears;
-   the JSON body deliberately says nothing more.
+4. **Server logs** — `docker compose logs app` for the core, `docker compose logs tg`
+   for the Telegram transport. The core log is the only place an unexpected
+   `internal_error`'s real cause appears; the JSON body deliberately says nothing
+   more. The transport log is where registration and poller failures appear.
 
 ---
 
@@ -20,19 +24,85 @@ because guessing is exactly what the trace archive exists to avoid.
 
 | Check | Fix |
 | --- | --- |
-| Overview → Telegram bot says "Not configured" | Set the bot token in Settings → Telegram |
-| Says "Stopped" | Click Start on the bot control card |
-| Says "Error" | Read the message. Ending in `reconnecting automatically` means the network dropped and the manager is retrying every 15s — nothing to do but restore the connection. Otherwise Telegram refused: an invalid token, or another process holding the same token's `getUpdates` lock |
+| Overview → Telegram bots says "Not configured" | No bot connection exists. Create an assistant on `/assistants` and connect a bot token in its editor |
+| Says "Stopped" | Every connection is parked. Start it from the assistant's editor (or the row under Overview's status grid) |
+| Says "Error" ending in `no poller is tracked — is the telegram service running?` | The transport reports nothing for an enabled connection — see [A connection reads "Not tracked"](#a-connection-reads-not-tracked) |
+| Says "Error" ending in `reconnecting automatically` | The network dropped and the transport is retrying every 15s — nothing to do but restore the connection |
+| Says "Error" with anything else | Telegram refused: an invalid token, or another process holding the same token's `getUpdates` lock |
 | Says "Running" but nothing happens | Continue below |
-| Overview → LLM endpoint is red | Fix the connection; use Settings → Test connection for the real error |
-| Overview → Model says none selected | Pick one in Settings → LLM |
-
-If the poller is running and the LLM is reachable, the message was probably not
-considered addressed — next section.
+| Overview → LLM endpoint is red | Fix the backend on `/backends`; its **Test connection** shows the real error |
+| Overview → Model says none selected | Pick one in Settings → Models → Chat |
 
 Another process holding the token is a real possibility during a redeploy or if you
-have a dev server and a container running against the same token. Telegram permits
-exactly one `getUpdates` consumer per token; the second one errors.
+have a dev `tg` service and a container running against the same token. Telegram
+permits exactly one `getUpdates` consumer per token; the second one errors.
+
+If the poller is running and the LLM is reachable, either the message never opened a
+turn — the next three sections — or it was not considered addressed — the one after.
+
+## The assistant editor says the transport "has not announced itself yet"
+
+The Telegram transport (`tg`) has never registered with this core, so the connection
+section cannot render; with no transport registered at all the editor says "No
+transport has registered with this core yet". The transport registers at boot and
+retries every 10 s until the core accepts it, so read `docker compose logs tg`:
+
+| Log line | Cause / fix |
+| --- | --- |
+| `registration with the core failed (core /api/internal/transports/register answered 401) — retrying in 10s` | `INTERNAL_API_TOKEN` differs between `app` and `tg`. Set one value for both and restart both |
+| `… failed (fetch failed …)` or a timeout, repeating | `CORE_API_URL` is wrong or the core is not up yet. Inside Compose it must be `http://app:3200`; the retry loop resolves itself once the core answers |
+| `registered with the core — N connection(s) desired` | Registration succeeded. The core log carries the matching `transport 'tg' registered from <SELF_URL>` |
+| Nothing — the service exits at once | `REDIS_URL` or `INTERNAL_API_TOKEN` is unset; both are required for the transport to start |
+
+Once registered the section appears by itself (the registration publishes a `status`
+event).
+
+## A connection reads "Not tracked"
+
+The connection is enabled in the core, but the transport's `/health` reports no poller
+for it. Overview folds the same state into its Error card as `connection is enabled
+but no poller is tracked — is the telegram service running?`.
+
+| Cause | Fix |
+| --- | --- |
+| The `tg` service is down or restarting | `docker compose ps`; bring it up. It re-registers and reconciles its pollers from the desired state at boot |
+| The core cannot reach the transport at the URL it announced | The status probe fetches `<SELF_URL>/health` with a 5 s timeout and reports nothing on failure. `SELF_URL` must be reachable **from the core** — `http://tg:3210` inside Compose, never `localhost` |
+| The transport has not reconciled yet | Connect/Start/Stop announce a `transport.config.changed` bus event and the transport refetches. If the core log says `transport.config.changed for 'tg' was NOT published (bus unconfigured?)`, Redis is down — next section — and the transport picks the change up only on its next restart |
+
+The poller's real state, once tracked, is on the same badge: Running, Error with the
+message, or Stopped.
+
+## Redis is down, or messages pile up unanswered
+
+Redis carries everything between the two apps: the `transport-updates` queue (what the
+transport polled), the `inbound-messages` queue (the turns the core opened), and the
+event bus.
+
+| Symptom | Meaning |
+| --- | --- |
+| Core log: `Inbound turn consumer NOT started — set REDIS_URL and DATABASE_URL; until then the core processes no incoming messages.` | The core booted without a queue consumer. `REDIS_URL` is unset or the core could not connect; the dashboard runs, the pipeline does not |
+| Core log: `Inbound turn consumer started (queue: inbound-messages)` and `Transport ingest started (queue: transport-updates)` | The consumers are up — look elsewhere |
+| The transport polls (Running) but no `inbound` trace ever appears | The core is not consuming. With Redis **up** and the core down or degraded, the forwarded events wait in the queue — persisted in `./data/redis` by the AOF — and are drained the moment the core's consumers start, so nothing is lost and a backlog of late replies is what to expect. With Redis **down** nothing crosses at all |
+
+`docker compose ps` shows the `redis` service's health; the core and the transport
+both connect to `redis://redis:6379` inside Compose.
+
+## The bots run and the LLM answers, but a message gets nothing back
+
+Work from the message inward, in Debug:
+
+1. Filter to `bot-messaging` and look for the **`inbound`** trace for that message
+   (correlation `<chatId>:<messageId>:<assistantId>`). It is recorded when the ingest
+   opened turns for the message and lists, per assistant, the turn's event id and its
+   structural addressing verdict. **No `inbound` trace** means the message never
+   reached the ingest as a turn: the transport is not polling that chat, or the core
+   has no consumer (previous section).
+2. Then the **`reply`** trace under the same correlation — what the pipeline did with
+   the turn: `replied`, `skipped` with the reason (`not addressed — …`, the loop
+   guard, maintenance), or `error` with the provider's full response.
+3. A `reply` trace that ends in a delivery but no message in the chat: the delivery
+   travels back to the transport as a bus event; check `docker compose logs tg` for
+   the send error.
 
 ## The bot ignores me in a group
 
@@ -41,8 +111,8 @@ Expected unless you addressed it. Check the reply trace — filter Debug to
 
 | Trace state | Meaning |
 | --- | --- |
-| **No trace at all** | The cheap deterministic checks rejected it and no LLM was consulted. Untraced by design; that is the bulk of a group's traffic |
-| A `skipped` trace with `not addressed — …` | The analyzer ran and said no. The event data shows what it was asked and what it answered |
+| **No `inbound` trace at all** | The message never opened a turn — see the previous section |
+| A `skipped` reply with `not addressed — …` | The structural checks and, where needed, the analyzer said no. The event data shows what it was asked and what it answered |
 
 To make it answer reliably: @mention it, reply to one of its messages, or use
 `/command@botusername`.
@@ -66,12 +136,23 @@ There is deliberately no way to make this cheaper by adding a lexical filter —
 tried and reverted, because any such gate misses real summonses in unfamiliar
 spellings.
 
+## Two assistants in one group stopped answering each other
+
+The loop guard. Assistants cannot see each other on Telegram, so the core hands each
+reply to the other assistants sharing the chat; Settings → General → **assistant
+replies in a row** bounds how many assistant messages may run in a row before every
+assistant there goes quiet until a person speaks again (default 3; 0 stops them
+answering each other at all). The silence is on the record: the `reply` trace is
+`skipped` with a loop-guard event.
+
 ## Everyone gets a "maintenance" notice
 
 Maintenance mode is on. Settings → Telegram → turn it off.
 
-While it is on: only the owner gets normal replies (and only through deterministic
-addressing — the LLM analyzer is off for everyone), and **no scheduled task fires**.
+While it is on: only senders with **owner rights** — the assistant's owning account
+(through their linked identity) and admins — get normal replies (and only through
+deterministic addressing — the LLM analyzer is off for everyone), and **no scheduled
+task fires**.
 
 ## A scheduled message never arrived
 
@@ -91,14 +172,14 @@ breakdown separates:
 
 | Call kind | If this dominates |
 | --- | --- |
-| `addressing-check` | Group traffic is generating many analyzer calls. Expected in a busy multilingual group; each undecided message costs up to two calls |
+| `addressing-check` | Group traffic is generating many analyzer calls. Expected in a busy multilingual group; each undecided message costs up to two calls. A small fast model on Settings → Models → Classifiers is the direct fix |
 | `reply-tool-turn` | The model is doing many tool rounds. Check the reply trace for a loop — a `loopDetected` flag means the stall guard fired |
 | `reply-final` | Plain inference latency. Look at p95, not the mean |
 
 Also check that a background job is not competing:
 
-- The **vision backfill** aborts on live traffic and only runs after ~45s of quiet, so
-  it should not be the cause.
+- The **vision backfill** and the **search index** abort on live traffic and only run
+  after the bot has been quiet, so they should not be the cause.
 - The **daily jobs** all run at one shared time (`dailyJobsRunTime`, default `04:00`).
   If that time is during your busy hours, move it.
 
@@ -106,7 +187,7 @@ Also check that a background job is not competing:
 
 | Check | Fix |
 | --- | --- |
-| `/history` job card: `embeddingsConfigured` false | Configure Settings → Embeddings. Summaries are written but not embedded without it, so semantic recall is off |
+| `/history` job card: `embeddingsConfigured` false | Configure Settings → Models → Embeddings. Summaries are written but not embedded without it, so semantic recall is off |
 | Job card shows a large `pendingDays` backlog | The nights have not caught up. "Run now" (it is fire-and-forget; watch progress live) |
 | Recall returns the wrong topic | Open `/history/{chatId}` → Summaries, find the topic, and check its **message ids** against the Messages tab. A summary that misrepresents its messages is a summarization problem; check the `history-summaries` trace for that chat-day |
 | A day was imported and never summarized | Import bumps the day's message count, so the due-scan re-summarizes it. Confirm the backlog count moved |
@@ -133,6 +214,7 @@ than as an opaque Postgres rejection inside a nightly job.
 | Nothing in the queue, and the fact was said in group chatter | Passive extraction reads finished chat-days, so it appears after that day's nightly run. Check `pendingExtractionDays` on the job card |
 | A person's document is empty though notes were consumed | Check the `memory` trace: an **empty merge is treated as a failed pass**, so the notes should still be pending. If notes were consumed but nothing was written, the trace has the model response |
 | It remembered something wrong | Edit or rewrite the document on `/memory`. It is re-embedded on save |
+| It remembers a person on Telegram but not in the web chat (or the reverse) | Memory follows the person-link graph. Link the two identities — Users → Linked people as an admin, or the code from that person's Profile sent to the bot |
 
 ## Images are not described
 
@@ -141,7 +223,7 @@ than as an opaque Postgres rejection inside a nightly job.
 | `/vision` shows pending rows and a growing backlog | Backfill only runs after ~45s of quiet. On a busy bot this is normal; "Run now" arms it as soon as possible |
 | The `vision`/`vision-backfill` trace shows a provider error | The configured model may not be vision-capable |
 | Row status is `unavailable` | The file could not be downloaded from Telegram — the token, or Telegram's file retention |
-| GIF/video rows fail | `ffmpeg` is missing. The Docker image installs it; locally it must be on `PATH` |
+| GIF/video rows fail | `ffmpeg` is missing. Both Docker images install it; locally it must be on `PATH` |
 
 ## The browser agent fails to launch
 
@@ -188,7 +270,8 @@ Do **not** try `chmod o+rx`: Postgres refuses to start if the data directory has
 world permission bits.
 
 Moving the directory out of the project also works, but the path is no longer
-configurable, so it would mean editing `docker-compose.yml`.
+configurable, so it would mean editing `docker-compose.yml`. The same applies to
+`./data/redis`, which the `redis` container owns.
 
 ## A media download fails
 
@@ -254,27 +337,49 @@ The database probe failed. That is the only thing that gates readiness.
 
 Check `DATABASE_URL`, that Postgres is up (`docker compose ps`), and that the app can
 reach it. Configuration presence, trace-storage health and download-storage health in
-the same body are informational and never cause a 503.
+the same body are informational and never cause a 503. Redis is not part of readiness
+either: a core without its queue serves the dashboard and reports the consumer state
+in its log.
 
 ## Locked out of the dashboard
 
-Clear the password and run setup again:
+Passwords are per account, and an admin resets any *other* account from `/accounts`
+(**Password** issues a fresh temporary one). Signed-in admins change their own on
+Settings → Security or Profile. The database procedure below is only for the case
+where **no admin can sign in**.
+
+If another trusted account exists, promote it and let it reset yours from the page:
 
 ```bash
-docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "update settings set operator_password_hash = null, session_secret = null"
+docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "update accounts set role = 'admin' where username = 'trusted-name'"
 ```
 
-No restart needed; the next visit redirects to `/setup`. Every existing session is
-invalidated. This is also the procedure for *changing* the password — there is
-deliberately no authenticated change-password flow yet.
+If the locked-out admin is the **only** account, delete its row; the next visit re-runs
+`/setup` and creates a fresh first admin:
+
+```bash
+docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "delete from accounts where username = 'admin-name'"
+```
+
+No restart needed; `/setup` reappears only because no account exists any more. Take a
+database dump first: deleting an account row cascades to its link codes, its tool
+connections and its web-chat threads, and its assistants become admin-owned (owner
+set to null) rather than passing to the new admin.
 
 ## `/setup` when I expected `/login`
 
-The `operator_password_hash` column is null. Either this is a genuinely fresh install,
-or the database was reset/restored from a dump taken before setup.
+No account exists. Either this is a genuinely fresh install, or the database was
+reset/restored from a dump taken before the first admin was created.
 
-If it is neither, treat it as urgent: until a password is set, whoever reaches `/setup`
+If it is neither, treat it as urgent: until an account exists, whoever reaches `/setup`
 first owns the dashboard.
+
+## An account is stuck on `/password`
+
+It signed in with a temporary password (issued at creation, or by an admin's
+**Password** action) and must replace it before reaching anything else. That is the
+gate working; choose a new password of at least 8 characters. If the person cannot,
+an admin issues another temporary one from `/accounts`.
 
 ## A dashboard page looks stale
 
@@ -310,9 +415,9 @@ than by exact phrasing.
 Attach:
 
 1. The **trace bundle** for the failing action (`/debug` → the trace → Download).
-2. The relevant server log lines.
+2. The relevant server log lines — `app`, and `tg` when a bot connection is involved.
 3. `GET /api/health` output.
-4. The version (shown on Overview, and in the health body).
+4. The version (shown on Overview and in the sidebar, and in the health body).
 
 The bundle contains complete conversation content and system prompts. Redact or share
 it privately — do not paste it into a public issue.

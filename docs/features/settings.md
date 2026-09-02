@@ -24,11 +24,14 @@ must never hand a repository record to a client.
 
 | Field | Client sees |
 | --- | --- |
-| The bot token, the Tavily key | Only `…Configured: boolean` |
-| The password hash, the session secret | Nothing |
+| The Tavily key | Only `webSearchConfigured: boolean` |
 
-(Endpoint API keys live on backend rows now — same write-only rule, exposed as
-`apiKeyConfigured` on the backend.)
+(Endpoint API keys live on backend rows — same write-only rule, exposed as
+`apiKeyConfigured` on the backend.) Bot tokens are not settings any more: they
+are per-assistant transport connections, stored opaquely by the transports
+service and previewed as `…last4` in the assistant editor
+([Assistants](assistants.md)). Passwords and session secrets live on `accounts`
+([Accounts](accounts.md)).
 
 Semantics on `PATCH`:
 
@@ -69,8 +72,9 @@ on the chat role — a fired task is a real message to a person.
 ## The form
 
 `SettingsForm` is a Client Component with one tab per concern — **Models** (all
-nine roles above, one card each), **Telegram** (bot token, owner,
-maintenance mode), **General** (timezone, daily run time, browser download cap),
+nine roles above, one card each), **Telegram** (maintenance mode, and a pointer
+to `/assistants`, where bot tokens live per assistant), **General** (timezone,
+daily run time, browser download cap, the assistant loop guard),
 **Integrations** (Tavily) and **Security** (password change; its own endpoint
 and button) — and **one** Save button below them that persists every changed
 field regardless of which tab is active.
@@ -190,7 +194,7 @@ evidence, and only a transport failure is a probe's to fail on.
 
 Results are rendered by one shared component (`ProbeReportView`) from one shared
 shape (`ProbeReport`: a model, a latency, and labelled input/output parts that
-are text, an image, audio or a vector). That is what keeps seven very different
+are text, an image, audio or a vector). That is what keeps nine very different
 exchanges legible in the same way — and why adding a probe means describing what
 it exchanged, not writing another result panel.
 
@@ -211,8 +215,8 @@ env-presence guess.
 | Concern | Owned by |
 | --- | --- |
 | Backend endpoints (URL, key, server type) | The [Backends page](backends.md) and `/api/backends` |
-| Operator password and session secret | `/setup` and the auth service. See [Security](../architecture/security.md) |
-| Active personality | `/personalities` and `PUT /api/personalities/active` |
+| Accounts, passwords and sessions | `/setup`, `/accounts`, `/profile` and the auth service. See [Accounts](accounts.md) |
+| Assistant personas and bot connections | `/assistants` and `/api/assistants*` — there is no active persona; the assistant in a chat is the one whose bot is in it ([Assistants](assistants.md)) |
 
 ## Consumers
 
@@ -221,7 +225,7 @@ resolved runtime:
 
 | Consumer | Asks for |
 | --- | --- |
-| Reply pipeline (and a fired scheduled task) | `getLlmRuntime()` (chat), active persona prompt, owner/maintenance policy, timezone |
+| Reply pipeline (and a fired task) | `getLlmRuntime()` (chat), the maintenance policy (`getBotPolicy`), the loop-guard limit, timezone — the persona comes from the assistants service, not from settings |
 | Every daily scheduler | The run time, the timezone, and whether an LLM is configured |
 | Embedding/image/speech paths | Their role runtime (`getEmbeddingRuntime` …), chat-backend fallback applied |
 | Voice path | `getAudioRuntime()` (STT), chat-model `input_audio` fallback when null |
@@ -229,7 +233,7 @@ resolved runtime:
 | Browser agent | `getBrowserLlmRuntime()` — chat backend/model unless overridden |
 | Addressing / rule match / honesty gate | `getClassifierRuntime()` — chat backend/model unless overridden |
 | Summaries, memory, insights, reflection | `getBackgroundRuntime()` — chat backend/model unless overridden |
-| Telegram bot manager | The bot token |
+| Transports | Nothing — bot tokens are per-assistant connection rows, handed to the transport as desired state (`server/transports/service.ts`) |
 | Search fallback | The Tavily key, read at call time |
 
 Because these are resolved per run or per turn, a settings change takes effect
@@ -238,7 +242,8 @@ immediately — no restart.
 ## API
 
 `GET /api/settings` (masked), `PATCH /api/settings` (partial, at least one field),
-and the four `POST /api/settings/test-*` role probes.
+and the nine `POST /api/settings/test-*` role probes (`audio`, `background`,
+`browser`, `chat`, `classifier`, `embeddings`, `images`, `speech`, `vision`).
 
 ## Tracing
 

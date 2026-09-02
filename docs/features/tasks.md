@@ -9,6 +9,7 @@ the contract, and it is carried out with the tools the bot already has.
 
 Feature ids: `tasks` (CRUD, fires, and the match decision), `mcp-tools-tasks`
 (the toolkit's calls). Dashboard: `/tasks`. Debug: `/debug?feature=tasks`.
+Every task belongs to one assistant ([Who a task applies to](#who-a-task-applies-to)).
 
 ## Trigger kinds
 
@@ -61,11 +62,16 @@ retarget call, the reply path discarded it, and the turn died with nothing to
 send (trace `224ef60a…`, 2026-08-14). A parameter silently ignored in one of two
 modes is a trap.
 
-The turn binds `deliver` and `deliveryKind` on the MCP tool context
-(`server/mcp/context.ts`), and `getToolset({ delivery })` offers at most one of
-the two. The handlers check the binding's **kind**, not merely its presence, so a
-registry that survived a hot reload cannot let a fire claim it replied to a
-message that never existed.
+The turn binds `deliveryKind` (and the `onDelivered` bookkeeping) on the MCP
+tool context (`server/mcp/context.ts`), and `getToolset({ delivery })` offers at
+most one of the two. The tools themselves are the owning source's — the
+transport's, reached through its managed connection as `tg__reply_to_message`
+and `tg__send_message`, or the web chat's in-process `chat_reply_to_message` /
+`chat_send_message` — and they re-check the **kind** carried in the call's
+`_meta`, not merely its presence, so a registry that survived a hot reload
+cannot let a fire claim it replied to a message that never existed. The turn
+learns that a send happened from the tool's result shape
+(`toolDeliveryResult`), never from the tool's name.
 
 **Silence is a feature.** A fire that calls no send tool is a *quiet fire* —
 "check X, message only if Y" is now expressible — recorded as a success with
@@ -141,17 +147,27 @@ the message itself, which passes by construction.
 
 ## Who a task applies to
 
+Every task belongs to **one assistant** (`tasks.assistant_id`, a NOT NULL
+foreign key that cascades on delete): it is that assistant's standing order,
+composed only into its turns (`getActiveTasksForChat(assistantId, chatId,
+senderId)`), fired as that assistant with its persona, and gone with it. The
+dashboard picks the assistant at creation and never moves it afterwards, like
+the chat; from a chat, a task takes the turn's assistant. A user-role account
+sees and edits only its own assistants' tasks ([Assistants](assistants.md)).
+
 A prompt task applies to **everyone in its chat** by default; one scoped to a
-**group** may instead name up to **16** people (`target_user_ids`), and then
-applies to their messages and nobody else's. It is a hard filter on the sender,
-applied in `getActiveTasksForChat` *before* anything is composed — a task about
-one member never reaches another member's prompt or the matcher. A timed fire
-passes a null sender and gets exactly the tasks that name nobody.
+**group** may instead name up to **16** people (`target_user_refs`, stored as
+scoped refs — the API and the tools speak `targetUserIds` / `user_ids`), and
+then applies to their messages and nobody else's. It is a hard filter on the
+sender, applied in `getActiveTasksForChat` *before* anything is composed — a
+task about one member never reaches another member's prompt or the matcher. A
+timed fire passes a null sender and gets exactly the tasks that name nobody.
 
 Only groups can narrow (a DM is one person; a global task spans unrelated
 rosters), and only people the bot has **seen speak** in that group can be named
-— checked against the `group_members` roster, so an invented id is refused
-rather than stored as a task that silently never fires. Names are never
+— checked against the `source_chat_members` roster (`source_chats` /
+`source_chat_members`, read through the groups directory), so an invented id is
+refused rather than stored as a task that silently never fires. Names are never
 resolved to ids in code: the group roster injected into every group prompt
 carries each participant's exact id, and the model copies one.
 
@@ -160,9 +176,12 @@ carries each participant's exact id, and the model copies one.
 **A task is its author's standing order** (user decision, 2026-07-29 — "rule
 creator beats message source"). When the bot acts because a `message` task
 matched, the action runs with the rights of whoever set the task:
-`resolveTaskAuthority` elevates exactly when a matched task was written by the
-**owner** in chat or by the **operator** in the dashboard, and the runtime binds
-the result as `authorityUserId` on the per-turn tool context. Permissions only —
+`taskLendsOwnerRights` elevates exactly when a matched task was written from
+the **dashboard** (`source = 'dashboard'`) or by someone holding **owner
+rights** in chat (`created_by_owner`, stamped from the inbound event's
+`sender.isOwner` — per assistant, resolved through accounts and person links;
+the core compares no user ids), and the runtime binds the result as
+`authorityIsOwner` on the per-turn tool context. Permissions only —
 provenance (`userId`) stays the real sender. The matcher also runs on addressed
 turns (skipped when nothing could elevate), so the answer is the same whether or
 not the person happened to name the bot. Restricted rule-driven downloads are
@@ -172,7 +191,7 @@ unchanged — see `docs/features/browser-agent.md`.
 
 | | Dashboard `/tasks` | The chat itself (`tasks_*` tools) |
 | --- | --- | --- |
-| Who | The operator (the dashboard is operator-only) | Gated — see below |
+| Who | A signed-in account, for its own assistants (admins for every assistant) | Gated — see below |
 | Scope | Any chat, **and** the global set (prompt kinds) | Only the current chat |
 | Audience | Everyone, or people ticked off the group's roster | Everyone, or `user_ids` copied from the roster |
 | Global tasks | Create, edit, delete | Visible, never editable |
@@ -182,10 +201,12 @@ Chat-side gates are enforced **inside the service** (no lexical pre-filter),
 and a denial is returned, never thrown, so the model relays the refusal:
 
 - **Prompt kinds** keep the rules gate (user decision, 2026-07-29): self-serve
-  in a private chat, owner-only in a group.
+  in a private chat, owner rights only in a group (`sender.isOwner`, per
+  assistant).
 - **Timed kinds** keep the scheduled-tasks gate: anyone in the chat may create;
-  a task is changed or cancelled by its creator, or by the owner (exemption:
-  user decision, 2026-08-07), judged on the turn's *authority*.
+  a task is changed or cancelled by its creator, or by a sender with owner
+  rights (exemption: user decision, 2026-08-07), judged on the turn's
+  *authority*.
 
 A task of another chat is invisible (`not_found`); a global task is visible but
 read-only from chat.
@@ -252,9 +273,12 @@ toggle and its `PATCH /api/tasks/[id]`. Two consequences follow:
 | `tasks_create` | `instruction`, `trigger`, `context`, `user_ids`, `every_minutes`, `delay_minutes`, `time`, `weekdays`, `date` | Save a standing rule or a timed job |
 | `tasks_update` | `id` + any of the above, `applies_to_everyone` | Reword, retime, retarget |
 | `tasks_delete` | `id` | Remove a task for good — how a chat cancels one |
-| `send_message` | `text` | **Timed fires only** — send a standalone message to the task's chat |
-| `reply_to_message` | `text` | **`message`-triggered turns only** — reply to the message that triggered the task (bot-messaging) |
-| `set_message_reaction` | `message_id`, `emoji`, `big` | React to an earlier message (bot-messaging; every turn — a reaction is not a delivery) |
+
+`TASKS_TOOL_NAMES` holds exactly these five. The delivery tools a task-driven
+turn speaks through — `reply_to_message` on a `message`-triggered turn,
+`send_message` on a timed fire — and the reaction tool are the owning
+source's own (`tg__…` on Telegram turns, `chat_…` in the web chat); see
+[Bot messaging](bot-messaging.md#delivery).
 
 `tasks_create`'s description is long by design and pinned in tests: it carries
 every behavioural rule its two predecessors earned in production — the many
@@ -281,7 +305,8 @@ advisory lock) scans enabled timed rows whose `next_run_at` is due, fires each,
 then settles: an `interval` advances from the settle instant (drift over
 double-fire), a `schedule` advances on the calendar, a spent one-shot is
 deleted, a failed one is retried/disabled. Fires pause during maintenance mode
-(skipped, not dropped). Each fire composes the chat's language, the
+(skipped, not dropped). Each fire runs as the task's assistant — its persona
+(`getAssistantPersona`), its bot — and composes the chat's language, the
 standing-tasks block (null sender), and the chat identity context — the group
 roster (names, @usernames, user ids) or the DM partner — and runs with the
 task's chat bound as the tool context. The identity context is what lets a fire
@@ -318,11 +343,14 @@ says "standing rules" — that is what these are to the people in the chat;
 
 ## Storage
 
-One table, `tasks` (migrations `0054` drops `chat_rules` + `scheduled_tasks` —
-a clean cut, user decision 2026-08-13 — and `0055` creates `tasks`). See
-`docs/architecture/data-model.md` for columns. Scope is **not** editable
-(moving a task between chats is delete + create); the trigger, audience,
-timing, and context are.
+One table, `tasks`, created with the v2 store's first migration (`0000`); the
+v1 `chat_rules` + `scheduled_tasks` split was cut cleanly when the two merged
+(user decision 2026-08-13) and never entered this store. Chats and people are
+scoped refs (`chat_ref`, `created_by_user_ref`, `target_user_refs`);
+`thread_id` stays a source-local delivery detail (a Telegram forum topic). See
+`docs/architecture/data-model.md` for columns. Scope and assistant are **not**
+editable (moving a task between chats or assistants is delete + create); the
+trigger, audience, timing, and context are.
 
 ## Traces
 
@@ -334,7 +362,7 @@ correlation so feedback can find it. A fire relates its task id **at open**
 (`trace.relate`), so failed and quiet fires stay findable, not only delivered
 ones. The match decision is recorded on the reply trace of the message it
 judged (`callKind: "task-match"`, a `task match` step with the offered tasks,
-matches, and the bound `authorityUserId`); when tasks *match*, their ids are
+matches, and the bound `authorityIsOwner`); when tasks *match*, their ids are
 related on that reply trace too, so a standing task's actual runs are part of
 its record. Tool calls are traced under `mcp-tools-tasks`.
 
@@ -356,7 +384,7 @@ facet is a first-class Debug filter; see
 | File | Covers |
 | --- | --- |
 | `features/tasks/schedule.test.ts` | Trigger math: wall-clock conversion, per-kind next-run, normalization, summaries |
-| `features/tasks/format.test.ts` | Prompt block and trigger directive; prompt/message selection; sender targeting; `resolveTaskAuthority` |
+| `features/tasks/format.test.ts` | Prompt block and trigger directive; prompt/message selection; sender targeting; `taskLendsOwnerRights` |
 | `features/tasks/server/matcher.test.ts` | Match prompt (audience prefix, sender line, two-step structure) and every fail-closed citation path |
 | `features/tasks/server/live-matcher.integration.test.ts` | `LLM_LIVE=1`: a real classifier fires a person-only task for its person and nobody else, and a content condition still binds |
 | `features/tasks/server/fire.test.ts` | The delivery inversion: `deliver` binding, quiet fires, delivery-failure semantics, history mirroring |

@@ -7,16 +7,34 @@ Two things are true of every page and worth stating once:
 - **Data is live.** Pages update themselves over the shared SSE stream. If a page
   looks stale, that is a bug — not something to fix with a reload. The `LiveIndicator`
   pill shows the connection and can be clicked to pause refreshes while you read.
-- **Times are in the operator timezone** (Settings → Timezone), never your browser's
-  local zone and never bare UTC.
+- **Times are in the operator timezone** (Settings → General → Timezone), never your
+  browser's local zone and never bare UTC.
+
+## Signing in
+
+`/setup` creates the **first admin account** — a username and a password of at least
+8 characters — and exists only while no account exists; afterwards it redirects to
+`/login` for good. Every further account is created by an admin on the Accounts page;
+there is no open registration.
+
+Accounts have a role, **admin** or **user**. A session is a signed cookie for one
+account, valid for 30 days; changing that account's password signs out its other
+sessions and nobody else's. An account that was handed a temporary password is held at
+`/password` until it chooses its own — it can go nowhere else first.
 
 ## Layout
 
 A fixed sidebar on desktop, an off-canvas drawer on mobile, and a sticky top bar with
-a search field, the theme toggle and **Sign out**. Above every page sits the global
-system-alert area — reserved for failures that silently destroy data if nobody acts.
-Today there is exactly one: the trace write path. If that banner appears, read
+the message search (admins only), the signed-in account's display name, the theme
+toggle and **Sign out**. Above every page sits the global system-alert area — reserved
+for failures that silently destroy data if nobody acts. Today there is exactly one:
+the trace write path. If that banner appears, read
 [Troubleshooting](troubleshooting.md#trace-flush-failures) before doing anything else.
+
+The sidebar footer carries a **Bot status** card (admins only): the same connection
+summary the Overview card shows — Running with the bot's `@username` (or "Bots" when
+several are up), Error with the message, Stopped, or "Setup needed" with a link to
+Settings.
 
 Navigation, in sidebar order:
 
@@ -24,16 +42,23 @@ Navigation, in sidebar order:
 | --- | --- |
 | — | Overview, Analytics |
 | Conversations | History, Vision, Users, Groups |
-| Bot | Personalities, Memory, Tools, Self-improvement |
-| Automation | Scheduled tasks, Browser agent, Background jobs |
-| System | Settings, Debug |
+| Bot | Assistants, Memory, Tools, Self-improvement |
+| Automation | Tasks, Browser agent, Background jobs |
+| System | Backends, Accounts, Settings, Debug |
+| Web chat | Chat |
+| You | Profile |
+
+A **user**-role account sees only History, Assistants, Tools, Tasks, Debug, Chat and
+Profile, each scoped to the assistants it owns. Its landing page is the web chat, and
+every admin page — Overview included — sends it there. The API enforces the same
+boundary per route, so the sidebar is a convenience, not the lock.
 
 ---
 
 ## Overview (`/`)
 
 The honest-state page — what is configured *and* what the bot has actually been
-doing. Four blocks, in the order they answer questions:
+doing. Three blocks, in the order they answer questions:
 
 1. **Last 24 hours** — messages handled and answered, failures, active people,
    media described, tokens in/out. Read from the traces, using the same
@@ -41,7 +66,7 @@ doing. Four blocks, in the order they answer questions:
 2. **System status** — the probes below, grouped into Core (nothing works
    without these), Model roles (optional capabilities) and Storage (write
    paths), each group carrying its own "all clear / needs setup / failing"
-   summary. The bot start/stop control sits under it.
+   summary. The per-connection bot rows sit under it.
 3. **Activity** — three tabs: the latest traced actions, everything that has
    failed (any age — with a line saying how many are recent), and every
    background job's state, next run and last result. The failures and jobs tabs
@@ -54,9 +79,9 @@ never an "is the variable set" guess:
 | Card | Probe |
 | --- | --- |
 | Database | An actual `SELECT 1` |
-| LLM endpoint | An actual `/v1/models` call, with the model count |
-| Model | Whether one is selected, and which |
-| Telegram bot | The live poller state, with the resolved `@username` |
+| LLM endpoint | An actual `/v1/models` call against the chat backend, with the model count |
+| Model | Whether a chat model is selected, and which |
+| Telegram bots | The transport's `/health`, summarized across **every** connection: Running (with the `@username` when exactly one bot is up), Error (the first failing connection's message — an enabled connection the transport reports nothing for counts as one), Stopped ("Ready — start below"), or Not configured ("Connect a bot to an assistant") |
 | Trace storage | Opening the current month's file for append — the same operation the flusher performs |
 | Downloads | Creating and removing a file in the downloads directory — the same thing a download does |
 
@@ -82,8 +107,14 @@ nothing is silently lost, browsing and reporting still work, and only saving a f
 fails — loudly, on the run that attempted it. The probe exists so you find out from
 this page rather than from a user's failed request.
 
-The bot control card starts and stops the poller. The token comes from Settings, so
-there is nothing to type. If the card says "Not configured", go to Settings first.
+Under the status grid, **Telegram bots** lists one row per connection: its state
+badge (Running / Error / Stopped), the assistant it serves, the bot's `@username`
+(or `token …xxxx` while nothing is polling yet), a Start/Stop button, and the error
+text when there is one. With no connection at all the block says "No bot connections
+yet — connect a bot to an assistant" and links to Assistants. The full control surface
+— connect, replace the token, start/stop, disconnect — is each assistant's editor on
+`/assistants`; the rows here re-read on every `status` event, so a crash or reconnect
+shows up without a reload.
 
 **What to do here:** after any config change or restart, confirm no card is red
 and that every neutral one says what you intended. Then check the Activity card:
@@ -129,7 +160,7 @@ data.
 
 Lists the chats with stored history. Each links to `/history/{chatId}`, which has:
 
-- **Messages** — the full stored mirror, oldest first, with Telegram ids, the reply
+- **Messages** — the full stored mirror, oldest first, with message ids, the reply
   pointer, timestamps, and edited/deleted flags.
 - **Summaries** — the chat's topic summaries grouped by day, newest first, each
   showing the **message ids** it claims to summarize. Those ids are what the bot
@@ -137,6 +168,9 @@ Lists the chats with stored history. Each links to `/history/{chatId}`, which ha
   summary against the actual messages in the Messages tab.
 - The summarization job card, with the chat-day backlog and whether embeddings
   (semantic search) are configured at all.
+
+A user-role account sees the chats its own assistants serve; the import/export and
+summary-run chrome is the operator's.
 
 ### `/history/transfer`
 
@@ -168,7 +202,11 @@ possible.
 
 ## Users (`/users`)
 
-Every user who has messaged the bot. Two editable fields per row:
+Everyone who has reached the bot, across every connected source, in two tabs. A
+source that could not be read is named above the tabs rather than silently omitted.
+
+**Directory** — one row per identity, labelled by the source that owns it. Two
+editable fields per row:
 
 | Field | Effect |
 | --- | --- |
@@ -178,29 +216,73 @@ Every user who has messaged the bot. Two editable fields per row:
 Each field saves on its own and the input is replaced with what was actually stored,
 so you can see the normalization (trimming, deduplication) applied.
 
-The owner is chosen from this list in Settings, which means someone must have messaged
-the bot before they can be made owner.
+**Linked people** — the person-link graph: the declaration that several identities
+(a Telegram user, a dashboard account's web identity, …) are one human. Two things
+resolve through these links. **Memory**: what the bot knows about someone follows them
+across every identity they reach it by. **Owner rights**: a Telegram sender holds owner
+rights over an assistant when the account their identity is linked to *owns* that
+assistant; admins hold them over every assistant. Nothing is chosen "as owner"
+anywhere any more — the global owner setting is retired.
+
+Admins link identities here (**Link identities**, with an optional note; the picker
+offers the whole directory and disables identities another link already claims, since
+one identity belongs to at most one person) or break a link again. People can also link
+themselves: they mint a one-time code on their [Profile](#profile-profile) and send it
+to any connected bot from the identity they want linked.
 
 ## Groups (`/groups`)
 
-Groups the bot participates in. Each links to `/groups/{chatId}`, which has:
+Every shared conversation the bot takes part in, across every source (a direct chat's
+identity is its person, so those are listed under Users). Each links to
+`/groups/{ref}` — addressed by scoped ref, e.g. `tg:chat:-100…` — with two tabs:
 
-| Field | Effect |
+| Tab | Contents |
 | --- | --- |
-| **Notes** | Operator notes (≤2000 chars) injected into the group's chat context on every reply — useful for "this is a work channel, keep it formal" |
-| **Language** | The bot's reply language in this group |
+| **Settings** | **Language** — the bot's reply language in this group. **Notes** — operator notes (≤2000 chars) injected into the group's chat context on every reply, useful for "this is a work channel, keep it formal" |
+| **Members** | The roster of known members with their curated aliases. Aliases are edited on `/users`, not here |
 
-Plus the roster of known members with their curated aliases. Aliases are edited on
-`/users`, not here.
+## Assistants (`/assistants`)
 
-## Personalities (`/personalities`)
+The bot's identities. Each assistant has its own **persona** and its own **bot
+connection**; the assistant in a chat is implied by which bot is in it, so there is no
+"active" one to pick (assistants replaced personalities in the redesign). At most 32,
+names up to 64 characters, personas up to 32 000.
 
-Named personas. Create, edit, delete, and pick the **active** one — whose prompt is
-appended to the fixed base system prompt as "Additional instructions". At most 32,
-names are case-insensitively unique, prompts up to 32 000 characters.
+One card per assistant: name, persona (or "No persona — base system prompt only"),
+and — for admins — an owner badge: `owner: <account>`, or `admin-owned` for rows that
+predate accounts. A user-role account sees and manages only the assistants it owns.
+**New assistant** (the floating button; disabled with "Limit of 32 reached") and
+**Edit** open the one dialog: **Name**, **Persona** — appended to the fixed base system
+prompt on every reply this assistant sends — and, once the assistant exists, one
+connection section per registered transport.
 
-Deleting the active persona clears the selection (the bot then runs on the base prompt
-plus learned self-corrections alone).
+The **Telegram connection** section is rendered from the field schema the transport
+announced at registration:
+
+- Not connected yet: a **Bot token** field (from @BotFather; stored by the core and
+  never shown again) and **Connect**. Connecting stores the token and the bot starts
+  polling at once — a saved connection means "run this"; **Stop** is how you park one.
+- Connected: a status badge and the token hint (`botToken …xxxx`), the token field
+  again (type a new one and **Save changes** to replace it), **Stop** / **Start**, and
+  **Disconnect…** (confirm with **Really disconnect**), which removes the connection
+  and its stored config. The assistant itself is untouched.
+
+| Badge | Means |
+| --- | --- |
+| Running | The transport is polling as `@username` |
+| Error | The poller failed and the message is shown — an invalid token, or Telegram refusing a second `getUpdates` consumer for the same token |
+| Not tracked | The connection is enabled but the transport reports nothing for it: the service is down, unreachable at the URL it announced, or has not reconciled yet |
+| Stopped | Parked by you |
+
+If the section reads "Telegram has not announced itself yet — is its service
+running?", the transport has never registered with this core; "No transport has
+registered with this core yet" means none has. Both are
+[Troubleshooting](troubleshooting.md#the-assistant-editor-says-the-transport-has-not-announced-itself-yet)
+material. The badge flips live: the transport publishes every poller change and the
+section re-reads.
+
+Deleting an assistant deletes its tasks and its bot connections; any bot it ran stops
+polling.
 
 To check which persona actually produced a given reply, look at the reply's trace: the
 composed system prompt is recorded on it.
@@ -223,14 +305,42 @@ single number would hide which half is behind.
 Nothing in the pending queue is injected into replies or readable by tools — only
 consolidated memory is.
 
+Every account can also read and delete the memory held about *its own* identities on
+its Profile; there is no way to write memory by hand there.
+
 ## Tools (`/tools`)
 
-Read-only. Every registered MCP tool grouped by the feature that contributes it, with
-the description the model actually sees.
+What the assistants can call while replying, and where those tools come from. Two
+tabs.
 
-There is no on/off switch: all registered tools are always available during a reply.
-To see whether a tool was used and what it returned, filter Debug to
-`mcp-tools-<feature>` or open the reply trace.
+**Tools (N)** — the catalog. Every tool grouped by the feature that contributes it or
+by the connection it came from, with the description the model actually sees and a
+Debug link into that group's `mcp-tools-<feature>` traces. Feature tools are code and
+always offered — there is no on/off switch; a connection's tools are offered wherever
+its scope says, which is written on the group ("offered on every source, for every
+assistant").
+
+**Connections (N)** — remote MCP servers you add (at most 32), scoped, discovered and
+applied:
+
+- A connection is a **name**, a **slug** (it prefixes the server's tool names, so two
+  servers can both have a `search`), an **endpoint URL** and optional **auth headers**
+  — write-only: stored values are never shown again, type one to replace it. "Where it
+  applies" is every source, Telegram turns only, or web chat turns only; "Which
+  assistants may call it" is every assistant or a ticked subset.
+- **Discover** asks the server what it offers and shows the drift (`2 new, 1 changed,
+  1 gone`); **Apply** hands that set to the assistants. The two verbs are separate on
+  purpose (user decision, 2026-08-28): until Apply is pressed the model keeps being
+  offered exactly what it was offered before, so a connection can be discovered, read
+  and thought about without running conversations noticing. Delete stops offering its
+  tools immediately.
+- A connection badged **provided by the hub** is one of the platform's own MCP servers
+  (the Telegram transport's delivery and reaction tools). Its address and credentials
+  come from configuration and its tools follow the deployed release; only where it
+  applies is yours to edit, and it cannot be deleted.
+
+A user-role account sees the built-in catalog, its own connections, and its own
+assistants in the scope pickers.
 
 ## Self-improvement (`/self-improvement`)
 
@@ -273,9 +383,9 @@ task with a next-run time in the past simply never arrives, and this notice is
 the only place that says why.
 
 A timed task you create here has no author, so the in-chat tools cannot modify
-it — unless you ask the bot as the configured owner, who is exempt and can
-cancel or edit any task in a chat they are in. Standing rules in a group are
-owner-only from chat either way.
+it — unless the person asking holds **owner rights** over that assistant (its
+owning account, or any admin), who is exempt and can cancel or edit any task in a
+chat they are in. Standing rules in a group are owner-only from chat either way.
 
 The **enable/disable** toggle is yours alone, and disabling hides the task from
 the bot completely: it is not listed, read, changed or deleted from a chat, and
@@ -309,10 +419,16 @@ file would only strand it.
 
 ## Background jobs (`/jobs`)
 
-All seven background jobs in one place: vision backfill, task poller, history summary,
-memory, analytics insights, self-improvement, yt-dlp updater. Each card shows an activity badge,
-next/last run, last result, the backlog, a live progress bar while running, "Run now",
-and a link to the owning feature's page.
+All eight background jobs in one place: vision backfill, search index, task poller,
+history summary, memory, analytics insights, self-improvement, yt-dlp updater. Each
+card shows an activity badge, next/last run, last result, the backlog, a live progress
+bar while running, "Run now", and a link to the owning feature's page.
+
+The two idle-debounced jobs run while the bot is quiet. **Vision backfill** describes
+media left un-captioned when it arrived. **Search index** indexes each message by what
+it says and what its media shows, so history can be searched by meaning; it waits a
+little longer than the backfill because it wants that run's descriptions, and with no
+embedding model it still indexes the text.
 
 The field to read first is the **notice** — the reason a job is currently *not* doing
 its work: paused by maintenance, no LLM configured, nothing to do. A job that silently
@@ -326,44 +442,47 @@ will actually run, and whether it came from the app's self-updated copy or the
 system. That badge is worth a glance whenever a media download misbehaves: a stale
 yt-dlp fails every media page at once, and **Run now** is the fix.
 
+## Backends (`/backends`)
+
+The endpoint catalog: every OpenAI-compatible server the bot can talk to, entered once
+here and picked by role in Settings. A backend is a name, a type, the API URL and a
+write-only API key. **Test connection** calls the endpoint for real — it proves the
+host answers and the key is accepted, and lists the models it serves. Each card says
+which Settings roles currently use it. Create and edit share one dialog (**New
+backend** is the floating button); an edit sends only what changed and keeps the stored
+key unless the field is touched; deleting asks for confirmation.
+
 ## Settings (`/settings`)
 
-One tab per concern, and **one** Save button that persists every changed field
-regardless of which tab is open. The first nine are LLM roles: each picks a
-backend from the catalog (managed on the Backends page) plus a model.
+Five tabs and **one** Save button — the floating one — that persists every changed
+field regardless of which tab is open. It steps aside on the Security tab, whose
+password change has its own endpoint and button.
 
 | Tab | Contents |
 | --- | --- |
-| **Chat** | The main model every reply runs on. The one role that must support thinking and tool calls |
-| **Embeddings** | Semantic recall over history summaries and memory search |
-| **Images** | Image generation |
-| **Speech** | Voice replies |
-| **Audio** | Voice-message speech-to-text, and how the endpoint takes audio |
-| **Vision** | The describer every photo, video, GIF and sticker goes through |
-| **Browser agent** | The model that plans browser actions |
-| **Classifiers** | The per-message checks: is the bot being addressed, does a standing rule apply, does the drafted reply claim something it did not do |
-| **Background jobs** | The nightly passes: history summaries, memory, analytics insights, self-improvement reflection |
-| **Telegram** | Bot token, owner, maintenance mode |
-| **General** | Timezone, daily jobs run time, browser download cap |
-| **Integrations** | Tavily key — the browsing agent's search fallback |
-| **Security** | Operator password change (its own button and endpoint) |
+| **Models** | All nine LLM roles as stacked cards on one tab (user decision, 2026-08-14): Chat, Embeddings, Images, Speech (plus the voice name), Audio (plus the transcription mode), Vision, Browser agent, Classifiers, Background jobs. Each picks a backend from the catalog and a model from that backend's live list, has its own Test button, and wears a badge saying what it is set to — the model, "Chat model", "Off", "No model selected", or "*model* — not served" |
+| **Telegram** | Maintenance mode: when on, senders with owner rights (an assistant's owning account, and admins) keep full replies; everyone else gets a static notice. Bot tokens are no longer here — they are per assistant, in the assistant editor, and the tab links there |
+| **General** | Timezone (IANA), daily jobs run time (`HH:MM` in that zone), **assistant replies in a row** (0–10: how many assistant messages a chat may hold in a row before every assistant there goes quiet until a person speaks; 0 stops assistants answering each other at all), browser download size limit (1–100 GB) |
+| **Integrations** | Tavily API key — the browsing agent's search fallback |
+| **Security** | The signed-in account's password: current password, new password, its own button. The same form lives on Profile |
 
-The last two role tabs are where to spend tuning effort once the bot works.
-**Classifiers** run on every group message before a reply is even considered, so
-they set how quickly the bot reacts at all — a small fast model here is a direct
-speed win and costs nothing in reply quality. **Background jobs** are the
-opposite: nobody waits for them, but what they write is what later replies
-recall, so a slower, more capable or longer-context model belongs there. Both
-run on the chat model until you say otherwise.
+The Chat card is the one role that must support thinking and tool calls; every other
+role uses the chat backend unless given its own, and most fall back to the chat model
+too — so **repointing the chat backend repoints them too**. The last two cards are
+where to spend tuning effort once the bot works. **Classifiers** run on every group
+message before a reply is even considered, so they set how quickly the bot reacts at
+all — a small fast model here is a direct speed win and costs nothing in reply
+quality. **Background jobs** are the opposite: nobody waits for them, but what they
+write is what later replies recall, so a slower, more capable or longer-context model
+belongs there. Both run on the chat model until you say otherwise.
 
-Every optional role reuses the chat backend unless given its own, so
-**repointing the chat backend repoints them too**. Saving a backend change
-verifies every stored model selection now served by the new backend and clears
-the ones it does not serve, naming them next to the Save button — pick
-replacements on their tabs. Nothing is cleared when the new backend cannot be
-listed. The audio model is spared only in `transcriptions` mode (whisper-class
-servers often expose no model listing); in `chat` mode it is an ordinary chat
-model and is verified like the rest.
+Saving a backend change verifies every stored model selection now served by the new
+backend and clears the ones it does not serve, naming them at the top of the Models
+tab, where those roles are — pick replacements in their cards. A selection the fetched
+model list already proves stale is flagged in its card and cleared with the save.
+Nothing is cleared when the new backend cannot be listed. The audio model is spared
+only in `transcriptions` mode (whisper-class servers often expose no model listing);
+in `chat` mode it is an ordinary chat model and is verified like the rest.
 
 Every "Test …" button does the role's **real work** and shows you the exchange —
 the prompt and the reply plus its reasoning, the phrase and the vector, the
@@ -386,10 +505,37 @@ the server; leaving one untouched keeps the stored value.
 
 Field-by-field reference: [Configuration](../configuration.md#db-backed-settings).
 
+## Accounts (`/accounts`)
+
+Who can sign in, and as what. There is no open registration: the first admin comes
+from `/setup`, every further account from here.
+
+**Create account** (the floating button): username, optional display name (shown in
+chats), role — *User: web chat and their own data* or *Admin: everything* — and a
+temporary password (suggested for you, at least 8 characters, shown only in the
+dialog). Hand it over out of band; the holder must replace it at first sign-in before
+reaching anything else.
+
+The table lists every account with its role, its state — **Active**, **Temporary
+password** (not yet replaced), or **Deactivated** — and creation time. Per row:
+
+| Action | Effect |
+| --- | --- |
+| **Password** | Issues a fresh temporary password: the current one stops working and every session of that account is signed out |
+| **Make admin** / **Make user** | Flips the role. Not on yourself |
+| **Deactivate** / **Reactivate** | A deactivated account cannot sign in and its sessions stop working. Everything it owns stays, and its assistants answer nothing while it is deactivated; reactivating restores the exact prior state. Not on yourself |
+| **Delete…** | Only offered once deactivated. Removes the account **and** its assistants (with their tasks and bot connections), tool connections, chat threads and the memory about them. Irreversible |
+
+The self and last-admin guards are enforced by the service; the page merely greys the
+buttons.
+
 ## Debug (`/debug`)
 
-Every feature's traces in one filterable list — filter by feature and status, click
-through to the detail view.
+Every feature's traces in one filterable, paged list — filter by feature (grouped by
+product area: Conversation, People, Knowledge, Automation, Tools, Insights, System,
+plus "Other" for ids retired from the registry but still in the data), assistant,
+status, correlation id, trigger kind, actor, related id and flow, then click through
+to the detail view. A user-role account sees its own assistants' turns.
 
 A trace detail shows the metadata panel and the ordered event timeline. Each event has
 a clean human title plus a stage badge, and its payload can be expanded. Large
@@ -409,12 +555,48 @@ Which feature to filter to, by question:
 
 | Question | Filter |
 | --- | --- |
-| Why did the bot (not) reply? | `bot-messaging` |
+| Did a message reach the pipeline at all? | `bot-messaging`, the `inbound` trace — one per message that opened turns, listing each assistant's turn and its structural verdict |
+| Why did the bot (not) reply? | `bot-messaging`, the `reply` trace |
 | Why did it answer an un-addressed message? | `bot-messaging`, read the `addressing check` event's `matchedText` |
-| Did a tool run, and what did it return? | `mcp-tools-<feature>` |
+| Why did every assistant in a shared group go quiet? | `bot-messaging`, a `skipped` reply carrying the loop-guard event |
+| Did a tool run, and what did it return? | `mcp-tools-<feature>`; `mcp-tools-connections` for remote servers |
 | Why is a recall bad? | `history-summaries` |
 | Why did it remember (or forget) something? | `memory`, `memory-extraction` |
 | Why did a task's message not arrive? | `tasks`, then the job card's pause notice (a quiet fire is the model's own choice, visible in the fire trace) |
 | What did the browser agent do? | `browser-agent` |
-| When did the model/config change? | `settings` |
-| Who tried to sign in? | `auth` |
+| When did the model/config change? | `settings`, `backends` |
+| Who connected, stopped or disconnected a bot? | `tool-connections` — the transport registry records its connection writes there |
+| Who tried to sign in, who linked an identity? | `auth`, `accounts` |
+
+## Chat (`/chat`)
+
+The web chat: talk to your assistants in the dashboard itself. This is the one page
+every account sees, and the user role's whole surface.
+
+Chats down the left with **New chat** at the top, the conversation on the right, the
+composer at the bottom. A new chat is a blank conversation, not a form: pick the
+assistant ("Talking to", shown only when more than one exists — a chat is always with
+exactly one, fixed for its lifetime), say something, and the thread is created by that
+first message and **named by the core** from the first exchange; click the title to
+rename it, **Delete** to remove it for good.
+
+The composer takes text, an attached image, or a voice note recorded in the browser.
+Sending is message-at-once: the reply arrives when the turn produces it, over the same
+live stream every other page uses — not as streamed tokens. Web-chat turns run through
+the same pipeline as Telegram turns (same tools, memory, persona), and the model is
+told it is in the web chat.
+
+## Profile (`/profile`)
+
+Every account's own page — identity, password, and its own memory. Four cards:
+
+| Card | What you can do |
+| --- | --- |
+| **Who you are** | The username you signed in as and an editable display name (how you appear in chats; empty means the username) |
+| **Your identities** | The platform identities linked to this person; memory and owner rights follow these links. **Link another identity** mints a one-time code (`link-xxxxxxxx`, valid 15 minutes, one live code per account — minting again replaces it). Send it, as the whole message, to any connected bot from the identity you want linked, e.g. your Telegram; the bot confirms in the chat and the identity appears here |
+| **What the assistant remembers about you** | One document per linked identity, readable in full; **Forget** deletes one. There is no way to write memory by hand |
+| **Password** | Current password, new password. Other sessions of this account are signed out; this one stays |
+
+Admins can instead link identities from the Users page; a code sent from an identity
+that already belongs to a *different* linked person is refused and needs an admin to
+sort the links out.

@@ -4,15 +4,19 @@ Configuration lives in **two** layers, and the split is deliberate.
 
 | Layer | Holds | Changed by | Takes effect |
 | --- | --- | --- | --- |
-| Environment variables | Bootstrap plumbing only: where the database is, where trace files go, the process timezone | Editing `.env` / compose, then restarting | On restart |
-| DB-backed Settings | All runtime product configuration: LLM connections, models, bot token, owner, timezone, schedules | The dashboard (Settings page) or `PATCH /api/settings` | Immediately — background jobs and the bot re-read settings per run/turn |
+| Environment variables | Bootstrap plumbing only: where the database and Redis are, the shared secret the two apps present to each other, the process timezone | Editing each app's `.env` / compose, then restarting | On restart |
+| DB-backed configuration | All runtime product configuration: backends, models, settings, assistants and their personas, bot tokens, tasks, tool connections | The dashboard, or the API | Immediately — background jobs and the pipeline re-read per run/turn; a transport reconciles on the change event |
 
 Runtime setup is **not** in env vars. An operator should never have to edit a
-file and restart a container to change the model the bot uses.
+file and restart a container to change the model an assistant uses.
+
+Paths are relative to `apps/core/` unless they start with `apps/` or `packages/`.
 
 ---
 
 ## Environment variables
+
+### The core (`apps/core`)
 
 The full list, as parsed by `server/env.ts`. Every variable also accepts a
 `<NAME>_FILE` variant whose file contents are used instead — that is the Docker
@@ -24,15 +28,27 @@ rather than crash-looping.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | — | Postgres (with pgvector) connection string. Required for anything that touches persistence, which is nearly everything. |
-| `TZ` | `UTC` | Process timezone. The *operator* timezone used for rendering and scheduling is the DB setting, not this. |
-| `NODE_ENV` | — | `development` \| `production` \| `test`. |
+| `DATABASE_URL` | — | Postgres (with `vector` and `pg_trgm`) connection string. Required for anything that touches persistence, which is nearly everything |
+| `REDIS_URL` | — | The queue every incoming message travels on and the bus the apps talk over. Unset, the core boots but starts no queue consumers and processes **no messages** — the log says so loudly |
+| `INTERNAL_API_TOKEN` | — | The shared secret authenticating every core ↔ transport HTTP call (`x-internal-token`). Must equal the transports'. Unset, every internal route answers 401 and no transport can register |
+| `TZ` | `UTC` | Process timezone. The *operator* timezone used for rendering and scheduling is the DB setting, not this |
+| `NODE_ENV` | — | `development` \| `production` \| `test` |
 
-One more bootstrap override is read directly rather than through `server/env.ts`, so it
-has no `_FILE` variant:
+### The Telegram transport (`apps/tg`)
+
+Read directly from the environment (`packages/service`'s `requireEnv` /
+`optionalEnv`; no `_FILE` variants):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `REDIS_URL` | — | Required. Same Redis as the core |
+| `INTERNAL_API_TOKEN` | — | Required. Must equal the core's |
+| `PORT` | `3210` | The service's HTTP port (health, the internal API, the MCP server) |
+| `CORE_API_URL` | `http://localhost:3200` | Where the core's internal API is |
+| `SELF_URL` | `http://localhost:<PORT>` | The base URL the service **announces** at registration — what the core calls back. Set it whenever the core cannot reach the service on localhost (compose: `http://tg:3210`) |
+
+Everything else the service needs — bot tokens, which assistants to run —
+comes from the core at registration and on every change event.
 
 ### Compose-only variables
 
@@ -40,17 +56,21 @@ Read by `docker-compose.yml`, not by application code:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `3200` | Host port published for the app |
+| `PORT` | `3200` | Host port published for the core |
+| `INTERNAL_API_TOKEN` | `change-me` | Passed to both apps. **Set a real value** |
 | `POSTGRES_USER` | `bot` | Bundled Postgres user |
 | `POSTGRES_PASSWORD` | `bot` | Bundled Postgres password |
 | `POSTGRES_DB` | `bot` | Bundled Postgres database |
 | `POSTGRES_PORT` | `5432` | Host port published for Postgres |
+| `REDIS_PORT` | `6379` | Host port published for Redis |
+| `TZ` | `UTC` | Process timezone for every service |
 
 Under Compose, `DATABASE_URL` is built from the `POSTGRES_*` variables and points
-at the bundled `db` service. Set `DATABASE_URL` explicitly to use an external
-database instead.
+at the bundled `db` service, `REDIS_URL` points at the bundled `redis`, and the
+transport's `SELF_URL` / `CORE_API_URL` are the compose service names. Set
+`DATABASE_URL` explicitly to use an external database instead.
 
-### Runtime variables set by the image
+### Runtime variables set by the core image
 
 | Variable | Set to | Why |
 | --- | --- | --- |
@@ -59,9 +79,9 @@ database instead.
 | `NEXT_TELEMETRY_DISABLED` | `1` | No build telemetry |
 
 `NEXT_PUBLIC_APP_NAME` and `NEXT_PUBLIC_APP_VERSION` are inlined at build time by
-`next.config.ts` from `package.json` and read through `lib/build-info.ts`. They
-exist so client-reachable code never imports `package.json` (which shipped the
-whole dependency manifest into the browser bundle).
+`next.config.ts` from the root `package.json` and read through `lib/build-info.ts`.
+They exist so client-reachable code never imports `package.json` (which shipped
+the whole dependency manifest into the browser bundle).
 
 ---
 
@@ -69,14 +89,14 @@ whole dependency manifest into the browser bundle).
 
 LLM endpoints are first-class rows in the `backends` table, managed as a CRUD
 on the **Backends** page (`/api/backends`). Each backend is a named
-OpenAI-compatible server:
+inference server:
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `name` | string (≤100) | Display name, unique case-insensitively |
-| `baseUrl` | URL (≤500) | The OpenAI-compatible endpoint (e.g. `…/v1`) |
+| `baseUrl` | URL (≤500) | The endpoint (e.g. `…/v1`) |
 | `apiKey` | secret | Optional; write-only, exposed as `apiKeyConfigured` |
-| `type` | enum | Which inference server answers there (`ollama`, `llamacpp`, `vllm`, `anthropic`, `google`, `openai-compatible`) — feeds the backend-normalization adapters. A **Detect** button fingerprints the endpoint as a suggestion; the operator picks. Two speak a native API rather than the OpenAI wire shape: `anthropic` (chat-shaped roles only; API key required) and `google` (chat, embeddings and images; API key required) |
+| `type` | enum | Which inference server answers there (`ollama`, `llamacpp`, `vllm`, `anthropic`, `google`, `zai`, `openai-compatible`) — feeds the backend-normalization adapters. A **Detect** button fingerprints the endpoint as a suggestion; the operator picks. Two speak a native API rather than the OpenAI wire shape: `anthropic` (chat-shaped roles only; API key required) and `google` (chat, embeddings and images; API key required). `zai` speaks the OpenAI shape off its own base with its own thinking switch |
 
 Each backend card has **Test connection** — one `/v1/models` call that proves
 the host answers and the key is accepted, and doubles as the model-list
@@ -89,16 +109,18 @@ model riding on it and clears what the new endpoint verifiably does not serve
 
 One typed row (`settings`, `id = 'singleton'`). Read with `GET /api/settings`,
 written with `PATCH /api/settings`; the dashboard form (Settings page) has one
-tab per concern and one Save button that persists every changed field
-regardless of which tab is open. The exception is the **Security** tab: the password change there
-posts to its own endpoint (`POST /api/auth/change-password`) with its own
-button, because it is an auth action, not a settings patch.
+tab per concern — **Models**, **Telegram**, **General**, **Integrations**,
+**Security** — and one Save button that persists every changed field
+regardless of which tab is open. The exception is the **Security** tab: the
+password change there posts to its own endpoint
+(`POST /api/auth/change-password`) with its own button, because it is an auth
+action on the signed-in account, not a settings patch.
 
 Secrets are **write-only**. They are accepted on input and never returned — the
 client-facing shape exposes only a `…Configured: boolean`. Omitting a secret key
 from a PATCH leaves the stored value alone; sending `null` clears it.
 
-### LLM roles
+### LLM roles (Models tab)
 
 LLM configuration is per **role**. Every role stores a backend id from the
 catalog plus a model id; endpoint URLs and keys live on the backend rows only.
@@ -107,21 +129,25 @@ and fed by the selected backend's live `/v1/models` listing.
 
 | Role | Backend field | Model field | Model unset means |
 | --- | --- | --- | --- |
-| Chat (main) | `chatBackendId` | `model` | Bot unconfigured: no replies, every background LLM job settles as a no-op. Pick a model that supports thinking and tool calls |
+| Chat (main) | `chatBackendId` | `model` | Unconfigured: no replies, every background LLM job settles as a no-op. Pick a model that supports tool calls |
 | Embeddings | `embeddingBackendId` | `embeddingModel` | Semantic recall off |
 | Images | `imageBackendId` | `imageModel` | `image_generate` tool off |
 | Speech (TTS) | `speechBackendId` | `speechModel` (+ `speechVoice`) | Voice replies off (text only) |
-| Audio (STT) | `audioBackendId` | `audioModel` | Voice messages transcribed by the chat model via `input_audio` (main by default) |
+| Audio (STT) | `audioBackendId` | `audioModel` (+ `audioTranscriptionMode`) | Voice messages transcribed by the chat model via `input_audio` (main by default) |
 | Vision | `visionBackendId` | `visionModel` | The chat model describes media (main by default) |
 | Browser agent | `browserBackendId` | `browserModel` | Browsing thinks on the chat model (main by default) |
 | Classifiers | `classifierBackendId` | `classifierModel` | The per-message checks run on the chat model (main by default) |
 | Background jobs | `backgroundBackendId` | `backgroundModel` | The nightly jobs run on the chat model (main by default) |
 
+`audioTranscriptionMode` is `transcriptions` (a whisper-class
+`/v1/audio/transcriptions` endpoint) or `chat` (an audio-capable chat model
+takes the bytes as `input_audio`).
+
 The last two are the **auxiliary** roles: everything the bot asks a model that
 is not a reply. They are split because the two workloads pull in opposite
 directions, and one setting for both would force a bad trade.
 
-- **Classifiers** — the addressing analyzer, its verifier, the standing chat-rule
+- **Classifiers** — the addressing analyzer, its verifier, the standing task
   match, and the honesty gate over a drafted reply. One question about one piece
   of text, answered as a small JSON verdict, with no tools, history or persona.
   Every group message pays at least one of these before a reply is even
@@ -135,9 +161,9 @@ directions, and one setting for both would force a bad trade.
   these, but what they write is what later replies recall, so quality outranks
   latency and a long-context model belongs here.
 
-Deliberately **not** auxiliary: replies, and scheduled tasks — a task fires a
-real user-facing message through the tool loop, so it holds the same quality bar
-as an answer to a person and stays on the chat role. Vision, audio and browsing
+Deliberately **not** auxiliary: replies, and tasks — a task fires a real
+user-facing message through the tool loop, so it holds the same quality bar as
+an answer to a person and stays on the chat role. Vision, audio and browsing
 have their own roles already.
 
 A model id is only meaningful on the backend it was picked from, so a PATCH
@@ -153,89 +179,104 @@ is only acted on when proven. The audio model is exempt only in
 is free-text in the UI for the same reason) — in `chat` mode it is an ordinary
 chat model and is verified like the rest.
 
-### Telegram
+### Role probes
+
+Every role card has a probe (`POST /api/settings/test-<role>`: `chat`,
+`classifier`, `background`, `vision`, `browser`, `embeddings`, `images`,
+`speech`, `audio`). Each takes `{ backendId?, model? }` (omitted fields fall
+back to what is stored, a null `backendId` means "use the chat backend") and
+resolves through the same runtime resolver the feature uses — a passing test
+means the real connection works, not a test-only variant of it.
+
+- The chat-shaped probes (**chat**, **classifier**, **background**, **vision**,
+  **browser**) run one real completion in that role's call shape and report
+  the model that answered and the latency.
+- **Test embeddings** embeds a real string and reports the vector width it got
+  back. Every stored vector must be **1024** wide (`lib/embeddings.ts`,
+  `EMBEDDING_DIMENSIONS` — a code constant, not a setting: pgvector cannot
+  index a vector of unspecified width), so a mismatched model surfaces as a
+  clear message instead of an opaque Postgres error inside a nightly job.
+- **Test images** / **Test speech** check the configured model is actually
+  served rather than generating anything.
+- **Test audio** transcribes a fraction of a second of generated silence — a
+  real call in the configured mode, because whisper-class servers often serve
+  it without `/v1/models`.
+
+### Telegram tab
 
 | Field | Type | Effect when unset |
 | --- | --- | --- |
-| `telegramBotToken` | secret (≤200) | The poller cannot start; Overview says so |
-| `ownerUserId` | numeric string | Owner-gated behavior is off (maintenance mode then closes the bot to everyone; browser-agent downloads stay disabled) |
-| `maintenanceModeEnabled` | boolean | `false`. When on, only the owner is answered (and only through deterministic addressing), and no scheduled task fires |
+| `maintenanceModeEnabled` | boolean | `false`. When on, only senders holding owner rights (the assistant's owning account, admins) are answered — and only through deterministic addressing — everyone else gets a static notice, and no task fires |
 
-`ownerUsername` is stored denormalized from the chosen known user, for display
-only.
+Bot tokens are **not** settings: each assistant carries its own Telegram
+connection, entered in the assistant editor on `/assistants` (the tab links
+there). The token is stored as the connection's opaque config and handed to the
+transport at registration and on every change.
 
-### General
+### General tab
 
 | Field | Type | Effect when unset |
 | --- | --- | --- |
-| `timezone` | IANA name | `UTC`. Governs every rendered timestamp, scheduled-task wall-clock times, daily-job run time, and analytics period boundaries |
+| `timezone` | IANA name | `UTC`. Governs every rendered timestamp, task wall-clock times, the daily-job run time, and analytics period boundaries |
 | `dailyJobsRunTime` | `HH:MM` | `04:00`. The local time in `timezone` that **all** daily jobs run at |
 | `browserDownloadLimitGb` | int 1–100 | `10`. Hard ceiling on a single browser-agent download, for every download tool. A disk guard — it never lowers the quality the agent fetches |
+| `assistantLoopGuardTurns` | int 0–10 | `3`. In a chat with several assistants, how many assistant-authored messages in a row are allowed before the assistants fall silent until a person speaks (user decision, 2026-08-24) |
 
 The chat-attach ceiling is not a setting: it is fixed at 50 MB, Telegram's bot
 upload limit (`TELEGRAM_MAX_UPLOAD_MB` in `lib/telegram.ts`; user decision,
 2026-08-01 — the old `browserDownloadMaxMb` setting only ever restated a fact
 about Telegram).
 
-### Role probes
-
-Every probe takes `{ backendId?, model? }` (omitted fields fall back to what is
-stored, a null `backendId` means "use the chat backend") and resolves through
-the same runtime resolver the feature uses — a passing test means the real
-connection works, not a test-only variant of it.
-
-- **Test embeddings** embeds a real string and reports the vector width it got
-  back. Every stored vector must be **1024** wide (`lib/embeddings.ts`,
-  `EMBEDDING_DIMENSIONS` — a code constant, not a setting: pgvector cannot
-  index a vector of unspecified width), so a mismatched model surfaces as a
-  clear message instead of an opaque Postgres error inside a nightly job.
-- **Test image endpoint** / **Test speech endpoint** check the configured model
-  is actually served rather than generating anything.
-- **Test audio** transcribes a fraction of a second of generated silence — a
-  real `/v1/audio/transcriptions` call, because whisper-class servers often
-  serve it without `/v1/models`.
-- Vision and browser agent have no dedicated probe: they are chat-completion
-  roles, verified by the backend's model listing (and the Overview probes).
-
-### Integrations
+### Integrations tab
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `tavilyApiKey` | secret | The browsing agent's search fallback, used only when no search engine loads in the browser. Unset, a run whose engines are all blocked reports the search as failed |
 
-### Not on the form
+## Configuration that is not a setting
 
-Two columns on the same row are managed by other flows and never editable here:
+Everything else a person configures is its own feature with its own page,
+because it is a collection rather than one row:
 
-| Column | Owner |
-| --- | --- |
-| `operator_password_hash`, `session_secret` | `/setup`, the Security tab's password change, and the auth service (see [Security](architecture/security.md)) |
-| `active_personality_id` | The Personalities page (`PUT /api/personalities/active`) |
+| What | Where | Doc |
+| --- | --- | --- |
+| Accounts, roles, passwords | `/accounts`, `/profile` | [Accounts](features/accounts.md) |
+| Assistants: name, persona, owner, tool selection | `/assistants` | [Assistants](features/assistants.md) |
+| Transport connections (bot tokens) | The assistant editor; rendered from the field schema each transport announces at registration; stored in `assistant_transports.config` | [Adding a transport](development/adding-a-transport.md) |
+| Transport-level config | `PUT /api/transports/{id}/config`; the Telegram transport announces no fields today | — |
+| Tasks | `/tasks` | [Tasks](features/tasks.md) |
+| Tool connections | `/tools` | [Tool connections](features/tool-connections.md) |
+| Per-person and per-chat reply language, aliases, group notes | `/users`, `/groups` | [Users and groups](features/known-users-and-groups.md) |
 
 ---
 
 ## Verifying configuration honestly
 
-Nothing in this app reports "configured" from the presence of a variable.
+Nothing in this system reports "configured" from the presence of a variable.
 
-- **Overview** runs a real `SELECT 1` and a real `/v1/models` call, and probes both
-  filesystem write paths: the trace directory by opening the current month's file for
-  append (exactly what the flusher does), and the downloads directory by creating and
-  removing a file (exactly what a download does). Neither is an `access(W_OK)` guess,
-  which a bind mount the container user cannot write to would satisfy.
+- **Overview** runs a real `SELECT 1` and a real `/v1/models` call, probes both
+  filesystem write paths (the trace directory by opening the current month's
+  file for append, the downloads directory by creating and removing a file),
+  and shows each Telegram connection's live poller state as the transport
+  reports it on its `/health` — "Not tracked" when the service is not running.
 - **`GET /api/health`** returns `200`/`503` on the database probe alone.
   Configuration presence, trace-storage health and download-storage health are
-  reported in the body but are deliberately *not* readiness gates: restart-looping on
-  an unwritable trace volume would drop the settled traces still buffered in RAM, and
-  an unwritable downloads mount breaks only the browser agent's downloads.
-- **Connection probes** (`POST /api/backends/test`, and the role probes
-  `test-embeddings`, `test-images`, `test-speech`, `test-audio`) each make a
-  real call and are recorded as traces (`backends` / `settings` features).
+  reported in the body but are deliberately *not* readiness gates: restart-looping
+  on an unwritable trace volume would drop the settled traces still buffered in
+  RAM, and an unwritable downloads mount breaks only the browser agent's
+  downloads.
+- **Connection probes** (`POST /api/backends/test`, and the nine role probes)
+  each make a real call and are recorded as traces (`backends` / `settings`
+  features).
+- **The assistant editor** shows a connection as Running only when the
+  transport's health report says its poller is polling under that bot account.
 
 ## Changing configuration
 
 | Change | How |
 | --- | --- |
 | Any runtime setting | Settings page, or `PATCH /api/settings`. Effective immediately |
-| Database location | `DATABASE_URL`, then restart |
-| Operator password | Settings → Security (requires the current password; signs out every other session). Forgotten password: clear `operator_password_hash` and `session_secret` in the database, then run `/setup` again. See [Security](architecture/security.md) |
+| A bot token, starting or stopping a bot | The assistant editor; the transport reconciles within a second of the change event |
+| Database or Redis location | `DATABASE_URL` / `REDIS_URL`, then restart the app(s) that read them |
+| The internal token | `INTERNAL_API_TOKEN` in **both** apps, then restart both |
+| Your password | `/profile` (requires the current password). An admin resets another account from `/accounts` with a temporary password. A locked-out sole admin: see [Security](architecture/security.md#recovery-for-a-locked-out-sole-admin) |

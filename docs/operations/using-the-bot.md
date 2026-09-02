@@ -24,6 +24,10 @@ Anything else in a group is treated as conversation between other people. The bo
 still **reads** it — everything is mirrored into history and can be recalled later —
 it just does not reply.
 
+Several bots can share a group, each with its own assistant. They can address each
+other, but the operator caps how many bot messages may run in a row before all of
+them go quiet until a person speaks again.
+
 If the bot answers when nobody was talking to it, that is fixable: see
 [Correcting it](#correcting-it) below.
 
@@ -41,6 +45,23 @@ If the bot answers when nobody was talking to it, that is fixable: see
 Reply chains matter to it: every history line is anchored by its Telegram message id
 and a reply is marked as such, so "what did we decide about that" resolves to the
 right thread rather than to whatever was said nearby.
+
+## Who it thinks you are
+
+The bot knows you by your Telegram identity. If you also have an account on the
+operator's dashboard, you can tell it that the two are the same person: open your
+**Profile** there, press **Link another identity**, and send the code it shows
+(`link-` followed by eight characters, valid for 15 minutes) to the bot as a whole
+message, from the Telegram account you want linked. The bot answers in the chat:
+
+> Done — this chat identity is now linked to *your name*. Memory and permissions
+> follow you here from now on.
+
+From then on what it remembers about you is shared between the web chat and Telegram,
+and if your account owns the assistant behind this bot, the bot treats you as its
+owner here too. An expired code gets "That link code is invalid or has expired";
+an identity that already belongs to a different linked person is refused and needs the
+operator to sort out.
 
 ## What it can do
 
@@ -75,8 +96,9 @@ One-off, daily and weekly schedules all work, and relative times ("in an hour",
 "tonight", "next Monday") are resolved against the current time.
 
 Anyone in the chat can create a task. You can list and read all of the chat's tasks —
-but you can only **change or cancel the ones you created**. Reminders are delivered to
-the chat they were created in.
+but you can only **change or cancel the ones you created**, unless you hold owner
+rights over this bot (see below). Reminders are delivered to the chat they were
+created in.
 
 Cancelling from the chat **removes** the task; there is no "pause it for now" from
 here. Pausing is the operator's, on the `/tasks` page — and a paused task is one the
@@ -117,8 +139,10 @@ while.
 Downloaded files are posted to the chat as they land, provided they are within the
 size limit the operator configured. Larger files stay on the server.
 
-**Downloading is restricted to the bot's configured owner.** Anyone can start a
-browsing session; only the owner's sessions may download.
+**Downloading is restricted to people with owner rights over this bot** — the
+dashboard account that owns its assistant (through a linked identity), and the
+operator's admins. Anyone can start a browsing session; only an owner's sessions may
+download.
 
 This is the bot's **only** way to reach the internet — searching, opening a link you
 sent, reading a live value, and downloading all go through it. So anything web-shaped
@@ -179,8 +203,9 @@ configured, it replies in English. Ask the operator to change it.
 | Symptom | Reason |
 | --- | --- |
 | Silence in a group | It did not consider itself addressed. @mention it or reply to one of its messages |
-| "Maintenance" notice | The operator has turned on maintenance mode. Only the owner gets normal replies until it is off |
+| "Maintenance" notice | The operator has turned on maintenance mode. Only people with owner rights over this bot get normal replies until it is off |
 | A reminder never arrived | Firing is paused during maintenance mode. It will deliver once maintenance ends |
+| Every bot in the group went quiet at once | They reached the operator's cap on bot messages in a row. Say something — a person's message lets them answer again |
 | It says it could not do something | Take that literally. It is instructed never to claim it looked something up, saved something, or remembered something unless it actually did |
 
 That last one is worth trusting: it is told that an action only counts when it actually

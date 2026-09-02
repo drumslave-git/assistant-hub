@@ -25,7 +25,9 @@ registration announces its config-field schemas, the dashboard renders
 them, and platform actions are the transport's own MCP tools. Accounts
 (admin/user roles) own assistants; owner rights, memory and identity
 resolve through the person-link graph. `docs/PLAN.md` holds the full
-design; `docs/architecture/overview.md` the operator-facing map.
+design; `docs/architecture/overview.md` the operator-facing map;
+`docs/development/adding-a-transport.md` the transport contract as a
+step-by-step manual with `apps/tg` as the worked example.
 
 ## Required Reading
 

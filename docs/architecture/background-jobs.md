@@ -2,9 +2,10 @@
 
 Background work runs **in-process**, on shared scheduler primitives, guarded by
 Postgres advisory locks. There is no external cron, no separate worker service
-and no on-demand-only work. That is the recorded operating model for this app: a
-single self-hosted container already runs in-process singletons (the Telegram
-poller, the MCP registry, Chromium, the realtime hub), and jobs run the same way.
+and no on-demand-only work. That is the recorded operating model for this app: the
+core container already runs in-process singletons (the queue consumers, the MCP
+registry, Chromium, the realtime hub), and jobs run the same way. The Telegram
+poller is not one of them — it lives in the `apps/tg` service.
 
 ## The three primitives
 
@@ -60,8 +61,8 @@ private copy of the same ~100-line shape. A feature now supplies only its
 
 | Job | Primitive | Runs | Work | Backlog badge |
 | --- | --- | --- | --- | --- |
-| **Vision backfill** | Idle | After the bot has been quiet | Caption `message_media` rows still `pending` | Media pending |
-| **Search index** | Idle | After a longer quiet period | Build + embed each message's searchable text into `chat_message_search` | Messages pending |
+| **Vision backfill** | Idle | After the bot has been quiet | Caption `source_media` (and `web_media`) rows still `pending` | Media pending |
+| **Search index** | Idle | After a longer quiet period | Build + embed each message's searchable text into `source_message_search` | Messages pending |
 | **Task poller** | Interval | Every tick | Fire due scheduled tasks, advance `next_run_at`, delete spent one-shots | Overdue tasks |
 | **History summary** | Daily | `daily_jobs_run_time` | Compress each finished chat-day into embedded topic summaries | Chat-days |
 | **Memory** | Daily | `daily_jobs_run_time` | Two ordered passes: passive extraction, then consolidation | Chat-days to read + notes to fold |
@@ -166,11 +167,12 @@ the length is not known up front — never a misleading bar.
 ## The Jobs board
 
 `/jobs` is the consolidated view. `features/jobs/server/registry.ts` is the one
-place that knows all seven jobs: it calls each feature's `getXJobInfo` getter and
+place that knows all eight jobs: it calls each feature's `getXJobInfo` getter and
 normalizes the two different status shapes (idle vs interval, plus each job's own
 backlog and pause state) into a single `JobView` the board renders uniformly.
-That coupling deliberately mirrors `register-node.ts`, which is likewise the
-single place that *starts* all seven.
+That coupling deliberately mirrors `server/boot/register-node.ts`, which is
+likewise the single place that *starts* all eight (plus the browser-agent
+runner, which is a queue drain rather than a scheduled job).
 
 Each card shows: an activity badge, next/last run, the last result, the backlog,
 a live progress bar while running, a "Run now" button hitting the owning
@@ -181,8 +183,9 @@ That last field matters more than it looks. A job that silently declines to run
 (paused by maintenance mode, no LLM configured, nothing to do) is the failure mode
 an operator cannot diagnose from a dashboard that only ever shows "Enabled".
 
-The board subscribes to all six job topics at once over the shared SSE stream, so
-any status or progress change refreshes it with no manual reload.
+The board subscribes to every job's topic at once (vision, history, tasks,
+memory, analytics, feedback, browser) over the shared SSE stream, so any status
+or progress change refreshes it with no manual reload.
 
 ## "Run now" semantics
 
@@ -206,7 +209,7 @@ fires.
 3. Wrap the scheduler in a `globalThis` singleton so there is exactly one per
    process and it survives hot reload.
 4. Export `startX` / `stopX` / `runXNow` / `getXJobInfo`.
-5. Register start and stop in `server/telegram/register-node.ts`.
+5. Register start and stop in `server/boot/register-node.ts`.
 6. Add a mapper in `features/jobs/server/registry.ts` (the mappers are pure and
    exported so the normalization is unit-testable without mocking every scheduler
    module).

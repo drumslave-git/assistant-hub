@@ -2,7 +2,11 @@
 
 Everything the app asks a model to do goes through one of five OpenAI-compatible
 clients in `server/llm/`. Everything the model can ask the app to do goes through
-the in-process MCP registry in `server/mcp/`.
+the MCP layer in `server/mcp/`: an in-process registry of the feature tools, plus
+remote MCP servers reached over HTTP — the operator's tool connections and each
+transport's own tool server.
+
+Paths are relative to `apps/core/` unless they start with `apps/` or `packages/`.
 
 ## The five provider clients
 
@@ -57,7 +61,7 @@ analyzer and verifier, chat-rule match, honesty gate). It lives on its own so th
 reply path and the Settings probe cannot drift apart on what a classification
 costs — and so the numbers, all of which were measured, are written down once.
 Which model answers them is the **classifier role** (see
-[Configuration](../configuration.md#llm-roles)); the shape is the same wherever
+[Configuration](../configuration.md#llm-roles-models-tab)); the shape is the same wherever
 it runs.
 
 Notable constraints, each learned the hard way:
@@ -288,8 +292,12 @@ response can never erase a document that took months to build.
 
 ## MCP: how tools work here
 
-Tools are exposed through the Model Context Protocol, but entirely **in-process**
-— no sockets, no HTTP.
+Tools are exposed through the Model Context Protocol in two ways. The feature
+tools are **in-process** — no sockets, no HTTP. Everything else is a remote MCP
+server over Streamable HTTP: the tool connections an operator adds on the Tools
+page, and the managed connection the core provisions for every registered
+transport's own server (`apps/tg` serves its reply, send and reaction tools at
+`/mcp`).
 
 ```
 BotMcpRegistry ── in-memory transport pair ── McpServer
@@ -299,6 +307,10 @@ BotMcpRegistry ── in-memory transport pair ── McpServer
  tool-trace.ts wrapper                    features/*/server/mcp-tools.ts
       │
       └─► one trace per call, feature `mcp-tools-<owner>`
+
+resolveConnectionToolset(scope) ── http-client.ts ── remote McpServer (tool connection / apps/tg /mcp)
+      │  applied snapshot, `<slug>__<tool>` names, turn binding as `_meta`
+      └─► one trace per call, feature `mcp-tools-connections`
 ```
 
 | Module | Role |
@@ -310,6 +322,9 @@ BotMcpRegistry ── in-memory transport pair ── McpServer
 | `server/mcp/context.ts` | Per-turn context (see below) |
 | `server/mcp/tool-trace.ts` | Wraps the single `callTool` choke point so every tool gets its own trace scope automatically |
 | `server/mcp/tool-result.ts` | The normalized result type the tool loop consumes |
+| `server/mcp/http-client.ts` | The MCP client for remote servers: discovery (`listRemoteTools`) and calls (`callRemoteTool`) over Streamable HTTP with the connection's auth headers |
+| `features/tool-connections/server/toolset.ts` | Turns the stored connections into the tools one turn may call: enabled, in the turn's source-app scope, open to this assistant. Offers the **applied snapshot**, never a live listing |
+| `features/tool-connections/server/managed.ts` | Provisions and reconciles the transports' own servers as managed connections at boot and on every registration |
 
 ### Per-turn context — the security boundary
 
@@ -333,16 +348,24 @@ The consequences are structural, not advisory:
   not part of the exemption. Owner status is resolved from the turn's authority,
   the same way the browser agent's download rights are.
 
-The storage itself is a `globalThis` singleton, like the registry and the bot
-manager. Next evaluates the same server module in several bundles
-(instrumentation, where the poller and the schedulers run, and the app/Route
-Handler bundle behind the dashboard), and dev hot reload adds another copy each
-time — but the registry that holds the tool handlers outlives all of them. A
-storage owned by a module instance is therefore bound in one copy and read from
-another, and every tool fails with "no chat is bound" however correctly the
-pipeline bound the turn. Keying the storage by name instead of by module
-identity is what keeps the binding a fact about the process rather than about
-load order.
+The storage itself is a `globalThis` singleton, like the registry. Next
+evaluates the same server module in several bundles (instrumentation, where the
+queue consumers and the schedulers run, and the app/Route Handler bundle behind
+the dashboard), and dev hot reload adds another copy each time — but the
+registry that holds the tool handlers outlives all of them. A storage owned by a
+module instance is therefore bound in one copy and read from another, and every
+tool fails with "no chat is bound" however correctly the pipeline bound the
+turn. Keying the storage by name instead of by module identity is what keeps
+the binding a fact about the process rather than about load order.
+
+A **remote** tool has no access to that storage, so the same binding travels
+with every call as request `_meta` under the key `assistant-hub/turn`
+(`packages/contracts/src/tool-meta.ts`): source, chat, assistant, thread, the
+message being answered, the speaker and their owner rights, and which delivery
+the turn may perform. It is attached out of band — invisible in the tool
+schema — so the model still chooses *what* to do and never *where*; a hosted
+tool refuses a call that carries no binding. See
+[Adding a transport](../development/adding-a-transport.md#the-turn-binding).
 
 ### Tool tracing
 
@@ -366,8 +389,13 @@ the task was cancelled.) The result itself still reaches the model unchanged.
 
 ### Tool authoring rules
 
-- **All registered tools are always available** to the model during a reply.
-  There is no per-tool on/off switch; the Tools page is read-only visibility.
+- **Every in-process feature tool is always offered** during a reply — there is
+  no per-tool on/off switch and no embedding or keyword routing (user decision,
+  2026-08-19). The only exception is the delivery tools, offered by turn kind
+  (below). Tool *connections* are the operator's: each is enabled or not, scoped
+  to every source app or one, and to every assistant or a selection, on the
+  Tools page — and what it offers is the snapshot the operator applied, never a
+  live listing that could change mid-conversation.
 - **Every tool self-describes**, and a tool description never references another
   tool by name. The system prompt lists no tools at all. The model chooses between
   tools from their descriptions alone.
@@ -382,7 +410,9 @@ the task was cancelled.) The result itself still reaches the model unchanged.
 
 ## The tool catalog
 
-26 tools across 9 owning features.
+18 in-process tools across 8 owning features, plus the transports' own tools
+(Telegram's three, on Telegram turns) and whatever tool connections the
+operator has applied.
 
 ### History — `mcp-tools-history`
 
@@ -397,7 +427,7 @@ query words it), while recall searches by meaning.
 | `history_get_by_message_ids` | `ids` (array) | Read messages referenced as `#<id>` in the transcript. Missing ids are omitted |
 | `history_recall_topics` | `query` (string or array), `limit` | Search past daily topic summaries by meaning; returns date, summary and the message ids to read the originals |
 
-`history_search` reads `chat_message_search` — a projection of each message
+`history_search` reads `source_message_search` — a projection of each message
 holding its own text **plus its media annotation**, embedded for semantic search
 (see [data-model](./data-model.md) and
 [background jobs](./background-jobs.md#message-search-index)). That is what makes
@@ -406,55 +436,51 @@ holds `''`, and only the projection carries what the picture shows. Hits name
 their author, so the `author` filter has something to be checked against; the
 bot-vs-participant distinction and the self-authored-only warning are unchanged.
 
-### Bot messaging — `mcp-tools-bot-messaging`
+### Telegram — the transport's own server, `mcp-tools-connections`
+
+Platform actions are not core tools: they are the transport's, served by its
+own MCP server and reached as a managed connection scoped to that transport's
+turns (`apps/tg/src/mcp.ts`, offered to the model as `tg__<tool>`). Their calls
+trace under `mcp-tools-connections` with the connection slug on the trace.
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
-| `reply_to_message` | `text` | **`message`-triggered task turns only** — reply to the message that triggered the task. The target is the runtime's decision, so there is no id for the model to get wrong |
+| `reply_to_message` | `text` | **`message`-triggered task turns only** — reply to the message that triggered the task. The target is the turn's, carried in the binding, so there is no id for the model to get wrong |
+| `send_message` | `text` | **Timed fires only** — send a standalone message to the task's chat |
 | `set_message_reaction` | `message_id`, `emoji`, `big` | Put one of Telegram's reaction emoji on a message of this chat (empty `emoji` takes it back off) |
 
-Both act on **one message of the bound chat**, and both check the id against the
-chat's mirror before doing anything — the model can aim neither at another
-conversation nor at an id it invented.
+All three act on **the bound chat** only. `set_message_reaction` asks the
+core's mirror before touching Telegram (`GET /api/internal/transports/messages`),
+so the model can aim neither at another conversation nor at an id it invented,
+and it refuses one target Telegram would happily accept — **the bot's own
+messages** (an `assistant` row in the mirror), because a badge the bot puts on
+its own message tells nobody anything. Another bot's message arrives as an
+ordinary `user` row and stays fair game. The allowed emoji are Telegram's fixed
+set, single-sourced in `apps/tg/src/reactions.ts` from the Bot API type and
+carried in the tool's own description. Validity is checked in the **handler**,
+not by a `z.enum`: the local backends this bot usually runs on template tool
+JSON without enforcing schemas, so an off-list emoji has to come back as a
+refusal written for the model rather than a raw schema error — and the
+normalizer accepts the variation-selector spellings (`U+2764 U+FE0F`) that
+Telegram itself rejects. A refusal from Telegram (a chat that allows only some
+emoji, a message too old, the poller down) is relayed verbatim with "do not
+claim you reacted", and the badge is recorded on the mirror row through a
+`transport.bot-reaction` event so the next turn remembers reacting.
 
-`set_message_reaction` is offered in **every** turn, unlike `send_message`: a
-reaction is not a message, so there is nothing to double-deliver, and the bot
-can react to the very message it is answering. It refuses one target Telegram
-would happily accept — **its own messages** (an `assistant` row in the mirror),
-because a badge the bot puts on its own message tells nobody anything. Another
-bot's message arrives as an ordinary `user` row and stays fair game. The allowed
-emoji are Telegram's
-fixed set, single-sourced in `lib/telegram.ts` from the Bot API type
-(`TELEGRAM_REACTION_EMOJI`) and carried in the tool's own description. Validity
-is checked in the **handler**, not by a `z.enum`: the local backends this bot
-usually runs on template tool JSON without enforcing schemas, so an off-list
-emoji has to come back as a refusal written for the model rather than a raw
-schema error — and `toTelegramReactionEmoji` accepts the variation-selector
-spellings (`U+2764 U+FE0F`) that Telegram itself rejects. A refusal from
-Telegram (a chat that allows only some emoji, a message too old, the poller
-down) is relayed verbatim with "do not claim you reacted".
+`set_message_reaction` is offered in **every** Telegram turn, unlike the two
+delivery tools: a reaction is not a message, so there is nothing to
+double-deliver, and the bot can react to the very message it is answering.
 
-Note the module-cycle hazard this tool introduced: the Telegram edge imports the
-reply pipeline, which imports the tool registry, which imports the bot-messaging
-tool module — so `reactToChatMessage` is imported **lazily inside the handler**.
-A static import leaves the toolkit's name list undefined while the registrar
-table is built, and every tool in that file silently loses its owning feature;
-`features/mcp-tools/server/service.test.ts` is what catches it.
-
-Pointing at *one* message. When the answer names several, citing their `#<id>`s in
-an ordinary sentence is the better shape — the delivery layer turns each cited id
-into a link to that message (see
+When an answer names several messages, citing their `#<id>`s in an ordinary
+sentence is the better shape — the transport turns each cited id the core has
+verified against the mirror into a link to that message (see
 [Bot messaging](../features/bot-messaging.md#delivery)), so one reply can carry
-three working references. The two compose: attach the reply to the main one, cite
-the rest.
+three working references. Deliveries pass `allow_sending_without_reply`, so a
+reply target that has since been deleted costs the pointer, not the answer.
 
-The one tool that changes **delivery** rather than doing work. Answering "where's
-that photo of the door?" under the question leaves the asker to go looking; a
-reply aimed at the found message quotes it and taps through to it. It sends
-nothing itself — the turn still produces exactly one message — and it validates
-the id against this chat's mirror first, because Telegram refuses a send whose
-reply target it cannot find. Deliveries pass `allow_sending_without_reply`, so a
-target that has since been deleted costs the pointer, not the answer.
+The delivery tools report what they sent in the result's `structuredContent`
+(`delivery: { ok, messageId, text }`), which is how the core counts a fire's
+deliveries and stamps a task's wording without recognizing any tool by name.
 
 ### Memory — `mcp-tools-memory`
 
@@ -491,36 +517,20 @@ task deletes it (user decision, 2026-08-14).
 | `tasks_update` | `id` + any changed field, `applies_to_everyone` | Reword, retime, re-target |
 | `tasks_delete` | `id` | Remove a task for good — how a chat cancels one |
 
-The toolkit's second registrar owns the **outbound** delivery tool:
+A task-driven turn's completion text is never sent; a **delivery tool** is the
+only path to the chat, and the delivery tools belong to the source the turn runs
+on: Telegram's `reply_to_message` / `send_message` on its own server (above),
+the web chat's `chat_reply_to_message` / `chat_send_message` in-process (below).
+A turn is offered **at most one** of the pair: the reply tool for a
+`message`-triggered turn (it is acting on a message, so the answer belongs under
+it) and the send tool for a timed fire (nothing triggered it, so there is
+nothing to reply to). An ordinary reply turn gets neither — its own text already
+delivers itself.
 
-| Tool | Input | Purpose |
-| --- | --- | --- |
-| `send_message` | `text` | **Timed fires only** — send a standalone message to the task's chat |
-
-A task-driven turn's completion text is never sent; a delivery tool is the only
-path to the chat, and a turn is offered **at most one** of the two:
-`reply_to_message` for a `message`-triggered turn (it is acting on a message, so
-the answer belongs under it) and `send_message` for a timed fire (nothing
-triggered it, so there is nothing to reply to). An ordinary reply turn gets
-neither — its own text already delivers itself.
-
-`getToolset({ delivery })` decides which; the handlers additionally check the
-context binding's **kind**, so a stale registry cannot let a fire claim it
-replied to a message that never existed.
-
-### Web — `mcp-tools-browser-agent`
-
-| Tool | Input | Purpose |
-| --- | --- | --- |
-| `browse_web` | `goal` | Enqueue a background browsing run: search, read, interact, download |
-
-**This is the only web-facing tool.** `search_web` (Tavily) and `read_web_page`
-(one-shot Chromium read) were removed on 2026-07-26 (user decision) — searching and
-page reading both happen inside a run now, on a real browser, where the agent can
-follow up on what it finds. Two weaker alternatives alongside it only split the
-model's choice. See [Browser agent](../features/browser-agent.md); every URL the
-model supplies is SSRF-checked before the browser touches it
-([Security](security.md#ssrf-defense)).
+The turn's `deliveryKind` (`reply` | `send` | none) decides which; the core
+withholds the other, and the tool's handler checks the binding's kind as well,
+so a stale toolset cannot let a fire claim it replied to a message that never
+existed (user decision, 2026-08-14).
 
 ### Images — `mcp-tools-image-gen`
 
@@ -539,11 +549,43 @@ forbids describing its contents.
 | --- | --- | --- |
 | `update_user_aliases` | `name`, `aliases` | Record a nickname observed for a participant, so the bot recognizes that name later |
 
+### Randomness — `mcp-tools-randomness`
+
+| Tool | Input | Purpose |
+| --- | --- | --- |
+| `roll_chance` | `percent` (0–100) | Roll once against a percentage and report `hit`, `percent` and the `roll`. How a standing task worded "sometimes" or "in 30% of cases" gets an honest coin flip instead of a model's guess |
+
+Read-only and side-effect free, but deliberately **not** idempotent: two
+identical calls are supposed to disagree. See [Randomness](../features/randomness.md).
+
+### Web chat — `mcp-tools-web-chat`
+
+The web chat's delivery tools, in-process since the chat dissolve (Phase 6),
+offered only on `chat` turns and only by the turn's `deliveryKind`
+(`webChatToolOffered`):
+
+| Tool | Input | Purpose |
+| --- | --- | --- |
+| `chat_reply_to_message` | `text` (≤8000) | **`message`-triggered task turns only** — reply into the thread, attached to the triggering message |
+| `chat_send_message` | `text` (≤8000) | **Timed fires only** — post a standalone message into the thread |
+
+Both store the message in the thread and ping the live view; they report the
+delivery in `structuredContent` exactly like the Telegram pair, so the core's
+bookkeeping is the same whichever source a task fires on.
+
 ### Browser agent — `mcp-tools-browser-agent`
 
 | Tool | Input | Purpose |
 | --- | --- | --- |
 | `browse_web` | `goal` | Enqueue a background run: a sub-agent drives a full browser, then reports back to this chat |
+
+**This is the only web-facing tool.** `search_web` (Tavily) and `read_web_page`
+(one-shot Chromium read) were removed on 2026-07-26 (user decision) — searching
+and page reading both happen inside a run now, on a real browser, where the
+agent can follow up on what it finds. Two weaker alternatives alongside it only
+split the model's choice. See [Browser agent](../features/browser-agent.md);
+every URL the model supplies is SSRF-checked before the browser touches it
+([Security](security.md#ssrf-defense)).
 
 The chat model calls this and moves on — it does not drive the browser itself
 (recorded decision: background run, not inline). The generic browser primitives
@@ -554,6 +596,12 @@ The chat model calls this and moves on — it does not drive the browser itself
 definitions for the *agent's own* loop. They are **not** MCP tools and are never offered to the main chat model.
 
 ## Adding a tool
+
+A tool that performs a **platform action** (send, react, pin, anything that
+touches Telegram or another transport's API) belongs in that transport's own
+MCP server, not here — see
+[Adding a transport](../development/adding-a-transport.md#step-6--the-mcp-server).
+A tool over the core's own data is an in-process feature tool:
 
 1. Write the handler in `features/<name>/server/mcp-tools.ts`, exporting a
    registrar and a `*_TOOL_NAMES` array.

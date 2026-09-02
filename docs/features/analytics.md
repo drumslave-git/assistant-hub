@@ -12,7 +12,7 @@ topic).
 
 | Source | Feeds |
 | --- | --- |
-| `chat_messages` (live SQL) | Message volume, active/new users, top users |
+| `source_messages` (live SQL through `server/source/tg-content.ts` — Telegram rows only, user decision 2026-08-27) | Message volume, active/new users, top users |
 | The **trace files** (`server/trace/store.ts`) | Tokens, model performance, traffic tiles |
 | `chat_hour_insights` / `period_insights` | Mood, word of the period, top topic |
 

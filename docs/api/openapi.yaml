@@ -2,23 +2,34 @@ openapi: 3.1.0
 
 info:
   title: assistant-hub dashboard API
-  version: 1.11.4
+  version: 1.48.0
   description: |
-    HTTP surface of the operator dashboard for a Telegram bot driven by an
-    OpenAI-compatible LLM.
+    HTTP surface of the assistant-hub core: the dashboard, the web chat, and
+    the internal API the transport services (Telegram today) call back into.
 
     Conventions:
-      * Every JSON success body is wrapped as `{ "data": … }`. The exceptions are
+      * Every JSON success body is wrapped as `{ "data": ... }`. The exceptions are
         `/api/health` (bare object), the bundle/export routes (file attachments),
-        the screenshot route (JPEG bytes) and `/api/events` (SSE).
-      * Every failure body is `{ "error": { code, message, details? } }`.
-      * All routes require the operator session cookie except
-        `/api/auth/*` and `/api/health`.
+        the screenshot and web-chat media routes (image bytes), `/api/events`
+        (SSE) and the `/api/internal/transports/*` routes (bare objects).
+      * Every failure body is `{ "error": { code, message, details? } }` - except
+        on the internal routes, whose errors carry only `{ "error": { message } }`.
+      * Access is per route, declared on `defineRoute` and echoed here as
+        `x-access`: `public` (no session), `account` (any signed-in active
+        account; ownership-scoped for a user-role account), `admin` (a
+        signed-in admin - the default), `internal` (the `x-internal-token`
+        header, no session). A user-role account on an admin route is 403;
+        an account still holding its temporary password is 403 everywhere
+        but `/api/auth/change-password`; an id outside an account's scope
+        is 404, never 403.
       * Timestamps are ISO-8601 UTC instants. Wall-clock strings are explicitly
         typed where they occur (`HH:MM`, `YYYY-MM-DD`, analytics bucket keys).
+      * Cross-app identifiers are scoped refs (`tg:user:123`, `tg:chat:-100...`,
+        `chat:user:<accountId>`), never foreign keys.
 
     Companion documents: `docs/api/README.md` (conventions),
-    `docs/api/endpoints.md` (human reference).
+    `docs/api/endpoints.md` (human reference),
+    `docs/development/adding-a-transport.md` (the transport contract).
   license:
     name: See repository
 
@@ -30,15 +41,27 @@ servers:
 
 tags:
   - name: auth
-    description: Operator authentication (public)
+    description: Account sign-in (public entry points plus the password change)
   - name: system
-    description: Health, realtime stream, bot control, tool registry
+    description: Health, realtime stream, tool catalog
+  - name: accounts
+    description: Account management (admin)
+  - name: profile
+    description: The acting account's own surface
+  - name: assistants
+  - name: transports
+    description: Registered transports and per-assistant connections (dashboard side)
   - name: backends
   - name: settings
     description: DB-backed runtime configuration and endpoint probes
+  - name: tool-connections
+    description: Remote MCP servers and the toolset they offer
   - name: directory
-    description: Known users and groups
-  - name: personalities
+    description: The aggregated people/chat directory across sources
+  - name: person-links
+    description: Identities declared to be one human
+  - name: web-chat
+    description: Threads an account holds with its assistants
   - name: history
   - name: memory
   - name: vision
@@ -47,20 +70,24 @@ tags:
   - name: browser-agent
   - name: analytics
   - name: traces
+  - name: internal
+    description: Token-authenticated routes the transport services call
 
 security:
   - cookieAuth: []
 
 paths:
-  # ───────────────────────────── auth ─────────────────────────────
+  # ----------------------------- auth -----------------------------
   /api/auth/setup:
     post:
       tags: [auth]
-      summary: First-run operator setup
+      x-access: public
+      summary: First-run setup - create the first admin account
       description: |
-        Stores the operator password (hashed) and opens a session. Public by
-        necessity — it exists exactly when no credential exists yet — and
-        self-sealing: the service refuses to overwrite an already-set password.
+        Creates the first admin account (hashed password) and opens its
+        session. Public by necessity - it exists exactly when no account
+        exists yet - and self-sealing: once any account exists it answers
+        409.
       security: []
       requestBody:
         required: true
@@ -68,8 +95,12 @@ paths:
           application/json:
             schema:
               type: object
-              required: [password]
+              required: [username, password]
               properties:
+                username:
+                  type: string
+                  minLength: 3
+                  pattern: '^[A-Za-z0-9._-]+$'
                 password:
                   type: string
                   minLength: 8
@@ -84,12 +115,18 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OkFlag" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/auth/login:
     post:
       tags: [auth]
-      summary: Operator login
+      x-access: public
+      summary: Account login
+      description: |
+        Verifies username + password and opens a session. A wrong username
+        and a wrong password get the same 401 after the same flat delay; a
+        deactivated account is 401 too. Before setup ran it is 400.
       security: []
       requestBody:
         required: true
@@ -97,8 +134,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [password]
+              required: [username, password]
               properties:
+                username: { type: string, minLength: 1 }
                 password: { type: string, minLength: 1 }
       responses:
         "200":
@@ -109,14 +147,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OkFlag" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/auth/logout:
     post:
       tags: [auth]
+      x-access: public
       summary: Expire the session cookie
-      description: Public — clearing one's own cookie needs no session, and logout must work with an already-expired one.
+      description: Public - clearing one's own cookie needs no session, and logout must work with an already-expired one.
       security: []
       responses:
         "200":
@@ -128,15 +168,50 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OkFlag" }
 
-  # ──────────────────────────── system ────────────────────────────
+  /api/auth/change-password:
+    post:
+      tags: [auth]
+      x-access: account
+      summary: Change the acting account's password
+      description: |
+        Requires the current password even though the route is
+        session-gated. Rotates the account's session secret - its other
+        sessions are signed out - and answers with a fresh cookie for the
+        caller. The one route an account still holding its admin-issued
+        temporary password may call; the change clears that hold.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, minLength: 1 }
+                newPassword: { type: string, minLength: 8 }
+      responses:
+        "200":
+          description: Password changed; a fresh session cookie
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkFlag" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ---------------------------- system ----------------------------
   /api/health:
     get:
       tags: [system]
+      x-access: public
       summary: Liveness and readiness
       description: |
         Readiness is a real database probe (`SELECT 1`). Configuration presence
-        and trace-storage health are reported but are deliberately not readiness
-        gates. Public, for the Docker healthcheck and orchestrators.
+        and both storage write paths are reported but are deliberately not
+        readiness gates. Public, for the Docker healthcheck and orchestrators.
       security: []
       responses:
         "200":
@@ -145,7 +220,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Health" }
         "503":
-          description: Not ready — the database is unreachable
+          description: Not ready - the database is unreachable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Health" }
@@ -153,11 +228,12 @@ paths:
   /api/events:
     get:
       tags: [system]
+      x-access: account
       summary: Shared realtime stream (SSE)
       description: |
         One long-lived connection per dashboard tab carrying every topic; clients
         filter on the payload's `topic`. A `: ping` comment is sent every 25s.
-        Each data frame is a `RealtimeEvent`.
+        Each data frame is a `RealtimeEvent`. Any signed-in account may open it.
       responses:
         "200":
           description: Event stream
@@ -166,54 +242,16 @@ paths:
               schema: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
-  /api/telegram/bot:
-    get:
-      tags: [system]
-      summary: Current poller status
-      responses:
-        "200":
-          description: Status
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data: { $ref: "#/components/schemas/BotStatus" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-    post:
-      tags: [system]
-      summary: Start or stop the poller
-      description: The bot reads its token from settings, so `start` needs no further input.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [action]
-              properties:
-                action:
-                  type: string
-                  enum: [start, stop]
-      responses:
-        "200":
-          description: Status after the transition
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data: { $ref: "#/components/schemas/BotStatus" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-
   /api/tools:
     get:
       tags: [system]
-      summary: Every registered MCP tool
-      description: Read-only. All registered tools are always available to the model.
+      x-access: admin
+      summary: Every tool either half of the toolset offers
+      description: |
+        Read-only catalog: the in-process feature tools plus every tool the
+        operator's tool connections currently offer (slug-prefixed, with the
+        connection's scope). Every tool is offered to the model within its
+        scope; there is no per-tool switch.
       responses:
         "200":
           description: Tool list
@@ -231,11 +269,544 @@ paths:
                             type: array
                             items: { $ref: "#/components/schemas/ToolView" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
-  # ─────────────────────────── backends ───────────────────────────
+  # ---------------------------- accounts --------------------------
+  /api/accounts:
+    get:
+      tags: [accounts]
+      x-access: admin
+      summary: Every account, oldest first
+      responses:
+        "200":
+          description: Accounts (never the secrets)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [accounts]
+                        properties:
+                          accounts:
+                            type: array
+                            items: { $ref: "#/components/schemas/AccountView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [accounts]
+      x-access: admin
+      summary: Create an account with a temporary password
+      description: |
+        The temporary password is handed over out of band; the account must
+        replace it at first sign-in (`mustChangePassword: true`) before any
+        other route lets it through.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountCreate" }
+      responses:
+        "201":
+          description: The created account
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [account]
+                        properties:
+                          account: { $ref: "#/components/schemas/AccountView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/accounts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [accounts]
+      x-access: admin
+      summary: One management action
+      description: |
+        Activate/deactivate, change the role, or hand the account a fresh
+        temporary password - one per call. Guards answer 400: you cannot
+        deactivate your own account or change your own role, and the last
+        active admin can be neither deactivated nor demoted. Deactivation
+        silences the account's assistants (computed, nothing deleted);
+        reactivation restores them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountPatch" }
+      responses:
+        "200":
+          description: The updated account
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [account]
+                        properties:
+                          account: { $ref: "#/components/schemas/AccountView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [accounts]
+      x-access: admin
+      summary: Hard-delete a deactivated account
+      description: |
+        DESTRUCTIVE. Only a deactivated account can be deleted (400 while it
+        is active - deactivating is the confirm step); not your own. Cascades
+        everything that was only theirs: their assistants (with tasks and
+        transport connections), the memory under their linked identities,
+        their person-link membership, their web threads, link codes and tool
+        connections.
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------- profile ---------------------------
+  /api/profile:
+    get:
+      tags: [profile]
+      x-access: account
+      summary: The acting account, its linked identities, and the memory about it
+      responses:
+        "200":
+          description: Profile view
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ProfileView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [profile]
+      x-access: account
+      summary: Change the acting account's display name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName]
+              properties:
+                displayName:
+                  type: string
+                  maxLength: 120
+                  description: Trimmed; blank clears the display name (the username shows instead).
+      responses:
+        "200":
+          description: The stored display name
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [displayName]
+                        properties:
+                          displayName: { type: [string, "null"] }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/profile/link-code:
+    post:
+      tags: [profile]
+      x-access: account
+      summary: Mint a one-time self-link code
+      description: |
+        Send the code to any connected bot within 15 minutes and that
+        platform identity joins the account's person link. Minting again
+        retires the previous unused code. The code never reaches the trace.
+      responses:
+        "200":
+          description: The code and when it expires
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [code, expiresAt]
+                        properties:
+                          code:
+                            type: string
+                            pattern: '^link-[a-z0-9]{8}$'
+                          expiresAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/profile/memory:
+    delete:
+      tags: [profile]
+      x-access: account
+      summary: Delete one of the acting account's own memory documents
+      description: |
+        Refused (403) unless `userId` is one of the account's linked
+        identities; 404 when no document is stored under it. Runs the memory
+        feature's traced delete, so the admin memory page's history shows it.
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          description: The document key - a scoped user ref from the profile's `memory` list.
+          schema: { $ref: "#/components/schemas/ScopedRef" }
+      responses:
+        "200":
+          description: Forgotten
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # --------------------------- assistants -------------------------
+  /api/assistants:
+    get:
+      tags: [assistants]
+      x-access: account
+      summary: List assistants
+      description: Oldest first. A user-role account sees only the assistants it owns.
+      responses:
+        "200":
+          description: Assistants
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [assistants]
+                        properties:
+                          assistants:
+                            type: array
+                            items: { $ref: "#/components/schemas/Assistant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [assistants]
+      x-access: account
+      summary: Create an assistant
+      description: |
+        The creator owns it. Names are case-insensitively unique; at most 32
+        assistants exist (both 409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssistantCreate" }
+      responses:
+        "201":
+          description: The created assistant
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Assistant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/assistants/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [assistants]
+      x-access: account
+      summary: Update an assistant
+      description: Ownership-gated - an assistant that is not yours answers 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssistantUpdate" }
+      responses:
+        "200":
+          description: The updated assistant
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Assistant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [assistants]
+      x-access: account
+      summary: Delete an assistant
+      description: |
+        Its tasks cascade in the store; its transport connections are dropped
+        by the transports reacting to the `assistant.deleted` bus event (a
+        missing bus is a loud trace warning, never a silent divergence).
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # --------------------------- transports -------------------------
+  /api/transports:
+    get:
+      tags: [transports]
+      x-access: account
+      summary: The registered transports and their config schemas
+      description: |
+        The roster the dashboard renders its schema-driven sections from.
+        Secret config values are reduced to `...last4` hints; `registered`
+        is false until the transport has announced itself.
+      responses:
+        "200":
+          description: Transports
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [transports]
+                        properties:
+                          transports:
+                            type: array
+                            items: { $ref: "#/components/schemas/TransportView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/transports/{id}/config:
+    parameters:
+      - $ref: "#/components/parameters/TransportId"
+    put:
+      tags: [transports]
+      x-access: admin
+      summary: Replace a transport's transport-level config
+      description: |
+        The operator's write of the transport-wide settings (keys from the
+        transport's `transportConfigSchema`). Replaces the blob, records a
+        trace and announces `transport.config.changed` on the bus. 400 for an
+        unknown source id, 404 for a transport that never registered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config]
+              properties:
+                config: { $ref: "#/components/schemas/ConfigBlob" }
+      responses:
+        "200":
+          description: The masked preview of the stored blob
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [configPreview]
+                        properties:
+                          configPreview: { $ref: "#/components/schemas/ConfigPreview" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/transports/{id}/connections:
+    parameters:
+      - $ref: "#/components/parameters/TransportId"
+    get:
+      tags: [transports]
+      x-access: account
+      summary: One transport's per-assistant connections, with live status
+      description: |
+        `assistantId` narrows to one assistant. A user-role account MUST pass
+        it (400 otherwise) and it must name one of its own assistants (404
+        otherwise). `status` is what the transport reports on its own
+        `/health`, or null when it reports nothing for the row.
+      parameters:
+        - name: assistantId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Connections
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [connections]
+                        properties:
+                          connections:
+                            type: array
+                            items: { $ref: "#/components/schemas/TransportConnectionView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [transports]
+      x-access: account
+      summary: Connect an assistant to a transport
+      description: |
+        `config` is keyed by the transport's `connectionConfigSchema` (a bot
+        token, say) and is the transport's to interpret - the core never
+        reads it. Enabled on creation. One connection per assistant per
+        transport (409). The assistant must be the caller's own (404
+        otherwise). Announces `transport.config.changed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assistantId, config]
+              properties:
+                assistantId: { type: string, minLength: 1 }
+                config: { $ref: "#/components/schemas/ConfigBlob" }
+      responses:
+        "201":
+          description: The created connection as the dashboard renders it
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [connection]
+                        properties:
+                          connection:
+                            oneOf:
+                              - $ref: "#/components/schemas/TransportConnectionView"
+                              - type: "null"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/transports/{id}/connections/{connectionId}:
+    parameters:
+      - $ref: "#/components/parameters/TransportId"
+      - name: connectionId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [transports]
+      x-access: account
+      summary: Re-configure, start or stop a connection
+      description: |
+        `config` is shallow-merged into the stored blob; `enabled` starts or
+        stops the connection. At least one of the two is required. Gated by
+        the connection's assistant (404 when not yours). Announces the change.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                config: { $ref: "#/components/schemas/ConfigBlob" }
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The connection's id and enabled flag
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [connection]
+                        properties:
+                          connection:
+                            type: object
+                            required: [id, enabled]
+                            properties:
+                              id: { type: string }
+                              enabled: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [transports]
+      x-access: account
+      summary: Disconnect an assistant from a transport
+      description: Removes the row, its stored config, and (through the announce) its runtime.
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------- backends --------------------------
   /api/backends:
     get:
       tags: [backends]
+      x-access: admin
       summary: List the backend catalog
       responses:
         "200":
@@ -250,8 +821,10 @@ paths:
                         type: array
                         items: { $ref: "#/components/schemas/Backend" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       tags: [backends]
+      x-access: admin
       summary: Create a backend
       requestBody:
         required: true
@@ -269,6 +842,7 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/Backend" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
@@ -280,6 +854,7 @@ paths:
         schema: { type: string }
     patch:
       tags: [backends]
+      x-access: admin
       summary: Update a backend
       requestBody:
         required: true
@@ -304,11 +879,13 @@ paths:
                             type: array
                             items: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [backends]
+      x-access: admin
       summary: Delete a backend
       description: Refused (409) while any settings role points at it; the error names the roles.
       responses:
@@ -316,16 +893,9 @@ paths:
           description: Deleted
           content:
             application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data:
-                        type: object
-                        required: [deleted]
-                        properties:
-                          deleted: { type: boolean }
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
@@ -337,6 +907,7 @@ paths:
         schema: { type: string }
     get:
       tags: [backends]
+      x-access: admin
       summary: List the models a stored backend serves
       responses:
         "200":
@@ -355,18 +926,21 @@ paths:
                             type: array
                             items: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/backends/test:
     post:
       tags: [backends]
+      x-access: admin
       summary: Test a backend connection (stored or as-typed)
       description: |
-        Calls `/v1/models` — proves the host answers and the key is accepted, and
-        the returned ids are the model preview. Give `backendId` to test a stored
-        backend (omitting `apiKey` reuses the stored key) or `baseUrl` to test an
-        unsaved form.
+        Lists the endpoint's models - proves the host answers and the key is
+        accepted, and the returned ids are the model preview. Give `backendId`
+        to test a stored backend (omitting `apiKey` reuses the stored key) or
+        `baseUrl` to test an unsaved form. `type` carries the form's current
+        server-type selection, since the listing call differs per server.
       requestBody:
         required: true
         content:
@@ -395,6 +969,7 @@ paths:
                             type: array
                             items: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
@@ -402,9 +977,10 @@ paths:
   /api/backends/detect:
     post:
       tags: [backends]
+      x-access: admin
       summary: Fingerprint the inference server behind a URL
       description: |
-        A suggestion, never an authority — the operator picks. An unidentifiable
+        A suggestion, never an authority - the operator picks. An unidentifiable
         endpoint answers with a null backend rather than an error.
       requestBody:
         required: true
@@ -434,14 +1010,16 @@ paths:
                               - type: "null"
                           detail: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  # ─────────────────────────── settings ───────────────────────────
+  # ---------------------------- settings --------------------------
   /api/settings:
     get:
       tags: [settings]
+      x-access: admin
       summary: Read settings
-      description: Secrets are never returned — only `…Configured` booleans.
+      description: Secrets are never returned - only `...Configured` booleans.
       responses:
         "200":
           description: Settings
@@ -453,9 +1031,11 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/Settings" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
     patch:
       tags: [settings]
+      x-access: admin
       summary: Update settings
       description: |
         Partial. At least one field is required. For secret fields: omitting leaves
@@ -476,14 +1056,17 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/Settings" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   # Every role probe performs the role's real work and answers with the same
   # ProbeReport. Omitted input fields fall back to the stored configuration; a
-  # null `backendId` means "use the chat backend".
+  # null `backendId` means "use the chat backend". A role with no model at all
+  # (and no chat model to fall back to) answers 400.
   /api/settings/test-chat:
     post:
       tags: [settings]
+      x-access: admin
       summary: Probe the chat (main) role
       description: |
         Completes a short prompt and reports the reply together with the hidden
@@ -496,13 +1079,16 @@ paths:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200": { $ref: "#/components/responses/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/settings/test-embeddings:
     post:
       tags: [settings]
+      x-access: admin
       summary: Probe the embedding role
       description: |
         Embeds a phrase and reports the vector, so it also catches a model whose
@@ -514,13 +1100,16 @@ paths:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200": { $ref: "#/components/responses/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/settings/test-images:
     post:
       tags: [settings]
+      x-access: admin
       summary: Probe the image role
       description: |
         Generates a small picture from a fixed prompt and returns it. A listed
@@ -533,13 +1122,16 @@ paths:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200": { $ref: "#/components/responses/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/settings/test-speech:
     post:
       tags: [settings]
+      x-access: admin
       summary: Probe the speech role
       description: |
         Synthesizes a short phrase in the configured voice and returns the audio.
@@ -551,36 +1143,44 @@ paths:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200": { $ref: "#/components/responses/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/settings/test-audio:
     post:
       tags: [settings]
+      x-access: admin
       summary: Probe the audio (STT) role
       description: |
-        Transcribes a fraction of a second of generated silence — a real
-        `/v1/audio/transcriptions` call, since whisper-class servers often serve
+        Transcribes a fraction of a second of generated silence - a real call
+        in the configured transcription mode (`/v1/audio/transcriptions`, or an
+        `input_audio` chat completion), since whisper-class servers often serve
         it without `/v1/models`. Resolves through the audio runtime, including
-        its fallback to the chat model.
+        its fallback to the chat model. `transcriptionMode` lets the form test
+        an unsaved mode choice.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/RoleProbeInput" }
+            schema: { $ref: "#/components/schemas/AudioProbeInput" }
       responses:
         "200": { $ref: "#/components/responses/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/settings/test-vision:
     post:
       tags: [settings]
+      x-access: admin
       summary: Probe the vision role
       description: |
-        Describes a generated PNG — a real vision completion, since a model
+        Describes a generated PNG - a real vision completion, since a model
         listing cannot reveal a missing image-input modality. Resolves through
         the vision runtime, including its fallback to the chat model.
       requestBody:
@@ -590,13 +1190,16 @@ paths:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200": { $ref: "#/components/responses/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/settings/test-browser:
     post:
       tags: [settings]
+      x-access: admin
       summary: Probe the browser-agent role
       description: |
         Runs one real tool round: the model is offered a single trivial tool and
@@ -611,22 +1214,23 @@ paths:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200": { $ref: "#/components/responses/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/settings/test-classifier:
     post:
       tags: [settings]
+      x-access: admin
       summary: Probe the classifier role
       description: |
-        Runs the real addressing check — the same prompt, call bounds and verdict
-        parser the bot uses on every undecided group message — over a synthetic
+        Runs the real addressing check - the same prompt, call bounds and verdict
+        parser the bot uses on every undecided group message - over a synthetic
         message naming a synthetic bot, and reports the verdict parsed from the
-        answer. A model listing cannot say whether a model answers a
-        classification quickly and in a shape the parser accepts, which is all
-        this role does; in production an unreadable verdict silently reads as
-        "not addressed". Resolves through the classifier runtime, including its
+        answer. In production an unreadable verdict silently reads as "not
+        addressed". Resolves through the classifier runtime, including its
         fallback to the chat model. A wrong or unreadable verdict is reported,
         not an error.
       requestBody:
@@ -636,23 +1240,25 @@ paths:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200": { $ref: "#/components/responses/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/settings/test-background:
     post:
       tags: [settings]
+      x-access: admin
       summary: Probe the background-jobs role
       description: |
-        Runs the real history summarizer — the same system prompt, transcript
-        format and topic parser the nightly job uses — over a tiny synthetic
+        Runs the real history summarizer - the same system prompt, transcript
+        format and topic parser the nightly job uses - over a tiny synthetic
         chat-day, at background priority, and reports the topics parsed from the
-        answer. A model listing cannot say whether a model returns the structured
-        output these jobs store; prose instead of JSON produces empty summaries
-        night after night while the job reports success. Resolves through the
-        background runtime, including its fallback to the chat model. Zero topics
-        is reported, not an error.
+        answer. Prose instead of JSON produces empty summaries night after night
+        while the job reports success. Resolves through the background runtime,
+        including its fallback to the chat model. Zero topics is reported, not
+        an error.
       requestBody:
         required: true
         content:
@@ -660,18 +1266,22 @@ paths:
             schema: { $ref: "#/components/schemas/RoleProbeInput" }
       responses:
         "200": { $ref: "#/components/responses/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  # ────────────────────────── directory ──────────────────────────
-  /api/users:
+  # ------------------------ tool connections ----------------------
+  /api/tool-connections:
     get:
-      tags: [directory]
-      summary: Every user who has messaged the bot
+      tags: [tool-connections]
+      x-access: account
+      summary: List tool connections
+      description: Oldest first, without secrets. A user-role account sees only its own.
       responses:
         "200":
-          description: Known users
+          description: Connections
           content:
             application/json:
               schema:
@@ -679,25 +1289,190 @@ paths:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
                       data:
-                        type: array
-                        items: { $ref: "#/components/schemas/KnownUser" }
+                        type: object
+                        required: [connections]
+                        properties:
+                          connections:
+                            type: array
+                            items: { $ref: "#/components/schemas/ToolConnection" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [tool-connections]
+      x-access: account
+      summary: Add a remote MCP server
+      description: |
+        The creator owns it. No tools are offered until a discovery is applied.
+        409 for a taken slug or the 32-connection cap; 400 for `stdio` (modelled,
+        not executed), an unknown assistant id, or a user-owned connection that
+        breaks its rules (must select specific own assistants, no app scope,
+        public address only).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToolConnectionCreate" }
+      responses:
+        "201":
+          description: The created connection
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ToolConnection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/tool-connections/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [tool-connections]
+      x-access: account
+      summary: Update a connection
+      description: |
+        Partial; at least one field. `authHeaders` replaces the whole set when
+        sent. A managed connection (a transport's own MCP server) accepts only
+        `enabled` and scope edits - renaming or re-pointing it is 409. Editing
+        can only take tools away; the offered snapshot moves on apply.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToolConnectionUpdate" }
+      responses:
+        "200":
+          description: The updated connection
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ToolConnection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [tool-connections]
+      x-access: account
+      summary: Delete a connection
+      description: Its snapshot and assistant selection cascade. A managed connection cannot be deleted (409).
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/tool-connections/{id}/discover:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [tool-connections]
+      x-access: account
+      summary: Ask the server what it offers
+      description: |
+        Stores the answer diffed against the applied snapshot; never changes
+        what the model sees. A server that cannot be reached is a report with
+        `ok: false`, not a 5xx - the applied toolset is untouched either way.
+      responses:
+        "200":
+          description: The discovery report
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/DiscoveryReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/tool-connections/{id}/apply:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [tool-connections]
+      x-access: account
+      summary: Make the reviewed discovery the offered toolset
+      description: |
+        The only write that changes what the model can call. Applies the
+        stored discovery - not a fresh fetch, so what is applied is what was on
+        screen. 400 before any discovery exists.
+      responses:
+        "200":
+          description: The connection with the discovery applied
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ToolConnection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------- directory -------------------------
+  /api/users:
+    get:
+      tags: [directory]
+      x-access: admin
+      summary: Every person every source knows
+      description: |
+        Aggregated across the registered sources (`tg`, `chat`), newest activity
+        first, each entry tagged with its origin and scoped ref. A source that
+        could not be read comes back under `unavailable` with its reason rather
+        than as an empty list.
+      responses:
+        "200":
+          description: Directory users
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/DirectoryUsersListing" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/users/{id}:
     parameters:
       - name: id
         in: path
         required: true
-        description: Telegram user id
-        schema: { type: string }
+        description: The person's scoped ref, e.g. `tg:user:123`.
+        schema: { $ref: "#/components/schemas/ScopedRef" }
     patch:
       tags: [directory]
+      x-access: admin
       summary: Update a user's curated fields
       description: |
         The body carries exactly one of `language` or `aliases`; each is dispatched
-        to its own traced action. Aliases are trimmed, blank-stripped and
-        case-insensitively deduplicated before the bounds are applied. An empty
-        `language` clears to null (the bot then uses the default).
+        to its own traced action and written to the owning source first. Aliases
+        are trimmed, blank-stripped and case-insensitively deduplicated before the
+        bounds are applied. An empty `language` clears to null (the bot then uses
+        the default).
       requestBody:
         required: true
         content:
@@ -725,37 +1500,42 @@ paths:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
                       data: { $ref: "#/components/schemas/KnownUser" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/groups:
     get:
       tags: [directory]
-      summary: Every group the bot is active in
+      x-access: admin
+      summary: Every conversation every source carries
+      description: Aggregated like `/api/users`; newest message first.
       responses:
         "200":
-          description: Known groups with member counts
+          description: Directory chats
           content:
             application/json:
               schema:
                 allOf:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
-                      data:
-                        type: array
-                        items: { $ref: "#/components/schemas/KnownGroupSummary" }
+                      data: { $ref: "#/components/schemas/DirectoryChatsListing" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/groups/{id}:
     parameters:
       - name: id
         in: path
         required: true
-        description: Telegram chat id
-        schema: { type: string }
+        description: The chat's scoped ref, e.g. `tg:chat:-100123`.
+        schema: { $ref: "#/components/schemas/ScopedRef" }
     patch:
       tags: [directory]
+      x-access: admin
       summary: Update a group's curated fields
       description: The body carries exactly one of `language` or `notes`.
       requestBody:
@@ -782,30 +1562,188 @@ paths:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
                       data: { $ref: "#/components/schemas/KnownGroup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  # ──────────────────────── personalities ────────────────────────
-  /api/personalities:
+  # --------------------------- person links -----------------------
+  /api/person-links:
     get:
-      tags: [personalities]
-      summary: All personalities and the active selection
+      tags: [person-links]
+      x-access: admin
+      summary: Every person link, oldest first
       responses:
         "200":
-          description: Personalities view
+          description: Links with their identities resolved against the directory
           content:
             application/json:
               schema:
                 allOf:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
-                      data: { $ref: "#/components/schemas/PersonalitiesView" }
+                      data:
+                        type: object
+                        required: [links]
+                        properties:
+                          links:
+                            type: array
+                            items: { $ref: "#/components/schemas/PersonLink" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [person-links]
+      x-access: admin
+      summary: Join identities into one person
+      description: An identity belongs to at most one link; 409 names the one already claimed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PersonLinkCreate" }
+      responses:
+        "201":
+          description: The created link
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/PersonLink" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/person-links/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [person-links]
+      x-access: admin
+      summary: Edit a link's note or its identity list
+      description: One field per call. A link needs at least two identities; breaking a person apart is a delete.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PersonLinkUpdate" }
+      responses:
+        "200":
+          description: The updated link
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/PersonLink" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [person-links]
+      x-access: admin
+      summary: Break a person apart again
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeletedFlag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------- web chat -------------------------
+  /api/chat/threads:
+    get:
+      tags: [web-chat]
+      x-access: account
+      summary: The acting account's threads, most recent first
+      responses:
+        "200":
+          description: Threads
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [threads]
+                        properties:
+                          threads:
+                            type: array
+                            items: { $ref: "#/components/schemas/ChatThread" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
-      tags: [personalities]
-      summary: Create a personality
-      description: Names are case-insensitively unique; at most 32 personalities exist.
+      tags: [web-chat]
+      x-access: account
+      summary: Start a thread with one assistant
+      description: |
+        The name is optional - a nameless thread carries a placeholder and is
+        named by the core from the first exchange. A user-role account may
+        only chat with its own assistants (404 otherwise).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatThreadCreate" }
+      responses:
+        "200":
+          description: The new thread
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data:
+                        type: object
+                        required: [thread]
+                        properties:
+                          thread: { $ref: "#/components/schemas/ChatThread" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/chat/threads/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [web-chat]
+      x-access: account
+      summary: One thread with its transcript and running turn
+      responses:
+        "200":
+          description: Thread view
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiOk"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ChatThreadView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [web-chat]
+      x-access: account
+      summary: Rename a thread
+      description: The assistant is fixed at creation - only the name moves.
       requestBody:
         required: true
         content:
@@ -814,59 +1752,28 @@ paths:
               type: object
               required: [name]
               properties:
-                name: { type: string, minLength: 1, maxLength: 64 }
-                prompt: { type: string, maxLength: 32000, default: "" }
-      responses:
-        "201":
-          description: The created personality
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiOk"
-                  - properties:
-                      data: { $ref: "#/components/schemas/Personality" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-
-  /api/personalities/{id}:
-    parameters:
-      - name: id
-        in: path
-        required: true
-        schema: { type: string }
-    patch:
-      tags: [personalities]
-      summary: Update a personality
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              minProperties: 1
-              properties:
-                name: { type: string, minLength: 1, maxLength: 64 }
-                prompt: { type: string, maxLength: 32000 }
+                name: { type: string, minLength: 1, maxLength: 120 }
       responses:
         "200":
-          description: The updated personalities view
+          description: The renamed thread
           content:
             application/json:
               schema:
                 allOf:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
-                      data: { $ref: "#/components/schemas/PersonalitiesView" }
+                      data:
+                        type: object
+                        required: [thread]
+                        properties:
+                          thread: { $ref: "#/components/schemas/ChatThread" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
-      tags: [personalities]
-      summary: Delete a personality
-      description: Deleting the active personality clears the active selection.
+      tags: [web-chat]
+      x-access: account
+      summary: Delete a thread and everything in it
       responses:
         "200":
           description: Deleted
@@ -876,39 +1783,83 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /api/personalities/active:
-    put:
-      tags: [personalities]
-      summary: Set or clear the active personality
+  /api/chat/threads/{id}/messages:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [web-chat]
+      x-access: account
+      summary: Say something in a thread
+      description: |
+        Stores the message first, then enqueues the turn; the answer arrives
+        through the pipeline like every other source's and the `threads` SSE
+        topic fires when it lands. An image is normalized to a bounded JPEG and
+        stored pending for the vision pass; a voice note is stored raw and
+        transcribed. Media that cannot be stored does not lose the message.
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [personalityId]
-              properties:
-                personalityId:
-                  type: [string, "null"]
-                  description: Null clears the active selection.
+            schema: { $ref: "#/components/schemas/ChatPostMessage" }
       responses:
         "200":
-          description: The updated personalities view
+          description: The stored message and the turn it started
           content:
             application/json:
               schema:
                 allOf:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
-                      data: { $ref: "#/components/schemas/PersonalitiesView" }
+                      data: { $ref: "#/components/schemas/ChatPostMessageResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  # ───────────────────────────  history  ──────────────────────────
+  /api/chat/media/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: A media id from a thread message's `media`.
+        schema: { type: string }
+    get:
+      tags: [web-chat]
+      x-access: account
+      summary: The bytes of one web-chat image
+      description: |
+        Not a JSON route: it streams the stored image (the bytes stay - a web
+        thread is the only archive its pictures have). Any signed-in session;
+        the id is the capability. Failures are plain-text bodies.
+      responses:
+        "200":
+          description: The image
+          headers:
+            Cache-Control:
+              schema: { type: string, examples: ["private, max-age=31536000, immutable"] }
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/*:
+              schema: { type: string, format: binary }
+        "401":
+          description: No valid session (plain text)
+          content:
+            text/plain:
+              schema: { type: string }
+        "404":
+          description: Unknown media id (plain text)
+          content:
+            text/plain:
+              schema: { type: string }
+
+  # ----------------------------- history --------------------------
   /api/history/summaries:
     get:
       tags: [history]
+      x-access: admin
       summary: Daily summarization job status
       responses:
         "200":
@@ -921,13 +1872,15 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/SummaryJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/history/summaries/run:
     post:
       tags: [history]
+      x-access: admin
       summary: Run the summarization job now
       description: |
-        Fire-and-forget — a backlog can take many LLM passes, so the snapshot is
+        Fire-and-forget - a backlog can take many LLM passes, so the snapshot is
         returned immediately and progress arrives over the `history` SSE topic.
       responses:
         "200":
@@ -940,10 +1893,12 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/SummaryJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/history/search-index:
     get:
       tags: [history]
+      x-access: admin
       summary: Message search-index job status
       responses:
         "200":
@@ -956,11 +1911,13 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/SearchIndexStatus" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       tags: [history]
+      x-access: admin
       summary: Index messages now
       description: |
-        Fire-and-forget — a backlog can take many embedding calls, so the snapshot
+        Fire-and-forget - a backlog can take many embedding calls, so the snapshot
         is returned immediately and progress arrives over the `history` SSE topic.
       responses:
         "200":
@@ -973,14 +1930,16 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/SearchIndexStatus" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     delete:
       tags: [history]
+      x-access: admin
       summary: Rebuild the search index from scratch
       description: |
-        Empties `chat_message_search` and arms a run. The recovery path after
-        configuring an embedding model: rows indexed without one are up to date by
-        the staleness rule and would otherwise keep a null vector forever. The
-        text is all still in the mirror, so nothing is lost — only re-derived.
+        Empties the index and arms a run. The recovery path after configuring an
+        embedding model: rows indexed without one are up to date by the
+        staleness rule and would otherwise keep a null vector forever. The text
+        is all still in the mirror, so nothing is lost - only re-derived.
       responses:
         "200":
           description: Status after clearing, with the number of rows dropped
@@ -992,10 +1951,12 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/SearchIndexStatus" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/history/export:
     get:
       tags: [history]
+      x-access: admin
       summary: CSV export of the history mirror
       description: Deleted rows are included, flagged. An export round-trips back through the import.
       parameters:
@@ -1014,16 +1975,18 @@ paths:
             text/csv:
               schema: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/history/import:
     post:
       tags: [history]
+      x-access: admin
       summary: CSV import into the history mirror
       description: |
         The server re-parses the raw text with the same module the browser previewed
         with. Rows whose `(chatId, telegramMessageId)` already exists are skipped,
         so a partially-applied file can safely be re-run. Also resets the analytics
-        insight scan floor so imported hours are picked up.
+        insight scan floor so imported hours are picked up. At most 5000 rows.
       requestBody:
         required: true
         content:
@@ -1034,7 +1997,7 @@ paths:
               properties:
                 csv:
                   type: string
-                  description: The raw file text.
+                  description: The raw file text (at most 5,000,000 characters).
                 mapping:
                   $ref: "#/components/schemas/HistoryColumnMapping"
                 delimiter:
@@ -1052,13 +2015,16 @@ paths:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
                       data: { $ref: "#/components/schemas/ImportResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  # ───────────────────────────  memory  ───────────────────────────
+  # ------------------------------ memory --------------------------
   /api/memory:
     get:
       tags: [memory]
+      x-access: admin
       summary: The memory dashboard view plus job status
       responses:
         "200":
@@ -1077,12 +2043,14 @@ paths:
                             properties:
                               job: { $ref: "#/components/schemas/MemoryJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/memory/run:
     post:
       tags: [memory]
+      x-access: admin
       summary: Run the nightly memory job now
-      description: Fire-and-forget. Two ordered passes — passive extraction, then consolidation.
+      description: Fire-and-forget. Two ordered passes - passive extraction, then consolidation.
       responses:
         "200":
           description: Job info at the moment of triggering
@@ -1094,6 +2062,7 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/MemoryJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/memory/entries/{id}:
     parameters:
@@ -1103,6 +2072,7 @@ paths:
         schema: { type: string }
     delete:
       tags: [memory]
+      x-access: admin
       summary: Discard a pending note
       description: The operator's chance to catch a fact the bot should not have saved, before the nightly merge folds it in.
       responses:
@@ -1112,6 +2082,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DeletedFlag" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/memory/users/{userId}:
@@ -1119,10 +2090,11 @@ paths:
       - name: userId
         in: path
         required: true
-        description: Telegram user id
-        schema: { type: string }
+        description: The person's scoped ref (`tg:user:123`, `chat:user:<accountId>`) - the memory keyspace speaks refs.
+        schema: { $ref: "#/components/schemas/ScopedRef" }
     patch:
       tags: [memory]
+      x-access: admin
       summary: Rewrite one person's memory document
       description: The rewritten document is re-embedded.
       requestBody:
@@ -1133,7 +2105,7 @@ paths:
               type: object
               required: [content]
               properties:
-                content: { type: string }
+                content: { type: string, minLength: 1 }
       responses:
         "200":
           description: The updated document
@@ -1145,10 +2117,12 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/UserMemory" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [memory]
+      x-access: admin
       summary: Forget a person
       description: Drops their memory document and, by cascade, their pending notes.
       responses:
@@ -1158,13 +2132,16 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DeletedFlag" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/memory/general:
     patch:
       tags: [memory]
+      x-access: admin
       summary: Write the general-knowledge document
       description: |
-        An upsert — the first edit creates it. General knowledge is ONE document, so
+        An upsert - the first edit creates it. General knowledge is ONE document, so
         there is no id in the path and no POST.
       requestBody:
         required: true
@@ -1174,7 +2151,7 @@ paths:
               type: object
               required: [content]
               properties:
-                content: { type: string }
+                content: { type: string, minLength: 1 }
       responses:
         "200":
           description: The updated document
@@ -1186,9 +2163,11 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/GeneralMemory" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [memory]
+      x-access: admin
       summary: Forget the general-knowledge document
       responses:
         "200":
@@ -1197,11 +2176,14 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DeletedFlag" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
-  # ───────────────────────────  vision  ───────────────────────────
+  # ------------------------------ vision --------------------------
   /api/vision/backfill:
     get:
       tags: [vision]
+      x-access: admin
       summary: Backfill scheduler status and pending media count
       responses:
         "200":
@@ -1214,9 +2196,12 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/VisionBackfillSnapshot" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       tags: [vision]
+      x-access: admin
       summary: Run the backfill as soon as possible
+      description: Fire-and-forget - the snapshot is taken right after arming the run.
       responses:
         "200":
           description: Status after triggering
@@ -1228,15 +2213,18 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/VisionBackfillSnapshot" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
-  # ────────────────────────── tasks ──────────────────────────────
+  # ------------------------------ tasks ---------------------------
   /api/tasks:
     get:
       tags: [tasks]
+      x-access: account
       summary: List tasks
+      description: Every task in every scope, oldest first. A user-role account sees only its own assistants' tasks.
       responses:
         "200":
-          description: Every task in every scope, oldest first
+          description: Tasks
           content:
             application/json:
               schema:
@@ -1249,45 +2237,20 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [tasks]
+      x-access: account
       summary: Create a task
       description: |
-        `triggerKind` selects which fields apply. Times are local wall-clock in
-        the operator timezone. `chatId: null` is the global scope, valid only
-        for `message`/`on-reply`; `targetUserIds` only on a group standing
-        task, and only naming people on that group's roster.
+        Every task belongs to one assistant (`assistantId`, which must be the
+        caller's own - 404 otherwise). `triggerKind` selects which fields
+        apply. Times are local wall-clock in the operator timezone. `chatId:
+        null` is the global scope, valid only for `message`/`on-reply`;
+        `targetUserIds` only on a group standing task, and only naming people
+        on that group's roster.
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [instruction, triggerKind]
-              properties:
-                chatId:
-                  type: [string, "null"]
-                  default: null
-                threadId: { type: [integer, "null"] }
-                instruction: { type: string, minLength: 2, maxLength: 2000 }
-                context: { type: [string, "null"], maxLength: 4000 }
-                triggerKind: { $ref: "#/components/schemas/TriggerKind" }
-                targetUserIds:
-                  type: array
-                  items: { type: string }
-                  maxItems: 16
-                  default: []
-                everyMinutes: { type: [integer, "null"] }
-                delayMinutes: { type: [integer, "null"] }
-                scheduleKind: { $ref: "#/components/schemas/ScheduleKind" }
-                timeOfDay: { $ref: "#/components/schemas/TimeOfDay" }
-                weekdays:
-                  type: [array, "null"]
-                  items: { type: integer, minimum: 0, maximum: 6 }
-                  description: For a weekly schedule. 0 = Sunday.
-                runDate:
-                  type: [string, "null"]
-                  pattern: '^\d{4}-\d{2}-\d{2}$'
-                  description: For a one-time schedule.
-                enabled: { type: boolean, default: true }
+            schema: { $ref: "#/components/schemas/TaskCreate" }
       responses:
         "201":
           description: The created task
@@ -1298,7 +2261,9 @@ paths:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
                       data: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/tasks/{id}:
@@ -1309,37 +2274,18 @@ paths:
         schema: { type: string }
     patch:
       tags: [tasks]
+      x-access: account
       summary: Update a task
       description: |
         Partial; at least one field. The trigger (including its kind) is
         editable and the timing is renormalized; the scope is not. `nextRunAt`
-        is recomputed and the failed-attempt counter resets.
+        is recomputed and the failed-attempt counter resets. Gated through the
+        task's assistant (404 when not yours).
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              minProperties: 1
-              properties:
-                instruction: { type: string, minLength: 2, maxLength: 2000 }
-                context: { type: [string, "null"], maxLength: 4000 }
-                triggerKind: { $ref: "#/components/schemas/TriggerKind" }
-                targetUserIds:
-                  type: array
-                  items: { type: string }
-                  maxItems: 16
-                everyMinutes: { type: [integer, "null"] }
-                delayMinutes: { type: [integer, "null"] }
-                scheduleKind: { $ref: "#/components/schemas/ScheduleKind" }
-                timeOfDay: { $ref: "#/components/schemas/TimeOfDay" }
-                weekdays:
-                  type: [array, "null"]
-                  items: { type: integer, minimum: 0, maximum: 6 }
-                runDate:
-                  type: [string, "null"]
-                  pattern: '^\d{4}-\d{2}-\d{2}$'
-                enabled: { type: boolean }
+            schema: { $ref: "#/components/schemas/TaskUpdate" }
       responses:
         "200":
           description: The updated task
@@ -1350,11 +2296,13 @@ paths:
                   - $ref: "#/components/schemas/ApiOk"
                   - properties:
                       data: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [tasks]
+      x-access: account
       summary: Delete a task
       responses:
         "200":
@@ -1373,15 +2321,17 @@ paths:
         schema: { type: string }
     post:
       tags: [tasks]
+      x-access: account
       summary: Fire one timed task now (manual fire)
       description: |
         Runs the task's fire immediately, off the schedule's books: `nextRunAt`,
         `lastRunAt`, `attempts` and `recentDeliveries` are untouched, and a
         one-shot is not consumed. Traced as `tasks`/`manual-fire`. Timed kinds
-        only — a `message`/`on-reply` task has no fire to run.
+        only - a `message`/`on-reply` task has no fire to run (400). 503 when no
+        LLM is configured. Gated through the task's assistant.
       responses:
         "200":
-          description: Fire outcome (`ok` with `sent: []` is a quiet fire)
+          description: "Fire outcome (`ok` with `sent: []` is a quiet fire)"
           content:
             application/json:
               schema:
@@ -1400,10 +2350,12 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /api/tasks/run:
     get:
       tags: [tasks]
+      x-access: admin
       summary: Poller status
       responses:
         "200":
@@ -1416,10 +2368,12 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/TaskSchedulerJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       tags: [tasks]
+      x-access: admin
       summary: Run one poll tick now
-      description: Only tasks that are actually due fire — and none do while maintenance mode is on.
+      description: Awaited. Only tasks that are actually due fire - and none do while maintenance mode is on.
       responses:
         "200":
           description: Job info after the tick
@@ -1431,11 +2385,13 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/TaskSchedulerJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
-  # ─────────────────────── self-improvement ──────────────────────
+  # -------------------------- self-improvement --------------------
   /api/self-improvement:
     get:
       tags: [self-improvement]
+      x-access: admin
       summary: Feedback, learned artifacts, exclusions, and job status
       responses:
         "200":
@@ -1454,12 +2410,14 @@ paths:
                             properties:
                               job: { $ref: "#/components/schemas/DailyJobInfoBase" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/self-improvement/run:
     post:
       tags: [self-improvement]
+      x-access: admin
       summary: Run the daily incorporation job now
-      description: Fire-and-forget — one LLM call per feedback.
+      description: Fire-and-forget - one LLM call per feedback.
       responses:
         "200":
           description: Job info at the moment of triggering
@@ -1471,6 +2429,7 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/DailyJobInfoBase" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/self-improvement/exclusions/{id}:
     parameters:
@@ -1480,8 +2439,9 @@ paths:
         schema: { type: string }
     delete:
       tags: [self-improvement]
+      x-access: admin
       summary: Drop an addressing exclusion
-      description: The operator's undo — after this the analyzer may match that word again.
+      description: The operator's undo - after this the analyzer may match that word again.
       responses:
         "200":
           description: Removed, with the row that was removed
@@ -1498,12 +2458,14 @@ paths:
                           deleted: { type: boolean, const: true }
                           exclusion: { $ref: "#/components/schemas/AddressingExclusion" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  # ───────────────────────── browser agent ───────────────────────
+  # ---------------------------- browser agent ---------------------
   /api/browser:
     get:
       tags: [browser-agent]
+      x-access: admin
       summary: List browser-agent runs
       responses:
         "200":
@@ -1522,11 +2484,13 @@ paths:
                             type: array
                             items: { $ref: "#/components/schemas/BrowserAgentRun" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       tags: [browser-agent]
+      x-access: admin
       summary: Queue a dashboard-started run
       description: |
-        A dashboard run has no chat to deliver to — the report is stored on the run
+        A dashboard run has no chat to deliver to - the report is stored on the run
         row. It is treated as the operator's own, so `isOwner` is true and the
         download tools are enabled.
       requestBody:
@@ -1549,6 +2513,7 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/BrowserAgentRun" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/browser/{id}:
@@ -1559,6 +2524,7 @@ paths:
         schema: { type: string }
     get:
       tags: [browser-agent]
+      x-access: admin
       summary: One run with its activity feed, screenshots and live state
       responses:
         "200":
@@ -1571,6 +2537,7 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/BrowserAgentRunDetail" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/browser/{id}/screenshot/{seq}:
@@ -1586,6 +2553,7 @@ paths:
         schema: { type: integer, minimum: 0 }
     get:
       tags: [browser-agent]
+      x-access: admin
       summary: One screenshot's JPEG bytes
       description: The bytes live in Postgres, never in trace JSON. Auth-gated like every other route.
       responses:
@@ -1599,14 +2567,16 @@ paths:
               schema: { type: string, format: binary }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/browser/ytdlp/run:
     post:
       tags: [browser-agent]
+      x-access: admin
       summary: Check for a newer yt-dlp now
       description: >
-        Fire-and-forget — a check that finds an update downloads ~40 MB from the
+        Fire-and-forget - a check that finds an update downloads ~40 MB from the
         yt-dlp release, verifies its SHA-256, and installs it into `data/bin`.
         Also runs daily at the shared daily-jobs run time.
       responses:
@@ -1620,11 +2590,13 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/YtDlpJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
-  # ──────────────────────────  analytics  ────────────────────────
+  # ----------------------------- analytics ------------------------
   /api/analytics/metrics:
     get:
       tags: [analytics]
+      x-access: admin
       summary: Traffic tiles for one card's filters
       parameters:
         - $ref: "#/components/parameters/PeriodUnit"
@@ -1642,11 +2614,13 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/TotalsPayload" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/analytics/series:
     get:
       tags: [analytics]
+      x-access: admin
       summary: One chart card's series
       description: Every section answers with the same `{ buckets, series }` shape. `mood` requires a `chatId`.
       parameters:
@@ -1671,11 +2645,13 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/SeriesPayload" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/analytics/models:
     get:
       tags: [analytics]
+      x-access: admin
       summary: Model performance for one period
       description: |
         Every LLM round recorded in the trace files, grouped by model and by what
@@ -1696,11 +2672,13 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/ModelsPayload" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/analytics/top-users:
     get:
       tags: [analytics]
+      x-access: admin
       summary: The most active senders in one period
       parameters:
         - $ref: "#/components/parameters/PeriodUnit"
@@ -1718,13 +2696,15 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/TopUsersPayload" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/analytics/insights:
     get:
       tags: [analytics]
+      x-access: admin
       summary: The stored roll-up for one chat's selected period
-      description: Returns `null` when that period has not been rolled up yet — insights only ever cover finished hours.
+      description: Returns `null` when that period has not been rolled up yet - insights only ever cover finished hours.
       parameters:
         - $ref: "#/components/parameters/PeriodUnit"
         - $ref: "#/components/parameters/PeriodAnchor"
@@ -1746,11 +2726,13 @@ paths:
                           - $ref: "#/components/schemas/PeriodInsight"
                           - type: "null"
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/analytics/availability:
     get:
       tags: [analytics]
+      x-access: admin
       summary: Which periods in a range hold data
       description: |
         The period picker's calendar marks. Answered from the calling card's own
@@ -1787,11 +2769,13 @@ paths:
                         type: array
                         items: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/analytics/insights/run:
     get:
       tags: [analytics]
+      x-access: admin
       summary: Insight job status
       responses:
         "200":
@@ -1804,10 +2788,12 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/AnalyticsJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       tags: [analytics]
+      x-access: admin
       summary: Run the insight job now
-      description: A run with no LLM configured, or nothing to compute, settles as a harmless no-op.
+      description: Awaited. A run with no LLM configured, or nothing to compute, settles as a harmless no-op.
       responses:
         "200":
           description: Job info after the run
@@ -1819,10 +2805,12 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/AnalyticsJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/analytics/insights/regenerate:
     post:
       tags: [analytics]
+      x-access: admin
       summary: Drop a period's stored insights and compute them again
       description: |
         DESTRUCTIVE and BILLABLE. Every day score covering the period is deleted,
@@ -1842,7 +2830,7 @@ paths:
                   description: 'Bucket key at that granularity: `2026-07-16 14`, `2026-07-16`, `2026-07`, `2026`, `all`.'
       responses:
         "200":
-          description: Job info after queueing the regeneration
+          description: Job info after the regeneration ran
           content:
             application/json:
               schema:
@@ -1851,50 +2839,30 @@ paths:
                   - properties:
                       data: { $ref: "#/components/schemas/AnalyticsJobInfo" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  # ───────────────────────────  traces  ──────────────────────────
+  # ------------------------------ traces --------------------------
   /api/traces:
     get:
       tags: [traces]
+      x-access: account
       summary: Trace headers, newest first
-      description: Events are omitted; the detail route loads them.
+      description: |
+        Events are omitted; the detail route loads them. A user-role account
+        gets only its own assistants' traces (a foreign `assistantId` facet
+        simply matches nothing); traces without an `assistantId` are admin-only.
       parameters:
-        - name: feature
-          in: query
-          description: A registered feature id, e.g. `bot-messaging`, `mcp-tools-history`.
-          schema: { type: string }
-        - name: status
-          in: query
-          schema: { $ref: "#/components/schemas/TraceStatus" }
-        - name: triggerKind
-          in: query
-          schema: { type: string, enum: [telegram, dashboard, cron, system, api, test] }
-        - name: actor
-          in: query
-          description: The trigger's actor (a chat id, user id, or job name), exact match.
-          schema: { type: string }
-        - name: correlationId
-          in: query
-          description: Every trace of one process (a turn, a job run).
-          schema: { type: string }
-        - name: relatedId
-          in: query
-          description: A row id under `relatedIds` (any table) — everything about one record, e.g. a task.
-          schema: { type: string }
-        - name: flow
-          in: query
-          description: >-
-            A flow seed (correlation, trace, or row id) — every transitively linked
-            trace: the turn that created a task, its tool calls, every fire, what
-            each fire sent. Depth- and size-capped.
-          schema: { type: string }
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 200 }
-        - name: offset
-          in: query
-          schema: { type: integer, minimum: 0 }
+        - $ref: "#/components/parameters/TraceFeature"
+        - $ref: "#/components/parameters/TraceAssistantId"
+        - $ref: "#/components/parameters/TraceStatusFilter"
+        - $ref: "#/components/parameters/TraceTriggerKind"
+        - $ref: "#/components/parameters/TraceActor"
+        - $ref: "#/components/parameters/TraceCorrelationId"
+        - $ref: "#/components/parameters/TraceRelatedId"
+        - $ref: "#/components/parameters/TraceFlow"
+        - $ref: "#/components/parameters/TraceLimit"
+        - $ref: "#/components/parameters/TraceOffset"
       responses:
         "200":
           description: Trace list
@@ -1927,7 +2895,9 @@ paths:
         schema: { type: string }
     get:
       tags: [traces]
+      x-access: account
       summary: One trace with its ordered events
+      description: 404 for an unknown id - or, for a user-role account, one that is not its own assistants'.
       responses:
         "200":
           description: Trace
@@ -1944,48 +2914,35 @@ paths:
   /api/traces/bundle:
     get:
       tags: [traces]
+      x-access: account
       summary: Download a bundle for a filtered set of traces
       description: |
-        Newest first, capped. Contains complete request and response payloads —
-        effectively full conversation content. Handle accordingly.
+        Newest first, capped at 500. Contains complete request and response
+        payloads - effectively full conversation content. Handle accordingly.
+        Scoped per role like the list. The filename names the active facets and
+        the local export time: `traces-<facets>-<YYYYMMDD-HHmmss>.json`.
       parameters:
-        - name: feature
-          in: query
-          schema: { type: string }
-        - name: status
-          in: query
-          schema: { $ref: "#/components/schemas/TraceStatus" }
-        - name: triggerKind
-          in: query
-          schema: { type: string, enum: [telegram, dashboard, cron, system, api, test] }
-        - name: actor
-          in: query
-          schema: { type: string }
-        - name: correlationId
-          in: query
-          schema: { type: string }
-        - name: relatedId
-          in: query
-          schema: { type: string }
-        - name: flow
-          in: query
-          schema: { type: string }
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 200 }
-        - name: offset
-          in: query
-          schema: { type: integer, minimum: 0 }
+        - $ref: "#/components/parameters/TraceFeature"
+        - $ref: "#/components/parameters/TraceAssistantId"
+        - $ref: "#/components/parameters/TraceStatusFilter"
+        - $ref: "#/components/parameters/TraceTriggerKind"
+        - $ref: "#/components/parameters/TraceActor"
+        - $ref: "#/components/parameters/TraceCorrelationId"
+        - $ref: "#/components/parameters/TraceRelatedId"
+        - $ref: "#/components/parameters/TraceFlow"
+        - $ref: "#/components/parameters/TraceLimit"
+        - $ref: "#/components/parameters/TraceOffset"
       responses:
         "200":
           description: JSON attachment
           headers:
             Content-Disposition:
-              schema: { type: string, examples: ['attachment; filename="traces-all.json"'] }
+              schema: { type: string, examples: ['attachment; filename="traces-all-20260726-091203.json"'] }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TraceBundle" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /api/traces/{id}/bundle:
     parameters:
@@ -1995,13 +2952,15 @@ paths:
         schema: { type: string }
     get:
       tags: [traces]
+      x-access: account
       summary: Download a bundle for one trace
+      description: Named by what it holds - `trace-<feature>-<action>-<local start>-<id prefix>.json`. Ownership-gated like the detail view.
       responses:
         "200":
           description: JSON attachment
           headers:
             Content-Disposition:
-              schema: { type: string, examples: ['attachment; filename="trace-abc.json"'] }
+              schema: { type: string, examples: ['attachment; filename="trace-tasks-manual-fire-20260726-091203-0a1b2c3d.json"'] }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TraceBundle" }
@@ -2011,9 +2970,10 @@ paths:
   /api/traces/prune:
     post:
       tags: [traces]
+      x-access: admin
       summary: Delete stored trace months older than a key
       description: |
-        DESTRUCTIVE and irreversible — the month files are the only copy of the
+        DESTRUCTIVE and irreversible - the month files are the only copy of the
         full request/response bodies. Manual-only by decision: no automatic
         retention exists, so nothing is deleted except through this call.
       requestBody:
@@ -2050,7 +3010,166 @@ paths:
                             description: How many stored traces those files held.
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ------------------------- internal transport API ---------------
+  # Called by the transport services (apps/tg today), never by the dashboard.
+  # No session, no `data` wrapper, errors as `{ "error": { message } }`. The
+  # whole contract lives in docs/development/adding-a-transport.md.
+  /api/internal/transports/register:
+    post:
+      tags: [internal]
+      x-access: internal
+      security:
+        - internalToken: []
+      summary: Transport self-registration
+      description: |
+        A transport announces itself at boot: its id, name, base URL, MCP path
+        and config-field schemas. The core upserts the registration (the
+        admin's `enabled` flag and stored config blobs survive every
+        re-registration), kicks the managed tool-connection reconcile, and
+        answers with the transport's desired state - so registration doubles
+        as the boot-time fetch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransportRegistrationRequest" }
+      responses:
+        "200":
+          description: The transport's desired state (bare object)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransportDesiredState" }
+        "400": { $ref: "#/components/responses/InternalBadRequest" }
+        "401": { $ref: "#/components/responses/InternalUnauthorized" }
+
+  /api/internal/transports/{id}/desired:
+    parameters:
+      - $ref: "#/components/parameters/TransportId"
+    get:
+      tags: [internal]
+      x-access: internal
+      security:
+        - internalToken: []
+      summary: Refetch the desired state
+      description: |
+        Called whenever the bus carries `transport.config.changed` for this
+        transport (or `assistant.deleted`). A connection's `enabled` already
+        folds in the transport switch and the owning account's deactivation.
+      responses:
+        "200":
+          description: Desired state (bare object)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransportDesiredState" }
+        "400": { $ref: "#/components/responses/InternalBadRequest" }
+        "401": { $ref: "#/components/responses/InternalUnauthorized" }
+        "404": { $ref: "#/components/responses/InternalNotFound" }
+
+  /api/internal/transports/{id}/config:
+    parameters:
+      - $ref: "#/components/parameters/TransportId"
+    patch:
+      tags: [internal]
+      x-access: internal
+      security:
+        - internalToken: []
+      summary: Write back into the transport-level config
+      description: |
+        A transport persisting something it resolved (telegram: the owner id
+        it just looked up). Shallow merge - the keys are the transport's own.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConfigBlob" }
+      responses:
+        "200":
+          description: The transport-level blob after the merge (bare object)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [config]
+                properties:
+                  config: { $ref: "#/components/schemas/ConfigBlob" }
+        "400": { $ref: "#/components/responses/InternalBadRequest" }
+        "401": { $ref: "#/components/responses/InternalUnauthorized" }
+        "404": { $ref: "#/components/responses/InternalNotFound" }
+
+  /api/internal/transports/messages:
+    get:
+      tags: [internal]
+      x-access: internal
+      security:
+        - internalToken: []
+      summary: Ask the mirror about one message
+      description: |
+        The reaction tool's pre-check: does the target exist, and is it the
+        bot's own? `assistantId` and `direct=true` pick the per-assistant
+        direct stream; a group chat is one shared stream.
+      parameters:
+        - name: source
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/SourceId" }
+        - name: chatId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: sourceMessageId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: assistantId
+          in: query
+          required: false
+          schema: { type: string }
+        - name: direct
+          in: query
+          required: false
+          description: Literal `true` selects the assistant's direct stream.
+          schema: { type: string, enum: ["true", "false"] }
+      responses:
+        "200":
+          description: Lookup result (bare object)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransportMessageLookup" }
+        "400": { $ref: "#/components/responses/InternalBadRequest" }
+        "401": { $ref: "#/components/responses/InternalUnauthorized" }
+
+  /api/internal/transports/callback:
+    post:
+      tags: [internal]
+      x-access: internal
+      security:
+        - internalToken: []
+      summary: A feedback-menu button was pressed
+      description: |
+        The one transport update that is request/response rather than a
+        queue event: the platform's button spinner wants a toast only the
+        flow's outcome can word. Never a 5xx - a source with no feedback flow,
+        or a flow that failed, answers `toast: null`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransportCallbackRequest" }
+      responses:
+        "200":
+          description: The toast to answer the platform's callback query with (bare object)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [toast]
+                properties:
+                  toast: { type: [string, "null"] }
+        "400": { $ref: "#/components/responses/InternalBadRequest" }
+        "401": { $ref: "#/components/responses/InternalUnauthorized" }
 
 components:
   securitySchemes:
@@ -2059,8 +3178,19 @@ components:
       in: cookie
       name: op_session
       description: |
-        Signed stateless session cookie set by `/api/auth/login` or
-        `/api/auth/setup`. Value shape `<expiresMs>.<nonce>.<sig>`; valid 30 days.
+        Signed stateless session cookie set by `/api/auth/login`,
+        `/api/auth/setup` and (rotated) `/api/auth/change-password`. Value
+        shape `<accountId>.<expiresMs>.<nonce>.<sig>`, signed with that
+        account's own session secret; valid 30 days.
+    internalToken:
+      type: apiKey
+      in: header
+      name: x-internal-token
+      description: |
+        The shared secret between the core and its transport services - the
+        core's `INTERNAL_API_TOKEN`. Only the `/api/internal/transports/*`
+        routes accept it; a missing or wrong value (or an unset token on the
+        core) is `401 { "error": { "message": "unauthorized" } }`.
 
   parameters:
     PeriodUnit:
@@ -2073,34 +3203,94 @@ components:
       name: anchor
       in: query
       description: |
-        The selected period's key — `2026-07-18` (day), `2026-07-13` (week: its
+        The selected period's key - `2026-07-18` (day), `2026-07-13` (week: its
         Monday), `2026-07` (month), `2026` (year), `all`. Defaults to the current
         period in the operator timezone.
       schema: { type: string }
     FilterChatId:
       name: chatId
       in: query
-      description: Restrict to one Telegram chat.
+      description: Restrict to one chat.
       schema: { type: string }
     FilterUserId:
       name: userId
       in: query
       description: Restrict to one user's own messages.
       schema: { type: string }
+    TransportId:
+      name: id
+      in: path
+      required: true
+      description: A source id (`tg`, `chat`). Anything else is 400.
+      schema: { $ref: "#/components/schemas/SourceId" }
+    TraceFeature:
+      name: feature
+      in: query
+      description: A registered feature id, e.g. `bot-messaging`, `tasks`, `mcp-tools-history`.
+      schema: { type: string }
+    TraceAssistantId:
+      name: assistantId
+      in: query
+      description: One assistant's actions - see `Trace.assistantId`.
+      schema: { type: string }
+    TraceStatusFilter:
+      name: status
+      in: query
+      schema: { $ref: "#/components/schemas/TraceStatus" }
+    TraceTriggerKind:
+      name: triggerKind
+      in: query
+      schema: { $ref: "#/components/schemas/TraceTriggerKind" }
+    TraceActor:
+      name: actor
+      in: query
+      description: The trigger's actor (a chat id, user id, or job name), exact match.
+      schema: { type: string }
+    TraceCorrelationId:
+      name: correlationId
+      in: query
+      description: Every trace of one process (a turn, a job run), exact match.
+      schema: { type: string }
+    TraceRelatedId:
+      name: relatedId
+      in: query
+      description: A row id under `relatedIds` (any table) - everything about one record, e.g. a task.
+      schema: { type: string }
+    TraceFlow:
+      name: flow
+      in: query
+      description: >-
+        A flow seed (correlation, trace, or row id) - every transitively linked
+        trace: the turn that created a task, its tool calls, every fire, what
+        each fire sent. Depth- and size-capped.
+      schema: { type: string }
+    TraceLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200 }
+    TraceOffset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0 }
 
   responses:
     BadRequest:
-      description: Malformed request
+      description: Malformed request, or a rule the schema cannot express
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
     Unauthorized:
-      description: No valid operator session
+      description: No valid session, or wrong credentials
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Forbidden:
+      description: The session's role or state does not allow this (a user-role account on an admin route; an unreplaced temporary password)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
     NotFound:
-      description: Unknown id
+      description: Unknown id - or an id outside the account's scope
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
@@ -2128,9 +3318,24 @@ components:
               - $ref: "#/components/schemas/ApiOk"
               - properties:
                   data: { $ref: "#/components/schemas/ProbeReport" }
+    InternalBadRequest:
+      description: The body or the transport id did not parse
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/InternalError" }
+    InternalUnauthorized:
+      description: Missing or wrong `x-internal-token`
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/InternalError" }
+    InternalNotFound:
+      description: The transport never registered
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/InternalError" }
 
   schemas:
-    # ── envelopes ──
+    # -- envelopes --
     ApiOk:
       type: object
       required: [data]
@@ -2162,6 +3367,16 @@ components:
             message: { type: string }
             details:
               description: Machine-readable detail. Never contains secrets.
+    InternalError:
+      type: object
+      description: The reduced error shape of the internal transport routes - no `code`.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message]
+          properties:
+            message: { type: string }
     OkFlag:
       allOf:
         - $ref: "#/components/schemas/ApiOk"
@@ -2181,7 +3396,23 @@ components:
               properties:
                 deleted: { type: boolean, const: true }
 
-    # ── scalars ──
+    # -- scalars --
+    SourceId:
+      type: string
+      enum: [tg, chat]
+      description: A source app - the transport (`tg`) or the built-in web chat (`chat`).
+    ScopedRef:
+      type: string
+      pattern: '^(tg|chat):(user|chat|thread|message):.+$'
+      description: A cross-app pointer `source:kind:id` - `tg:user:123`, `tg:chat:-100123`, `chat:user:<accountId>`.
+    ConfigBlob:
+      type: object
+      description: An opaque config blob keyed by a transport's config-field schema. The core stores it and never interprets it.
+      additionalProperties: true
+    ConfigPreview:
+      type: object
+      description: A config blob as the dashboard shows it - per schema field, the stored value with every `secret` reduced to `...last4`.
+      additionalProperties: { type: string }
     TimeOfDay:
       type: string
       pattern: '^([01]\d|2[0-3]):[0-5]\d$'
@@ -2199,10 +3430,31 @@ components:
     TraceStatus:
       type: string
       enum: [pending, running, success, error, skipped]
+    TraceTriggerKind:
+      type: string
+      enum: [telegram, chat, dashboard, cron, system, api, test]
+      description: What triggered a traced action - a message from a source (`telegram`, `chat`), an operator, a job, the system, an API call, a test.
     RealtimeTopic:
       type: string
       enum:
-        [traces, bot, status, history, users, groups, vision, tasks, feedback, memory, analytics, browser]
+        [
+          traces,
+          bot,
+          status,
+          history,
+          users,
+          groups,
+          vision,
+          tasks,
+          feedback,
+          memory,
+          analytics,
+          browser,
+          assistants,
+          threads,
+          tools,
+          accounts,
+        ]
 
     RealtimeEvent:
       type: object
@@ -2214,7 +3466,7 @@ components:
           description: Optional feature scope, so a scoped view can ignore unrelated events.
         at: { type: string, format: date-time }
 
-    # ── system ──
+    # -- system --
     Health:
       type: object
       required: [status, time, version, checks]
@@ -2223,7 +3475,7 @@ components:
           type: string
           enum: [ok, unavailable]
         time: { type: string, format: date-time }
-        version: { type: string }
+        version: { type: string, description: "The root package.json version, inlined at build time." }
         checks:
           type: object
           required: [database, configuration, traceStorage, downloadStorage]
@@ -2238,7 +3490,7 @@ components:
               type: object
               required: [configured, detail]
               properties:
-                configured: { type: boolean }
+                configured: { type: boolean, description: Whether a chat backend and model are saved. }
                 detail: { type: string }
             traceStorage: { $ref: "#/components/schemas/TraceStorageHealth" }
             downloadStorage: { $ref: "#/components/schemas/DownloadStorageHealth" }
@@ -2258,8 +3510,18 @@ components:
           type: integer
           description: Settled traces held only in RAM awaiting a successful flush.
         lastFlushError:
-          type: [object, "null"]
-          description: The standing flush failure, with when it first appeared.
+          oneOf:
+            - $ref: "#/components/schemas/TraceFlushError"
+            - type: "null"
+
+    TraceFlushError:
+      type: object
+      description: The standing flush failure, with when it first appeared.
+      required: [monthKey, message, at]
+      properties:
+        monthKey: { type: string }
+        message: { type: string }
+        at: { type: string, format: date-time }
 
     DownloadStorageHealth:
       type: object
@@ -2273,24 +3535,286 @@ components:
           type: string
           description: The downloads directory when ok; the OS failure message when not.
 
-    BotStatus:
-      type: object
-      required: [state, username, since, error]
-      properties:
-        state: { type: string }
-        username: { type: [string, "null"] }
-        since: { type: [string, "null"], format: date-time }
-        error: { type: [string, "null"] }
-
     ToolView:
       type: object
+      description: One tool as the Tools dashboard shows it - from the in-process half or a tool connection.
       required: [name, description, feature]
       properties:
-        name: { type: string, description: The identifier the model calls. }
+        name: { type: string, description: The identifier the model calls - slug-prefixed (`<slug>__<tool>`) for a connection's tools. }
         description: { type: string }
-        feature: { type: string, description: The feature that contributes the tool. }
+        feature: { type: string, description: "The feature that contributes the tool, or `connections` for a hosted tool." }
+        connection:
+          type: object
+          description: The connection this tool comes from; absent for in-process tools.
+          required: [id, slug, name, managed, enabled, scope]
+          properties:
+            id: { type: string }
+            slug: { type: string }
+            name: { type: string }
+            managed: { type: boolean, description: Managed connections are the transports' own MCP servers. }
+            enabled: { type: boolean }
+            scope:
+              type: object
+              required: [appScope, allAssistants, assistantCount]
+              properties:
+                appScope:
+                  oneOf:
+                    - $ref: "#/components/schemas/SourceId"
+                    - type: "null"
+                allAssistants: { type: boolean }
+                assistantCount: { type: integer, description: How many assistants may call it when `allAssistants` is false. }
 
-    # ── backends ──
+    # -- accounts --
+    AccountView:
+      type: object
+      description: One account as the management page renders it. Never the secrets.
+      required: [id, username, displayName, role, active, mustChangePassword, createdAt]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        displayName: { type: [string, "null"] }
+        role: { $ref: "#/components/schemas/AccountRole" }
+        active: { type: boolean }
+        mustChangePassword:
+          type: boolean
+          description: True while the account still holds its admin-issued temporary password.
+        createdAt: { type: string, format: date-time }
+    AccountRole:
+      type: string
+      enum: [admin, user]
+    AccountCreate:
+      type: object
+      required: [username, role, temporaryPassword]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          pattern: '^[A-Za-z0-9._-]+$'
+        displayName: { type: string, maxLength: 120 }
+        role: { $ref: "#/components/schemas/AccountRole" }
+        temporaryPassword: { type: string, minLength: 8 }
+    AccountPatch:
+      description: One management action per call.
+      oneOf:
+        - type: object
+          required: [active]
+          properties:
+            active: { type: boolean }
+        - type: object
+          required: [role]
+          properties:
+            role: { $ref: "#/components/schemas/AccountRole" }
+        - type: object
+          required: [temporaryPassword]
+          properties:
+            temporaryPassword: { type: string, minLength: 8 }
+
+    # -- profile --
+    ProfileIdentity:
+      type: object
+      description: One identity attached to the profile's person, via the link graph.
+      required: [ref, source, sourceLabel, label, self]
+      properties:
+        ref: { $ref: "#/components/schemas/ScopedRef" }
+        source: { $ref: "#/components/schemas/SourceId" }
+        sourceLabel: { type: string }
+        label:
+          type: [string, "null"]
+          description: Directory label, or null when no source currently knows the ref.
+        self: { type: boolean, description: True for the account's own web-chat identity. }
+    ProfileMemoryDoc:
+      type: object
+      description: A memory document about one of the profile's identities.
+      required: [userId, ref, content, updatedAt]
+      properties:
+        userId:
+          allOf: [{ $ref: "#/components/schemas/ScopedRef" }]
+          description: The key the document is stored under - what `DELETE /api/profile/memory` takes.
+        ref: { $ref: "#/components/schemas/ScopedRef" }
+        content: { type: string }
+        updatedAt: { type: string, format: date-time }
+    ProfileView:
+      type: object
+      required: [account, identities, memory]
+      properties:
+        account:
+          type: object
+          required: [id, username, displayName, role]
+          properties:
+            id: { type: string }
+            username: { type: string }
+            displayName: { type: string, description: Already fallen back to the username. }
+            role: { $ref: "#/components/schemas/AccountRole" }
+        identities:
+          type: array
+          items: { $ref: "#/components/schemas/ProfileIdentity" }
+        memory:
+          type: array
+          items: { $ref: "#/components/schemas/ProfileMemoryDoc" }
+
+    # -- assistants --
+    Assistant:
+      type: object
+      required: [id, name, persona, ownerAccountId, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        persona: { type: string }
+        ownerAccountId:
+          type: [string, "null"]
+          description: The owning account, or null for rows created before accounts existed (admin-owned in effect).
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AssistantCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        persona: { type: string, maxLength: 32000, default: "" }
+    AssistantUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        persona: { type: string, maxLength: 32000 }
+
+    # -- transports --
+    TransportConfigField:
+      type: object
+      description: One field a transport's config form renders - the schema-driven UI unit. Secrets are write-only.
+      required: [key, label, kind]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        kind:
+          type: string
+          enum: [text, secret, boolean]
+        help: { type: string, description: Help line under the field. }
+        required: { type: boolean }
+    TransportView:
+      type: object
+      required:
+        [id, name, enabled, registered, lastSeenAt, connectionConfigSchema, transportConfigSchema, configPreview, updatedAt]
+      properties:
+        id: { $ref: "#/components/schemas/SourceId" }
+        name: { type: string }
+        enabled: { type: boolean }
+        registered: { type: boolean, description: Whether the transport has announced itself (a never-registered row has no base URL). }
+        lastSeenAt: { type: string, format: date-time }
+        connectionConfigSchema:
+          type: array
+          items: { $ref: "#/components/schemas/TransportConfigField" }
+          description: The per-assistant connection section (a bot token, say).
+        transportConfigSchema:
+          type: array
+          items: { $ref: "#/components/schemas/TransportConfigField" }
+          description: The transport-wide settings section.
+        configPreview: { $ref: "#/components/schemas/ConfigPreview" }
+        updatedAt: { type: string, format: date-time }
+    TransportConnectionStatus:
+      type: object
+      description: Live poller state the transport reports on its own `/health` for one connection.
+      required: [state, username, since, error]
+      properties:
+        state:
+          type: string
+          enum: [running, error, stopped]
+        username: { type: [string, "null"], description: The platform identity the connection runs as. }
+        since: { type: [string, "null"], format: date-time }
+        error: { type: [string, "null"] }
+    TransportConnectionView:
+      type: object
+      required: [id, assistantId, enabled, configPreview, createdAt, updatedAt, status]
+      properties:
+        id: { type: string }
+        assistantId: { type: string }
+        enabled: { type: boolean }
+        configPreview: { $ref: "#/components/schemas/ConfigPreview" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        status:
+          oneOf:
+            - $ref: "#/components/schemas/TransportConnectionStatus"
+            - type: "null"
+    TransportRegistrationRequest:
+      type: object
+      required: [id, name, baseUrl, mcpPath, connectionConfigSchema, transportConfigSchema]
+      properties:
+        id: { $ref: "#/components/schemas/SourceId" }
+        name: { type: string, minLength: 1, description: What the dashboard calls the transport. }
+        baseUrl: { type: string, minLength: 1, description: "The transport's internal API base URL, reachable from the core." }
+        mcpPath: { type: [string, "null"], description: "Path of the transport's MCP server on that base, or null." }
+        connectionConfigSchema:
+          type: array
+          items: { $ref: "#/components/schemas/TransportConfigField" }
+        transportConfigSchema:
+          type: array
+          items: { $ref: "#/components/schemas/TransportConfigField" }
+    TransportDesiredConnection:
+      type: object
+      description: "One desired connection: run this assistant on this opaque config."
+      required: [id, assistantId, config, enabled]
+      properties:
+        id: { type: string }
+        assistantId: { type: string }
+        config: { $ref: "#/components/schemas/ConfigBlob" }
+        enabled:
+          type: boolean
+          description: Already folds in the transport switch and the owning account's deactivation - false means "do not run this".
+    TransportDesiredState:
+      type: object
+      required: [transport, connections]
+      properties:
+        transport:
+          type: object
+          required: [enabled, config]
+          properties:
+            enabled: { type: boolean }
+            config: { $ref: "#/components/schemas/ConfigBlob" }
+        connections:
+          type: array
+          items: { $ref: "#/components/schemas/TransportDesiredConnection" }
+    TransportUser:
+      type: object
+      description: A platform user's raw profile, as the transport saw it on the wire.
+      required: [userId, username, firstName, lastName]
+      properties:
+        userId: { type: string, minLength: 1, description: Source-local user id. }
+        username: { type: [string, "null"], description: "Platform handle (normalized lowercase, no `@`)." }
+        firstName: { type: [string, "null"] }
+        lastName: { type: [string, "null"] }
+    TransportChat:
+      type: object
+      description: The chat an update belongs to, as the transport saw it.
+      required: [id, kind]
+      properties:
+        id: { type: string, minLength: 1, description: Source-local chat id. }
+        kind:
+          type: string
+          enum: [direct, group]
+        title: { type: [string, "null"] }
+        type: { type: [string, "null"], description: The platform's own chat type string (`group` / `supergroup`). }
+    TransportCallbackRequest:
+      type: object
+      required: [source, assistantId, chat, user, menuSourceMessageId, data]
+      properties:
+        source: { $ref: "#/components/schemas/SourceId" }
+        assistantId: { type: string, minLength: 1, description: The receiving connection's assistant. }
+        chat: { $ref: "#/components/schemas/TransportChat" }
+        user: { $ref: "#/components/schemas/TransportUser" }
+        menuSourceMessageId: { type: string, minLength: 1, description: Source-local id of the menu message the button lives on. }
+        data: { type: string, minLength: 1, description: The raw callback payload the button carried. }
+    TransportMessageLookup:
+      type: object
+      required: [found, role, assistantId]
+      properties:
+        found: { type: boolean }
+        role:
+          type: [string, "null"]
+          enum: [user, assistant, null]
+        assistantId: { type: [string, "null"], description: "The assistant that authored an assistant row, when stamped." }
+
+    # -- backends --
     Backend:
       type: object
       description: One catalog endpoint. The API key appears only as `apiKeyConfigured`.
@@ -2306,7 +3830,7 @@ components:
 
     BackendType:
       type: string
-      enum: [ollama, llamacpp, vllm, anthropic, google, openai-compatible]
+      enum: [ollama, llamacpp, vllm, anthropic, google, zai, openai-compatible]
       description: Which inference server answers at the endpoint (drives the backend-normalization adapters).
 
     BackendCreate:
@@ -2332,13 +3856,18 @@ components:
         apiKey: { type: [string, "null"], maxLength: 500 }
         type: { $ref: "#/components/schemas/BackendType" }
 
-    # ── settings ──
+    # -- settings --
+    TranscriptionMode:
+      type: string
+      enum: [transcriptions, chat]
+      description: How the audio role transcribes - the `/v1/audio/transcriptions` endpoint, or a chat completion carrying `input_audio`.
     Settings:
       type: object
       description: |
-        Client-facing settings. Secrets appear only as `…Configured` booleans.
+        Client-facing settings. Secrets appear only as `...Configured` booleans.
         LLM configuration is per role: each role references a backend from the
-        catalog (null = "use the chat backend") plus a model id.
+        catalog (null = "use the chat backend") plus a model id. Bot tokens are
+        not here - they live on each assistant's transport connection.
       required:
         [
           chatBackendId,
@@ -2352,19 +3881,18 @@ components:
           speechVoice,
           audioBackendId,
           audioModel,
+          audioTranscriptionMode,
           visionBackendId,
           visionModel,
-          browserBackendId,
-          browserModel,
           classifierBackendId,
           classifierModel,
           backgroundBackendId,
           backgroundModel,
-          telegramBotTokenConfigured,
+          browserBackendId,
+          browserModel,
           webSearchConfigured,
-          ownerUserId,
-          ownerUsername,
           maintenanceModeEnabled,
+          assistantLoopGuardTurns,
           timezone,
           dailyJobsRunTime,
           browserDownloadLimitGb,
@@ -2383,36 +3911,31 @@ components:
         audioBackendId: { type: [string, "null"] }
         audioModel:
           type: [string, "null"]
-          description: Null → voice transcription falls back to the chat model.
+          description: Null -> voice transcription falls back to the chat model.
+        audioTranscriptionMode: { $ref: "#/components/schemas/TranscriptionMode" }
         visionBackendId: { type: [string, "null"] }
         visionModel:
           type: [string, "null"]
-          description: Null → the chat model describes media.
-        browserBackendId: { type: [string, "null"] }
-        browserModel:
-          type: [string, "null"]
-          description: Null → the browser agent thinks on the chat model.
+          description: Null -> the chat model describes media.
         classifierBackendId: { type: [string, "null"] }
         classifierModel:
           type: [string, "null"]
-          description: >-
-            Null → the per-message checks (addressing analyzer and verifier,
-            chat-rule match, honesty gate) run on the chat model.
+          description: Null -> the per-message checks run on the chat model.
         backgroundBackendId: { type: [string, "null"] }
         backgroundModel:
           type: [string, "null"]
-          description: >-
-            Null → the offline jobs (history summaries, memory, analytics
-            insights, self-improvement reflection) run on the chat model.
-        telegramBotTokenConfigured: { type: boolean }
+          description: Null -> the offline jobs (history summaries, memory, analytics insights, self-improvement reflection) run on the chat model.
+        browserBackendId: { type: [string, "null"] }
+        browserModel:
+          type: [string, "null"]
+          description: Null -> the browser agent thinks on the chat model.
         webSearchConfigured:
           type: boolean
           description: Whether a Tavily key is stored, enabling the browsing agent's search fallback.
-        ownerUserId: { type: [string, "null"] }
-        ownerUsername:
-          type: [string, "null"]
-          description: Denormalized from the chosen known user; display only.
         maintenanceModeEnabled: { type: boolean }
+        assistantLoopGuardTurns:
+          type: integer
+          description: Consecutive assistant turns a chat may hold before every bot there goes quiet.
         timezone: { type: string, description: Operator IANA timezone. }
         dailyJobsRunTime: { $ref: "#/components/schemas/TimeOfDay" }
         browserDownloadLimitGb: { type: integer }
@@ -2437,20 +3960,22 @@ components:
         speechVoice: { type: [string, "null"], maxLength: 100 }
         audioBackendId: { type: [string, "null"], maxLength: 100 }
         audioModel: { type: [string, "null"], maxLength: 200 }
+        audioTranscriptionMode: { $ref: "#/components/schemas/TranscriptionMode" }
         visionBackendId: { type: [string, "null"], maxLength: 100 }
         visionModel: { type: [string, "null"], maxLength: 200 }
-        browserBackendId: { type: [string, "null"], maxLength: 100 }
-        browserModel: { type: [string, "null"], maxLength: 200 }
         classifierBackendId: { type: [string, "null"], maxLength: 100 }
         classifierModel: { type: [string, "null"], maxLength: 200 }
         backgroundBackendId: { type: [string, "null"], maxLength: 100 }
         backgroundModel: { type: [string, "null"], maxLength: 200 }
-        telegramBotToken: { type: [string, "null"], maxLength: 200 }
+        browserBackendId: { type: [string, "null"], maxLength: 100 }
+        browserModel: { type: [string, "null"], maxLength: 200 }
         tavilyApiKey: { type: [string, "null"], maxLength: 500 }
-        ownerUserId:
-          type: [string, "null"]
-          pattern: '^\d+$'
         maintenanceModeEnabled: { type: boolean }
+        assistantLoopGuardTurns:
+          type: integer
+          minimum: 0
+          maximum: 10
+          description: 0 stops assistants from answering each other at all.
         timezone: { type: string, minLength: 1, maxLength: 64 }
         dailyJobsRunTime: { $ref: "#/components/schemas/TimeOfDay" }
         browserDownloadLimitGb:
@@ -2468,6 +3993,13 @@ components:
         backendId: { type: [string, "null"], maxLength: 100 }
         model: { type: [string, "null"], maxLength: 200 }
 
+    AudioProbeInput:
+      allOf:
+        - $ref: "#/components/schemas/RoleProbeInput"
+        - type: object
+          properties:
+            transcriptionMode: { $ref: "#/components/schemas/TranscriptionMode" }
+
     ProbePart:
       type: object
       description: |
@@ -2478,17 +4010,17 @@ components:
       properties:
         kind: { type: string, enum: [text, image, audio, vector] }
         label: { type: string }
-        text: { type: string, description: Present when kind is "text". }
+        text: { type: string, description: "Present when kind is \"text\"." }
         dataUrl:
           type: string
           description: Present when kind is "image" or "audio".
         dimensions:
           type: integer
-          description: Present when kind is "vector" — the full vector width.
+          description: Present when kind is "vector" - the full vector width.
         preview:
           type: array
           items: { type: number }
-          description: Present when kind is "vector" — its leading components.
+          description: Present when kind is "vector" - its leading components.
 
     ProbeReport:
       type: object
@@ -2506,9 +4038,252 @@ components:
           type: array
           items: { $ref: "#/components/schemas/ProbePart" }
 
-    # ── directory ──
+    # -- tool connections --
+    ConnectionTool:
+      type: object
+      description: One tool as stored in the applied snapshot.
+      required: [name, description, inputSchema, appliedAt]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        inputSchema: { type: object, additionalProperties: true }
+        appliedAt: { type: string, format: date-time }
+    DiscoveredTool:
+      type: object
+      description: A tool as the last discovery saw it (not necessarily applied).
+      required: [name, description, inputSchema]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        inputSchema: { type: object, additionalProperties: true }
+    ToolsetDiff:
+      type: object
+      description: What a discovery found against what is applied, by tool name.
+      required: [added, changed, removed, unchanged]
+      properties:
+        added: { type: array, items: { type: string } }
+        changed: { type: array, items: { type: string } }
+        removed: { type: array, items: { type: string } }
+        unchanged: { type: array, items: { type: string } }
+    ToolTransport:
+      type: string
+      enum: [http, stdio]
+      description: Only `http` is executed; `stdio` is modelled and refused.
+    ToolConnection:
+      type: object
+      description: A connection as returned to clients. Header VALUES never leave the server.
+      required:
+        [
+          id,
+          slug,
+          name,
+          transport,
+          endpointUrl,
+          authHeaderNames,
+          enabled,
+          appScope,
+          allAssistants,
+          assistantIds,
+          managed,
+          ownerAccountId,
+          lastDiscoveredAt,
+          lastError,
+          discoveredTools,
+          drift,
+          tools,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string }
+        slug: { type: string, description: The model-visible tool prefix (`<slug>__<tool>`). }
+        name: { type: string }
+        transport: { $ref: "#/components/schemas/ToolTransport" }
+        endpointUrl: { type: string, format: uri }
+        authHeaderNames:
+          type: array
+          items: { type: string }
+          description: Names of the configured auth headers, values withheld.
+        enabled: { type: boolean }
+        appScope:
+          oneOf:
+            - $ref: "#/components/schemas/SourceId"
+            - type: "null"
+          description: Null = every source app; else the only source whose turns may call it.
+        allAssistants: { type: boolean }
+        assistantIds:
+          type: array
+          items: { type: string }
+          description: Assistant ids allowed to call it when `allAssistants` is false.
+        managed: { type: boolean, description: Provided by a transport's own MCP server; reconciled from configuration. }
+        ownerAccountId: { type: [string, "null"], description: "The owning account, or null for managed/system rows." }
+        lastDiscoveredAt: { type: [string, "null"], format: date-time }
+        lastError: { type: [string, "null"] }
+        discoveredTools:
+          type: [array, "null"]
+          items: { $ref: "#/components/schemas/DiscoveredTool" }
+          description: What the last discovery saw, or null before the first one.
+        drift:
+          oneOf:
+            - $ref: "#/components/schemas/ToolsetDiff"
+            - type: "null"
+          description: That discovery against the applied snapshot; null before the first one.
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/ConnectionTool" }
+          description: The applied snapshot - exactly the tools the model is offered.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ToolConnectionCreate:
+      type: object
+      required: [slug, name, endpointUrl]
+      properties:
+        slug:
+          type: string
+          pattern: '^[a-z][a-z0-9-]*$'
+          maxLength: 24
+        name: { type: string, minLength: 1, maxLength: 64 }
+        transport:
+          allOf: [{ $ref: "#/components/schemas/ToolTransport" }]
+          default: http
+        endpointUrl: { type: string, format: uri, description: http(s) only. }
+        authHeaders:
+          type: object
+          additionalProperties: { type: string, maxLength: 2000 }
+          maxProperties: 8
+          default: {}
+          description: "`{ name: value }`; names follow the HTTP token grammar."
+        enabled: { type: boolean, default: true }
+        appScope:
+          oneOf:
+            - $ref: "#/components/schemas/SourceId"
+            - type: "null"
+          default: null
+        allAssistants: { type: boolean, default: true }
+        assistantIds:
+          type: array
+          items: { type: string }
+          default: []
+    ToolConnectionUpdate:
+      type: object
+      minProperties: 1
+      description: Any subset; `authHeaders` replaces the whole set when sent.
+      properties:
+        slug:
+          type: string
+          pattern: '^[a-z][a-z0-9-]*$'
+          maxLength: 24
+        name: { type: string, minLength: 1, maxLength: 64 }
+        endpointUrl: { type: string, format: uri }
+        authHeaders:
+          type: object
+          additionalProperties: { type: string, maxLength: 2000 }
+          maxProperties: 8
+        enabled: { type: boolean }
+        appScope:
+          oneOf:
+            - $ref: "#/components/schemas/SourceId"
+            - type: "null"
+        allAssistants: { type: boolean }
+        assistantIds:
+          type: array
+          items: { type: string }
+    DiscoveryReport:
+      type: object
+      required: [connectionId, ok, error, connection, diff]
+      properties:
+        connectionId: { type: string }
+        ok: { type: boolean }
+        error: { type: [string, "null"], description: "Why discovery failed, or null." }
+        connection: { $ref: "#/components/schemas/ToolConnection" }
+        diff:
+          oneOf:
+            - $ref: "#/components/schemas/ToolsetDiff"
+            - type: "null"
+          description: What the discovery saw against what is applied; null when it failed.
+
+    # -- directory --
+    DirectoryOrigin:
+      type: object
+      description: Where a directory row came from, carried on every entry.
+      required: [source, sourceLabel, ref]
+      properties:
+        source: { $ref: "#/components/schemas/SourceId" }
+        sourceLabel: { type: string, description: "Human name of the source (\"Telegram\", \"Web chat\")." }
+        ref: { $ref: "#/components/schemas/ScopedRef" }
+    OperatorUser:
+      type: object
+      description: One person as its source lists it, with the operator-curated fields.
+      required: [id, username, firstName, lastName, label, aliases, language, firstSeenAt, updatedAt]
+      properties:
+        id: { type: string, description: Source-local id. }
+        username: { type: [string, "null"] }
+        firstName: { type: [string, "null"] }
+        lastName: { type: [string, "null"] }
+        label: { type: string, description: Display label the source resolved. }
+        aliases:
+          type: array
+          items: { type: string }
+        language:
+          type: [string, "null"]
+          description: Governs the reply language in this person's direct chat.
+        firstSeenAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    DirectoryUser:
+      allOf:
+        - $ref: "#/components/schemas/OperatorUser"
+        - $ref: "#/components/schemas/DirectoryOrigin"
+    OperatorChat:
+      type: object
+      description: One conversation as its source lists it.
+      required: [id, kind, title, type, notes, language, messageCount, memberCount, lastMessageAt]
+      properties:
+        id: { type: string, description: Source-local id. }
+        kind:
+          type: string
+          enum: [direct, group]
+        title: { type: [string, "null"] }
+        type: { type: [string, "null"], description: Source-specific chat subtype (`group` / `supergroup`). }
+        notes: { type: [string, "null"], description: Operator-curated description (groups only). }
+        language: { type: [string, "null"] }
+        messageCount: { type: integer, minimum: 0 }
+        memberCount: { type: integer, minimum: 0 }
+        lastMessageAt: { type: [string, "null"], format: date-time }
+    DirectoryChat:
+      allOf:
+        - $ref: "#/components/schemas/OperatorChat"
+        - $ref: "#/components/schemas/DirectoryOrigin"
+    UnavailableSource:
+      type: object
+      description: A source the listing could not read, and why.
+      required: [source, sourceLabel, reason]
+      properties:
+        source: { $ref: "#/components/schemas/SourceId" }
+        sourceLabel: { type: string }
+        reason: { type: string }
+    DirectoryUsersListing:
+      type: object
+      required: [entries, unavailable]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/DirectoryUser" }
+        unavailable:
+          type: array
+          items: { $ref: "#/components/schemas/UnavailableSource" }
+    DirectoryChatsListing:
+      type: object
+      required: [entries, unavailable]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/DirectoryChat" }
+        unavailable:
+          type: array
+          items: { $ref: "#/components/schemas/UnavailableSource" }
     KnownUser:
       type: object
+      description: The shadow row a curated edit answers with (source-local id, no origin).
       required: [userId, username, firstName, lastName, aliases, language, firstSeenAt, updatedAt]
       properties:
         userId: { type: string }
@@ -2518,12 +4293,9 @@ components:
         aliases:
           type: array
           items: { type: string }
-        language:
-          type: [string, "null"]
-          description: Governs the bot's reply language in this person's private chat.
+        language: { type: [string, "null"] }
         firstSeenAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
-
     KnownGroup:
       type: object
       required: [chatId, title, type, notes, language, firstSeenAt, updatedAt]
@@ -2536,40 +4308,151 @@ components:
         firstSeenAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
-    KnownGroupSummary:
-      allOf:
-        - $ref: "#/components/schemas/KnownGroup"
-        - type: object
-          required: [memberCount]
-          properties:
-            memberCount: { type: integer }
-
-    # ── personalities ──
-    Personality:
+    # -- person links --
+    PersonLinkMember:
       type: object
-      required: [id, name, prompt, createdAt, updatedAt]
+      description: One identity in a link, resolved against the aggregated directory.
+      required: [userRef, source, sourceLabel, label, addedAt]
+      properties:
+        userRef: { $ref: "#/components/schemas/ScopedRef" }
+        source: { $ref: "#/components/schemas/SourceId" }
+        sourceLabel: { type: string }
+        label:
+          type: [string, "null"]
+          description: Directory label, or null when no source currently knows the ref.
+        addedAt: { type: string, format: date-time }
+    PersonLink:
+      type: object
+      required: [id, note, members, createdAt, updatedAt]
       properties:
         id: { type: string }
-        name: { type: string }
-        prompt: { type: string }
+        note: { type: [string, "null"] }
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/PersonLinkMember" }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
-
-    PersonalitiesView:
+    PersonLinkMembersInput:
+      type: array
+      description: Scoped user refs, deduplicated; at least two, at most twenty.
+      minItems: 2
+      maxItems: 20
+      items: { $ref: "#/components/schemas/ScopedRef" }
+    PersonLinkCreate:
       type: object
-      required: [personalities, activeId]
+      required: [members]
       properties:
-        personalities:
-          type: array
-          items: { $ref: "#/components/schemas/Personality" }
-        activeId: { type: [string, "null"] }
+        members: { $ref: "#/components/schemas/PersonLinkMembersInput" }
+        note: { type: string, maxLength: 500, default: "", description: Trimmed; blank stores null. }
+    PersonLinkUpdate:
+      description: One field per call.
+      oneOf:
+        - type: object
+          required: [note]
+          properties:
+            note: { type: string, maxLength: 500 }
+        - type: object
+          required: [members]
+          properties:
+            members: { $ref: "#/components/schemas/PersonLinkMembersInput" }
 
-    # ── jobs ──
+    # -- web chat --
+    ChatThread:
+      type: object
+      required: [id, assistantId, name, titleProvisional, userId, messageCount, lastMessageAt, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        assistantId: { type: string, description: Fixed at creation. }
+        name: { type: string }
+        titleProvisional: { type: boolean, description: True while the name is the placeholder a new thread starts with. }
+        userId: { type: string, description: The account that owns the thread. }
+        messageCount: { type: integer, minimum: 0 }
+        lastMessageAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ChatMessageMedia:
+      type: object
+      required: [id, kind, status, description]
+      properties:
+        id: { type: string, description: "Fetch the bytes from `/api/chat/media/{id}`." }
+        kind: { type: string }
+        status:
+          type: string
+          enum: [pending, described, unavailable]
+        description: { type: [string, "null"], description: "The vision model's text, once it exists." }
+    ChatThreadMessage:
+      type: object
+      required: [id, role, content, sentAt, replyToId, media]
+      properties:
+        id: { type: string, description: "Source-local message id, as a string." }
+        role:
+          type: string
+          enum: [user, assistant]
+        content: { type: string }
+        sentAt: { type: string, format: date-time }
+        replyToId: { type: [string, "null"] }
+        media:
+          oneOf:
+            - $ref: "#/components/schemas/ChatMessageMedia"
+            - type: "null"
+    ChatThreadTurn:
+      type: object
+      description: What the core is doing in this thread right now.
+      required: [sourceMessageId, activity, since]
+      properties:
+        sourceMessageId: { type: string, description: The message being answered. }
+        activity: { type: [string, "null"], description: "A tool's label, or null." }
+        since: { type: string, format: date-time }
+    ChatThreadView:
+      type: object
+      required: [thread, messages, turn]
+      properties:
+        thread: { $ref: "#/components/schemas/ChatThread" }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/ChatThreadMessage" }
+        turn:
+          oneOf:
+            - $ref: "#/components/schemas/ChatThreadTurn"
+            - type: "null"
+    ChatThreadCreate:
+      type: object
+      required: [assistantId]
+      properties:
+        assistantId: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+    ChatAttachment:
+      type: object
+      required: [dataBase64]
+      properties:
+        dataBase64: { type: string, minLength: 1, maxLength: 16777216 }
+        mimeType: { type: [string, "null"], maxLength: 200 }
+    ChatPostMessage:
+      type: object
+      description: Text, an image, a voice note, or some of each - at least one.
+      properties:
+        text: { type: string, maxLength: 10000, default: "" }
+        image: { $ref: "#/components/schemas/ChatAttachment" }
+        audio: { $ref: "#/components/schemas/ChatAttachment" }
+    ChatPostMessageResult:
+      type: object
+      required: [message, correlationId]
+      properties:
+        message: { $ref: "#/components/schemas/ChatThreadMessage" }
+        correlationId:
+          type: [string, "null"]
+          description: The turn's correlation id, or null when nothing was enqueued.
+
+    # -- jobs --
     JobProgress:
       type: [object, "null"]
       description: |
         Live "what it does now" while a run is in flight; null otherwise. Carries the
         current step, and an `n / total` count when the work is a countable loop.
+      properties:
+        step: { type: string }
+        current: { type: integer }
+        total: { type: integer }
     IntervalJobStatus:
       type: object
       required: [running, ticking, lastTickAt, lastSummary, lastError, progress]
@@ -2622,7 +4505,7 @@ components:
               type: string
               enum: [managed, system, missing]
               description: >
-                Where that binary comes from — the self-updating copy in `data/bin`,
+                Where that binary comes from - the self-updating copy in `data/bin`,
                 whatever is on PATH (the image's pinned build), or nowhere.
 
     SearchIndexStatus:
@@ -2633,7 +4516,7 @@ components:
         pending:
           type: integer
           description: |
-            Messages whose searchable text is missing or out of date — including
+            Messages whose searchable text is missing or out of date - including
             every photo still waiting for the vision backfill to say what it shows.
         cleared:
           type: integer
@@ -2668,8 +4551,8 @@ components:
         paused:
           type: boolean
           description: |
-            True when maintenance mode is pausing every fire. Due tasks stay due —
-            they are skipped, not advanced — and deliver once maintenance ends.
+            True when maintenance mode is pausing every fire. Due tasks stay due -
+            they are skipped, not advanced - and deliver once maintenance ends.
         overdue: { type: integer, description: Enabled tasks whose instant has already passed. }
         nextRunAt: { type: [string, "null"], format: date-time }
         asOf: { type: string, format: date-time }
@@ -2696,7 +4579,7 @@ components:
         status: { $ref: "#/components/schemas/IdleJobStatus" }
         pending: { type: integer, description: Media rows still awaiting a description. }
 
-    # ── history ──
+    # -- history --
     HistoryColumnSource:
       oneOf:
         - type: object
@@ -2713,7 +4596,7 @@ components:
     HistoryColumnMapping:
       type: object
       description: |
-        Where each canonical field's value comes from — a column of the file, or a
+        Where each canonical field's value comes from - a column of the file, or a
         fixed value. `telegram_message_id` cannot take a fixed value: it is the
         per-chat unique key, so one value would collapse the file into one message.
       properties:
@@ -2747,7 +4630,7 @@ components:
           type: array
           items: { type: string }
 
-    # ── memory ──
+    # -- memory --
     MemoryEntry:
       type: object
       required: [id, scope, userId, content, chatId, createdAt]
@@ -2758,9 +4641,9 @@ components:
           enum: [user, general]
         userId:
           type: [string, "null"]
-          description: Set for `user`, null for `general`.
+          description: The person's scoped ref for `user`, null for `general`.
         content: { type: string }
-        chatId: { type: [string, "null"], description: Provenance only, not a scope. }
+        chatId: { type: [string, "null"], description: "Provenance only, not a scope." }
         createdAt: { type: string, format: date-time }
     MemoryEntryView:
       allOf:
@@ -2773,7 +4656,7 @@ components:
       type: object
       required: [userId, content, embedded, updatedAt]
       properties:
-        userId: { type: string }
+        userId: { $ref: "#/components/schemas/ScopedRef" }
         content: { type: string }
         embedded: { type: boolean, description: Whether the row carries an embedding. }
         updatedAt: { type: string, format: date-time }
@@ -2807,7 +4690,7 @@ components:
             - type: "null"
         generalPendingNotes: { type: integer }
 
-    # ── tasks ──
+    # -- tasks --
     TriggerKind:
       type: string
       enum: [message, on-reply, interval, timeout, schedule]
@@ -2821,10 +4704,12 @@ components:
       required:
         [
           id,
+          assistantId,
           chatId,
           threadId,
           createdByUserId,
           source,
+          createdByOwner,
           instruction,
           context,
           triggerKind,
@@ -2844,14 +4729,16 @@ components:
         ]
       properties:
         id: { type: string }
+        assistantId: { type: string, description: The assistant this task belongs to; dies with it. }
         chatId:
           type: [string, "null"]
           description: Null for a global task (message/on-reply kinds only).
         threadId: { type: [integer, "null"] }
         createdByUserId:
           type: [string, "null"]
-          description: The author. Null for a dashboard-created task, which the chat tools cannot mutate (timed kinds) — except by the owner, who is exempt.
+          description: The author. Null for a dashboard-created task, which the chat tools cannot mutate (timed kinds) - except by the owner, who is exempt.
         source: { type: string, enum: [chat, dashboard] }
+        createdByOwner: { type: boolean, description: Whether the creator held owner rights at creation. }
         instruction: { type: string }
         context:
           type: [string, "null"]
@@ -2877,7 +4764,7 @@ components:
           items: { type: string }
           description: >
             What this task's runs actually sent (newest first), for wording
-            variation — timed fires and matched `message`-task turns alike.
+            variation - timed fires and matched `message`-task turns alike.
         lastRunAt: { type: [string, "null"], format: date-time }
         nextRunAt:
           type: [string, "null"]
@@ -2886,7 +4773,67 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
-    # ── self-improvement ──
+    TaskCreate:
+      type: object
+      required: [assistantId, instruction, triggerKind]
+      properties:
+        assistantId: { type: string, minLength: 1 }
+        chatId:
+          type: [string, "null"]
+          default: null
+        threadId: { type: [integer, "null"] }
+        instruction: { type: string, minLength: 2, maxLength: 2000 }
+        context: { type: [string, "null"], maxLength: 4000 }
+        triggerKind: { $ref: "#/components/schemas/TriggerKind" }
+        targetUserIds:
+          type: array
+          items: { type: string }
+          maxItems: 16
+          default: []
+        everyMinutes: { type: [integer, "null"] }
+        delayMinutes: { type: [integer, "null"] }
+        scheduleKind:
+          oneOf:
+            - $ref: "#/components/schemas/ScheduleKind"
+            - type: "null"
+        timeOfDay: { type: [string, "null"] }
+        weekdays:
+          type: [array, "null"]
+          items: { type: integer, minimum: 0, maximum: 6 }
+          description: For a weekly schedule. 0 = Sunday.
+        runDate:
+          type: [string, "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: For a one-time schedule.
+        enabled: { type: boolean, default: true }
+
+    TaskUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        instruction: { type: string, minLength: 2, maxLength: 2000 }
+        context: { type: [string, "null"], maxLength: 4000 }
+        triggerKind: { $ref: "#/components/schemas/TriggerKind" }
+        targetUserIds:
+          type: array
+          items: { type: string }
+          maxItems: 16
+        everyMinutes: { type: [integer, "null"] }
+        delayMinutes: { type: [integer, "null"] }
+        scheduleKind:
+          oneOf:
+            - $ref: "#/components/schemas/ScheduleKind"
+            - type: "null"
+        timeOfDay: { type: [string, "null"] }
+        weekdays:
+          type: [array, "null"]
+          items: { type: integer, minimum: 0, maximum: 6 }
+        runDate:
+          type: [string, "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        enabled: { type: boolean }
+
+    # -- self-improvement --
     UserFeedback:
       type: object
       required:
@@ -2959,8 +4906,8 @@ components:
         [id, term, normalized, botDisplayName, chatId, telegramMessageId, userId, feedbackId, createdAt]
       properties:
         id: { type: string }
-        term: { type: string, description: The word verbatim, as it appeared in the message that mis-triggered. }
-        normalized: { type: string, description: Case-folded, whitespace-collapsed — what the mechanical check matches. }
+        term: { type: string, description: "The word verbatim, as it appeared in the message that mis-triggered." }
+        normalized: { type: string, description: "Case-folded, whitespace-collapsed - what the mechanical check matches." }
         botDisplayName: { type: string }
         chatId: { type: [string, "null"] }
         telegramMessageId: { type: [integer, "null"] }
@@ -2969,7 +4916,7 @@ components:
         createdAt: { type: string, format: date-time }
     SelfImprovementView:
       type: object
-      required: [feedbacks, preferences, correction, exclusions]
+      required: [feedbacks, preferences, correction, exclusions, feedbacksError]
       properties:
         feedbacks:
           type: array
@@ -3002,8 +4949,11 @@ components:
                 required: [userLabel]
                 properties:
                   userLabel: { type: string }
+        feedbacksError:
+          type: [string, "null"]
+          description: Why the feedback listing is missing, when it is - an unreachable source is an outage, never "no feedback yet".
 
-    # ── browser agent ──
+    # -- browser agent --
     BrowserAgentRun:
       type: object
       required:
@@ -3047,7 +4997,7 @@ components:
           type: array
           items: { type: string }
           description: >-
-            The triggering message's http(s) URLs, extracted in code — verbatim,
+            The triggering message's http(s) URLs, extracted in code - verbatim,
             never re-typed by a model. Empty for a dashboard run.
         goal: { type: string }
         status:
@@ -3075,7 +5025,7 @@ components:
               discarded:
                 type: boolean
                 description: >-
-                  True when the file was deleted instead of kept — a restricted run's
+                  True when the file was deleted instead of kept - a restricted run's
                   download that was too large to attach (attach or fail).
         traceId: { type: [string, "null"] }
         createdAt: { type: string, format: date-time }
@@ -3085,7 +5035,7 @@ components:
       type: object
       required: [seq, tool, action, url, ok, summary, at]
       properties:
-        seq: { type: integer, description: Order within the run, from 1. }
+        seq: { type: integer, description: "Order within the run, from 1." }
         tool: { type: string, examples: [browser_navigate] }
         action: { type: string }
         url: { type: [string, "null"] }
@@ -3112,7 +5062,7 @@ components:
                 currentAction: { type: [string, "null"] }
                 progress: { type: [string, "null"] }
 
-    # ── analytics ──
+    # -- analytics --
     MetricContext:
       type: object
       required: [unit, anchor, timezone, scope, chatId, userId]
@@ -3154,11 +5104,11 @@ components:
               enum: [volume, tokens, users, mood]
             bucketUnit:
               allOf: [{ $ref: "#/components/schemas/Granularity" }]
-              description: The granularity the axis is bucketed at — one step finer than `unit`.
+              description: The granularity the axis is bucketed at - one step finer than `unit`.
             buckets:
               type: array
               items: { type: string }
-              description: Bucket labels, oldest → newest. Every series is aligned to this.
+              description: Bucket labels, oldest to newest. Every series is aligned to this.
             series:
               type: array
               items:
@@ -3171,7 +5121,7 @@ components:
                     items: { type: [number, "null"] }
             yMax:
               type: number
-              description: Fixed y-axis maximum where the metric has one (mood is 0–100).
+              description: Fixed y-axis maximum where the metric has one (mood is 0-100).
     CallKindStat:
       type: object
       required:
@@ -3272,7 +5222,7 @@ components:
         model: { type: string }
         computedAt: { type: string, format: date-time }
 
-    # ── traces ──
+    # -- traces --
     LlmUsage:
       type: object
       properties:
@@ -3289,7 +5239,7 @@ components:
       properties:
         id: { type: string }
         traceId: { type: string }
-        seq: { type: integer, minimum: 0, description: Monotonic order within the trace, from 0. }
+        seq: { type: integer, minimum: 0, description: "Monotonic order within the trace, from 0." }
         ts: { type: string, format: date-time }
         type:
           type: string
@@ -3298,8 +5248,8 @@ components:
           type: string
           enum: [debug, info, success, warn, error]
           default: info
-        message: { type: string, description: A clean human title, not a raw type string. }
-        data: { description: Structured, client-safe payload. }
+        message: { type: string, description: "A clean human title, not a raw type string." }
+        data: { description: "Structured, client-safe payload." }
         usage: { $ref: "#/components/schemas/LlmUsage" }
     Trace:
       type: object
@@ -3307,16 +5257,17 @@ components:
       properties:
         id: { type: string }
         feature: { type: string, description: A registered feature id from `lib/features.ts`. }
-        action: { type: string, examples: [reply, summarize, test-connection] }
+        action: { type: string, examples: [reply, summarize, manual-fire] }
+        assistantId:
+          type: string
+          description: The assistant this action belonged to, when it belonged to one. Absent on operator actions and background jobs - those are admin-only.
         status: { $ref: "#/components/schemas/TraceStatus" }
         trigger:
           type: object
           required: [kind]
           properties:
-            kind:
-              type: string
-              enum: [telegram, dashboard, cron, system, api, test]
-            actor: { type: string, description: Chat id, user, or job name. }
+            kind: { $ref: "#/components/schemas/TraceTriggerKind" }
+            actor: { type: string, description: "Chat id, user, or job name." }
             correlationId: { type: string, description: Links related traces. }
         startedAt: { type: string, format: date-time }
         finishedAt: { type: [string, "null"], format: date-time }
