@@ -104,7 +104,8 @@ export interface ModelStat {
 
 /** One user's activity within the period. */
 export interface UserStat {
-  userId: string;
+  /** Scoped ref of the person (`tg:user:123`). */
+  userRef: string;
   label: string;
   messages: number;
   /** Prompt tokens attributed to this user's turns. */
@@ -123,8 +124,10 @@ export interface CardFilters {
   unit: PeriodUnit;
   /** The selected period's key: `2026-07-18`, `2026-07`, `2026`, or `all`. */
   anchor: string;
-  chatId: string | null;
-  userId: string | null;
+  /** One chat's scoped ref, or null for every chat. */
+  chatRef: string | null;
+  /** One person's scoped ref, or null for everyone. */
+  userRef: string | null;
 }
 
 /** Where a card's data comes from — picks the calendar's availability source. */
@@ -138,8 +141,8 @@ export interface MetricContext {
   anchor: string;
   timezone: string;
   scope: MetricScopeKind;
-  chatId: string | null;
-  userId: string | null;
+  chatRef: string | null;
+  userRef: string | null;
 }
 
 /** Which time series a chart card is asking for. */
@@ -234,7 +237,7 @@ export interface MoodPayload {
 export interface PeriodInsight {
   unit: PeriodUnit;
   anchor: string;
-  chatId: string;
+  chatRef: string;
   wordOfPeriod: string;
   topTopic: string;
   mood: MoodPayload["aggregate"];

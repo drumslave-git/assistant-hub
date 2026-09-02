@@ -79,6 +79,7 @@ import {
   renderHistoryWindow,
   type TranscriptVoices,
 } from "./render";
+import { sourceLabel } from "@/server/source/directory";
 import { sourceMediaStore } from "./source-media";
 import { sourceOutbound, type SourceOutboundPort } from "./source-outbound";
 
@@ -167,9 +168,9 @@ function resolveOutbound(
 /** What this turn's media resolves to — the v1 `visionAttachment` shape. */
 interface VisionAttachment {
   note?: string;
-  recognizeMessageId?: number;
+  recognizeMessageId?: string;
   hasCaption?: boolean;
-  replyTargetMessageId?: number;
+  replyTargetMessageId?: string;
 }
 
 function lifecycleEvent(
@@ -284,7 +285,7 @@ async function buildEventDeps(
   const [policy, selfCorrection, taskSets, timezone] = await Promise.all([
     getBotPolicy(),
     getLatestSelfCorrectionPrompt().catch(() => null),
-    getActiveTasksForChat(event.assistantId, chatId, senderId).catch(() => ({
+    getActiveTasksForChat(event.assistantId, event.source, chatId, senderId).catch(() => ({
       prompt: [],
       message: [],
     })),
@@ -334,7 +335,7 @@ async function buildEventDeps(
   const registerBrowserRunAck = async (messageId: number) => {
     const runId = turn.enqueuedBrowserRuns[turn.enqueuedBrowserRuns.length - 1];
     if (!runId) return;
-    if (registerRunAck(runId, chatId, messageId) !== "settled") return;
+    if (registerRunAck(runId, event.chat.ref, messageId) !== "settled") return;
     await turn.outbound?.deleteMessage(chatId, messageId).catch(() => undefined);
   };
 
@@ -444,7 +445,7 @@ async function buildEventDeps(
               const deps = await describeDeps();
               if (deps) {
                 const described = await describeAndStore(
-                  { chatId, telegramMessageId: va.recognizeMessageId },
+                  { chatId, sourceMessageId: va.recognizeMessageId },
                   deps,
                   { store: turn.store, trace: replyTrace },
                 ).catch(() => null);
@@ -487,7 +488,7 @@ async function buildEventDeps(
               const deps = await describeDeps();
               if (deps) {
                 const described = await describeAndStore(
-                  { chatId, telegramMessageId: va.replyTargetMessageId },
+                  { chatId, sourceMessageId: va.replyTargetMessageId },
                   deps,
                   { store: turn.store, trace: replyTrace },
                 ).catch(() => null);
@@ -505,7 +506,7 @@ async function buildEventDeps(
           return { note: va.note };
         }
       : undefined,
-    loadChatContext: () => Promise.resolve(renderChatContext(event)),
+    loadChatContext: async () => renderChatContext(event, await sourceLabel(event.source)),
     // Memory and preferences are about PEOPLE. A cross-fed message was
     // written by another assistant's bot account, which is nobody's identity
     // — reading (and later writing) a person's memory under it would invent a
@@ -524,7 +525,7 @@ async function buildEventDeps(
           }).catch(() => null),
     loadSenderPreferences: isCrossFed(event)
       ? undefined
-      : () => getPreferencesContext(senderId).catch(() => null),
+      : () => getPreferencesContext(event.sender.ref).catch(() => null),
     loadAddressExclusions: () => listAddressingExclusionTerms().catch(() => []),
     generateReply: bindings.generateReply,
     applyStandingTasks: bindings.applyStandingTasks,
@@ -715,7 +716,7 @@ export async function processInboundEvent(
       const deps = ctx.overrides?.describeDeps ?? (await resolveDescribeDeps().catch(() => null));
       if (deps) {
         const described = await describeAndStore(
-          { chatId, telegramMessageId: Number(event.message.sourceMessageId) },
+          { chatId, sourceMessageId: event.message.sourceMessageId },
           deps,
           { store, trace: replyTrace },
         ).catch(() => null);
@@ -736,11 +737,11 @@ export async function processInboundEvent(
     attachment = { note: transcript ? VOICE_TURN_NOTE : VOICE_UNAVAILABLE_NOTE };
   } else if (media && media.status !== "unavailable") {
     attachment = {
-      recognizeMessageId: Number(event.message.sourceMessageId),
+      recognizeMessageId: event.message.sourceMessageId,
       hasCaption: Boolean(event.message.content.trim()),
     };
   } else if (event.message.replyTo?.hasMedia) {
-    attachment = { replyTargetMessageId: Number(event.message.replyTo.sourceMessageId) };
+    attachment = { replyTargetMessageId: event.message.replyTo.sourceMessageId };
   }
 
   const turn: TurnPlan = {

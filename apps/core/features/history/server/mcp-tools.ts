@@ -1,10 +1,9 @@
 import "server-only";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { scopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
 import { z } from "zod";
 
-import { formatKnownUserLabel } from "@/features/known-users/format";
-import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { resolveChatUserByReference } from "@/features/known-users/server/service";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
 import { renderMediaSuffix, type MediaAnnotation } from "@/features/vision/format";
@@ -14,9 +13,10 @@ import { getToolContext } from "@/server/mcp/context";
 import {
   requireSourceContent,
   type SourceMessageMatch,
-} from "@/server/source/tg-content";
+} from "@/server/source/content";
 import { recallChatTopics } from "./recall";
 import type { ChatMessageRecord } from "./repository";
+import { resolveSpeakerLabels } from "./service";
 
 /**
  * History exposed as MCP tools — deeper-than-the-window lookups the model can
@@ -80,8 +80,8 @@ const historyOutputSchema = {
   count: z.number().int().nonnegative(),
   messages: z.array(
     z.object({
-      id: z.number().int(),
-      replyTo: z.number().int().nullable(),
+      id: z.string(),
+      replyTo: z.string().nullable(),
       role: z.string(),
       content: z.string(),
       at: z.string(),
@@ -119,16 +119,17 @@ function formatLine(
   record: ChatMessageRecord,
   extras?: {
     labels?: Map<string, string>;
-    mediaSuffixes?: Map<number, string>;
+    mediaSuffixes?: Map<string, string>;
     /** Cut each line's body to this many characters (searches only). */
     maxContentChars?: number;
   },
 ): string {
-  const reply = record.replyToMessageId != null ? ` [reply to #${record.replyToMessageId}]` : "";
-  const suffix = extras?.mediaSuffixes?.get(record.telegramMessageId) ?? "";
+  const reply =
+    record.replyToSourceMessageId != null ? ` [reply to #${record.replyToSourceMessageId}]` : "";
+  const suffix = extras?.mediaSuffixes?.get(record.sourceMessageId) ?? "";
   const author = authorOf(record, extras?.labels);
   const body = snippet(`${record.content}${suffix}`, extras?.maxContentChars);
-  return `[#${record.telegramMessageId}] [${record.sentAt}] ${author}${reply}: ${body}`;
+  return `[#${record.sourceMessageId}] [${record.sentAt}] ${author}${reply}: ${body}`;
 }
 
 /**
@@ -153,7 +154,7 @@ export function buildResult(
   records: ChatMessageRecord[],
   extras?: {
     labels?: Map<string, string>;
-    mediaSuffixes?: Map<number, string>;
+    mediaSuffixes?: Map<string, string>;
     /**
      * Cut each line's body in the model-facing text. The structured payload below
      * is unaffected: it is trace-only (the loop feeds the model `result.text`
@@ -166,10 +167,10 @@ export function buildResult(
   },
 ) {
   const messages = records.map((r) => ({
-    id: r.telegramMessageId,
-    replyTo: r.replyToMessageId,
+    id: r.sourceMessageId,
+    replyTo: r.replyToSourceMessageId,
     role: r.role,
-    content: `${r.content}${extras?.mediaSuffixes?.get(r.telegramMessageId) ?? ""}`,
+    content: `${r.content}${extras?.mediaSuffixes?.get(r.sourceMessageId) ?? ""}`,
     at: r.sentAt,
     author: authorOf(r, extras?.labels),
   }));
@@ -204,19 +205,19 @@ export function buildResult(
  * the mirror rows, so one by-ids read resolves every hit that has media.
  */
 async function loadMediaSuffixes(
-  chatId: string,
+  chatRef: string,
   matches: readonly SourceMessageMatch[],
-): Promise<Map<number, string>> {
-  const withMedia = matches.filter((m) => m.mediaKind != null).map((m) => m.telegramMessageId);
+): Promise<Map<string, string>> {
+  const withMedia = matches.filter((m) => m.mediaKind != null).map((m) => m.sourceMessageId);
   if (withMedia.length === 0) return new Map();
   const rows = await requireSourceContent()
-    .messagesByIds(chatId, withMedia)
+    .messagesByIds(chatRef, withMedia)
     .catch(() => []);
-  const suffixes = new Map<number, string>();
+  const suffixes = new Map<string, string>();
   for (const row of rows) {
     if (!row.media) continue;
     const suffix = renderMediaSuffix(row.media as MediaAnnotation);
-    if (suffix) suffixes.set(row.telegramMessageId, suffix);
+    if (suffix) suffixes.set(row.sourceMessageId, suffix);
   }
   return suffixes;
 }
@@ -236,14 +237,6 @@ export function mergeMatches(
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .sort((a, b) => a.id - b.id);
-}
-
-/** Resolve the speaker labels for a set of hits, so each line names its author. */
-async function resolveLabels(records: ChatMessageRecord[]): Promise<Map<string, string>> {
-  const userIds = [...new Set(records.map((r) => r.userId).filter((id): id is string => !!id))];
-  if (userIds.length === 0) return new Map();
-  const users = await getKnownUsersByIds(undefined, userIds);
-  return new Map(users.map((user) => [user.userId, formatKnownUserLabel(user)]));
 }
 
 /**
@@ -277,10 +270,11 @@ export function unquote(value: string): string {
  * reply.
  */
 async function resolveAuthorFilter(
+  source: SourceId,
   chatId: string,
   author: string,
 ): Promise<{ ok: true; userIds: string[] } | { ok: false; error: string }> {
-  const resolved = await resolveChatUserByReference(chatId, author);
+  const resolved = await resolveChatUserByReference(source, chatId, author);
   if (resolved.status === "matched") return { ok: true, userIds: [resolved.user.userId] };
   if (resolved.status === "ambiguous") {
     return {
@@ -400,7 +394,8 @@ export function registerHistoryMcpTools(server: McpServer): void {
       },
     },
     async ({ query, author, media_kinds, limit }) => {
-      const { chatId } = getToolContext();
+      const { source, chatId } = getToolContext();
+      const chatRef = scopedRef(source, "chat", chatId);
       const queries = query == null ? [] : Array.isArray(query) ? query : [query];
       const cap = limit ?? SEARCH_LIMIT_DEFAULT;
       const content = requireSourceContent();
@@ -422,7 +417,7 @@ export function registerHistoryMcpTools(server: McpServer): void {
 
       let authorUserIds: string[] | undefined;
       if (author) {
-        const resolved = await resolveAuthorFilter(chatId, unquote(author));
+        const resolved = await resolveAuthorFilter(source, chatId, unquote(author));
         if (!resolved.ok) {
           return {
             content: [{ type: "text" as const, text: resolved.error }],
@@ -447,7 +442,7 @@ export function registerHistoryMcpTools(server: McpServer): void {
         queries.length === 0
           ? [
               await content.searchMessages({
-                chatId,
+                chatRef,
                 queryText: "",
                 queryVector: null,
                 limit: cap,
@@ -458,7 +453,7 @@ export function registerHistoryMcpTools(server: McpServer): void {
               queries.map(async (q) => {
                 const vector = embedding ? await embedOne(embedding, q).catch(() => null) : null;
                 return content.searchMessages({
-                  chatId,
+                  chatRef,
                   queryText: q,
                   queryVector: vector,
                   limit: cap,
@@ -471,8 +466,8 @@ export function registerHistoryMcpTools(server: McpServer): void {
       // Media annotations ride the matched rows themselves since the split —
       // one by-ids read resolves them (search hits carry only the kind).
       const [labels, mediaSuffixes] = await Promise.all([
-        resolveLabels(matches),
-        loadMediaSuffixes(chatId, matches),
+        resolveSpeakerLabels(undefined, matches),
+        loadMediaSuffixes(chatRef, matches),
       ]);
       return buildResult(matches, {
         labels,
@@ -517,8 +512,8 @@ export function registerHistoryMcpTools(server: McpServer): void {
           isError: true,
         };
       }
-      const { chatId } = getToolContext();
-      const records = await requireSourceContent().messagesWindow(chatId, {
+      const { source, chatId } = getToolContext();
+      const records = await requireSourceContent().messagesWindow(scopedRef(source, "chat", chatId), {
         from: fromDate,
         to: toDate,
         endExclusive: false,
@@ -532,16 +527,16 @@ export function registerHistoryMcpTools(server: McpServer): void {
     {
       title: "Get messages by their ids",
       description:
-        "Fetch specific messages from this conversation by their Telegram message ids. Use it " +
+        "Fetch specific messages from this conversation by their message ids. Use it " +
         "to read a message referenced as #<id> in the transcript (for example a reply target " +
         "marked [reply to #<id>]) whose content is not shown. Ids not found are omitted from " +
         "the result.",
       inputSchema: {
         ids: z
-          .array(z.number().int().positive())
+          .array(z.union([z.string().regex(/^\d+$/), z.number().int().positive()]))
           .min(1)
           .max(GET_BY_IDS_MAX)
-          .describe(`Telegram message ids to fetch (max ${GET_BY_IDS_MAX})`),
+          .describe(`Message ids to fetch, as shown after # in the transcript (max ${GET_BY_IDS_MAX})`),
       },
       outputSchema: historyOutputSchema,
       annotations: {
@@ -552,8 +547,11 @@ export function registerHistoryMcpTools(server: McpServer): void {
       },
     },
     async ({ ids }) => {
-      const { chatId } = getToolContext();
-      const records = await requireSourceContent().messagesByIds(chatId, ids);
+      const { source, chatId } = getToolContext();
+      const records = await requireSourceContent().messagesByIds(
+        scopedRef(source, "chat", chatId),
+        ids.map(String),
+      );
       return buildResult(records);
     },
   );
@@ -592,7 +590,7 @@ export function registerHistoryMcpTools(server: McpServer): void {
           z.object({
             date: z.string(),
             content: z.string(),
-            message_ids: z.array(z.number().int()),
+            message_ids: z.array(z.string()),
           }),
         ),
       },
@@ -604,10 +602,14 @@ export function registerHistoryMcpTools(server: McpServer): void {
       },
     },
     async ({ query, limit }) => {
-      const { chatId } = getToolContext();
+      const { source, chatId } = getToolContext();
       const queries = Array.isArray(query) ? query : [query];
       const cap = limit ?? RECALL_LIMIT_DEFAULT;
-      const matches = await recallChatTopics({ chatId, queries, limit: cap });
+      const matches = await recallChatTopics({
+        chatRef: scopedRef(source, "chat", chatId),
+        queries,
+        limit: cap,
+      });
 
       const text =
         matches.length === 0

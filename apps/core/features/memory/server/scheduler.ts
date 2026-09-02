@@ -18,7 +18,7 @@ import { withAdvisoryLock } from "@/server/jobs/lock";
 import { chatCompletion } from "@/server/llm/client";
 import { embed } from "@/server/llm/embeddings";
 
-import { resolveSourceContent } from "@/server/source/tg-content";
+import { requireSourceContent } from "@/server/source/content";
 
 import { runMemoryConsolidation, type ConsolidateDeps } from "./consolidate";
 import { runMemoryExtraction, type ExtractDeps } from "./extract";
@@ -88,9 +88,6 @@ async function resolveDeps(): Promise<(ConsolidateDeps & ExtractDeps) | null> {
 async function runJob(ctx?: IntervalRunContext): Promise<string> {
   const deps = await resolveDeps();
   if (!deps) return "LLM not configured";
-  // Extraction reads the mirror from the owning source; without its API the
-  // consolidation half still runs (tool-saved notes are local).
-  const extractable = resolveSourceContent() != null;
 
   // One correlation for the whole night: every extraction chat-day trace and
   // the consolidation trace carry it, so the run reads start to end in Debug.
@@ -98,13 +95,11 @@ async function runJob(ctx?: IntervalRunContext): Promise<string> {
   const outcome = await withAdvisoryLock("memory", async () => {
     let extracted: string;
     try {
-      const extraction = extractable
-        ? await runMemoryExtraction({
-            ...deps,
-            runCorrelationId,
-            onProgress: ctx?.reportProgress,
-          })
-        : { summary: "skipped (telegram service not configured)" };
+      const extraction = await runMemoryExtraction({
+        ...deps,
+        runCorrelationId,
+        onProgress: ctx?.reportProgress,
+      });
       extracted = extraction.summary;
     } catch (err) {
       extracted = `extraction failed (${err instanceof Error ? err.message : String(err)})`;
@@ -160,15 +155,12 @@ export async function getMemoryJobInfo(): Promise<MemoryJobInfo> {
     scheduler.getBaseInfo(),
     getEmbeddingRuntime().catch(() => null),
   ]);
-  const content = resolveSourceContent();
   const [pendingNotes, pendingExtractionDays] = await Promise.all([
     countPendingNotes(getStoreDb()).catch(() => 0),
-    content
-      ? countDaysNeedingExtraction(content, getStoreDb(), {
-          timeZone: base.timezone,
-          today: currentSummaryDate(new Date(), base.timezone),
-        }).catch(() => 0)
-      : Promise.resolve(0),
+    countDaysNeedingExtraction(requireSourceContent(), getStoreDb(), {
+      timeZone: base.timezone,
+      today: currentSummaryDate(new Date(), base.timezone),
+    }).catch(() => 0),
   ]);
 
   return {

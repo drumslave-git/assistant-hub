@@ -2,7 +2,7 @@ import "server-only";
 
 import { desc, eq } from "drizzle-orm";
 
-import { scopedRef, tryParseScopedRef } from "@assistant-hub-swarm/contracts";
+import { scopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
 
 import { addressingExclusions, type AddressingExclusionRow } from "../../../store/schema";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
@@ -14,18 +14,15 @@ import { normalizeExclusionTerm, type AddressingExclusion } from "../exclusions"
  * self-improvement service; the reads are consumed by the addressing analyzer.
  */
 
-/** The store keys provenance by scoped ref (Phase 10); the feature is tg-scoped. */
-const idOf = (ref: string | null) => (ref ? (tryParseScopedRef(ref)?.id ?? ref) : null);
-
 function mapExclusion(row: AddressingExclusionRow): AddressingExclusion {
   return {
     id: row.id,
     term: row.term,
     normalized: row.normalized,
     botDisplayName: row.botDisplayName,
-    chatId: idOf(row.chatRef),
-    telegramMessageId: row.sourceMessageId,
-    userId: idOf(row.userRef),
+    chatRef: row.chatRef,
+    sourceMessageId: row.sourceMessageId,
+    userRef: row.userRef,
     feedbackId: row.feedbackId,
     createdAt: row.createdAt.toISOString(),
   };
@@ -36,8 +33,10 @@ export interface InsertAddressingExclusion {
   id: string;
   term: string;
   botDisplayName: string;
+  /** The transport the report came from — the namespace of the ids below. */
+  source: SourceId;
   chatId?: string | null;
-  telegramMessageId?: number | null;
+  sourceMessageId?: string | null;
   userId?: string | null;
   feedbackId?: string | null;
 }
@@ -59,9 +58,9 @@ export async function insertAddressingExclusion(
       term: values.term.trim(),
       normalized,
       botDisplayName: values.botDisplayName,
-      chatRef: values.chatId ? scopedRef("tg", "chat", values.chatId) : null,
-      sourceMessageId: values.telegramMessageId ?? null,
-      userRef: values.userId ? scopedRef("tg", "user", values.userId) : null,
+      chatRef: values.chatId ? scopedRef(values.source, "chat", values.chatId) : null,
+      sourceMessageId: values.sourceMessageId ?? null,
+      userRef: values.userId ? scopedRef(values.source, "user", values.userId) : null,
       feedbackId: values.feedbackId ?? null,
     })
     .onConflictDoNothing({ target: addressingExclusions.normalized })

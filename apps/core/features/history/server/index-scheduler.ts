@@ -8,7 +8,6 @@ import {
 } from "@/server/jobs/idle-scheduler";
 import { publishEvent } from "@/server/realtime/hub";
 
-import { resolveSourceContent } from "@/server/source/tg-content";
 
 import { runMessageIndexing } from "./index-messages";
 
@@ -39,10 +38,6 @@ function scheduler(): IdleScheduler {
       debounceMs: DEBOUNCE_MS,
       onStatusChange: () => publishEvent(FEATURE.realtimeTopic),
       run: async (ctx) => {
-        // The mirror and the index live with the owning source.
-        if (!resolveSourceContent()) {
-          return { summary: "telegram service not configured (TG_API_URL / INTERNAL_API_TOKEN)" };
-        }
         const result = await runMessageIndexing({
           isAborted: ctx.isAborted,
           onProgress: ctx.reportProgress,

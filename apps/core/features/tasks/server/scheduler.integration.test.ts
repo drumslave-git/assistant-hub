@@ -60,6 +60,7 @@ beforeEach(async () => {
 
 const trigger = { kind: "dashboard" } as const;
 const CHAT = "-1001";
+const CHAT_REF = `tg:chat:${CHAT}`;
 const ASSISTANT = "assistant-1";
 
 /**
@@ -93,7 +94,7 @@ async function dueTask(over: Record<string, unknown> = {}) {
   const task = await createTaskService(
     {
       assistantId: ASSISTANT,
-      chatId: CHAT,
+      chatRef: CHAT_REF,
       instruction: "Check in.",
       triggerKind: "interval",
       everyMinutes: 10,
@@ -243,7 +244,7 @@ describe("manualFireTask", () => {
     const rule = await createTaskService(
       {
         assistantId: ASSISTANT,
-        chatId: CHAT,
+        chatRef: CHAT_REF,
         instruction: "Answer briefly.",
         triggerKind: "on-reply",
         targetUserIds: [],

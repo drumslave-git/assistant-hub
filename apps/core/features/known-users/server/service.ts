@@ -1,10 +1,16 @@
 import "server-only";
 
-import { parseScopedRef, scopedRef } from "@assistant-hub-swarm/contracts";
+import {
+  WEB_CHAT_SOURCE,
+  parseScopedRef,
+  scopedRef,
+  tryParseScopedRef,
+  type SourceId,
+} from "@assistant-hub-swarm/contracts";
 
+import { getAccountById } from "@/server/auth/accounts";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
-import { getGroupMembers } from "@/features/known-groups/server/repository";
-import { isGroupChatId } from "@/lib/telegram";
+import { listChatParticipantIds } from "@/features/known-groups/server/repository";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
@@ -21,7 +27,7 @@ import {
   setKnownUserLanguage,
   upsertKnownUser,
   type KnownUserRecord,
-  type TelegramUserProfile,
+  type SourceUserProfile,
 } from "./repository";
 import {
   updateAliasesSchema,
@@ -32,34 +38,34 @@ import {
 
 /**
  * Known-users domain service — the boundary Route Handlers, Server Components,
- * and the Telegram runtime call. Remembering a user is a high-frequency passive
- * upsert (not traced); editing aliases is an operator action (traced).
+ * and the turn runtime call. Remembering a user is a high-frequency passive
+ * upsert (not traced); editing aliases is an operator action (traced). Every
+ * read names the source the ids belong to; a curated write is addressed by
+ * scoped ref, which names it.
  */
 
 const FEATURE = FEATURES["known-users"];
-
-/**
- * The transitional v1 shadow directory this service reads is telegram-shaped
- * (`known_users.user_id` IS a Telegram user id), so a bare id from the
- * message path names a tg person. Curated writes go to the owning source by
- * scoped ref, and the shadow row is keyed by that ref's source-local id —
- * one place to change when Phase 6 collapses the shadow.
- */
-const tgUserRef = (userId: string) => scopedRef("tg", "user", userId);
 
 /** A known user record is already client-safe (no secrets). */
 function toClient(record: KnownUserRecord): KnownUser {
   return record;
 }
 
-/** All known users, most-recently-seen first. */
-export async function listUsers(db: StoreDb = getStoreDb()): Promise<KnownUser[]> {
-  return (await listKnownUsers(db)).map(toClient);
+/** All of one source's known users, most-recently-seen first. */
+export async function listUsers(
+  source: SourceId,
+  db: StoreDb = getStoreDb(),
+): Promise<KnownUser[]> {
+  return (await listKnownUsers(db, source)).map(toClient);
 }
 
 /** One known user by id, or null. */
-export async function getUser(userId: string, db: StoreDb = getStoreDb()): Promise<KnownUser | null> {
-  const record = await getKnownUser(db, userId);
+export async function getUser(
+  source: SourceId,
+  userId: string,
+  db: StoreDb = getStoreDb(),
+): Promise<KnownUser | null> {
+  const record = await getKnownUser(db, source, userId);
   return record ? toClient(record) : null;
 }
 
@@ -70,14 +76,47 @@ export async function getUser(userId: string, db: StoreDb = getStoreDb()): Promi
  * would then have to explain.
  */
 export async function getUserLabels(
+  source: SourceId,
   userIds: readonly string[],
   db: StoreDb = getStoreDb(),
 ): Promise<Map<string, string>> {
   const wanted = [...new Set(userIds.filter(Boolean))];
   if (wanted.length === 0) return new Map();
-  const records = await getKnownUsersByIds(db, wanted);
+  const records = await getKnownUsersByIds(db, source, wanted);
   const byId = new Map(records.map((record) => [record.userId, formatKnownUserLabel(record)]));
   return new Map(wanted.map((id) => [id, byId.get(id) ?? `User ${id}`]));
+}
+
+/**
+ * Human labels for a set of user refs (`tg:user:123`, `chat:user:<uuid>`),
+ * keyed by ref — a transport's people from its directory, web users from the
+ * account roster. A ref nobody knows is absent; the caller picks its fallback.
+ */
+export async function getUserLabelsByRef(
+  refs: readonly string[],
+  db: StoreDb = getStoreDb(),
+): Promise<Map<string, string>> {
+  const byRef = new Map<string, string>();
+  const idsBySource = new Map<SourceId, string[]>();
+  const accountIds: string[] = [];
+  for (const ref of new Set(refs)) {
+    const parsed = tryParseScopedRef(ref);
+    if (parsed?.kind !== "user") continue;
+    if (parsed.source === WEB_CHAT_SOURCE) accountIds.push(parsed.id);
+    else idsBySource.set(parsed.source, [...(idsBySource.get(parsed.source) ?? []), parsed.id]);
+  }
+  for (const [source, ids] of idsBySource) {
+    for (const user of await getKnownUsersByIds(db, source, ids)) {
+      byRef.set(scopedRef(source, "user", user.userId), formatKnownUserLabel(user));
+    }
+  }
+  for (const id of accountIds) {
+    const account = await getAccountById(id, db).catch(() => null);
+    if (account) {
+      byRef.set(scopedRef(WEB_CHAT_SOURCE, "user", id), account.displayName ?? account.username);
+    }
+  }
+  return byRef;
 }
 
 /** The identity block injected into a private-chat reply (parallel of GroupContext). */
@@ -95,17 +134,18 @@ export interface UserContext {
  * null when the user is not yet known (nothing useful to inject).
  */
 export async function getUserContext(
+  source: SourceId,
   userId: string,
   db: StoreDb = getStoreDb(),
 ): Promise<UserContext | null> {
-  const user = await getKnownUser(db, userId);
+  const user = await getKnownUser(db, source, userId);
   if (!user) return null;
   const content = formatUserContext({ label: formatKnownUserLabel(user), aliases: user.aliases });
   return { content, data: { userId, aliasCount: user.aliases.length } };
 }
 
-/** Whether the freshly captured Telegram profile differs from the stored one. */
-function userProfileChanged(before: KnownUserRecord, profile: TelegramUserProfile): boolean {
+/** Whether the freshly captured profile differs from the stored one. */
+function userProfileChanged(before: KnownUserRecord, profile: SourceUserProfile): boolean {
   return (
     before.username !== profile.username ||
     before.firstName !== profile.firstName ||
@@ -121,7 +161,7 @@ function userProfileChanged(before: KnownUserRecord, profile: TelegramUserProfil
  */
 async function traceUserCapture(
   before: KnownUserRecord | null,
-  profile: TelegramUserProfile,
+  profile: SourceUserProfile,
 ): Promise<void> {
   if (before && !userProfileChanged(before, profile)) return;
   const added = !before;
@@ -148,18 +188,19 @@ async function traceUserCapture(
 }
 
 /**
- * Server-only: remember (upsert) a Telegram user who messaged the bot. Refreshes
- * the profile fields, preserves operator-curated aliases. A trace is recorded only
+ * Server-only: remember (upsert) a user who messaged the bot. Refreshes the
+ * profile fields, preserves operator-curated aliases. A trace is recorded only
  * when the capture actually adds or changes data (see {@link traceUserCapture}).
  * Never throws into the message path — a capture failure must not drop the reply.
  */
 export async function rememberUser(
-  profile: TelegramUserProfile,
+  source: SourceId,
+  profile: SourceUserProfile,
   db: StoreDb = getStoreDb(),
 ): Promise<void> {
   try {
-    const before = await getKnownUser(db, profile.userId);
-    await upsertKnownUser(db, profile);
+    const before = await getKnownUser(db, source, profile.userId);
+    await upsertKnownUser(db, source, profile);
     publishEvent(FEATURE.realtimeTopic);
     await traceUserCapture(before, profile);
   } catch {
@@ -198,17 +239,15 @@ export type ResolveChatUserResult =
  * lone match, or `not_found`/`ambiguous` for the caller to surface to the model.
  */
 export async function resolveChatUserByReference(
+  source: SourceId,
   chatId: string,
   reference: string,
   db: StoreDb = getStoreDb(),
 ): Promise<ResolveChatUserResult> {
-  // The chat's participants: for a group, its (shadow-kept) membership
-  // roster; a private chat's one participant is its peer (chat id = user
-  // id). The mirror itself lives with the owning source since the split.
-  const participantIds = isGroupChatId(chatId)
-    ? (await getGroupMembers(db, chatId)).map((member) => member.userId)
-    : [chatId];
-  const users = await getKnownUsersByIds(db, participantIds);
+  // The chat's participants: a group's roster, or whoever has messaged in a
+  // direct chat — the same "people who have spoken here" either way.
+  const participantIds = await listChatParticipantIds(db, source, chatId);
+  const users = await getKnownUsersByIds(db, source, participantIds);
   const matches = matchUsersByReference(users, reference);
   if (matches.length === 0) return { status: "not_found" };
   if (matches.length > 1) return { status: "ambiguous", count: matches.length };
@@ -231,7 +270,7 @@ export type AddAliasByReferenceResult =
  * model-driven alias changes on the Users Debug page alongside their own edits.
  */
 export async function addAliasByReference(
-  params: { chatId: string; reference: string; aliases: string[] },
+  params: { source: SourceId; chatId: string; reference: string; aliases: string[] },
   trigger: TraceTrigger,
   db: StoreDb = getStoreDb(),
 ): Promise<AddAliasByReferenceResult> {
@@ -244,7 +283,12 @@ export async function addAliasByReference(
         data: { reference: params.reference, aliases: params.aliases },
       });
 
-      const resolved = await resolveChatUserByReference(params.chatId, params.reference, db);
+      const resolved = await resolveChatUserByReference(
+        params.source,
+        params.chatId,
+        params.reference,
+        db,
+      );
       if (resolved.status === "not_found") {
         await trace.skip(`no participant matches "${params.reference}"`);
         return { status: "not_found" };
@@ -279,8 +323,10 @@ export async function addAliasByReference(
       }
 
       // Source first, shadow second — see updateLanguage.
-      await writeSourceUser(tgUserRef(user.userId), { aliases: parsed.data.aliases });
-      const record = await setKnownUserAliases(db, user.userId, parsed.data.aliases);
+      await writeSourceUser(scopedRef(params.source, "user", user.userId), {
+        aliases: parsed.data.aliases,
+      });
+      const record = await setKnownUserAliases(db, params.source, user.userId, parsed.data.aliases);
       if (!record) throw ApiError.notFound("Unknown user");
       await trace.event({ type: "db", message: "aliases updated (source + shadow)", data: { aliases: parsed.data.aliases } });
       publishEvent(FEATURE.realtimeTopic);
@@ -300,7 +346,7 @@ export async function updateLanguage(
   trigger: TraceTrigger,
   db: StoreDb = getStoreDb(),
 ): Promise<KnownUser> {
-  const userId = parseScopedRef(userRef).id;
+  const { source, id: userId } = parseScopedRef(userRef);
   return withTrace(
     { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `user ${userRef}` },
     async (trace) => {
@@ -312,7 +358,7 @@ export async function updateLanguage(
       // The source owns the directory: the edit lands there first, then in
       // the local shadow the readers (and the next event refresh) agree with.
       await writeSourceUser(userRef, { language: input.language });
-      const record = await setKnownUserLanguage(db, userId, input.language);
+      const record = await setKnownUserLanguage(db, source, userId, input.language);
       if (!record) throw ApiError.notFound("Unknown user");
       await trace.event({ type: "db", message: "language updated (source + shadow)" });
       publishEvent(FEATURE.realtimeTopic);
@@ -331,10 +377,11 @@ export async function updateLanguage(
  * the message path — a private chat's id equals the user id.
  */
 export async function getUserLanguage(
+  source: SourceId,
   userId: string,
   db: StoreDb = getStoreDb(),
 ): Promise<string | null> {
-  const user = await getKnownUser(db, userId);
+  const user = await getKnownUser(db, source, userId);
   return user?.language ?? null;
 }
 
@@ -345,14 +392,14 @@ export async function updateAliases(
   trigger: TraceTrigger,
   db: StoreDb = getStoreDb(),
 ): Promise<KnownUser> {
-  const userId = parseScopedRef(userRef).id;
+  const { source, id: userId } = parseScopedRef(userRef);
   return withTrace(
     { feature: FEATURE.id, action: "update-aliases", trigger, inputSummary: `user ${userRef}` },
     async (trace) => {
       await trace.event({ type: "input", message: "aliases update", data: { userId, aliases: input.aliases } });
       // Source first, shadow second — see updateLanguage.
       await writeSourceUser(userRef, { aliases: input.aliases });
-      const record = await setKnownUserAliases(db, userId, input.aliases);
+      const record = await setKnownUserAliases(db, source, userId, input.aliases);
       if (!record) throw ApiError.notFound("Unknown user");
       await trace.event({ type: "db", message: "aliases updated" });
       publishEvent(FEATURE.realtimeTopic);

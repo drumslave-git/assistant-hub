@@ -238,7 +238,7 @@ describe("handleIncomingMessage", () => {
     // The delivered reply is mirrored into history, threaded to the triggering msg.
     expect(d.recordReply).toHaveBeenCalledWith({
       content: "hi back",
-      telegramMessageId: 99,
+      sourceMessageId: 99,
       replyToMessageId: 7,
     });
     // Typing shown while generating, then stopped once the turn settles.
@@ -1167,7 +1167,7 @@ describe("voice turns", () => {
     // The text form is still what history mirrors.
     expect(d.recordReply).toHaveBeenCalledWith({
       content: "hi back",
-      telegramMessageId: 42,
+      sourceMessageId: 42,
       replyToMessageId: 7,
     });
   });

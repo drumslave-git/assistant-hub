@@ -13,7 +13,33 @@ import { sourceMessageSearch, sourceSummaries, type SourceSummaryRow } from "../
  * former tg-app `content/*` modules, source-parameterized: the SQL runs
  * beside the data and its indexes; callers supply query text and embedding
  * vectors — models never run here.
+ *
+ * A read that names one chat takes its {@link SourceChatKey}; a read across
+ * chats takes the list of sources it may see (the registered transports —
+ * the caller's roster, never a literal here) and tags every row with the
+ * source it came from.
  */
+
+/** One chat, named by its owning source and its source-local id. */
+export interface SourceChatKey {
+  source: SourceId;
+  chatId: string;
+}
+
+/** One person, named by their owning source and their source-local id. */
+export interface SourceUserKey {
+  source: SourceId;
+  userId: string;
+}
+
+/** `<column> in (…)` over the sources a read may see; nothing registered reads nothing. */
+function sourceIn(column: SQL, sources: readonly SourceId[]): SQL {
+  if (sources.length === 0) return sql`false`;
+  return sql`${column} in (${sql.join(
+    sources.map((source) => sql`${source}`),
+    sql`, `,
+  )})`;
+}
 
 /** Filters a message search may narrow by, beyond the query itself. */
 export interface SourceMessageSearchFilters {
@@ -26,6 +52,7 @@ export interface SourceMessageSearchFilters {
 /** A search hit: the message row, the text that matched, and its fused score. */
 export interface SourceMessageSearchMatch {
   id: number;
+  source: SourceId;
   chatId: string;
   sourceMessageId: string;
   role: "user" | "assistant";
@@ -53,6 +80,7 @@ const RRF_K = 60;
  */
 interface PoolRow extends Record<string, unknown> {
   id: string | number;
+  source: string;
   chat_id: string;
   source_message_id: string;
   role: string;
@@ -78,6 +106,7 @@ function toIso(value: Date | string): string {
 function mapPoolRow(row: PoolRow): Omit<SourceMessageSearchMatch, "score"> {
   return {
     id: Number(row.id),
+    source: row.source,
     chatId: row.chat_id,
     sourceMessageId: row.source_message_id,
     role: row.role === "assistant" ? "assistant" : "user",
@@ -98,13 +127,13 @@ function mapPoolRow(row: PoolRow): Omit<SourceMessageSearchMatch, "score"> {
  * embedding), lexical (Postgres full text over the indexed text), and
  * literal (case-insensitive substring), fused by reciprocal rank. Three
  * pools because they cover different failures — see the v1 module notes.
- * `chatId: null` searches every chat of the source (operator search); the
- * assistant's own tool always passes its bound chat.
+ * `chat: null` searches every chat of every listed source (operator search);
+ * the assistant's own tool always passes its bound chat.
  */
 export async function searchSourceMessagesHybrid(
-  source: SourceId,
   params: {
-    chatId: string | null;
+    sources: readonly SourceId[];
+    chat: SourceChatKey | null;
     queryText: string;
     queryVector: number[] | null;
     limit: number;
@@ -124,7 +153,9 @@ export async function searchSourceMessagesHybrid(
   // list*, not one array-typed parameter — so `in (…)` works.
   const authorFilter = authorIds.length > 0 ? sql`and cm.user_id in (${authorIds})` : sql``;
   const kindFilter = kinds.length > 0 ? sql`and mm.kind in (${kinds})` : sql``;
-  const chatFilter = params.chatId != null ? sql`and cm.chat_id = ${params.chatId}` : sql``;
+  const scopeFilter = params.chat
+    ? sql`cm.source = ${params.chat.source} and cm.chat_id = ${params.chat.chatId}`
+    : sourceIn(sql`cm.source`, params.sources);
 
   /** The visible messages in scope, joined to what a hit needs to explain itself. */
   const sourceRelation = sql`
@@ -133,14 +164,13 @@ export async function searchSourceMessagesHybrid(
       on s.source = cm.source and s.chat_id = cm.chat_id and s.source_message_id = cm.source_message_id
     left join source_media mm
       on mm.source = cm.source and mm.chat_id = cm.chat_id and mm.source_message_id = cm.source_message_id
-    where cm.source = ${source}
+    where ${scopeFilter}
       and cm.deleted_at is null
-      ${chatFilter}
       ${authorFilter}
       ${kindFilter}
   `;
   const columns = sql`
-    cm.id, cm.chat_id, cm.source_message_id, cm.role, cm.user_id, cm.content,
+    cm.id, cm.source, cm.chat_id, cm.source_message_id, cm.role, cm.user_id, cm.content,
     cm.reply_to_source_message_id, cm.sent_at, cm.edited_at, cm.bot_reaction, cm.created_at,
     s.content as indexed_content, mm.kind as media_kind
   `;
@@ -227,6 +257,7 @@ function escapeLike(term: string): string {
 /** A stored topic summary, as served to the features. */
 export interface SourceSummaryRecord {
   id: number;
+  source: SourceId;
   chatId: string;
   summaryDate: string;
   content: string;
@@ -239,6 +270,7 @@ export interface SourceSummaryRecord {
 function mapSummaryRow(row: SourceSummaryRow): SourceSummaryRecord {
   return {
     id: row.id,
+    source: row.source,
     chatId: row.chatId,
     summaryDate: row.summaryDate,
     content: row.content,
@@ -266,8 +298,8 @@ export interface InsertSourceSummary {
  * feature that runs it.
  */
 export async function replaceSourceSummariesForDay(
-  source: SourceId,
-  input: { chatId: string; summaryDate: string; topics: readonly InsertSourceSummary[] },
+  chat: SourceChatKey,
+  input: { summaryDate: string; topics: readonly InsertSourceSummary[] },
   db: StoreDb = getStoreDb(),
 ): Promise<SourceSummaryRecord[]> {
   return db.transaction(async (tx) => {
@@ -275,8 +307,8 @@ export async function replaceSourceSummariesForDay(
       .delete(sourceSummaries)
       .where(
         and(
-          eq(sourceSummaries.source, source),
-          eq(sourceSummaries.chatId, input.chatId),
+          eq(sourceSummaries.source, chat.source),
+          eq(sourceSummaries.chatId, chat.chatId),
           eq(sourceSummaries.summaryDate, input.summaryDate),
         ),
       );
@@ -286,8 +318,8 @@ export async function replaceSourceSummariesForDay(
             .insert(sourceSummaries)
             .values(
               input.topics.map((topic) => ({
-                source,
-                chatId: input.chatId,
+                source: chat.source,
+                chatId: chat.chatId,
                 summaryDate: input.summaryDate,
                 content: topic.content,
                 messageIds: topic.messageIds,
@@ -302,14 +334,16 @@ export async function replaceSourceSummariesForDay(
 
 /** A chat's stored topics, newest day first (the dashboard view). */
 export async function listSourceChatSummaries(
-  source: SourceId,
-  chatId: string,
+  chat: SourceChatKey,
   limit = 200,
   /** Restrict to one day's topics (the insight job's extra-context read). */
   date?: string,
   db: StoreDb = getStoreDb(),
 ): Promise<SourceSummaryRecord[]> {
-  const scoped = and(eq(sourceSummaries.source, source), eq(sourceSummaries.chatId, chatId));
+  const scoped = and(
+    eq(sourceSummaries.source, chat.source),
+    eq(sourceSummaries.chatId, chat.chatId),
+  );
   const where = date ? and(scoped, eq(sourceSummaries.summaryDate, date)) : scoped;
   const rows = await db
     .select()
@@ -320,17 +354,21 @@ export async function listSourceChatSummaries(
   return rows.map(mapSummaryRow);
 }
 
-/** Per-chat topic counts, for the History overview. */
+/** Per-chat topic counts across the listed sources, for the History overview. */
 export async function countSourceSummariesByChat(
-  source: SourceId,
+  sources: readonly SourceId[],
   db: StoreDb = getStoreDb(),
-): Promise<Map<string, number>> {
+): Promise<(SourceChatKey & { topicCount: number })[]> {
   const rows = await db
-    .select({ chatId: sourceSummaries.chatId, topicCount: sql<number>`count(*)::int` })
+    .select({
+      source: sourceSummaries.source,
+      chatId: sourceSummaries.chatId,
+      topicCount: sql<number>`count(*)::int`,
+    })
     .from(sourceSummaries)
-    .where(eq(sourceSummaries.source, source))
-    .groupBy(sourceSummaries.chatId);
-  return new Map(rows.map((row) => [row.chatId, row.topicCount]));
+    .where(sourceIn(sql`${sourceSummaries.source}`, sources))
+    .groupBy(sourceSummaries.source, sourceSummaries.chatId);
+  return rows.map((row) => ({ source: row.source, chatId: row.chatId, topicCount: row.topicCount }));
 }
 
 /**
@@ -339,9 +377,8 @@ export async function countSourceSummariesByChat(
  * rather than returning nothing.
  */
 export async function searchSourceSummariesHybrid(
-  source: SourceId,
+  chat: SourceChatKey,
   params: {
-    chatId: string;
     queryText: string;
     queryVector: number[] | null;
     limit: number;
@@ -349,7 +386,10 @@ export async function searchSourceSummariesHybrid(
   db: StoreDb = getStoreDb(),
 ): Promise<SourceSummarySearchMatch[]> {
   const poolSize = Math.max(params.limit * 4, 20);
-  const scoped = and(eq(sourceSummaries.source, source), eq(sourceSummaries.chatId, params.chatId));
+  const scoped = and(
+    eq(sourceSummaries.source, chat.source),
+    eq(sourceSummaries.chatId, chat.chatId),
+  );
 
   const vectorRows: SourceSummaryRow[] = params.queryVector
     ? await db
@@ -395,8 +435,7 @@ export async function searchSourceSummariesHybrid(
 }
 
 /** One (chat, day)'s visible message count, in the given zone's calendar. */
-export interface SourceChatDayCount {
-  chatId: string;
+export interface SourceChatDayCount extends SourceChatKey {
   /** `YYYY-MM-DD` in the requested timezone. */
   date: string;
   messageCount: number;
@@ -408,30 +447,33 @@ export interface SourceChatDayCount {
  * the feature). Days bucket by the operator's wall clock.
  */
 export async function listSourceChatDayCounts(
-  source: SourceId,
+  sources: readonly SourceId[],
   params: { timeZone: string; before: string },
   db: StoreDb = getStoreDb(),
 ): Promise<SourceChatDayCount[]> {
   const rows = await db.execute<{
+    source: string;
     chat_id: string;
     day: string;
     message_count: number;
   }>(sql`
     with days as (
       select
+        source,
         chat_id,
         to_char((sent_at at time zone ${params.timeZone})::date, 'YYYY-MM-DD') as day,
         count(*)::int as message_count
       from source_messages
-      where source = ${source} and deleted_at is null
-      group by 1, 2
+      where ${sourceIn(sql`source`, sources)} and deleted_at is null
+      group by 1, 2, 3
     )
-    select chat_id, day, message_count
+    select source, chat_id, day, message_count
     from days
     where day < ${params.before}
-    order by day asc, chat_id asc
+    order by day asc, source asc, chat_id asc
   `);
   return rows.rows.map((row) => ({
+    source: row.source,
     chatId: row.chat_id,
     date: row.day,
     messageCount: Number(row.message_count),
@@ -441,8 +483,7 @@ export async function listSourceChatDayCounts(
 // ---- Search index ----------------------------------------------------------
 
 /** A message the indexing job still owes work on, with everything the text needs. */
-export interface SourceUnindexedMessage {
-  chatId: string;
+export interface SourceUnindexedMessage extends SourceChatKey {
   sourceMessageId: string;
   content: string;
   /** The message's media, when it has any — its annotation is part of the text. */
@@ -450,8 +491,7 @@ export interface SourceUnindexedMessage {
 }
 
 /** One built index row, ready to store. `embedding` is null when unconfigured. */
-export interface SourceIndexedMessage {
-  chatId: string;
+export interface SourceIndexedMessage extends SourceChatKey {
   sourceMessageId: string;
   content: string;
   embedding: number[] | null;
@@ -480,11 +520,12 @@ const DUE_JOINS = sql`
 
 /** Messages needing (re)indexing, oldest first, capped at `limit`. */
 export async function listSourceMessagesNeedingIndex(
-  source: SourceId,
+  sources: readonly SourceId[],
   limit: number,
   db: StoreDb = getStoreDb(),
 ): Promise<SourceUnindexedMessage[]> {
   const rows = await db.execute<{
+    source: string;
     chat_id: string;
     source_message_id: string;
     content: string;
@@ -493,6 +534,7 @@ export async function listSourceMessagesNeedingIndex(
     description: string | null;
   }>(sql`
     select
+      cm.source,
       cm.chat_id,
       cm.source_message_id,
       cm.content,
@@ -500,12 +542,13 @@ export async function listSourceMessagesNeedingIndex(
       m.status,
       m.description
     ${DUE_JOINS}
-    where cm.source = ${source} and cm.deleted_at is null and (${DUE_CONDITION})
+    where ${sourceIn(sql`cm.source`, sources)} and cm.deleted_at is null and (${DUE_CONDITION})
     order by cm.id asc
     limit ${limit}
   `);
 
   return rows.rows.map((row) => ({
+    source: row.source,
     chatId: row.chat_id,
     sourceMessageId: row.source_message_id,
     content: row.content,
@@ -517,13 +560,13 @@ export async function listSourceMessagesNeedingIndex(
 
 /** How many messages are still awaiting indexing — the dashboard's backlog size. */
 export async function countSourceMessagesNeedingIndex(
-  source: SourceId,
+  sources: readonly SourceId[],
   db: StoreDb = getStoreDb(),
 ): Promise<number> {
   const rows = await db.execute<{ count: number }>(sql`
     select count(*)::int as count
     ${DUE_JOINS}
-    where cm.source = ${source} and cm.deleted_at is null and (${DUE_CONDITION})
+    where ${sourceIn(sql`cm.source`, sources)} and cm.deleted_at is null and (${DUE_CONDITION})
   `);
   return Number(rows.rows[0]?.count ?? 0);
 }
@@ -533,7 +576,6 @@ export async function countSourceMessagesNeedingIndex(
  * insert-or-skip: a re-index exists precisely because the text changed.
  */
 export async function upsertSourceMessageIndex(
-  source: SourceId,
   rows: readonly SourceIndexedMessage[],
   db: StoreDb = getStoreDb(),
 ): Promise<void> {
@@ -542,7 +584,7 @@ export async function upsertSourceMessageIndex(
     .insert(sourceMessageSearch)
     .values(
       rows.map((row) => ({
-        source,
+        source: row.source,
         chatId: row.chatId,
         sourceMessageId: row.sourceMessageId,
         content: row.content,
@@ -566,8 +608,7 @@ export async function upsertSourceMessageIndex(
 
 /** How many of a chat's messages are semantically searchable (have a vector). */
 export async function countEmbeddedSourceMessages(
-  source: SourceId,
-  chatId: string,
+  chat: SourceChatKey,
   db: StoreDb = getStoreDb(),
 ): Promise<number> {
   const rows = await db
@@ -575,8 +616,8 @@ export async function countEmbeddedSourceMessages(
     .from(sourceMessageSearch)
     .where(
       and(
-        eq(sourceMessageSearch.source, source),
-        eq(sourceMessageSearch.chatId, chatId),
+        eq(sourceMessageSearch.source, chat.source),
+        eq(sourceMessageSearch.chatId, chat.chatId),
         sql`${sourceMessageSearch.embedding} is not null`,
       ),
     );
@@ -584,15 +625,17 @@ export async function countEmbeddedSourceMessages(
 }
 
 /**
- * Empty a source's index so every message is rebuilt from scratch — the
- * honest fix when embeddings were configured after messages were indexed.
+ * Empty the listed sources' index so every message is rebuilt from scratch —
+ * the honest fix when embeddings were configured after messages were indexed.
  */
 export async function clearSourceMessageIndex(
-  source: SourceId,
+  sources: readonly SourceId[],
   db: StoreDb = getStoreDb(),
 ): Promise<number> {
   const rows = await db.execute<{ count: number }>(sql`
-    with removed as (delete from source_message_search where source = ${source} returning 1)
+    with removed as (
+      delete from source_message_search where ${sourceIn(sql`source`, sources)} returning 1
+    )
     select count(*)::int as count from removed
   `);
   return Number(rows.rows[0]?.count ?? 0);
@@ -629,19 +672,29 @@ function bucketExpr(column: SQL, unit: SourceBucketUnit, timeZone: string): SQL 
 export interface SourceMessageScope {
   fromUtc: Date;
   toUtc: Date;
-  chatId?: string | null;
-  userId?: string | null;
+  /** One chat, or every chat of the listed sources. */
+  chat?: SourceChatKey | null;
+  /** One person's own messages, or everyone's. */
+  user?: SourceUserKey | null;
 }
 
-function messageWhere(source: SourceId, scope: SourceMessageScope): SQL {
+/** The source half of a scope: the one chat's or person's source, else the whole roster. */
+function scopeSourceWhere(
+  sources: readonly SourceId[],
+  scope: { chat?: SourceChatKey | null; user?: SourceUserKey | null },
+): SQL[] {
+  if (scope.chat) return [sql`source = ${scope.chat.source}`, sql`chat_id = ${scope.chat.chatId}`];
+  if (scope.user) return [sql`source = ${scope.user.source}`, sql`user_id = ${scope.user.userId}`];
+  return [sourceIn(sql`source`, sources)];
+}
+
+function messageWhere(sources: readonly SourceId[], scope: SourceMessageScope): SQL {
   const parts: SQL[] = [
-    sql`source = ${source}`,
+    ...scopeSourceWhere(sources, scope),
     sql`deleted_at is null`,
     sql`sent_at >= ${scope.fromUtc}`,
     sql`sent_at < ${scope.toUtc}`,
   ];
-  if (scope.chatId) parts.push(sql`chat_id = ${scope.chatId}`);
-  if (scope.userId) parts.push(sql`user_id = ${scope.userId}`);
   return sql.join(parts, sql` and `);
 }
 
@@ -654,7 +707,7 @@ export interface SourceMessageSeriesRow {
 
 /** Per-bucket message volume and active users. */
 export async function getSourceMessageSeries(
-  source: SourceId,
+  sources: readonly SourceId[],
   params: SourceMessageScope & { unit: SourceBucketUnit; timeZone: string },
   db: StoreDb = getStoreDb(),
 ): Promise<SourceMessageSeriesRow[]> {
@@ -671,7 +724,7 @@ export async function getSourceMessageSeries(
       count(*) filter (where role = 'assistant')::int as bot,
       count(distinct user_id) filter (where role = 'user')::int as active_users
     from source_messages
-    where ${messageWhere(source, params)}
+    where ${messageWhere(sources, params)}
     group by 1
   `);
   return rows.rows.map((r) => ({
@@ -684,7 +737,7 @@ export async function getSourceMessageSeries(
 
 /** Per-bucket count of users first seen in the period (global only). */
 export async function getSourceNewUserSeries(
-  source: SourceId,
+  sources: readonly SourceId[],
   params: { fromUtc: Date; toUtc: Date; unit: SourceBucketUnit; timeZone: string },
   db: StoreDb = getStoreDb(),
 ): Promise<{ bucket: string; newUsers: number }[]> {
@@ -692,7 +745,7 @@ export async function getSourceNewUserSeries(
   const rows = await db.execute<{ bucket: string; new_users: number }>(sql`
     select ${bucket} as bucket, count(*)::int as new_users
     from source_users
-    where source = ${source}
+    where ${sourceIn(sql`source`, sources)}
       and first_seen_at >= ${params.fromUtc} and first_seen_at < ${params.toUtc}
     group by 1
   `);
@@ -701,50 +754,52 @@ export async function getSourceNewUserSeries(
 
 /** The most active human senders in the period (optionally within one chat). */
 export async function getSourceTopUsers(
-  source: SourceId,
-  params: { fromUtc: Date; toUtc: Date; chatId?: string | null; limit: number },
+  sources: readonly SourceId[],
+  params: { fromUtc: Date; toUtc: Date; chat?: SourceChatKey | null; limit: number },
   db: StoreDb = getStoreDb(),
-): Promise<{ userId: string; messages: number }[]> {
+): Promise<(SourceUserKey & { messages: number })[]> {
   const parts: SQL[] = [
-    sql`source = ${source}`,
+    ...scopeSourceWhere(sources, params),
     sql`deleted_at is null`,
     sql`role = 'user'`,
     sql`user_id is not null`,
     sql`sent_at >= ${params.fromUtc}`,
     sql`sent_at < ${params.toUtc}`,
   ];
-  if (params.chatId) parts.push(sql`chat_id = ${params.chatId}`);
-  const rows = await db.execute<{ user_id: string; messages: number }>(sql`
-    select user_id, count(*)::int as messages
+  const rows = await db.execute<{ source: string; user_id: string; messages: number }>(sql`
+    select source, user_id, count(*)::int as messages
     from source_messages
     where ${sql.join(parts, sql` and `)}
-    group by user_id
+    group by source, user_id
     order by messages desc
     limit ${params.limit}
   `);
-  return rows.rows.map((r) => ({ userId: r.user_id, messages: Number(r.messages) }));
+  return rows.rows.map((r) => ({
+    source: r.source,
+    userId: r.user_id,
+    messages: Number(r.messages),
+  }));
 }
 
 /** Bucket keys in a range that hold any message — the calendar's data marks. */
 export async function getSourceMessageAvailability(
-  source: SourceId,
+  sources: readonly SourceId[],
   params: {
     fromUtc: Date;
     toUtc: Date;
     unit: SourceBucketUnit;
     timeZone: string;
-    chatId?: string | null;
+    chat?: SourceChatKey | null;
   },
   db: StoreDb = getStoreDb(),
 ): Promise<string[]> {
   const bucket = bucketExpr(sql`sent_at`, params.unit, params.timeZone);
   const parts: SQL[] = [
-    sql`source = ${source}`,
+    ...scopeSourceWhere(sources, params),
     sql`deleted_at is null`,
     sql`sent_at >= ${params.fromUtc}`,
     sql`sent_at < ${params.toUtc}`,
   ];
-  if (params.chatId) parts.push(sql`chat_id = ${params.chatId}`);
   const rows = await db.execute<{ bucket: string }>(sql`
     select distinct ${bucket} as bucket
     from source_messages
@@ -754,8 +809,7 @@ export async function getSourceMessageAvailability(
   return rows.rows.map((r) => r.bucket);
 }
 
-export interface SourceChatHourCount {
-  chatId: string;
+export interface SourceChatHourCount extends SourceChatKey {
   /** `YYYY-MM-DD HH24` in the requested timezone. */
   insightHour: string;
   messageCount: number;
@@ -767,26 +821,29 @@ export interface SourceChatHourCount {
  * raw `sent_at`, so rows below it skip the per-row timezone expression.
  */
 export async function listSourceChatHourCounts(
-  source: SourceId,
+  sources: readonly SourceId[],
   params: { timeZone: string; fromUtc?: Date },
   db: StoreDb = getStoreDb(),
 ): Promise<SourceChatHourCount[]> {
   const floor = params.fromUtc ? sql`and sent_at >= ${params.fromUtc}` : sql``;
   const rows = await db.execute<{
+    source: string;
     chat_id: string;
     insight_hour: string;
     message_count: number;
   }>(sql`
     select
+      source,
       chat_id,
       to_char(date_trunc('hour', (sent_at at time zone ${params.timeZone})), 'YYYY-MM-DD HH24') as insight_hour,
       count(*)::int as message_count
     from source_messages
-    where source = ${source} and deleted_at is null ${floor}
-    group by 1, 2
-    order by 2 asc, 1 asc
+    where ${sourceIn(sql`source`, sources)} and deleted_at is null ${floor}
+    group by 1, 2, 3
+    order by 3 asc, 1 asc, 2 asc
   `);
   return rows.rows.map((r) => ({
+    source: r.source,
     chatId: r.chat_id,
     insightHour: r.insight_hour,
     messageCount: Number(r.message_count),

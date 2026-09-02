@@ -102,7 +102,7 @@ export function toExtractionLine(
     message.userId && storableIds.has(message.userId)
       ? `${message.label} [id:${message.userId}]`
       : message.label;
-  return `[#${message.telegramMessageId}] [${message.sentAt}] ${speaker}: ${message.content}`;
+  return `[#${message.sourceMessageId}] [${message.sentAt}] ${speaker}: ${message.content}`;
 }
 
 /**

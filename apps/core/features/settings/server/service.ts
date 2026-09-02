@@ -1509,7 +1509,7 @@ const BACKGROUND_PROBE_TIMEOUT_MS = 120_000;
 /** A tiny synthetic chat-day for the background probe to distil. */
 const BACKGROUND_PROBE_TRANSCRIPT: SummarizableMessage[] = [
   {
-    telegramMessageId: 101,
+    sourceMessageId: "101",
     role: "user",
     content: "The staging deploy is failing again — the migration step times out.",
     label: "Ada",
@@ -1517,7 +1517,7 @@ const BACKGROUND_PROBE_TRANSCRIPT: SummarizableMessage[] = [
     sentAt: "2026-01-01T10:00:00.000Z",
   },
   {
-    telegramMessageId: 102,
+    sourceMessageId: "102",
     role: "user",
     content: "I'll raise the statement timeout and rerun it after lunch.",
     label: "Bo",
@@ -1525,7 +1525,7 @@ const BACKGROUND_PROBE_TRANSCRIPT: SummarizableMessage[] = [
     sentAt: "2026-01-01T10:02:00.000Z",
   },
   {
-    telegramMessageId: 103,
+    sourceMessageId: "103",
     role: "user",
     content: "Also we agreed to move the weekly sync to Thursday.",
     label: "Ada",

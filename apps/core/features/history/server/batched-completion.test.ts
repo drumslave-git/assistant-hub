@@ -18,7 +18,7 @@ const OVERFLOW_MESSAGE = "LLM endpoint error (500): Context size has been exceed
 
 function msg(id: number, chars: number): SummarizableMessage {
   return {
-    telegramMessageId: id,
+    sourceMessageId: String(id),
     role: "user",
     content: "x".repeat(chars),
     label: "Alice",

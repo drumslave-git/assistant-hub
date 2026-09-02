@@ -7,7 +7,7 @@ import {
 } from "@assistant-hub-swarm/db/testing";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as storeSchema from "../../../store/schema";
 import { listTraces } from "@/server/trace";
@@ -19,6 +19,18 @@ import {
   removeLink,
   resolveLinkedRefs,
 } from "./service";
+
+const holder = vi.hoisted(() => ({ db: null as unknown }));
+
+// Production code that walks the registered transports reads the default
+// store handle; point it at this suite's container.
+vi.mock("@/server/store/db", () => ({
+  getStoreDb: () => holder.db,
+  getStorePool: () => {
+    throw new Error("not used in this suite");
+  },
+  closeStorePool: async () => {},
+}));
 
 const STORE_MIGRATIONS = fileURLToPath(new URL("../../../store/migrations", import.meta.url));
 
@@ -48,6 +60,7 @@ describe("person links", () => {
     await applyMigrations(url, STORE_MIGRATIONS);
     pool = new Pool({ connectionString: url });
     db = drizzle(pool, { schema: storeSchema });
+    holder.db = db;
   });
 
   afterAll(async () => {

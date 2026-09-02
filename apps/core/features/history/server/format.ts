@@ -41,14 +41,14 @@ export function fallbackSpeakerLabel(userId: string | null): string {
  *   trimmed) are inlined; `text` is null when the target had no textual content.
  */
 export type ReplyRef =
-  | { kind: "anchor"; telegramMessageId: number; quote?: string | null }
+  | { kind: "anchor"; sourceMessageId: string; quote?: string | null }
   | { kind: "inline"; label: string | null; text: string | null };
 
 /** Render a reply reference as its `[reply to …]` marker. */
 export function renderReplyRef(ref: ReplyRef): string {
   if (ref.kind === "anchor") {
     const quote = ref.quote?.trim() ? `, quoting: "${ref.quote}"` : "";
-    return `[reply to #${ref.telegramMessageId}${quote}]`;
+    return `[reply to #${ref.sourceMessageId}${quote}]`;
   }
   const who = ref.label ? ` ${ref.label}` : "";
   if (ref.text == null || ref.text === "") {
@@ -59,7 +59,7 @@ export function renderReplyRef(ref: ReplyRef): string {
 
 /** Parts of one transcript line. */
 export interface TranscriptLineParts {
-  telegramMessageId: number;
+  sourceMessageId: string;
   /** Speaker label — a known-user label, or the bot label for its own replies. */
   label: string;
   replyRef?: ReplyRef | null;
@@ -69,21 +69,21 @@ export interface TranscriptLineParts {
 /** Render one transcript line: `[#<id>] <sender> [reply to …]: <text>`. */
 export function renderTranscriptLine(parts: TranscriptLineParts): string {
   const reply = parts.replyRef ? ` ${renderReplyRef(parts.replyRef)}` : "";
-  return `[#${parts.telegramMessageId}] ${parts.label}${reply}: ${parts.content}`;
+  return `[#${parts.sourceMessageId}] ${parts.label}${reply}: ${parts.content}`;
 }
 
 export interface TranscriptOptions {
-  /** Resolved labels for human senders, keyed by Telegram user id. */
+  /** Resolved labels for human senders, keyed by source-local user id. */
   speakerLabels?: ReadonlyMap<string, string>;
   /** Label for the bot's own (assistant) rows, e.g. `You (@MyBot)`. */
   botLabel?: string;
   /**
-   * Media suffixes keyed by Telegram message id — how a media message reads as
+   * Media suffixes keyed by source-local message id — how a media message reads as
    * text (e.g. ` [photo: <description>]`). Appended to the line so a past image
    * turn carries its description. Built by the caller from vision annotations, so
    * this module stays free of vision imports.
    */
-  mediaSuffixes?: ReadonlyMap<number, string>;
+  mediaSuffixes?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -105,17 +105,17 @@ export function toTranscriptLine(record: ChatMessageRecord, options: TranscriptO
       : ((record.userId ? options.speakerLabels?.get(record.userId) : undefined) ??
         fallbackSpeakerLabel(record.userId));
   const replyRef: ReplyRef | null =
-    record.replyToMessageId != null
-      ? { kind: "anchor", telegramMessageId: record.replyToMessageId }
+    record.replyToSourceMessageId != null
+      ? { kind: "anchor", sourceMessageId: record.replyToSourceMessageId }
       : null;
   const line = renderTranscriptLine({
-    telegramMessageId: record.telegramMessageId,
+    sourceMessageId: record.sourceMessageId,
     label,
     replyRef,
     content: record.content,
   });
   return (
-    line + (options.mediaSuffixes?.get(record.telegramMessageId) ?? "") + botReactionSuffix(record)
+    line + (options.mediaSuffixes?.get(record.sourceMessageId) ?? "") + botReactionSuffix(record)
   );
 }
 

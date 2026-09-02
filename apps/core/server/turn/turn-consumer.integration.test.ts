@@ -210,7 +210,7 @@ describe("inbound turn consumer", () => {
     );
     const { getStoreDb } = await import("@/server/store/db");
     const { upsertKnownUser } = await import("@/features/known-users/server/repository");
-    await upsertKnownUser(getStoreDb(), {
+    await upsertKnownUser(getStoreDb(), "tg", {
       userId: "5001",
       username: "alice_example",
       firstName: "Alice",
@@ -218,7 +218,7 @@ describe("inbound turn consumer", () => {
     });
     await insertPreference(getStoreDb(), {
       id: crypto.randomUUID(),
-      userId: "5001",
+      userRef: "tg:user:5001",
       model: "fixture-model",
       likes: "short answers",
       dislikes: "emoji walls",
@@ -612,8 +612,9 @@ describe("inbound turn consumer", () => {
   it("recognizes a pending photo through the media store and folds the text into the turn", async () => {
     let record: MediaRecord = {
       id: "media-1",
+      source: "tg",
       chatId: "-300",
-      telegramMessageId: 12,
+      sourceMessageId: "12",
       kind: "photo",
       fileId: "",
       fileUniqueId: null,

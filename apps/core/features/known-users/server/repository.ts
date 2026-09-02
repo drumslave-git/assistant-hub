@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { SourceId } from "@assistant-hub-swarm/contracts";
+
 import type { StoreDb } from "@/server/store/db";
 import {
   getSourceUserById,
@@ -12,17 +14,19 @@ import {
 } from "@/server/source-store/repository";
 
 /**
- * Typed persistence for known Telegram users — since the Phase 10 cutover an
- * adapter over the source store's `source_users` rows (`source = 'tg'`),
- * which the ingest maintains from live traffic. The record shape and the
- * function surface are unchanged from the v1 shadow this replaces, so the
+ * Typed persistence for known users — an adapter over the source store's
+ * `source_users` rows, which the ingest maintains from live traffic. Every
+ * read and write names the source whose people it touches: a user id is
+ * only meaningful together with the transport that issued it, so nothing
+ * here assumes a platform. The record shape and the function surface are
+ * otherwise unchanged from the v1 shadow this replaces, so the
  * label/roster/alias consumers across the brain did not have to move.
  */
 
-const SOURCE = "tg" as const;
-
 /** A known user as stored. */
 export interface KnownUserRecord {
+  /** The transport this person is known through. */
+  source: SourceId;
   userId: string;
   username: string | null;
   firstName: string | null;
@@ -34,8 +38,8 @@ export interface KnownUserRecord {
   updatedAt: string;
 }
 
-/** Telegram profile fields captured on each message (never includes aliases). */
-export interface TelegramUserProfile {
+/** Profile fields a transport captures on each message (never includes aliases). */
+export interface SourceUserProfile {
   userId: string;
   username: string | null;
   firstName: string | null;
@@ -44,6 +48,7 @@ export interface TelegramUserProfile {
 
 function mapRow(row: SourceUserRow): KnownUserRecord {
   return {
+    source: row.source,
     userId: row.userId,
     username: row.username,
     firstName: row.firstName,
@@ -55,52 +60,59 @@ function mapRow(row: SourceUserRow): KnownUserRecord {
   };
 }
 
-/** All known users, most-recently-seen first. */
-export async function listKnownUsers(db?: StoreDb): Promise<KnownUserRecord[]> {
-  const rows = await listSourceUsers(SOURCE, db);
+/** All of one source's known users, most-recently-seen first. */
+export async function listKnownUsers(
+  db: StoreDb | undefined,
+  source: SourceId,
+): Promise<KnownUserRecord[]> {
+  const rows = await listSourceUsers(source, db);
   return rows.map(mapRow).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 /** One known user by id, or null. */
 export async function getKnownUser(
   db: StoreDb | undefined,
+  source: SourceId,
   userId: string,
 ): Promise<KnownUserRecord | null> {
-  const row = await getSourceUserById(SOURCE, userId, db);
+  const row = await getSourceUserById(source, userId, db);
   return row ? mapRow(row) : null;
 }
 
 /** Many known users by id (for label resolution). */
 export async function getKnownUsersByIds(
   db: StoreDb | undefined,
-  userIds: string[],
+  source: SourceId,
+  userIds: readonly string[],
 ): Promise<KnownUserRecord[]> {
   const unique = [...new Set(userIds.filter(Boolean))];
   if (unique.length === 0) return [];
-  const rows = await getSourceUsersByIds(SOURCE, unique, db);
+  const rows = await getSourceUsersByIds(source, unique, db);
   return rows.map(mapRow);
 }
 
 /**
- * Upsert the Telegram profile of a user who messaged the bot. Refreshes the
- * mutable profile fields but leaves operator-curated `aliases` (and
- * `first_seen_at`) untouched. The live path is the ingest's own upsert; this
- * stays for the curated-edit flows and tests.
+ * Upsert the profile of a user who messaged the bot. Refreshes the mutable
+ * profile fields but leaves operator-curated `aliases` (and `first_seen_at`)
+ * untouched. The live path is the ingest's own upsert; this stays for the
+ * curated-edit flows and tests.
  */
 export async function upsertKnownUser(
   db: StoreDb | undefined,
-  profile: TelegramUserProfile,
+  source: SourceId,
+  profile: SourceUserProfile,
 ): Promise<void> {
-  await upsertSourceUser({ source: SOURCE, ...profile }, db);
+  await upsertSourceUser({ source, ...profile }, db);
 }
 
 /** Replace a user's alias list. Returns the updated record, or null if unknown. */
 export async function setKnownUserAliases(
   db: StoreDb | undefined,
+  source: SourceId,
   userId: string,
   aliases: string[],
 ): Promise<KnownUserRecord | null> {
-  const row = await updateSourceUserAliases(SOURCE, userId, aliases, db);
+  const row = await updateSourceUserAliases(source, userId, aliases, db);
   return row ? mapRow(row) : null;
 }
 
@@ -110,9 +122,10 @@ export async function setKnownUserAliases(
  */
 export async function setKnownUserLanguage(
   db: StoreDb | undefined,
+  source: SourceId,
   userId: string,
   language: string | null,
 ): Promise<KnownUserRecord | null> {
-  const row = await updateSourceUserLanguage(SOURCE, userId, language, db);
+  const row = await updateSourceUserLanguage(source, userId, language, db);
   return row ? mapRow(row) : null;
 }

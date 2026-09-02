@@ -6,8 +6,9 @@ import {
   deleteAddressingExclusion,
   listAddressingExclusions,
 } from "@/features/bot-messaging/server/exclusions-repository";
-import { formatKnownUserLabel } from "@/features/known-users/format";
-import { getKnownUsersByIds } from "@/features/known-users/server/repository";
+import { scopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
+
+import { getUserLabelsByRef } from "@/features/known-users/server/service";
 import { getLlmRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { publishEvent } from "@/server/realtime/hub";
@@ -41,10 +42,11 @@ const FEEDBACK_FEATURE = FEATURES["user-feedback"];
  */
 export async function resolveReplyModel(
   messages: SourceMessagePort,
+  source: SourceId,
   chatId: string,
-  telegramMessageId: number,
+  sourceMessageId: string,
 ): Promise<string> {
-  const trace = await getReplyTrace(messages, chatId, telegramMessageId);
+  const trace = await getReplyTrace(messages, source, chatId, sourceMessageId);
   const model = trace?.events.find((e) => e.usage?.model)?.usage?.model;
   if (model) return normalizeModelName(model);
   const runtime = await getLlmRuntime().catch(() => null);
@@ -65,7 +67,7 @@ export async function getLatestSelfCorrectionPrompt(db: StoreDb = getStoreDb()):
 export interface PreferencesContext {
   content: string;
   /** Trace payload for the "communication preferences loaded" step. */
-  data: { userId: string; version: number };
+  data: { userRef: string; version: number };
 }
 
 /**
@@ -74,20 +76,19 @@ export interface PreferencesContext {
  * preferences yet (nothing useful to inject).
  */
 export async function getPreferencesContext(
-  userId: string,
+  userRef: string,
   db: StoreDb = getStoreDb(),
 ): Promise<PreferencesContext | null> {
-  const latest = await getLatestPreference(db, userId);
+  const latest = await getLatestPreference(db, userRef);
   if (!latest) return null;
-  const [user] = await getKnownUsersByIds(undefined, [userId]);
-  const label = user ? formatKnownUserLabel(user) : `user ${userId}`;
+  const label = (await getUserLabelsByRef([userRef], db)).get(userRef) ?? `user ${userRef}`;
   const content = formatPreferencesContext({
     label,
     likes: latest.likes,
     dislikes: latest.dislikes,
   });
   if (!content) return null;
-  return { content, data: { userId, version: latest.version } };
+  return { content, data: { userRef, version: latest.version } };
 }
 
 /** A feedback row resolved with its sender's label (dashboard). */
@@ -131,35 +132,34 @@ export async function getSelfImprovementView(db: StoreDb = getStoreDb()): Promis
   const [feedbacks, preferences, correction, exclusions] = await Promise.all([
     ports
       ? ports.feedbacks.listAll().catch((err: unknown) => {
-          feedbacksError = `telegram service unreachable: ${
+          feedbacksError = `feedback store unreachable: ${
             err instanceof Error ? err.message : String(err)
           }`;
           return [] as UserFeedback[];
         })
       : (() => {
-          feedbacksError =
-            "telegram service is not configured (TG_API_URL / INTERNAL_API_TOKEN)";
+          feedbacksError = "feedback store is not configured";
           return Promise.resolve([] as UserFeedback[]);
         })(),
     listLatestPreferences(db),
     getLatestCorrection(db),
     listAddressingExclusions(db),
   ]);
-  const userIds = [
-    ...feedbacks.map((f) => f.userId),
-    ...preferences.map((p) => p.userId),
-    ...exclusions.flatMap((e) => (e.userId ? [e.userId] : [])),
+  const feedbackRef = (f: UserFeedback) => scopedRef(f.source, "user", f.userId);
+  const refs = [
+    ...feedbacks.map(feedbackRef),
+    ...preferences.map((p) => p.userRef),
+    ...exclusions.flatMap((e) => (e.userRef ? [e.userRef] : [])),
   ];
-  const users = await getKnownUsersByIds(undefined, userIds);
-  const labels = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
-  const labelFor = (userId: string) => labels.get(userId) ?? `user ${userId}`;
+  const labels = await getUserLabelsByRef(refs, db);
+  const labelFor = (userRef: string) => labels.get(userRef) ?? `user ${userRef}`;
   return {
-    feedbacks: feedbacks.map((f) => ({ ...f, userLabel: labelFor(f.userId) })),
-    preferences: preferences.map((p) => ({ ...p, userLabel: labelFor(p.userId) })),
+    feedbacks: feedbacks.map((f) => ({ ...f, userLabel: labelFor(feedbackRef(f)) })),
+    preferences: preferences.map((p) => ({ ...p, userLabel: labelFor(p.userRef) })),
     correction,
     exclusions: exclusions.map((e) => ({
       ...e,
-      userLabel: e.userId ? labelFor(e.userId) : "—",
+      userLabel: e.userRef ? labelFor(e.userRef) : "—",
     })),
     feedbacksError,
   };

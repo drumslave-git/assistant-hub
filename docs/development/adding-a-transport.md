@@ -69,9 +69,9 @@ Two things are checked when you register:
 | **Source id** | `^[a-z][a-z0-9-]{0,31}$` — short, lowercase, stable. It becomes the prefix of every scoped ref (`signal:user:123`), the slug of your MCP tools (`signal__send_message`), the `source` on every event and the `transports.id` row. It cannot change later without rewriting stored refs | 400 `a transport registration is required` |
 | **Contract major** | `contractMajor` must equal the core's `CONTRACT_MAJOR` (exported by the contracts package; `1` today). It is bumped when an event, an internal route or the registration shape changes incompatibly | 409 naming both majors. The row is still upserted so the assistant editor shows the refusal next to your name; you get no desired state and your events are dropped until either side updates |
 
-Also know what is still Telegram-only in the dashboard today, so you set
-expectations right: see [Known Telegram-only surfaces](#known-telegram-only-surfaces)
-at the end.
+Every dashboard surface is source-generic — see
+[What the dashboard shows for your transport](#what-the-dashboard-shows-for-your-transport)
+at the end for the exact list, and for the one convention it relies on.
 
 ## Step 1 — Scaffold the app
 
@@ -624,29 +624,34 @@ reply-author recognition, what is dropped) and `apps/tg/src/addressing.test.ts`
 | Calls into the core (callback toast, mirror lookup) | `src/core-client.ts` |
 | Running-connection roster | `src/connections.ts` |
 
-## Known Telegram-only surfaces
+## What the dashboard shows for your transport
 
-The runtime contract is generic and a second transport's turns run end to
-end: it registers under its own id, its messages land in `source_messages`
-under that id, its history window is composed from its own rows, memory and
-owner rights resolve through scoped refs, its tools are scoped to its own
-turns, and it is listed wherever the core enumerates sources (the managed
-tool connections, the Users and Groups roster, the media backfill and
-gallery, the app-scope select, the Overview's Bots card and its per-transport
-start/stop blocks, the shell's bot status). What is still literally Telegram
-in the core today, so you know what a new transport's operator will and will
-not see — each is being widened under the "Transport SDK" entry in
-`docs/TODO.md`:
+Nothing in the core is keyed by a platform literal: every surface that names
+a source walks the registration table, and every surface that names a chat
+or a person speaks a scoped ref (`<source>:chat:<id>`, `<source>:user:<id>`)
+or a `(source, local id)` pair. Once your transport has registered and its
+events land, an operator sees it everywhere a Telegram deployment does:
 
-| Surface | Where | Effect on a second transport |
-| --- | --- | --- |
-| History, search, summaries, analytics content plane | `apps/core/server/source/tg-content.ts` (`SOURCE = "tg"`) | The History and Analytics pages, the nightly summaries and the search index read Telegram rows only |
-| Curated Users and Groups pages | `apps/core/features/known-users`, `known-groups` (`SOURCE = "tg"`) | Your people and chats are in the roster, but the curated pages (aliases, notes, languages) edit Telegram rows |
-| Vision gallery and backfill rows | `apps/core/features/vision/server/repository.ts` (`"tg"`) | Media is stored and described per source; the gallery view lists Telegram |
-| Scoped-ref defaults | `features/memory`, `features/tasks`, `features/self-improvement` build `tg:user:` / `tg:chat:` refs where a source is not supplied | Turn-time reads pass the source; some dashboard-driven writes assume Telegram |
-| Timed task fires | `features/tasks/server/fire.ts` binds the fire's tool context to `source: "tg"` (the task store hands out raw Telegram ids) | A scheduled or interval task always delivers through Telegram's `send_message`; message-triggered tasks run on the turn's own source and are unaffected |
+| Surface | What it reads |
+| --- | --- |
+| Overview and the shell's Bot status | Every registered transport's roster (`/health` per transport); one start/stop block per transport, titled with the name you announced |
+| History, search, summaries, memory extraction, analytics | The conversation store across every transport on this core's contract major; chats are addressed by ref (`/history/<ref>`, `?chatRef=`, `?userRef=`) |
+| Users and Groups, and their curated edits (aliases, notes, languages) | Each transport's own `source_users` / `source_chats` rows, by ref |
+| Vision gallery and backfill | Every transport's `source_media`, tagged with your announced name |
+| Tasks | Chats are picked by ref across every transport; a timed fire binds its tool context to the task's chat's transport, so `send_message` is yours |
+| Memory, preferences, feedback, addressing exclusions | Keyed by refs in your namespace |
+| Browser-agent runs | Deliver through the transport the run's chat ref names |
 
-Each of these is a lookup keyed by a literal, not a branch on platform
-behaviour; widening one means iterating the registered transports instead.
-Record which you widened in `docs/TODO.md` against the entry for your
-transport.
+Two conventions your transport must follow for those surfaces to work:
+
+- **A group is a chat you report as not direct.** The ingest stores a
+  `source_chats` row for groups only, and that row is the core's whole notion
+  of "this is a group" — no id shape is inspected. A direct chat's
+  participants are the people who have messaged in it.
+- **Message ids are text.** The core never converts them to numbers (a
+  64-bit snowflake would not survive it), and it anchors transcripts and
+  citations by them (`#<id>`). Turn correlation ids are
+  `<chatId>:<sourceMessageId>` in your local ids.
+
+If you find a surface that shows Telegram and not you, that is a core bug —
+file it against the "Transport SDK" entry in `docs/TODO.md`.

@@ -17,6 +17,8 @@ function task(over: Partial<Task> = {}): Task {
   return {
     id: "task-1",
     chatId: "-1001",
+    chatRef: "tg:chat:-1001",
+    chatSource: "tg",
     threadId: null,
     createdByUserId: "77",
     createdByOwner: false,

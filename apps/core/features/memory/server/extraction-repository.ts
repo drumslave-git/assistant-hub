@@ -1,16 +1,16 @@
 import "server-only";
 
 import type { StoreDb } from "@/server/store/db";
-import { scopedRef, tryParseScopedRef } from "@assistant-hub-swarm/contracts";
 
 import { memoryExtractionDays } from "../../../store/schema";
+import { chatDayKey } from "@/features/history/server/summaries-repository";
 import type { SummaryDate } from "@/features/history/summary";
-import type { SourceContentClient } from "@/server/source/tg-content";
+import type { SourceContentClient } from "@/server/source/content";
 
 /**
  * Typed persistence for the passive-extraction markers (`memory_extraction_days`)
  * and the due-scan that drives the job. Pure data access — no LLM, no tracing;
- * `extract.ts` owns those.
+ * `extract.ts` owns those. Chats are keyed by scoped ref.
  *
  * The scan is a deliberate twin of history's `listDaysNeedingSummary`: both ask
  * "which finished chat-days hold messages this job has not processed at their
@@ -22,7 +22,7 @@ import type { SourceContentClient } from "@/server/source/tg-content";
 
 /** A (chat, day) pair extraction still owes work on. */
 export interface PendingExtractionDay {
-  chatId: string;
+  chatRef: string;
   extractionDate: SummaryDate;
   /** Messages the day currently holds — what the marker records once extracted. */
   messageCount: number;
@@ -38,19 +38,13 @@ export interface PendingExtractionDay {
 export async function stampExtractionDay(
   db: StoreDb,
   input: {
-    chatId: string;
+    chatRef: string;
     extractionDate: SummaryDate;
     messageCount: number;
     noteCount: number;
   },
 ): Promise<void> {
-  const marker = {
-    chatRef: scopedRef("tg", "chat", input.chatId),
-    extractionDate: input.extractionDate,
-    messageCount: input.messageCount,
-    noteCount: input.noteCount,
-    extractedAt: new Date(),
-  };
+  const marker = { ...input, extractedAt: new Date() };
   await db
     .insert(memoryExtractionDays)
     .values(marker)
@@ -79,8 +73,8 @@ export async function listDaysNeedingExtraction(
   db: StoreDb,
   params: { timeZone: string; today: SummaryDate; limit: number },
 ): Promise<PendingExtractionDay[]> {
-  // The counts come from the owning source's mirror; the markers are this
-  // job's own state — compared here (the v1 SQL join, split across stores).
+  // The counts come from the conversation store; the markers are this job's
+  // own state — compared here (the v1 SQL join, split across stores).
   const [days, markers] = await Promise.all([
     content.dayCounts(params.timeZone, params.today),
     db
@@ -92,19 +86,14 @@ export async function listDaysNeedingExtraction(
       .from(memoryExtractionDays)
       .then(
         (rows) =>
-          new Map(
-            rows.map((row) => [
-              `${tryParseScopedRef(row.chatRef)?.id ?? row.chatRef}|${row.extractionDate}`,
-              row.messageCount,
-            ]),
-          ),
+          new Map(rows.map((row) => [chatDayKey(row.chatRef, row.extractionDate), row.messageCount])),
       ),
   ]);
   return days
-    .filter((day) => markers.get(`${day.chatId}|${day.date}`) !== day.messageCount)
+    .filter((day) => markers.get(chatDayKey(day.chatRef, day.date)) !== day.messageCount)
     .slice(0, params.limit)
     .map((day) => ({
-      chatId: day.chatId,
+      chatRef: day.chatRef,
       extractionDate: day.date,
       messageCount: day.messageCount,
     }));

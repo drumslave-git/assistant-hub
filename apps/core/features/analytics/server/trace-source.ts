@@ -1,5 +1,7 @@
 import "server-only";
 
+import { parseScopedRef } from "@assistant-hub-swarm/contracts";
+
 import { normalizeModelName, UNKNOWN_MODEL } from "@/features/self-improvement/model-name";
 import type { Trace } from "@/lib/trace";
 import { scanTraces } from "@/server/trace";
@@ -55,8 +57,10 @@ export interface TraceScope {
   startUtc: Date;
   /** Exclusive. */
   endUtc: Date;
-  chatId?: string | null;
-  userId?: string | null;
+  /** One chat's scoped ref, or every chat. */
+  chatRef?: string | null;
+  /** One person's scoped ref, or everyone. */
+  userRef?: string | null;
 }
 
 /**
@@ -79,10 +83,18 @@ export function attributedModel(raw: string | null | undefined): string {
   return normalizeModelName(trimmed);
 }
 
-/** Whether a trace belongs to the requested chat/user scope. */
+/**
+ * Whether a trace belongs to the requested chat/user scope. A turn's trace is
+ * correlated as `<chatId>:<messageId>` and its actor is the sender's id — both
+ * in the transport's own ids — so the scope's refs are compared by their
+ * local half.
+ */
 function inScope(trace: Trace, scope: TraceScope): boolean {
-  if (scope.chatId && !trace.trigger.correlationId?.startsWith(`${scope.chatId}:`)) return false;
-  if (scope.userId && trace.trigger.actor !== scope.userId) return false;
+  if (scope.chatRef) {
+    const chatId = parseScopedRef(scope.chatRef).id;
+    if (!trace.trigger.correlationId?.startsWith(`${chatId}:`)) return false;
+  }
+  if (scope.userRef && trace.trigger.actor !== parseScopedRef(scope.userRef).id) return false;
   return true;
 }
 

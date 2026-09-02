@@ -1960,11 +1960,11 @@ paths:
       summary: CSV export of the history mirror
       description: Deleted rows are included, flagged. An export round-trips back through the import.
       parameters:
-        - name: chatId
+        - name: chatRef
           in: query
           required: false
-          description: Restrict to one chat. Omitted exports every chat.
-          schema: { type: string }
+          description: Restrict to one chat (scoped ref). Omitted exports every chat of every transport.
+          schema: { $ref: "#/components/schemas/ScopedRef" }
       responses:
         "200":
           description: CSV attachment (UTF-8 with BOM)
@@ -1984,7 +1984,7 @@ paths:
       summary: CSV import into the history mirror
       description: |
         The server re-parses the raw text with the same module the browser previewed
-        with. Rows whose `(chatId, telegramMessageId)` already exists are skipped,
+        with. Rows whose `(chatRef, sourceMessageId)` already exists are skipped,
         so a partially-applied file can safely be re-run. Also resets the analytics
         insight scan floor so imported hours are picked up. At most 5000 rows.
       requestBody:
@@ -2242,7 +2242,7 @@ paths:
       description: |
         Every task belongs to one assistant (`assistantId`, which must be the
         caller's own - 404 otherwise). `triggerKind` selects which fields
-        apply. Times are local wall-clock in the operator timezone. `chatId:
+        apply. Times are local wall-clock in the operator timezone. `chatRef:
         null` is the global scope, valid only for `message`/`on-reply`;
         `targetUserIds` only on a group standing task, and only naming people
         on that group's roster.
@@ -2601,8 +2601,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/PeriodUnit"
         - $ref: "#/components/parameters/PeriodAnchor"
-        - $ref: "#/components/parameters/FilterChatId"
-        - $ref: "#/components/parameters/FilterUserId"
+        - $ref: "#/components/parameters/FilterChatRef"
+        - $ref: "#/components/parameters/FilterUserRef"
       responses:
         "200":
           description: Totals
@@ -2622,7 +2622,7 @@ paths:
       tags: [analytics]
       x-access: admin
       summary: One chart card's series
-      description: Every section answers with the same `{ buckets, series }` shape. `mood` requires a `chatId`.
+      description: Every section answers with the same `{ buckets, series }` shape. `mood` requires a `chatRef`.
       parameters:
         - name: section
           in: query
@@ -2632,8 +2632,8 @@ paths:
             enum: [volume, tokens, users, mood]
         - $ref: "#/components/parameters/PeriodUnit"
         - $ref: "#/components/parameters/PeriodAnchor"
-        - $ref: "#/components/parameters/FilterChatId"
-        - $ref: "#/components/parameters/FilterUserId"
+        - $ref: "#/components/parameters/FilterChatRef"
+        - $ref: "#/components/parameters/FilterUserRef"
       responses:
         "200":
           description: Series
@@ -2659,8 +2659,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/PeriodUnit"
         - $ref: "#/components/parameters/PeriodAnchor"
-        - $ref: "#/components/parameters/FilterChatId"
-        - $ref: "#/components/parameters/FilterUserId"
+        - $ref: "#/components/parameters/FilterChatRef"
+        - $ref: "#/components/parameters/FilterUserRef"
       responses:
         "200":
           description: Models
@@ -2683,8 +2683,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/PeriodUnit"
         - $ref: "#/components/parameters/PeriodAnchor"
-        - $ref: "#/components/parameters/FilterChatId"
-        - $ref: "#/components/parameters/FilterUserId"
+        - $ref: "#/components/parameters/FilterChatRef"
+        - $ref: "#/components/parameters/FilterUserRef"
       responses:
         "200":
           description: Top users
@@ -2708,10 +2708,10 @@ paths:
       parameters:
         - $ref: "#/components/parameters/PeriodUnit"
         - $ref: "#/components/parameters/PeriodAnchor"
-        - name: chatId
+        - name: chatRef
           in: query
           required: true
-          schema: { type: string }
+          schema: { $ref: "#/components/schemas/ScopedRef" }
       responses:
         "200":
           description: The insight, or null
@@ -2755,7 +2755,7 @@ paths:
           required: true
           description: Inclusive anchor the calendar ends at.
           schema: { type: string }
-        - $ref: "#/components/parameters/FilterChatId"
+        - $ref: "#/components/parameters/FilterChatRef"
       responses:
         "200":
           description: The anchors in range that hold data
@@ -3215,16 +3215,16 @@ components:
         Monday), `2026-07` (month), `2026` (year), `all`. Defaults to the current
         period in the operator timezone.
       schema: { type: string }
-    FilterChatId:
-      name: chatId
+    FilterChatRef:
+      name: chatRef
       in: query
-      description: Restrict to one chat.
-      schema: { type: string }
-    FilterUserId:
-      name: userId
+      description: Restrict to one chat (scoped ref, `tg:chat:-100…`).
+      schema: { $ref: "#/components/schemas/ScopedRef" }
+    FilterUserRef:
+      name: userRef
       in: query
-      description: Restrict to one user's own messages.
-      schema: { type: string }
+      description: Restrict to one user's own messages (scoped ref, `tg:user:123`).
+      schema: { $ref: "#/components/schemas/ScopedRef" }
     TransportId:
       name: id
       in: path
@@ -4609,11 +4609,11 @@ components:
       type: object
       description: |
         Where each canonical field's value comes from - a column of the file, or a
-        fixed value. `telegram_message_id` cannot take a fixed value: it is the
+        fixed value. `source_message_id` cannot take a fixed value: it is the
         per-chat unique key, so one value would collapse the file into one message.
       properties:
-        chat_id: { $ref: "#/components/schemas/HistoryColumnSource" }
-        telegram_message_id: { $ref: "#/components/schemas/HistoryColumnSource" }
+        chat_ref: { $ref: "#/components/schemas/HistoryColumnSource" }
+        source_message_id: { $ref: "#/components/schemas/HistoryColumnSource" }
         role: { $ref: "#/components/schemas/HistoryColumnSource" }
         content: { $ref: "#/components/schemas/HistoryColumnSource" }
         sent_at: { $ref: "#/components/schemas/HistoryColumnSource" }
@@ -4623,13 +4623,13 @@ components:
         deleted_at: { $ref: "#/components/schemas/HistoryColumnSource" }
     ImportResult:
       type: object
-      required: [totalRows, imported, skippedDuplicates, errors, chatIds]
+      required: [totalRows, imported, skippedDuplicates, errors, chatRefs]
       properties:
         totalRows: { type: integer, description: Data rows found (the header is not counted). }
         imported: { type: integer }
         skippedDuplicates:
           type: integer
-          description: Rows whose `(chatId, telegramMessageId)` was already in the mirror.
+          description: Rows whose `(chatRef, sourceMessageId)` was already in the mirror.
         errors:
           type: array
           items:
@@ -4638,9 +4638,9 @@ components:
             properties:
               line: { type: integer, description: 1-based data-row number. }
               message: { type: string }
-        chatIds:
+        chatRefs:
           type: array
-          items: { type: string }
+          items: { $ref: "#/components/schemas/ScopedRef" }
 
     # -- memory --
     MemoryEntry:
@@ -4718,6 +4718,8 @@ components:
           id,
           assistantId,
           chatId,
+          chatRef,
+          chatSource,
           threadId,
           createdByUserId,
           source,
@@ -4744,11 +4746,17 @@ components:
         assistantId: { type: string, description: The assistant this task belongs to; dies with it. }
         chatId:
           type: [string, "null"]
-          description: Null for a global task (message/on-reply kinds only).
+          description: Source-local id of the chat. Null for a global task (message/on-reply kinds only).
+        chatRef:
+          type: [string, "null"]
+          description: The chat's scoped ref (`tg:chat:-100…`); null for a global task.
+        chatSource:
+          type: [string, "null"]
+          description: The transport the chat lives on - the namespace of every id on the task; null for a global task.
         threadId: { type: [integer, "null"] }
         createdByUserId:
           type: [string, "null"]
-          description: The author. Null for a dashboard-created task, which the chat tools cannot mutate (timed kinds) - except by the owner, who is exempt.
+          description: The author (source-local id in `chatSource`). Null for a dashboard-created task, which the chat tools cannot mutate (timed kinds) - except by the owner, who is exempt.
         source: { type: string, enum: [chat, dashboard] }
         createdByOwner: { type: boolean, description: Whether the creator held owner rights at creation. }
         instruction: { type: string }
@@ -4790,9 +4798,10 @@ components:
       required: [assistantId, instruction, triggerKind]
       properties:
         assistantId: { type: string, minLength: 1 }
-        chatId:
+        chatRef:
           type: [string, "null"]
           default: null
+          description: The chat's scoped ref, or null for the global scope.
         threadId: { type: [integer, "null"] }
         instruction: { type: string, minLength: 2, maxLength: 2000 }
         context: { type: [string, "null"], maxLength: 4000 }
@@ -4851,8 +4860,9 @@ components:
       required:
         [
           id,
+          source,
           chatId,
-          telegramMessageId,
+          sourceMessageId,
           userId,
           reaction,
           feedback,
@@ -4868,9 +4878,10 @@ components:
         ]
       properties:
         id: { type: string }
-        chatId: { type: string }
-        telegramMessageId: { type: integer }
-        userId: { type: string }
+        source: { $ref: "#/components/schemas/SourceId" }
+        chatId: { type: string, description: Source-local chat id. }
+        sourceMessageId: { type: string, description: Source-local id of the reacted reply. }
+        userId: { type: string, description: Source-local id of who reacted. }
         reaction:
           type: string
           enum: [up, down]
@@ -4894,10 +4905,10 @@ components:
         updatedAt: { type: string, format: date-time }
     CommunicationPreference:
       type: object
-      required: [id, userId, model, likes, dislikes, version, createdAt]
+      required: [id, userRef, model, likes, dislikes, version, createdAt]
       properties:
         id: { type: string }
-        userId: { type: string }
+        userRef: { $ref: "#/components/schemas/ScopedRef" }
         model: { type: string }
         likes: { type: string }
         dislikes: { type: string }
@@ -4971,9 +4982,9 @@ components:
       required:
         [
           id,
-          chatId,
+          chatRef,
           threadId,
-          createdByUserId,
+          createdByUserRef,
           isOwner,
           restricted,
           sourceUrls,
@@ -4990,11 +5001,11 @@ components:
         ]
       properties:
         id: { type: string }
-        chatId:
+        chatRef:
           type: [string, "null"]
           description: Null for a dashboard-started run, which delivers nothing.
         threadId: { type: [integer, "null"] }
-        createdByUserId: { type: [string, "null"] }
+        createdByUserRef: { type: [string, "null"] }
         isOwner:
           type: boolean
           description: Resolved at enqueue time; gates the download tools inside the run.

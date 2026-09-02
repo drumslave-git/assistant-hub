@@ -15,12 +15,12 @@ import type { TraceTrigger } from "@/lib/trace";
  */
 export interface McpToolContext {
   /**
-   * Which source app the turn belongs to — the trace trigger's kind, so a
-   * web-thread tool call is not filed under telegram in Debug. Absent →
-   * telegram, the v1 shape (task fires and tests still bind that way).
+   * Which source app the turn belongs to — the trace trigger's kind, and the
+   * namespace every id below lives in. A reply turn binds the inbound
+   * event's source, a task fire the task's chat's; nothing defaults it.
    */
-  source?: SourceId;
-  /** The current chat's id — a Telegram chat/group id, a web thread's uuid. */
+  source: SourceId;
+  /** The current chat's source-local id — a platform chat/group id, a web thread's uuid. */
   chatId: string;
   /**
    * The turn's assistant (Phase 3): a reply turn binds the inbound event's,

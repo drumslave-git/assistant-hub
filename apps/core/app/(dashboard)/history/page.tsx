@@ -4,6 +4,8 @@ import Link from "next/link";
 import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { featureDebugHref } from "@/lib/features";
+import { parseScopedRef } from "@assistant-hub-swarm/contracts";
+
 import { actingAccount } from "@/server/auth/acting";
 import { chatKey, servedChatKeys } from "@/server/ownership";
 import { getHistoryOverview } from "@/features/history/server/service";
@@ -40,7 +42,10 @@ export default async function HistoryPage() {
     chats =
       served === null
         ? overview
-        : overview.filter((chat) => served.has(chatKey("tg", chat.chatId)));
+        : overview.filter((chat) => {
+            const { source, id } = parseScopedRef(chat.chatRef);
+            return served.has(chatKey(source, id));
+          });
     summaryJob = jobInfo;
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read history from the database";

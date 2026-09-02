@@ -18,7 +18,7 @@ const createRunSchema = z.object({
 export const POST = defineRoute(async ({ request }) => {
   const { goal } = await parseJson(request, createRunSchema);
   // Dashboard runs are the operator's own — treat as owner (downloads enabled).
-  const run = await enqueueBrowserRun({ goal, chatId: null, isOwner: true });
+  const run = await enqueueBrowserRun({ goal, chatRef: null, isOwner: true });
   emitRunEnqueued();
   return ok(run, { status: 201 });
 });

@@ -17,7 +17,7 @@ import "server-only";
  */
 
 interface AckEntry {
-  chatId: string;
+  chatRef: string;
   messageIds: number[];
   /** Set when the run settled with no ack registered yet (epoch ms, for sweeping). */
   settledAt: number | null;
@@ -49,7 +49,7 @@ function sweep(entries: Map<string, AckEntry>): void {
  */
 export function registerRunAck(
   runId: string,
-  chatId: string,
+  chatRef: string,
   messageId: number,
 ): "stored" | "settled" {
   const entries = store();
@@ -63,7 +63,7 @@ export function registerRunAck(
   if (existing) {
     existing.messageIds.push(messageId);
   } else {
-    entries.set(runId, { chatId, messageIds: [messageId], settledAt: null });
+    entries.set(runId, { chatRef, messageIds: [messageId], settledAt: null });
   }
   return "stored";
 }
@@ -73,15 +73,15 @@ export function registerRunAck(
  * When none was registered yet, leaves a settled marker so a late registration
  * knows to delete immediately, and returns null.
  */
-export function takeRunAck(runId: string): { chatId: string; messageIds: number[] } | null {
+export function takeRunAck(runId: string): { chatRef: string; messageIds: number[] } | null {
   const entries = store();
   sweep(entries);
   const entry = entries.get(runId);
   if (entry && entry.messageIds.length > 0) {
     entries.delete(runId);
-    return { chatId: entry.chatId, messageIds: entry.messageIds };
+    return { chatRef: entry.chatRef, messageIds: entry.messageIds };
   }
-  entries.set(runId, { chatId: "", messageIds: [], settledAt: Date.now() });
+  entries.set(runId, { chatRef: "", messageIds: [], settledAt: Date.now() });
   return null;
 }
 

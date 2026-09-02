@@ -1,6 +1,7 @@
 import { ArrowLeft, Database, Download } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { tryParseScopedRef } from "@assistant-hub-swarm/contracts";
 
 import { Button, EmptyState, PageHeader, Tabs } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
@@ -9,7 +10,7 @@ import type { ChatMessageWithTrace } from "@/features/history/server/schema";
 import type { ChatSummaryRecord } from "@/features/history/server/summaries-repository";
 import { actingAccount } from "@/server/auth/acting";
 import { chatKey, servedChatKeys } from "@/server/ownership";
-import { requireSourceContent } from "@/server/source/tg-content";
+import { requireSourceContent } from "@/server/source/content";
 import { ChatHistoryTable } from "@/features/history/ui/ChatHistoryTable";
 import { ChatSummariesList } from "@/features/history/ui/ChatSummariesList";
 
@@ -17,28 +18,31 @@ import { ChatSummariesList } from "@/features/history/ui/ChatSummariesList";
 export const dynamic = "force-dynamic";
 
 /**
- * Single-chat history mirror. Server Component: renders the full stored
- * conversation for one chat, including edit/delete flags.
+ * Single-chat history mirror, addressed by the chat's scoped ref
+ * (`tg:chat:-100…`). Server Component: renders the full stored conversation
+ * for one chat, including edit/delete flags.
  */
 export default async function ChatHistoryPage({
   params,
 }: {
-  params: Promise<{ chatId: string }>;
+  params: Promise<{ ref: string }>;
 }) {
-  const { chatId: raw } = await params;
-  const chatId = decodeURIComponent(raw);
+  const { ref: raw } = await params;
+  const chatRef = decodeURIComponent(raw);
+  const parsed = tryParseScopedRef(chatRef);
+  if (parsed?.kind !== "chat") notFound();
 
   // Phase 9: a user opens only chats their own assistants serve.
   const served = await servedChatKeys(await actingAccount()).catch(() => null);
-  if (served !== null && !served.has(chatKey("tg", chatId))) notFound();
+  if (served !== null && !served.has(chatKey(parsed.source, parsed.id))) notFound();
 
   let messages: ChatMessageWithTrace[] | null = null;
   let summaries: ChatSummaryRecord[] = [];
   let dbError: string | null = null;
   try {
     [messages, summaries] = await Promise.all([
-      getChatHistory(chatId),
-      requireSourceContent().listSummaries(chatId),
+      getChatHistory(chatRef),
+      requireSourceContent().listSummaries(chatRef),
     ]);
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read history from the database";
@@ -53,7 +57,7 @@ export default async function ChatHistoryPage({
           <div className="flex items-center gap-2">
             <LiveIndicator topic="history" />
             <Button asChild variant="outline" size="sm">
-              <a href={`/api/history/export?chatId=${encodeURIComponent(chatId)}`} download>
+              <a href={`/api/history/export?chatRef=${encodeURIComponent(chatRef)}`} download>
                 <Download className="h-4 w-4" aria-hidden />
                 Export CSV
               </a>
@@ -73,7 +77,7 @@ export default async function ChatHistoryPage({
           <EmptyState
             icon={Database}
             title="No messages"
-            description={`No stored history for chat ${chatId}.`}
+            description={`No stored history for chat ${chatRef}.`}
           />
         ) : (
           <Tabs
@@ -81,7 +85,7 @@ export default async function ChatHistoryPage({
               {
                 id: "messages",
                 label: `Messages (${messages.length})`,
-                content: <ChatHistoryTable chatId={chatId} messages={messages} />,
+                content: <ChatHistoryTable chatRef={chatRef} messages={messages} />,
               },
               {
                 id: "summaries",

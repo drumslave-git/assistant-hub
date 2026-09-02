@@ -91,9 +91,10 @@ export interface EngineStat {
 export interface BrowserAgentRun {
   id: string;
   /** Chat the run reports to, or null for a dashboard-started run. */
-  chatId: string | null;
+  /** Scoped ref of the chat the run reports to (`tg:chat:-100…`), or null (dashboard). */
+  chatRef: string | null;
   threadId: number | null;
-  createdByUserId: string | null;
+  createdByUserRef: string | null;
   /** Whether the run carries owner rights (download tools enabled). */
   isOwner: boolean;
   /**

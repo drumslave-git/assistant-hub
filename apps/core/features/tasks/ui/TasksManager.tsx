@@ -63,9 +63,9 @@ export interface TaskChatMember {
   label: string;
 }
 
-/** A chat a task can live in (known groups + DM chats). */
+/** A chat a task can live in (known groups + DM chats), named by scoped ref. */
 export interface TaskChat {
-  chatId: string;
+  chatRef: string;
   label: string;
   kind: "group" | "dm";
   /** The group's roster; empty for a DM, which is one person by definition. */
@@ -419,7 +419,7 @@ function TaskDialog({
   const router = useRouter();
   const editing = task !== null;
   const [scope, setScope] = useState<string>(
-    editing ? (task.chatId ?? GLOBAL) : (chats[0]?.chatId ?? GLOBAL),
+    editing ? (task.chatRef ?? GLOBAL) : (chats[0]?.chatRef ?? GLOBAL),
   );
   // The assistant is chosen at creation and fixed afterwards, like the chat:
   // a task is one assistant's standing order. Single-assistant deployments
@@ -437,7 +437,7 @@ function TaskDialog({
   const [error, setError] = useState<string | null>(null);
 
   const promptKind = isPromptKind(trigger.triggerKind);
-  const scopeChat = scope === GLOBAL ? null : chats.find((c) => c.chatId === scope);
+  const scopeChat = scope === GLOBAL ? null : chats.find((c) => c.chatRef === scope);
   const members = promptKind && scopeChat?.kind === "group" ? scopeChat.members : [];
 
   async function save() {
@@ -462,7 +462,7 @@ function TaskDialog({
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               assistantId,
-              chatId: scope === GLOBAL ? null : scope,
+              chatRef: scope === GLOBAL ? null : scope,
               instruction: instruction.trim(),
               context: !promptKind && context.trim() ? context.trim() : null,
               targetUserIds: members.length > 0 ? targetUserIds : [],
@@ -556,7 +556,7 @@ function TaskDialog({
               >
                 {promptKind ? <option value={GLOBAL}>Every chat (global)</option> : null}
                 {chats.map((chat) => (
-                  <option key={chat.chatId} value={chat.chatId}>
+                  <option key={chat.chatRef} value={chat.chatRef}>
                     {chat.kind === "group" ? "Group" : "DM"} · {chat.label}
                   </option>
                 ))}
@@ -864,19 +864,20 @@ export function TasksManager({
     }
   }
 
-  const chatOf = (chatId: string | null) =>
-    chatId === null ? null : chats.find((c) => c.chatId === chatId);
-  const chatLabelOf = (chatId: string | null) =>
-    chatId === null ? "every chat" : (chatOf(chatId)?.label ?? `Chat ${chatId}`);
+  const chatOf = (chatRef: string | null) =>
+    chatRef === null ? null : chats.find((c) => c.chatRef === chatRef);
+  const chatLabelOf = (chatRef: string | null) =>
+    chatRef === null ? "every chat" : (chatOf(chatRef)?.label ?? `Chat ${chatRef}`);
+  // Authors are keyed by scoped user ref; a task's creator lives in its chat's transport.
   const authorLabelOf = (task: Task) =>
-    task.createdByUserId
-      ? `by ${authors[task.createdByUserId] ?? `user ${task.createdByUserId}`}`
+    task.createdByUserId && task.chatSource
+      ? `by ${authors[`${task.chatSource}:user:${task.createdByUserId}`] ?? `user ${task.createdByUserId}`}`
       : "via dashboard";
 
   const visible = useMemo(() => {
     if (filter === ALL) return tasks;
-    if (filter === GLOBAL) return tasks.filter((task) => task.chatId === null);
-    return tasks.filter((task) => task.chatId === filter);
+    if (filter === GLOBAL) return tasks.filter((task) => task.chatRef === null);
+    return tasks.filter((task) => task.chatRef === filter);
   }, [tasks, filter]);
 
   // "Overdue" is measured against the server's snapshot instant, not the browser
@@ -909,7 +910,7 @@ export function TasksManager({
             <option value={ALL}>All chats</option>
             <option value={GLOBAL}>Every chat (global)</option>
             {chats.map((chat) => (
-              <option key={chat.chatId} value={chat.chatId}>
+              <option key={chat.chatRef} value={chat.chatRef}>
                 {chat.kind === "group" ? "Group" : "DM"} · {chat.label}
               </option>
             ))}
@@ -929,11 +930,11 @@ export function TasksManager({
             <TaskCard
               key={task.id}
               task={task}
-              chatLabel={chatLabelOf(task.chatId)}
+              chatLabel={chatLabelOf(task.chatRef)}
               authorLabel={authorLabelOf(task)}
               members={
-                task.chatId !== null && chatOf(task.chatId)?.kind === "group"
-                  ? (chatOf(task.chatId)?.members ?? [])
+                task.chatRef !== null && chatOf(task.chatRef)?.kind === "group"
+                  ? (chatOf(task.chatRef)?.members ?? [])
                   : []
               }
               overdue={isOverdue(task)}

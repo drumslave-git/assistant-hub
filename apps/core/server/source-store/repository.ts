@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, count, eq, gte, inArray, isNull, lt, lte, max, ne } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, max, ne } from "drizzle-orm";
 import type { SourceId } from "@assistant-hub-swarm/contracts";
 import { messageDedupeKey } from "@assistant-hub-swarm/contracts";
 
@@ -381,6 +381,31 @@ export async function listSourceChatMemberUsers(
     .where(and(eq(sourceChatMembers.source, source), eq(sourceChatMembers.chatId, chatId)))
     .orderBy(asc(sourceChatMembers.firstSeenAt));
   return rows.map((row) => row.user);
+}
+
+/**
+ * Distinct people who have sent a message in a chat, most recent first —
+ * the participants of a direct chat, which keeps no roster row.
+ */
+export async function listSourceChatSenderIds(
+  source: SourceId,
+  chatId: string,
+  db: StoreDb = getStoreDb(),
+): Promise<string[]> {
+  const rows = await db
+    .select({ userId: sourceMessages.userId })
+    .from(sourceMessages)
+    .where(
+      and(
+        eq(sourceMessages.source, source),
+        eq(sourceMessages.chatId, chatId),
+        eq(sourceMessages.role, "user"),
+        isNotNull(sourceMessages.userId),
+      ),
+    )
+    .groupBy(sourceMessages.userId)
+    .orderBy(desc(max(sourceMessages.sentAt)));
+  return rows.map((row) => row.userId).filter((id): id is string => id != null);
 }
 
 /** Media annotations for a set of the chat's messages (history rendering). */

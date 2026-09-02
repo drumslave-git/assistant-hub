@@ -27,9 +27,9 @@ import { getLiveState } from "./live-state";
 
 /** Columns an enqueue sets. */
 export interface InsertBrowserAgentRun {
-  chatId: string | null;
+  chatRef: string | null;
   threadId: number | null;
-  createdByUserId: string | null;
+  createdByUserRef: string | null;
   isOwner: boolean;
   restricted: boolean;
   sourceUrls: string[];
@@ -39,9 +39,9 @@ export interface InsertBrowserAgentRun {
 function mapRow(row: BrowserAgentRunRow): BrowserAgentRun {
   return {
     id: row.id,
-    chatId: row.chatId,
+    chatRef: row.chatRef,
     threadId: row.threadId,
-    createdByUserId: row.createdByUserId,
+    createdByUserRef: row.createdByUserRef,
     isOwner: row.isOwner,
     restricted: row.restricted,
     sourceUrls: row.sourceUrls ?? [],
@@ -70,10 +70,10 @@ function mapRow(row: BrowserAgentRunRow): BrowserAgentRun {
 /** All runs (optionally scoped to one chat), newest first. */
 export async function listBrowserAgentRuns(
   db: StoreDb,
-  chatId?: string,
+  chatRef?: string,
 ): Promise<BrowserAgentRun[]> {
   const rows = await db.query.browserAgentRuns.findMany({
-    where: chatId ? eq(browserAgentRuns.chatId, chatId) : undefined,
+    where: chatRef ? eq(browserAgentRuns.chatRef, chatRef) : undefined,
     orderBy: [desc(browserAgentRuns.createdAt)],
   });
   return rows.map(mapRow);
@@ -138,9 +138,9 @@ export async function insertBrowserAgentRun(
     .insert(browserAgentRuns)
     .values({
       id,
-      chatId: values.chatId,
+      chatRef: values.chatRef,
       threadId: values.threadId,
-      createdByUserId: values.createdByUserId,
+      createdByUserRef: values.createdByUserRef,
       isOwner: values.isOwner,
       restricted: values.restricted,
       sourceUrls: values.sourceUrls,

@@ -33,9 +33,6 @@ const STATUS_LABEL: Record<MediaStatus, string> = {
   unavailable: "Unavailable",
 };
 
-/** Which app a row came from — pictures arrive in more than one place now. */
-const SOURCE_LABEL: Record<string, string> = { tg: "Telegram", chat: "Web chat" };
-
 function MediaCard({ media }: { media: MediaView }) {
   const isVoice = media.kind === "voice";
   return (
@@ -85,9 +82,9 @@ function MediaCard({ media }: { media: MediaView }) {
         <div className="flex items-center justify-between gap-2 text-xs text-faint">
           <span
             className="truncate font-mono"
-            title={`${SOURCE_LABEL[media.source] ?? media.source} · chat ${media.chatId}`}
+            title={`${media.sourceLabel} · chat ${media.chatId}`}
           >
-            {SOURCE_LABEL[media.source] ?? media.source} · {media.chatId}
+            {media.sourceLabel} · {media.chatId}
           </span>
           <Timestamp iso={media.createdAt} />
         </div>

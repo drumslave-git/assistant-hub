@@ -7,7 +7,7 @@ import {
   type YtDlpJobInfo,
 } from "@/features/browser-agent/server/ytdlp-scheduler";
 import { getMessageIndexingStatus } from "@/features/history/server/index-scheduler";
-import { resolveSourceContent } from "@/server/source/tg-content";
+import { requireSourceContent } from "@/server/source/content";
 import { getSummaryJobInfo, type SummaryJobInfo } from "@/features/history/server/summary-scheduler";
 import { getMemoryJobInfo, type MemoryJobInfo } from "@/features/memory/server/scheduler";
 import {
@@ -284,9 +284,10 @@ export async function getAllJobs(): Promise<JobView[]> {
   const [pendingMedia, pendingIndex, tasks, selfImprovement, summary, memory, analytics, ytdlp] =
     await Promise.all([
       getPendingMediaCount().catch(() => 0),
-      (resolveSourceContent()?.indexDue(0).then((due) => due.total) ?? Promise.resolve(0)).catch(
-        () => 0,
-      ),
+      requireSourceContent()
+        .indexDue(0)
+        .then((due) => due.total)
+        .catch(() => 0),
       getTaskSchedulerInfo().catch(() => null),
       getSelfImprovementJobInfo().catch(() => null),
       getSummaryJobInfo().catch(() => null),

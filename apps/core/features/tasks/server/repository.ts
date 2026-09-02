@@ -1,6 +1,6 @@
 import "server-only";
 
-import { parseScopedRef, scopedRef } from "@assistant-hub-swarm/contracts";
+import { parseScopedRef, scopedRef, tryParseScopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
 import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 
 import { tasks, type TaskRow } from "../../../store/schema";
@@ -16,23 +16,26 @@ import { PROMPT_TRIGGER_KINDS, type Task, type TaskSource, type TriggerKind } fr
  * against the pool or a test instance.
  *
  * Ref translation happens HERE, at the storage boundary: the feature keeps
- * speaking source-local ids ("-1001", "42") because every caller does — the
- * inbound event's parsed refs, the chat tools, the dashboard. All refs are
- * `tg:*` until the chat source lands (Phase 4) and generalizes the service
- * surface; the store shape is already source-neutral.
+ * speaking source-local ids ("-1001", "42") together with the transport they
+ * belong to (`chatSource`), because every caller has both — the inbound
+ * event's parsed refs, the bound tool context, the dashboard's chat picker.
+ * A task's people live in its chat's transport, so one source covers the
+ * chat, the creator and the targets.
  */
 
 export const RECENT_DELIVERIES_CAP = 5;
 
-const toChatRef = (chatId: string | null): string | null =>
-  chatId === null ? null : scopedRef("tg", "chat", chatId);
-const toUserRef = (userId: string | null): string | null =>
-  userId === null ? null : scopedRef("tg", "user", userId);
+const toChatRef = (source: SourceId | null, chatId: string | null): string | null =>
+  chatId === null || source === null ? null : scopedRef(source, "chat", chatId);
+const toUserRef = (source: SourceId | null, userId: string | null): string | null =>
+  userId === null || source === null ? null : scopedRef(source, "user", userId);
 const refId = (ref: string | null): string | null => (ref === null ? null : parseScopedRef(ref).id);
 
 /** Columns a create sets (the caller has already computed `nextRunAt`). */
 export interface InsertTask {
   assistantId: string;
+  /** The transport the chat (and everyone named on the task) lives on; null with a null chat. */
+  chatSource: SourceId | null;
   chatId: string | null;
   threadId: number | null;
   createdByUserId: string | null;
@@ -68,10 +71,13 @@ export interface UpdateTask {
 }
 
 function mapRow(row: TaskRow): Task {
+  const chat = row.chatRef === null ? null : tryParseScopedRef(row.chatRef);
   return {
     id: row.id,
     assistantId: row.assistantId,
-    chatId: refId(row.chatRef),
+    chatId: chat?.id ?? null,
+    chatRef: row.chatRef,
+    chatSource: chat?.source ?? null,
     threadId: row.threadId,
     createdByUserId: refId(row.createdByUserRef),
     source: row.source as TaskSource,
@@ -98,10 +104,10 @@ function mapRow(row: TaskRow): Task {
 /** Oldest first — the order tasks were agreed in is the order they read in. */
 const byAge = [asc(tasks.createdAt)];
 
-/** All tasks across assistants (optionally one chat's rows), oldest first. */
-export async function listTasks(db: StoreDb, chatId?: string): Promise<Task[]> {
+/** All tasks across assistants (optionally one chat's rows, by scoped ref), oldest first. */
+export async function listTasks(db: StoreDb, chatRef?: string): Promise<Task[]> {
   const rows = await db.query.tasks.findMany({
-    where: chatId ? eq(tasks.chatRef, toChatRef(chatId)!) : undefined,
+    where: chatRef ? eq(tasks.chatRef, chatRef) : undefined,
     orderBy: byAge,
   });
   return rows.map(mapRow);
@@ -116,12 +122,13 @@ export async function listTasks(db: StoreDb, chatId?: string): Promise<Task[]> {
 export async function listTasksForChat(
   db: StoreDb,
   assistantId: string,
+  source: SourceId,
   chatId: string,
 ): Promise<Task[]> {
   const rows = await db.query.tasks.findMany({
     where: and(
       eq(tasks.assistantId, assistantId),
-      or(eq(tasks.chatRef, toChatRef(chatId)!), isNull(tasks.chatRef)),
+      or(eq(tasks.chatRef, scopedRef(source, "chat", chatId)), isNull(tasks.chatRef)),
     ),
     orderBy: byAge,
   });
@@ -134,21 +141,21 @@ export async function getTaskById(db: StoreDb, id: string): Promise<Task | null>
   return row ? mapRow(row) : null;
 }
 
-/** Substring search over instructions (optionally chat-scoped), oldest first. */
-export async function searchTasks(db: StoreDb, query: string, chatId?: string): Promise<Task[]> {
+/** Substring search over instructions (optionally one chat's, by scoped ref), oldest first. */
+export async function searchTasks(db: StoreDb, query: string, chatRef?: string): Promise<Task[]> {
   const rows = await db.query.tasks.findMany({
     where: and(
       ilike(tasks.instruction, `%${query}%`),
-      chatId ? eq(tasks.chatRef, toChatRef(chatId)!) : undefined,
+      chatRef ? eq(tasks.chatRef, chatRef) : undefined,
     ),
     orderBy: byAge,
   });
   return rows.map(mapRow);
 }
 
-/** Scope filter: one chat's own rows, or the global set. */
-function scopeWhere(chatId: string | null) {
-  return chatId === null ? isNull(tasks.chatRef) : eq(tasks.chatRef, toChatRef(chatId)!);
+/** Scope filter: one chat's own rows (by scoped ref), or the global set. */
+function scopeWhere(chatRef: string | null) {
+  return chatRef === null ? isNull(tasks.chatRef) : eq(tasks.chatRef, chatRef);
 }
 
 /**
@@ -160,7 +167,7 @@ function scopeWhere(chatId: string | null) {
 export async function countPromptTasksInScope(
   db: StoreDb,
   assistantId: string,
-  chatId: string | null,
+  chatRef: string | null,
 ): Promise<number> {
   const rows = await db
     .select({ n: sql<number>`count(*)::int` })
@@ -168,7 +175,7 @@ export async function countPromptTasksInScope(
     .where(
       and(
         eq(tasks.assistantId, assistantId),
-        scopeWhere(chatId),
+        scopeWhere(chatRef),
         inArray(tasks.trigger, PROMPT_TRIGGER_KINDS),
       ),
     );
@@ -185,14 +192,14 @@ export async function countPromptTasksInScope(
 export async function findActiveTasksByInstruction(
   db: StoreDb,
   assistantId: string,
-  chatId: string | null,
+  chatRef: string | null,
   instruction: string,
   kinds: TriggerKind[],
   exceptId?: string,
 ): Promise<Task[]> {
   const parts = [
     eq(tasks.assistantId, assistantId),
-    scopeWhere(chatId),
+    scopeWhere(chatRef),
     eq(tasks.enabled, true),
     inArray(tasks.trigger, kinds),
     sql`lower(${tasks.instruction}) = lower(${instruction})`,
@@ -214,15 +221,15 @@ export async function insertTask(db: StoreDb, id: string, values: InsertTask): P
     .values({
       id,
       assistantId: values.assistantId,
-      chatRef: toChatRef(values.chatId),
+      chatRef: toChatRef(values.chatSource, values.chatId),
       threadId: values.threadId,
-      createdByUserRef: toUserRef(values.createdByUserId),
+      createdByUserRef: toUserRef(values.chatSource, values.createdByUserId),
       source: values.source,
       createdByOwner: values.createdByOwner,
       instruction: values.instruction,
       context: values.context,
       trigger: values.triggerKind,
-      targetUserRefs: values.targetUserIds.map((userId) => scopedRef("tg", "user", userId)),
+      targetUserRefs: values.targetUserIds.map((userId) => toUserRef(values.chatSource, userId)!),
       everyMinutes: values.everyMinutes,
       delayMinutes: values.delayMinutes,
       timeOfDay: values.timeOfDay,
@@ -240,13 +247,19 @@ export async function insertTask(db: StoreDb, id: string, values: InsertTask): P
 /** Apply a patch to one task. Returns the updated record, or null if unknown. */
 export async function updateTask(db: StoreDb, id: string, patch: UpdateTask): Promise<Task | null> {
   const { triggerKind, targetUserIds, ...rest } = patch;
+  // Targets live in the task's chat's transport; the stored chat ref names it.
+  const current =
+    targetUserIds !== undefined
+      ? await db.query.tasks.findFirst({ where: eq(tasks.id, id), columns: { chatRef: true } })
+      : undefined;
+  const source = current?.chatRef ? tryParseScopedRef(current.chatRef)?.source ?? null : null;
   const [row] = await db
     .update(tasks)
     .set({
       ...rest,
       ...(triggerKind !== undefined ? { trigger: triggerKind } : {}),
       ...(targetUserIds !== undefined
-        ? { targetUserRefs: targetUserIds.map((userId) => scopedRef("tg", "user", userId)) }
+        ? { targetUserRefs: targetUserIds.map((userId) => toUserRef(source, userId)!) }
         : {}),
       updatedAt: new Date(),
     })
@@ -359,9 +372,9 @@ export async function nextUpcomingRunAt(db: StoreDb, now: Date): Promise<Date | 
 }
 
 /** All tasks newest first (the dashboard's timed listing prefers recency). */
-export async function listTasksNewestFirst(db: StoreDb, chatId?: string): Promise<Task[]> {
+export async function listTasksNewestFirst(db: StoreDb, chatRef?: string): Promise<Task[]> {
   const rows = await db.query.tasks.findMany({
-    where: chatId ? eq(tasks.chatRef, toChatRef(chatId)!) : undefined,
+    where: chatRef ? eq(tasks.chatRef, chatRef) : undefined,
     orderBy: [desc(tasks.createdAt)],
   });
   return rows.map(mapRow);

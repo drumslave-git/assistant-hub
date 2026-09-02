@@ -3,7 +3,9 @@ import "server-only";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { isGroupChatId } from "@/lib/telegram";
+import { scopedRef } from "@assistant-hub-swarm/contracts";
+
+import { isGroupChat } from "@/features/known-groups/server/repository";
 import { getToolContext } from "@/server/mcp/context";
 
 import { enqueueBrowserRun } from "./service";
@@ -105,13 +107,16 @@ export function registerBrowserAgentMcpTools(server: McpServer): void {
       // group's audience cannot reach the server's disk — and any run whose
       // rights were lent to a non-owner. The owner's direct requests and their
       // own DM rules stay unrestricted.
-      const restricted = isOwner && ruleDriven && (!senderIsOwner || isGroupChatId(ctx.chatId));
+      const restricted =
+        isOwner &&
+        ruleDriven &&
+        (!senderIsOwner || (await isGroupChat(undefined, ctx.source, ctx.chatId)));
 
       const run = await enqueueBrowserRun({
         goal,
-        chatId: ctx.chatId,
+        chatRef: scopedRef(ctx.source, "chat", ctx.chatId),
         threadId: ctx.threadId ?? null,
-        createdByUserId: ctx.userId ?? null,
+        createdByUserRef: ctx.userId ? scopedRef(ctx.source, "user", ctx.userId) : null,
         isOwner,
         restricted,
         sourceUrls: ctx.messageUrls ?? [],

@@ -52,7 +52,7 @@ export const NAME_MATCH_VALUES = ["exact", "other_alphabet", "inflected", "absen
 
 export type NameMatch = (typeof NAME_MATCH_VALUES)[number];
 
-export const ANALYZER_SYSTEM_PROMPT = `You decide whether a group-chat message calls a Telegram bot by its display name.
+export const ANALYZER_SYSTEM_PROMPT = `You decide whether a group-chat message calls a chat bot by its display name.
 
 @username mentions, replies to the bot, and slash commands are already handled elsewhere — judge only the spoken display name. An automated scan has already looked for the name spelled exactly as configured and found nothing, but it can only catch that exact spelling: it misses other alphabets, transliterations, and inflected forms. Judge the message yourself.
 
@@ -198,7 +198,7 @@ export function parseAnalyzerVerdict(
   };
 }
 
-export const VERIFIER_SYSTEM_PROMPT = `You verify one word against a Telegram bot's display name.
+export const VERIFIER_SYSTEM_PROMPT = `You verify one word against a chat bot's display name.
 
 You are given the bot's display name and a single word taken from a chat message. First identify what the word actually is: give its base (dictionary) form and say what it refers to. Then decide whether it IS the display name — the same name, possibly written in another alphabet (for example a Cyrillic spelling of a Latin name) or in an inflected/declined grammatical form.
 

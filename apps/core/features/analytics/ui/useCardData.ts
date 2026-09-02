@@ -44,8 +44,8 @@ export function useCardData<T>(
   const query = new URLSearchParams({
     unit: filters.unit,
     anchor: filters.anchor,
-    ...(filters.chatId ? { chatId: filters.chatId } : {}),
-    ...(filters.userId ? { userId: filters.userId } : {}),
+    ...(filters.chatRef ? { chatRef: filters.chatRef } : {}),
+    ...(filters.userRef ? { userRef: filters.userRef } : {}),
     ...params,
   }).toString();
   const url = `${endpoint}?${query}`;

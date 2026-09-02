@@ -6,7 +6,7 @@ import {
   requireSourceContent,
   type SourceContentClient,
   type SourceSummaryMatch,
-} from "@/server/source/tg-content";
+} from "@/server/source/content";
 
 /**
  * Long-term recall: find the past topics of one chat that match what is being
@@ -20,7 +20,7 @@ import {
 
 /** Recall past topics in a chat. Never throws: a recall failure must not fail a reply. */
 export async function recallChatTopics(
-  params: { chatId: string; queries: string[]; limit: number },
+  params: { chatRef: string; queries: string[]; limit: number },
   content: SourceContentClient = requireSourceContent(),
 ): Promise<SourceSummaryMatch[]> {
   // Embeddings are optional. Without a configured model the search runs on full
@@ -35,7 +35,7 @@ export async function recallChatTopics(
       vector = await embedOne(embedding, query).catch(() => null);
     }
     const matches = await content.searchSummaries({
-      chatId: params.chatId,
+      chatRef: params.chatRef,
       queryText: query,
       queryVector: vector,
       limit: params.limit,

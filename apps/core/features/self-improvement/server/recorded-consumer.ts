@@ -75,7 +75,12 @@ export async function handleFeedbackRecorded(
     // The model stamp is informational and must never block the learning
     // steps below.
     try {
-      const model = await resolveReplyModel(ports.messages, chatId, feedback.telegramMessageId);
+      const model = await resolveReplyModel(
+        ports.messages,
+        feedback.source,
+        chatId,
+        feedback.sourceMessageId,
+      );
       if (model) {
         await ports.feedbacks.patch(feedback.id, { model });
         feedback.model = model;

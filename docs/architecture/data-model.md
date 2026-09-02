@@ -745,7 +745,7 @@ provenance columns are refs and source-local ids with no FKs.
 | `normalized` | text NOT NULL | Case-folded, whitespace-collapsed — what the mechanical check matches. Unique `addressing_exclusions_normalized_idx` |
 | `bot_display_name` | text NOT NULL | The name the false match was made against |
 | `chat_ref` | text | Scoped ref of the chat the report came from |
-| `source_message_id` | bigint | Source-local id of the reported reply (a bigint here, unlike the text ids of the conversation store) |
+| `source_message_id` | text | Source-local id of the reported reply |
 | `user_ref` | text | Scoped ref of who reported it |
 | `feedback_id` | text | Id of the `source_feedbacks` row that created it (no FK) |
 | `created_at` | timestamptz NOT NULL | |
@@ -770,7 +770,7 @@ Regenerate).
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | bigint PK, identity | |
-| `chat_id` | text NOT NULL | Source-local chat id (the schema calls it a Telegram chat/group id; there is no `source` column) |
+| `chat_ref` | text NOT NULL | Scoped ref of the chat (`tg:chat:-100…`) — the transport is in the ref |
 | `insight_hour` | text NOT NULL | `YYYY-MM-DD HH` wall-clock in the operator timezone |
 | `mood_score` | integer NOT NULL | 0 (very negative) – 100 (very positive) |
 | `mood_label` | text NOT NULL | Short label (`positive`, `tense`, …) |
@@ -781,7 +781,7 @@ Regenerate).
 | `model` | text NOT NULL | Clean model name (informational) |
 | `created_at`, `updated_at` | timestamptz NOT NULL | |
 
-Unique `chat_hour_insights_chat_hour_idx (chat_id, insight_hour)`.
+Unique `chat_hour_insights_chat_hour_idx (chat_ref, insight_hour)`.
 
 ### `period_insights`
 
@@ -797,7 +797,7 @@ global scope.
 | `id` | bigint PK, identity | |
 | `granularity` | text NOT NULL | `check`: `hour` \| `day` \| `week` \| `month` \| `year` \| `all` |
 | `bucket` | text NOT NULL | `YYYY-MM-DD HH`, `YYYY-MM-DD`, `YYYY-MM`, `YYYY`, or `all` |
-| `chat_id` | text NOT NULL | As in `chat_hour_insights` |
+| `chat_ref` | text NOT NULL | As in `chat_hour_insights` |
 | `word_of_period`, `top_topic` | text NOT NULL | |
 | `mood_score` | integer NOT NULL | Message-weighted average 0–100 across the period's hour rows |
 | `mood_label` | text NOT NULL | |
@@ -806,7 +806,7 @@ global scope.
 | `model` | text NOT NULL | Clean model name that produced the word/topic |
 | `computed_at` | timestamptz NOT NULL | |
 
-Unique `period_insights_key_idx (granularity, bucket, chat_id)`.
+Unique `period_insights_key_idx (granularity, bucket, chat_ref)`.
 
 ### `search_engine_stats`
 
@@ -840,9 +840,9 @@ report.
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | text PK | |
-| `chat_id` | text | Source-local chat id the run reports back to, or null for a dashboard-started run (the report is only stored here) |
+| `chat_ref` | text | Scoped ref of the chat the run reports back to, or null for a dashboard-started run (the report is only stored here) |
 | `thread_id` | bigint | Forum-topic thread to deliver into, or null |
-| `created_by_user_id` | text | Source-local user id of whoever asked, or null (dashboard) |
+| `created_by_user_ref` | text | Scoped ref of whoever asked for the run, or null (dashboard) |
 | `is_owner` | boolean NOT NULL, default `false` | Resolved at enqueue time; gates the download tools for the whole run |
 | `restricted` | boolean NOT NULL, default `false` | A standing rule drove the run in a group, or lent the sender rights they did not hold: downloads are fenced to `source_urls` and must attach to the chat or be discarded (user decisions, 2026-08-01) |
 | `source_urls` | jsonb `string[]` NOT NULL, default `[]` | The triggering message's http(s) URLs, extracted in code — never re-typed by a model |
@@ -857,7 +857,7 @@ report.
 | `started_at`, `finished_at` | timestamptz | When the runner picked it up / when it settled |
 
 Indexes: `browser_agent_runs_status_idx (status, created_at)` — the runner's
-queued scan — and `browser_agent_runs_chat_idx (chat_id)`.
+queued scan — and `browser_agent_runs_chat_idx (chat_ref)`.
 
 ### `browser_run_screenshots`
 

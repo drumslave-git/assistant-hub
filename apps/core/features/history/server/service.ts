@@ -1,9 +1,17 @@
 import "server-only";
 
+import { parseScopedRef, scopedRef } from "@assistant-hub-swarm/contracts";
+
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { renderMediaSuffix, type MediaAnnotation } from "@/features/vision/format";
-import { requireSourceContent, type SourceChatMessage } from "@/server/source/tg-content";
+import {
+  contentSources,
+  requireSourceContent,
+  type SourceChatMessage,
+  type SourceContentClient,
+} from "@/server/source/content";
+import { sourceLabels } from "@/server/source/directory";
 import { sourceDirectoryClient } from "@/server/source-store/directory-client";
 import type { StoreDb } from "@/server/store/db";
 import { getLatestTraceIdsByCorrelation } from "@/server/trace";
@@ -15,25 +23,38 @@ import {
 import { summaryDayBounds, type SummarizableMessage, type SummaryDate } from "../summary";
 import type { ChatMessageRecord, ChatSummary } from "./repository";
 import type { ChatMessageWithTrace } from "./schema";
-import type { SourceContentClient } from "@/server/source/tg-content";
 
 /**
  * History domain service — the read side the dashboard and the day-reading
- * jobs call. The mirror lives in the owning source app's store since the
- * source split: the source captures every message itself and mirrors every
- * delivered reply, so nothing here writes any more — this service composes
- * views and transcripts from what the source serves.
+ * jobs call. The mirror lives in the core's conversation store: every
+ * transport's ingest captures the messages and mirrors every delivered
+ * reply, so nothing here writes any more — this service composes views and
+ * transcripts from what the store serves, for whichever transport a chat
+ * ref names.
  */
 
-/** Resolve known-user labels for every sender in a set of rows. */
+/**
+ * Resolve known-user labels for every sender in a set of rows, keyed by
+ * source-local user id. Rows of several chats may mix sources; each source's
+ * directory is asked for its own people.
+ */
 export async function resolveSpeakerLabels(
   db: StoreDb | undefined,
   records: readonly ChatMessageRecord[],
 ): Promise<Map<string, string>> {
-  const userIds = collectUserIds(records);
-  if (userIds.length === 0) return new Map();
-  const users = await getKnownUsersByIds(db, userIds);
-  return new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
+  const bySource = new Map<string, ChatMessageRecord[]>();
+  for (const record of records) {
+    const { source } = parseScopedRef(record.chatRef);
+    bySource.set(source, [...(bySource.get(source) ?? []), record]);
+  }
+  const labels = new Map<string, string>();
+  for (const [source, rows] of bySource) {
+    const userIds = collectUserIds(rows);
+    if (userIds.length === 0) continue;
+    const users = await getKnownUsersByIds(db, source, userIds);
+    for (const user of users) labels.set(user.userId, formatKnownUserLabel(user));
+  }
+  return labels;
 }
 
 /** Label used for the bot's own rows in a loaded chat-day transcript. */
@@ -62,23 +83,22 @@ export interface ChatDayTranscript {
  * their media annotated. Shared by the two nightly jobs that read a day as
  * a whole — history summarization and passive memory extraction. The
  * boundaries are the operator's day, not UTC's, so an evening conversation
- * is not split across two runs. Rows come from the owning source; labels
- * from the (shadowed) local directory.
+ * is not split across two runs.
  */
 export async function loadChatDayTranscript(
   content: SourceContentClient,
   db: StoreDb,
-  chatId: string,
+  chatRef: string,
   date: SummaryDate,
   timeZone: string,
 ): Promise<ChatDayTranscript> {
   const { from, to } = summaryDayBounds(date, timeZone);
-  const records = await content.messagesWindow(chatId, { from, to, endExclusive: true });
+  const records = await content.messagesWindow(chatRef, { from, to, endExclusive: true });
   if (records.length === 0) return { messages: [], dayMessageCount: 0 };
   const labels = await resolveSpeakerLabels(db, records);
   const messages = records
     .map((record) => ({
-      telegramMessageId: record.telegramMessageId,
+      sourceMessageId: record.sourceMessageId,
       role: record.role,
       content: `${record.content}${mediaSuffixOf(record)}${botReactionSuffix(record)}`.trim(),
       label:
@@ -99,28 +119,41 @@ export function mediaSuffixOf(record: SourceChatMessage): string {
   return record.media ? renderMediaSuffix(record.media as MediaAnnotation) : "";
 }
 
-/** Per-chat rollups for the History dashboard. */
+/**
+ * Per-chat rollups for the History dashboard, across every registered
+ * transport — each chat tagged with the transport it lives on and named by
+ * its title when the directory has one.
+ */
 export async function getHistoryOverview(): Promise<ChatSummary[]> {
-  const operator = sourceDirectoryClient("tg");
-  const chats = await operator.listChats();
-  return chats
-    .filter((chat) => chat.messageCount > 0 && chat.lastMessageAt != null)
-    .map((chat) => ({
-      chatId: chat.id,
-      messageCount: chat.messageCount,
-      lastSentAt: chat.lastMessageAt!,
-    }));
+  const [sources, labels] = await Promise.all([contentSources(), sourceLabels()]);
+  const listings = await Promise.all(
+    sources.map(async (source) => {
+      const chats = await sourceDirectoryClient(source).listChats();
+      return chats
+        .filter((chat) => chat.messageCount > 0 && chat.lastMessageAt != null)
+        .map((chat) => ({
+          chatRef: scopedRef(source, "chat", chat.id),
+          sourceLabel: labels.get(source) ?? source,
+          label: chat.title ?? chat.id,
+          messageCount: chat.messageCount,
+          lastSentAt: chat.lastMessageAt!,
+        }));
+    }),
+  );
+  return listings.flat().sort((a, b) => b.lastSentAt.localeCompare(a.lastSentAt));
 }
 
 /**
- * Correlation id of the trace that handled a message's turn. A trace's
- * correlation id is `${chatId}:${incomingMessageId}` (see the bot-messaging
- * service), so a user row uses its own Telegram id and an assistant row uses the
- * message it replied to (the incoming turn). Null when there is no anchor.
+ * Correlation id of the trace that handled a message's turn. A transport
+ * correlates a turn as `${chatId}:${incomingMessageId}` (source-local ids —
+ * see the transport manual), so a user row uses its own message id and an
+ * assistant row uses the message it replied to (the incoming turn). Null when
+ * there is no anchor.
  */
 export function traceCorrelationFor(record: ChatMessageRecord): string | null {
-  const anchor = record.role === "assistant" ? record.replyToMessageId : record.telegramMessageId;
-  return anchor != null ? `${record.chatId}:${anchor}` : null;
+  const anchor =
+    record.role === "assistant" ? record.replyToSourceMessageId : record.sourceMessageId;
+  return anchor != null ? `${parseScopedRef(record.chatRef).id}:${anchor}` : null;
 }
 
 /**
@@ -128,8 +161,8 @@ export function traceCorrelationFor(record: ChatMessageRecord): string | null {
  * annotated with the id of the trace that handled its turn so the UI can
  * link straight to `/debug/[id]`.
  */
-export async function getChatHistory(chatId: string): Promise<ChatMessageWithTrace[]> {
-  const records = await requireSourceContent().allMessages(chatId);
+export async function getChatHistory(chatRef: string): Promise<ChatMessageWithTrace[]> {
+  const records = await requireSourceContent().allMessages(chatRef);
   const correlations = records
     .map(traceCorrelationFor)
     .filter((value): value is string => value != null);

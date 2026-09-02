@@ -417,7 +417,8 @@ export const addressingExclusions = pgTable(
     /** Scoped ref of the chat the report came from (provenance). */
     chatRef: text("chat_ref"),
     /** Source-local message id of the reported reply (provenance). */
-    sourceMessageId: bigint("source_message_id", { mode: "number" }),
+    /** The platform's id of the message the report was about, or null. */
+    sourceMessageId: text("source_message_id"),
     /** Scoped ref of who reported it (provenance). */
     userRef: text("user_ref"),
     /** Id of the tg-store feedback row that created it (provenance, no FK). */
@@ -1373,7 +1374,7 @@ interface BrowserAgentStepJson {
  * queue is this table — the runner picks up `queued` rows oldest-first, flips
  * them `running`, and settles them `done`/`failed` with the final report.
  *
- * `chat_id` is null for dashboard-started runs: there is no chat to deliver to,
+ * `chat_ref` is null for dashboard-started runs: there is no chat to deliver to,
  * so the report is only stored here. `is_owner` is resolved at enqueue time and
  * gates the download tool for the whole run (recorded decision: anyone can start
  * a run; downloads are owner-only). Ids are app-generated UUIDs.
@@ -1382,12 +1383,12 @@ export const browserAgentRuns = pgTable(
   "browser_agent_runs",
   {
     id: text("id").primaryKey(),
-    /** Chat the run reports back to, or null for a dashboard-started run. */
-    chatId: text("chat_id"),
+    /** Scoped ref of the chat the run reports back to, or null for a dashboard-started run. */
+    chatRef: text("chat_ref"),
     /** Forum-topic thread to deliver into, or null (chat root). */
     threadId: bigint("thread_id", { mode: "number" }),
-    /** Numeric Telegram user id of whoever asked for the run, or null (dashboard). */
-    createdByUserId: text("created_by_user_id"),
+    /** Scoped ref of whoever asked for the run, or null (dashboard). */
+    createdByUserRef: text("created_by_user_ref"),
     /** Whether the run carries owner rights — gates the download tools. */
     isOwner: boolean("is_owner").notNull().default(false),
     /**
@@ -1433,7 +1434,7 @@ export const browserAgentRuns = pgTable(
   (t) => [
     // The runner scans for queued rows oldest-first.
     index("browser_agent_runs_status_idx").on(t.status, t.createdAt),
-    index("browser_agent_runs_chat_idx").on(t.chatId),
+    index("browser_agent_runs_chat_idx").on(t.chatRef),
     check(
       "browser_agent_runs_status_check",
       sql`${t.status} in ('queued', 'running', 'done', 'failed')`,
@@ -1498,8 +1499,8 @@ export const chatHourInsights = pgTable(
   "chat_hour_insights",
   {
     id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-    /** Telegram chat/group id this insight belongs to. */
-    chatId: text("chat_id").notNull(),
+    /** Scoped ref of the chat this insight belongs to (`tg:chat:-100…`). */
+    chatRef: text("chat_ref").notNull(),
     /** The insight hour (`YYYY-MM-DD HH`) as wall-clock in the operator timezone. */
     insightHour: text("insight_hour").notNull(),
     /** Mood score 0 (very negative) – 100 (very positive) for the hour's conversation. */
@@ -1519,7 +1520,7 @@ export const chatHourInsights = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("chat_hour_insights_chat_hour_idx").on(t.chatId, t.insightHour)],
+  (t) => [uniqueIndex("chat_hour_insights_chat_hour_idx").on(t.chatRef, t.insightHour)],
 );
 
 export type ChatHourInsightRow = typeof chatHourInsights.$inferSelect;
@@ -1552,8 +1553,8 @@ export const periodInsights = pgTable(
     granularity: text("granularity").notNull(),
     /** Bucket key: `YYYY-MM-DD HH`, `YYYY-MM-DD`, `YYYY-MM`, `YYYY`, or `all`. */
     bucket: text("bucket").notNull(),
-    /** Telegram chat/group id this roll-up covers. */
-    chatId: text("chat_id").notNull(),
+    /** Scoped ref of the chat this roll-up covers. */
+    chatRef: text("chat_ref").notNull(),
     /** The standout word of the period, as named by the model. */
     wordOfPeriod: text("word_of_period").notNull(),
     /** The most-discussed topic across the period, as named by the model. */
@@ -1571,7 +1572,7 @@ export const periodInsights = pgTable(
     computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("period_insights_key_idx").on(t.granularity, t.bucket, t.chatId),
+    uniqueIndex("period_insights_key_idx").on(t.granularity, t.bucket, t.chatRef),
     check(
       "period_insights_granularity_check",
       sql`${t.granularity} in ('hour', 'day', 'week', 'month', 'year', 'all')`,

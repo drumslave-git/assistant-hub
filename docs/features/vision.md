@@ -18,7 +18,8 @@ and the bytes can be dropped.
 file with the connection's token — only it can talk to its platform's file API —
 normalizes it, and attaches the payload to the `transport.message` event as
 ordered base64 `frames` plus a `visionHint` (`apps/tg/src/media/ingest.ts`,
-`telegram-files.ts`, `normalize.ts`, `frames.ts`). The core's ingest stores the
+`telegram-files.ts`, `normalize.ts`, `frames.ts` — all in the transport; the core
+holds no platform download code). The core's ingest stores the
 row `status = 'pending'` with its bytes in `source_media_blobs`
 (`server/source-store/media.ts`). A payload that could not be loaded travels as
 an `unavailable` marker, recorded once and never re-attempted — and the turn

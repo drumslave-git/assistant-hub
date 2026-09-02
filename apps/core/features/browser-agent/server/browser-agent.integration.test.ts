@@ -38,7 +38,7 @@ beforeEach(async () => {
 describe("browser-agent queue", () => {
   it("enqueues a queued run visible to the queue and the dashboard list", async () => {
     const run = await enqueueBrowserRun(
-      { goal: "find the pricing page", chatId: "123", isOwner: true },
+      { goal: "find the pricing page", chatRef: "tg:chat:123", isOwner: true },
       ctx.db,
     );
     expect(run.status).toBe("queued");
@@ -52,7 +52,7 @@ describe("browser-agent queue", () => {
   });
 
   it("claims a run exactly once — a second claim returns null", async () => {
-    const run = await enqueueBrowserRun({ goal: "browse", chatId: "1", isOwner: false }, ctx.db);
+    const run = await enqueueBrowserRun({ goal: "browse", chatRef: "tg:chat:1", isOwner: false }, ctx.db);
 
     const [first, second] = await Promise.all([
       claimBrowserAgentRun(ctx.db, run.id),
@@ -68,7 +68,7 @@ describe("browser-agent queue", () => {
   });
 
   it("records an activity feed as steps are appended, and settles as done", async () => {
-    const run = await enqueueBrowserRun({ goal: "g", chatId: "1", isOwner: true }, ctx.db);
+    const run = await enqueueBrowserRun({ goal: "g", chatRef: "tg:chat:1", isOwner: true }, ctx.db);
     await claimBrowserAgentRun(ctx.db, run.id);
 
     // Steps accumulate as the agent acts — this is what drives the live feed and
@@ -115,7 +115,7 @@ describe("browser-agent queue", () => {
   });
 
   it("fails runs left running by a previous process", async () => {
-    const run = await enqueueBrowserRun({ goal: "g", chatId: "1", isOwner: false }, ctx.db);
+    const run = await enqueueBrowserRun({ goal: "g", chatRef: "tg:chat:1", isOwner: false }, ctx.db);
     await claimBrowserAgentRun(ctx.db, run.id);
 
     const reset = await failStaleRunningRuns(ctx.db);
@@ -127,7 +127,7 @@ describe("browser-agent queue", () => {
   });
 
   it("stores and serves run screenshots by sequence, exposed on the detail view", async () => {
-    const run = await enqueueBrowserRun({ goal: "g", chatId: "1", isOwner: true }, ctx.db);
+    const run = await enqueueBrowserRun({ goal: "g", chatRef: "tg:chat:1", isOwner: true }, ctx.db);
     const bytes = Buffer.from([1, 2, 3, 4]);
     await insertBrowserRunScreenshot(ctx.db, {
       runId: run.id,

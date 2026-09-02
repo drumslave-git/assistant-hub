@@ -2,6 +2,8 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { scopedRef } from "@assistant-hub-swarm/contracts";
+
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { FEATURES } from "@/lib/features";
 import { extractJsonObject } from "@/lib/json";
@@ -120,13 +122,14 @@ async function stampVersions(
   }
 }
 
-/** Group feedbacks by user, preserving order. */
+/** Group feedbacks by person (scoped user ref), preserving order. */
 function groupByUser(feedbacks: UserFeedback[]): Map<string, UserFeedback[]> {
   const groups = new Map<string, UserFeedback[]>();
   for (const feedback of feedbacks) {
-    const list = groups.get(feedback.userId);
+    const userRef = scopedRef(feedback.source, "user", feedback.userId);
+    const list = groups.get(userRef);
     if (list) list.push(feedback);
-    else groups.set(feedback.userId, [feedback]);
+    else groups.set(userRef, [feedback]);
   }
   return groups;
 }
@@ -245,21 +248,21 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
 
     // Pass 1 — per-user communication preferences.
     let prefsUpdated = 0;
-    for (const [userId, feedbacks] of groupByUser(prefsBacklog)) {
-      const previous = await getLatestPreference(db, userId);
+    for (const [userRef, feedbacks] of groupByUser(prefsBacklog)) {
+      const previous = await getLatestPreference(db, userRef);
       let draft = { likes: previous?.likes ?? "", dislikes: previous?.dislikes ?? "" };
       let draftModel = fallbackModel;
       const folded: string[] = [];
 
       await trace.event({
         type: "step",
-        message: `preferences fold for user ${userId}`,
-        data: { userId, feedbackCount: feedbacks.length, previousVersion: previous?.version ?? null },
+        message: `preferences fold for user ${userRef}`,
+        data: { userRef, feedbackCount: feedbacks.length, previousVersion: previous?.version ?? null },
       });
 
       for (const feedback of feedbacks) {
         deps.onProgress?.({
-          step: `Learning preferences for user ${userId}`,
+          step: `Learning preferences for user ${userRef}`,
           current: ++processed,
           total,
         });
@@ -289,7 +292,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
       const version = (previous?.version ?? 0) + 1;
       await insertPreference(db, {
         id: randomUUID(),
-        userId,
+        userRef,
         model: draftModel,
         likes: draft.likes,
         dislikes: draft.dislikes,
@@ -302,7 +305,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
         type: "db",
         level: "success",
         message: `preferences v${version} written`,
-        data: { userId, version, likes: draft.likes, dislikes: draft.dislikes, incorporated: folded },
+        data: { userRef, version, likes: draft.likes, dislikes: draft.dislikes, incorporated: folded },
       });
     }
 

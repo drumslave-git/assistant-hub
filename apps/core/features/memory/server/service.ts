@@ -1,13 +1,21 @@
 import "server-only";
 
-import { scopedRef, tryParseScopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
+import {
+  WEB_CHAT_SOURCE,
+  scopedRef,
+  tryParseScopedRef,
+  type SourceId,
+} from "@assistant-hub-swarm/contracts";
 
 import { getAccountById } from "@/server/auth/accounts";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { getGroupMembers } from "@/features/known-groups/server/repository";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUser, getKnownUsersByIds } from "@/features/known-users/server/repository";
-import { resolveChatUserByReference } from "@/features/known-users/server/service";
+import {
+  getUserLabelsByRef,
+  resolveChatUserByReference,
+} from "@/features/known-users/server/service";
 import { resolveLinkedRefs } from "@/features/person-links/server/service";
 import { getEmbeddingRuntime } from "@/features/settings/server/service";
 import { ApiError } from "@/lib/api-error";
@@ -110,29 +118,12 @@ function peoplePresent(
 }
 
 /**
- * Human labels for a set of memory keys (scoped refs), best-effort: telegram
- * refs from the tg directory, web refs from the account roster, anything
- * else falls back to the ref itself at the call site.
+ * Human labels for a set of memory keys (scoped refs), best-effort — the
+ * directory's shared ref labeller; anything it does not know falls back to
+ * the ref itself at the call site.
  */
 async function labelsForRefs(refs: readonly string[], db: StoreDb): Promise<Map<string, string>> {
-  const byRef = new Map<string, string>();
-  const tgIds: string[] = [];
-  const accountIds: string[] = [];
-  for (const ref of new Set(refs)) {
-    const parsed = tryParseScopedRef(ref);
-    if (parsed?.kind !== "user") continue;
-    if (parsed.source === "tg") tgIds.push(parsed.id);
-    else if (parsed.source === "chat") accountIds.push(parsed.id);
-  }
-  const known = await getKnownUsersByIds(db, tgIds);
-  for (const user of known) {
-    byRef.set(scopedRef("tg", "user", user.userId), formatKnownUserLabel(user));
-  }
-  for (const id of accountIds) {
-    const account = await getAccountById(id, db).catch(() => null);
-    if (account) byRef.set(scopedRef("chat", "user", id), account.displayName ?? account.username);
-  }
-  return byRef;
+  return getUserLabelsByRef(refs, db);
 }
 
 /* --------------------------------------------------------- reply injection */
@@ -169,11 +160,11 @@ export interface MemoryContext {
  */
 export async function getMemoryContext(
   params: {
+    /** Whose ids these are. */
+    source: SourceId;
     chatId: string;
     senderId: string | null;
     isGroup: boolean;
-    /** Whose ids these are. Defaults to telegram (v1 callers). */
-    source?: SourceId;
     /**
      * Display labels the source already resolved, keyed by user id — a web
      * user has no row in the v1 directory, and "User 3f2b…" is not a name
@@ -187,7 +178,7 @@ export async function getMemoryContext(
   if (params.senderId) ids.push(params.senderId);
 
   if (params.isGroup) {
-    const members = await getGroupMembers(db, params.chatId);
+    const members = await getGroupMembers(db, params.source, params.chatId);
     for (const member of members) {
       if (!ids.includes(member.userId)) ids.push(member.userId);
     }
@@ -195,13 +186,15 @@ export async function getMemoryContext(
 
   // One human may be here under several identities the operator has linked;
   // read all of them and speak about the person once.
-  const people = peoplePresent(ids, await identitiesOf(ids, params.source ?? "tg"));
+  const people = peoplePresent(ids, await identitiesOf(ids, params.source));
   const readIds = people.flatMap((person) => person.identities);
   const presentIds = people.map((person) => person.userId);
 
   const [documents, users, general] = await Promise.all([
     readIds.length > 0 ? getUserMemoriesFor(db, readIds) : Promise.resolve([]),
-    presentIds.length > 0 ? getKnownUsersByIds(db, presentIds) : Promise.resolve([]),
+    presentIds.length > 0
+      ? getKnownUsersByIds(db, params.source, presentIds)
+      : Promise.resolve([]),
     getGeneralMemory(db),
   ]);
 
@@ -226,7 +219,7 @@ export async function getMemoryContext(
       // A linked identity of the sender is still the sender.
       isSender:
         params.senderId != null &&
-        person.identities.includes(scopedRef(params.source ?? "tg", "user", params.senderId)),
+        person.identities.includes(scopedRef(params.source, "user", params.senderId)),
       facts,
     };
   });
@@ -267,7 +260,12 @@ export type MemorySubjectResult = { ok: true; userId: string } | { ok: false; er
  * outsider belongs. See {@link import("../prompt").UNIDENTIFIED_PERSON_RULE}.
  */
 export async function resolveMemorySubject(
-  params: { person?: string; chatId: string; speakerId: string | null | undefined },
+  params: {
+    person?: string;
+    source: SourceId;
+    chatId: string;
+    speakerId: string | null | undefined;
+  },
   db: StoreDb = getStoreDb(),
 ): Promise<MemorySubjectResult> {
   const reference = params.person?.trim();
@@ -278,7 +276,7 @@ export async function resolveMemorySubject(
     return { ok: true, userId: params.speakerId };
   }
 
-  const resolved = await resolveChatUserByReference(params.chatId, reference, db);
+  const resolved = await resolveChatUserByReference(params.source, params.chatId, reference, db);
   if (resolved.status === "not_found") {
     return {
       ok: false,
@@ -311,13 +309,13 @@ export async function resolveMemorySubject(
  * with no subject named is taken at its word as being about nobody.
  */
 export async function checkGeneralNoteSubject(
-  params: { person?: string; chatId: string },
+  params: { person?: string; source: SourceId; chatId: string },
   db: StoreDb = getStoreDb(),
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const reference = params.person?.trim();
   if (!reference) return { ok: true };
 
-  const resolved = await resolveChatUserByReference(params.chatId, reference, db);
+  const resolved = await resolveChatUserByReference(params.source, params.chatId, reference, db);
   if (resolved.status === "ambiguous") {
     return {
       ok: false,
@@ -351,7 +349,7 @@ export async function checkGeneralNoteSubject(
  * only until the next nightly run.
  */
 export async function readMemory(
-  params: { userId?: string | null; source?: SourceId },
+  params: { userId?: string | null; source: SourceId },
   db: StoreDb = getStoreDb(),
 ): Promise<MemoryMatch[]> {
   const userId = params.userId?.trim();
@@ -360,8 +358,8 @@ export async function readMemory(
   // stored under; the model only ever saw the id it asked about, so that is
   // the id the facts come back on.
   const identities =
-    (await identitiesOf([userId], params.source ?? "tg")).get(userId) ?? [
-      scopedRef(params.source ?? "tg", "user", userId),
+    (await identitiesOf([userId], params.source)).get(userId) ?? [
+      scopedRef(params.source, "user", userId),
     ];
   const stored = await getUserMemoriesFor(db, identities);
   return stored.flatMap((document) =>
@@ -424,21 +422,23 @@ export async function saveMemoryNote(
     userId: string | null;
     content: string;
     chatId: string | null;
-    /** Whose ids these are. Defaults to telegram (v1 callers). */
-    source?: SourceId;
+    /** Whose ids these are. */
+    source: SourceId;
   },
   db: StoreDb = getStoreDb(),
 ): Promise<{ ok: true; entry: MemoryEntry } | { ok: false; error: string }> {
-  const source = params.source ?? "tg";
+  const source = params.source;
   if (params.scope === "user") {
     const userId = params.userId?.trim();
     if (!userId) {
       return { ok: false, error: "A 'user' memory needs the id of the person it is about." };
     }
-    // A telegram id must belong to someone the bot has met; a web id must be
-    // an account. Either way a hallucinated id is refused, not stored.
+    // A transport's id must belong to someone the bot has met there; a web id
+    // must be an account. Either way a hallucinated id is refused, not stored.
     const known =
-      source === "chat" ? await getAccountById(userId, db) : await getKnownUser(db, userId);
+      source === WEB_CHAT_SOURCE
+        ? await getAccountById(userId, db)
+        : await getKnownUser(db, source, userId);
     if (!known) {
       return {
         ok: false,
@@ -559,7 +559,11 @@ export async function editUserMemory(
     `user ${userId}`,
     async (trace) => {
       const parsed = tryParseScopedRef(userId);
-      if (parsed?.source === "tg" && !(await getKnownUser(db, parsed.id))) {
+      if (
+        parsed &&
+        parsed.source !== WEB_CHAT_SOURCE &&
+        !(await getKnownUser(db, parsed.source, parsed.id))
+      ) {
         throw ApiError.notFound(`No known user with id ${userId}`);
       }
 

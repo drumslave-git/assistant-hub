@@ -13,10 +13,10 @@ export interface AddressingExclusion {
   normalized: string;
   /** The bot display name the false match was made against. */
   botDisplayName: string;
-  /** Where the report came from (provenance — the exclusion applies bot-wide). */
-  chatId: string | null;
-  telegramMessageId: number | null;
-  userId: string | null;
+  /** Where the report came from (provenance — the exclusion applies bot-wide), as scoped refs. */
+  chatRef: string | null;
+  sourceMessageId: string | null;
+  userRef: string | null;
   feedbackId: string | null;
   createdAt: string;
 }

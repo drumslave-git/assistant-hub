@@ -71,8 +71,8 @@ export async function runTurnClassifier(
 }
 
 export interface TurnBindingsInput {
-  /** Which source the turn belongs to — carried onto every tool call's trace. */
-  source?: SourceId;
+  /** Which source the turn belongs to — the namespace of every id here, and the tool traces' kind. */
+  source: SourceId;
   chatId: string;
   /** The turn's assistant (from the inbound event) — bound onto tool calls. */
   assistantId: string;
@@ -260,7 +260,7 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
           const offered = addressed ? promptTasks : messageTasks;
           // Names for the people involved — a task conditioned on *who is
           // speaking* is unjudgeable without them. Degrades to no names.
-          const labels = await getUserLabels([
+          const labels = await getUserLabels(source, [
             ...(senderId ? [senderId] : []),
             ...offered.flatMap((task) => task.targetUserIds),
           ]).catch(() => new Map<string, string>());

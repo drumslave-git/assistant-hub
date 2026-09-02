@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { SourceId } from "@assistant-hub-swarm/contracts";
+
 import {
   getSourceFeedback,
   listSourceFeedbacks,
@@ -47,7 +49,7 @@ export interface SourceMessage {
 }
 
 export interface SourceMessagePort {
-  getMessage(chatId: string, sourceMessageId: string): Promise<SourceMessage | null>;
+  getMessage(source: SourceId, chatId: string, sourceMessageId: string): Promise<SourceMessage | null>;
 }
 
 /** The two ports every learning-job entry resolves together. */
@@ -59,8 +61,9 @@ export interface FeedbackPorts {
 function toUserFeedback(feedback: SourceFeedbackRecord): UserFeedback {
   return {
     id: feedback.id,
+    source: feedback.source,
     chatId: feedback.chatId,
-    telegramMessageId: Number(feedback.sourceMessageId),
+    sourceMessageId: feedback.sourceMessageId,
     userId: feedback.userId,
     reaction: feedback.reaction,
     feedback: feedback.feedback,
@@ -77,10 +80,9 @@ function toUserFeedback(feedback: SourceFeedbackRecord): UserFeedback {
 }
 
 /**
- * The conversation-store-backed ports. Feedback collection is telegram-only
- * today (the one source with reactions), so the reads stay scoped to `tg`
- * rows and the message lookups read the tg mirror unscoped (the operator
- * plane's read, exactly what the exchange renderer needs).
+ * The conversation-store-backed ports. Feedback rows carry their transport,
+ * and the message lookups read that transport's mirror unscoped (the
+ * operator plane's read, exactly what the exchange renderer needs).
  */
 export function resolveFeedbackPorts(): FeedbackPorts | null {
   return {
@@ -100,9 +102,9 @@ export function resolveFeedbackPorts(): FeedbackPorts | null {
       },
     },
     messages: {
-      async getMessage(chatId, sourceMessageId) {
+      async getMessage(source, chatId, sourceMessageId) {
         const row = await getSourceMessage(
-          { source: "tg", chatId, assistantId: null, direct: false },
+          { source, chatId, assistantId: null, direct: false },
           sourceMessageId,
         );
         if (!row) return null;
@@ -110,7 +112,7 @@ export function resolveFeedbackPorts(): FeedbackPorts | null {
         // text is empty (a photo answered "what is this?").
         let content = row.content;
         if (!content) {
-          const media = await getSourceMediaByMessage("tg", chatId, sourceMessageId).catch(
+          const media = await getSourceMediaByMessage(source, chatId, sourceMessageId).catch(
             () => null,
           );
           if (media?.description) content = `[${media.description}]`;

@@ -92,7 +92,7 @@ export const SELF_CONTAINED_FACT_RULE =
 
 /** System prompt for the per-user document merge. */
 export const USER_MERGE_PROMPT =
-  "You maintain the long-term memory document a Telegram chat bot keeps about ONE person. " +
+  "You maintain the long-term memory document a chat bot keeps about ONE person. " +
   "You are given the current document and newly saved facts about that same person. Rewrite the " +
   "document to incorporate the new facts.\n" +
   "Rules:\n" +
@@ -153,7 +153,7 @@ export function parseMergedDocument(content: string): string[] {
 
 /** System prompt for the general-knowledge document merge. */
 export const GENERAL_MERGE_PROMPT =
-  "You maintain the long-term memory document a Telegram chat bot keeps of GENERAL knowledge — " +
+  "You maintain the long-term memory document a chat bot keeps of GENERAL knowledge — " +
   "shared facts, definitions, rules and conventions, and how things work. You are given the " +
   "current document and newly saved facts. Rewrite the document to incorporate the new facts.\n" +
   "Rules:\n" +

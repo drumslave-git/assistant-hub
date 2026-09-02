@@ -63,14 +63,15 @@ function tinyWavBase64(): string {
   return buf.toString("base64");
 }
 
-async function seedVoice(over?: { telegramMessageId?: number; dataBase64?: string }) {
-  const telegramMessageId = over?.telegramMessageId ?? 70;
+async function seedVoice(over?: { sourceMessageId?: number; dataBase64?: string }) {
+  const sourceMessageId = over?.sourceMessageId ?? 70;
   // Media rows require their mirrored message (FK) — mirror first, like the pipeline.
-  await seedSourceMessage(ctx, { chatId: "5", telegramMessageId });
+  await seedSourceMessage(ctx, { chatId: "5", sourceMessageId });
   return insertMedia(ctx.db, {
     id: crypto.randomUUID(),
+    source: "tg",
     chatId: "5",
-    telegramMessageId,
+    sourceMessageId: String(sourceMessageId),
     kind: "voice",
     fileId: "voice-70",
     fileUniqueId: "vu70",
@@ -98,7 +99,7 @@ describe("describeAndStore — voice dispatch", () => {
     let seen: ChatMessage[] | null = null;
     let seenTrace: Parameters<DescribeDeps["complete"]>[1];
     const result = await describeAndStore(
-      { chatId: "5", telegramMessageId: 70 },
+      { chatId: "5", sourceMessageId: "70" },
       {
         complete: async (messages, trace) => {
           seen = messages;
@@ -106,7 +107,7 @@ describe("describeAndStore — voice dispatch", () => {
           return fakeComplete("hello from the voice message");
         },
       },
-      { db: ctx.db },
+      { source: "tg", db: ctx.db },
     );
 
     // The request was a transcription pass: strict system prompt + one audio part.
@@ -126,8 +127,8 @@ describe("describeAndStore — voice dispatch", () => {
     expect(result?.dataBase64).toBeNull();
 
     // History reads it exactly like other media annotations.
-    const suffixes = await getMediaSuffixesForMessages("5", [70], ctx.db);
-    expect(suffixes.get(70)).toBe(" [voice message: hello from the voice message]");
+    const suffixes = await getMediaSuffixesForMessages("tg", "5", ["70"], ctx.db);
+    expect(suffixes.get("70")).toBe(" [voice message: hello from the voice message]");
 
     // Traced under the voice feature, not vision.
     const voiceTraces = await listTraces({ feature: "voice" });
@@ -145,12 +146,12 @@ describe("describeAndStore — voice dispatch", () => {
   });
 
   it("prefers a wired dedicated STT endpoint over the chat model, with raw-body trace events", async () => {
-    await seedVoice({ telegramMessageId: 75 });
+    await seedVoice({ sourceMessageId: 75 });
 
     let completeCalled = false;
     let sttWav: Buffer | null = null;
     const result = await describeAndStore(
-      { chatId: "5", telegramMessageId: 75 },
+      { chatId: "5", sourceMessageId: "75" },
       {
         complete: async () => {
           completeCalled = true;
@@ -166,7 +167,7 @@ describe("describeAndStore — voice dispatch", () => {
         },
         transcribeTarget: { baseUrl: "https://whisper.example.com/v1", model: "large-v3" },
       },
-      { db: ctx.db },
+      { source: "tg", db: ctx.db },
     );
 
     expect(completeCalled).toBe(false);
@@ -186,26 +187,26 @@ describe("describeAndStore — voice dispatch", () => {
   });
 
   it("stores '(no speech)' terminally so the backfill never loops on silent audio", async () => {
-    await seedVoice({ telegramMessageId: 71 });
+    await seedVoice({ sourceMessageId: 71 });
     const result = await describeAndStore(
-      { chatId: "5", telegramMessageId: 71 },
+      { chatId: "5", sourceMessageId: "71" },
       { complete: async () => fakeComplete("[no speech]") },
-      { db: ctx.db },
+      { source: "tg", db: ctx.db },
     );
     expect(result?.status).toBe("described");
     expect(result?.description).toBe("(no speech)");
   });
 
   it("fails instead of storing a blank transcript when the chat model returns nothing", async () => {
-    await seedVoice({ telegramMessageId: 72 });
+    await seedVoice({ sourceMessageId: 72 });
     const result = await describeAndStore(
-      { chatId: "5", telegramMessageId: 72 },
+      { chatId: "5", sourceMessageId: "72" },
       { complete: async () => fakeComplete("   \n ") },
-      { db: ctx.db },
+      { source: "tg", db: ctx.db },
     );
 
     expect(result).toBeNull();
-    const media = await getMediaByMessage(ctx.db, "5", 72);
+    const media = await getMediaByMessage(ctx.db, "tg", "5", "72");
     expect(media?.status).toBe("pending");
     expect(media?.description).toBeNull();
 
@@ -214,20 +215,20 @@ describe("describeAndStore — voice dispatch", () => {
   });
 
   it("fails a dedicated STT endpoint that answers with no text, keeping the audio retryable", async () => {
-    await seedVoice({ telegramMessageId: 73 });
+    await seedVoice({ sourceMessageId: 73 });
     const result = await describeAndStore(
-      { chatId: "5", telegramMessageId: 73 },
+      { chatId: "5", sourceMessageId: "73" },
       {
         complete: async () => fakeComplete("unused — the STT path must win"),
         // What a whisper-class server does on an internal failure it reports as 200.
         transcribe: async () => ({ text: "", latencyMs: 8, responseBody: { text: "" } }),
         transcribeTarget: { baseUrl: "https://whisper.example.com/v1", model: "large-v3" },
       },
-      { db: ctx.db },
+      { source: "tg", db: ctx.db },
     );
 
     expect(result).toBeNull();
-    const media = await getMediaByMessage(ctx.db, "5", 73);
+    const media = await getMediaByMessage(ctx.db, "tg", "5", "73");
     expect(media?.status).toBe("pending");
     expect(media?.description).toBeNull();
     // The bytes must survive, or "retryable" is a word with nothing behind it.
@@ -238,7 +239,7 @@ describe("describeAndStore — voice dispatch", () => {
   });
 
   it("records into a passed parent trace instead of opening its own (live reply path)", async () => {
-    await seedVoice({ telegramMessageId: 74 });
+    await seedVoice({ sourceMessageId: 74 });
     const before = (await listTraces({ feature: "voice" })).traces.length;
 
     const parent = await startTrace({
@@ -247,7 +248,7 @@ describe("describeAndStore — voice dispatch", () => {
       trigger: { kind: "transport", actor: "5", correlationId: "5:74" },
     });
     const result = await describeAndStore(
-      { chatId: "5", telegramMessageId: 74 },
+      { chatId: "5", sourceMessageId: "74" },
       {
         // Record like the real completion does (the shared LLM tracing layer),
         // so the parent-trace assertion pins the same titles production writes.
@@ -266,7 +267,7 @@ describe("describeAndStore — voice dispatch", () => {
           return completed;
         },
       },
-      { db: ctx.db, trace: parent },
+      { source: "tg", db: ctx.db, trace: parent },
     );
     await parent.succeed({ outputSummary: "done" });
 
@@ -282,10 +283,10 @@ describe("describeAndStore — voice dispatch", () => {
   });
 
   it("returns the winner's transcript — never a failure — when a concurrent pass wins the write race", async () => {
-    const seeded = await seedVoice({ telegramMessageId: 76 });
+    const seeded = await seedVoice({ sourceMessageId: 76 });
 
     const result = await describeAndStore(
-      { chatId: "5", telegramMessageId: 76 },
+      { chatId: "5", sourceMessageId: "76" },
       {
         complete: async () => {
           // A concurrent pass describes the row while our LLM call is in flight,
@@ -294,7 +295,7 @@ describe("describeAndStore — voice dispatch", () => {
           return fakeComplete("the loser's transcript");
         },
       },
-      { db: ctx.db },
+      { source: "tg", db: ctx.db },
     );
 
     // The caller still gets a described record with real text (the winner's) —
@@ -307,19 +308,19 @@ describe("describeAndStore — voice dispatch", () => {
   });
 
   it("reuses an already-stored transcript without spending a call (re-delivered update)", async () => {
-    const seeded = await seedVoice({ telegramMessageId: 77 });
+    const seeded = await seedVoice({ sourceMessageId: 77 });
     await markDescribed(ctx.db, seeded!.id, "already transcribed");
 
     let called = false;
     const result = await describeAndStore(
-      { chatId: "5", telegramMessageId: 77 },
+      { chatId: "5", sourceMessageId: "77" },
       {
         complete: async () => {
           called = true;
           return fakeComplete("unused");
         },
       },
-      { db: ctx.db },
+      { source: "tg", db: ctx.db },
     );
 
     expect(called).toBe(false);
@@ -329,14 +330,14 @@ describe("describeAndStore — voice dispatch", () => {
 
   it("leaves the row pending (for the backfill retry) when the audio cannot be transcoded", async () => {
     // Garbage bytes: ffmpeg cannot decode them, the transcode throws, the trace fails.
-    await seedVoice({ telegramMessageId: 72, dataBase64: Buffer.from("junk").toString("base64") });
+    await seedVoice({ sourceMessageId: 72, dataBase64: Buffer.from("junk").toString("base64") });
     const result = await describeAndStore(
-      { chatId: "5", telegramMessageId: 72 },
+      { chatId: "5", sourceMessageId: "72" },
       { complete: async () => fakeComplete("unused") },
-      { db: ctx.db },
+      { source: "tg", db: ctx.db },
     );
     expect(result).toBeNull();
-    const row = await getMediaByMessage(ctx.db, "5", 72);
+    const row = await getMediaByMessage(ctx.db, "tg", "5", "72");
     expect(row?.status).toBe("pending");
     const traces = await listTraces({ feature: "voice" });
     expect(traces.traces[0]?.status).toBe("error");

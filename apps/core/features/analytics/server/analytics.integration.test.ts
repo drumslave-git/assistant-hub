@@ -7,11 +7,17 @@ import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces, startTrace } from "@/server/trace";
 import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
 import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
+import { registerTestTransport } from "@/test/transports";
 
 import { getMetricTotals, getModels, getMoodForPeriod, getSeries } from "./metrics";
 import { regenerateAnalyticsInsights, runAnalyticsInsights } from "./insights";
 import { getPeriodInsight } from "./repository";
 import { resetInsightScanFloor } from "./watermark";
+
+/** Fixture chats, named the way every dashboard surface names them. */
+const C1 = "tg:chat:c1";
+const C2 = "tg:chat:c2";
+const C9 = "tg:chat:c9";
 
 let ctx: TestStoreDb;
 // The mirror lives with the owning source since the swap; these tests seed the
@@ -37,6 +43,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  await registerTestTransport(ctx.db);
   content = fakeSourceContent();
   // The due-scan floor lives on globalThis and would otherwise carry proof from
   // one test's data into the next test's freshly-truncated database.
@@ -48,8 +55,8 @@ afterEach(() => {
 });
 
 async function seedMessage(input: {
-  chatId: string;
-  telegramMessageId: number;
+  chatRef: string;
+  sourceMessageId: string;
   role: "user" | "assistant";
   userId?: string | null;
   content: string;
@@ -206,7 +213,7 @@ describe("traffic totals", () => {
       correlationId: "c2:1",
     });
 
-    const m = await getMetricTotals({ unit: "day", anchor: "2026-07-15", chatId: "c1" });
+    const m = await getMetricTotals({ unit: "day", anchor: "2026-07-15", chatRef: C1 });
     expect(m.scope).toBe("chat");
     expect(m.totals.tokensProcessed).toBe(40);
     expect(m.totals.tokensGenerated).toBe(10);
@@ -216,16 +223,16 @@ describe("traffic totals", () => {
 describe("getSeries", () => {
   it("plots a day as its 24 hours, with values on the right hour", async () => {
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 1,
+      chatRef: C1,
+      sourceMessageId: "1",
       role: "user",
       userId: "u1",
       content: "hello",
       sentAt: new Date("2026-07-15T09:30:00Z"),
     });
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 2,
+      chatRef: C1,
+      sourceMessageId: "2",
       role: "assistant",
       content: "hi",
       sentAt: new Date("2026-07-15T09:31:00Z"),
@@ -246,8 +253,8 @@ describe("getSeries", () => {
 
   it("plots a year as its 12 months", async () => {
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 1,
+      chatRef: C1,
+      sourceMessageId: "1",
       role: "user",
       userId: "u1",
       content: "hello",
@@ -340,18 +347,18 @@ describe("getModels", () => {
 describe("runAnalyticsInsights", () => {
   const NOW = new Date("2026-07-15T12:00:00Z");
 
-  async function seedFinishedHour(chatId = "c1", telegramMessageId = 1) {
+  async function seedFinishedHour(chatRef = C1, ids: [string, string] = ["1", "2"]) {
     await seedMessage({
-      chatId,
-      telegramMessageId,
+      chatRef,
+      sourceMessageId: ids[0],
       role: "user",
       userId: "u1",
       content: "planning the weekend trip",
       sentAt: new Date("2026-07-14T09:00:00Z"),
     });
     await seedMessage({
-      chatId,
-      telegramMessageId: telegramMessageId + 1,
+      chatRef,
+      sourceMessageId: ids[1],
       role: "assistant",
       content: "sounds fun!",
       sentAt: new Date("2026-07-14T09:01:00Z"),
@@ -376,7 +383,7 @@ describe("runAnalyticsInsights", () => {
     const all = await getPeriodInsight(ctx.db, {
       granularity: "all",
       bucket: "all",
-      chatId: "c1",
+      chatRef: C1,
     });
     expect(all?.wordOfPeriod).toBe("weekend");
     expect(all?.moodScore).toBe(70);
@@ -385,7 +392,7 @@ describe("runAnalyticsInsights", () => {
     const hour = await getPeriodInsight(ctx.db, {
       granularity: "hour",
       bucket: "2026-07-14 09",
-      chatId: "c1",
+      chatRef: C1,
     });
     expect(hour?.moodScore).toBe(70);
     expect(hour?.messageCount).toBe(2);
@@ -396,19 +403,19 @@ describe("runAnalyticsInsights", () => {
   });
 
   it("keeps each chat's insight separate — there is no cross-chat average", async () => {
-    await seedFinishedHour("c1", 1);
-    await seedFinishedHour("c2", 10);
+    await seedFinishedHour(C1, ["1", "2"]);
+    await seedFinishedHour(C2, ["10", "11"]);
 
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
-    for (const chatId of ["c1", "c2"]) {
+    for (const chatRef of [C1, C2]) {
       const day = await getPeriodInsight(ctx.db, {
         granularity: "day",
         bucket: "2026-07-14",
-        chatId,
+        chatRef,
       });
-      expect(day?.messageCount, chatId).toBe(2);
-      expect(day?.sourceUnits, chatId).toBe(1);
+      expect(day?.messageCount, chatRef).toBe(2);
+      expect(day?.sourceUnits, chatRef).toBe(1);
     }
   });
 
@@ -416,8 +423,8 @@ describe("runAnalyticsInsights", () => {
     // Two hours in one day: a quiet unhappy one and a busy happy one. The day's mood
     // must follow the messages, not the hour count.
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 1,
+      chatRef: C1,
+      sourceMessageId: "1",
       role: "user",
       userId: "u1",
       content: "this is broken and I am annoyed",
@@ -425,8 +432,8 @@ describe("runAnalyticsInsights", () => {
     });
     for (let i = 0; i < 9; i += 1) {
       await seedMessage({
-        chatId: "c1",
-        telegramMessageId: 10 + i,
+        chatRef: C1,
+        sourceMessageId: String(10 + i),
         role: "user",
         userId: "u1",
         content: "great, thanks, this is lovely",
@@ -458,7 +465,7 @@ describe("runAnalyticsInsights", () => {
     const day = await getPeriodInsight(ctx.db, {
       granularity: "day",
       bucket: "2026-07-14",
-      chatId: "c1",
+      chatRef: C1,
     });
     // (10*1 + 90*9) / 10 = 82 — not the 50 an unweighted mean would give.
     expect(day?.moodScore).toBe(82);
@@ -470,7 +477,7 @@ describe("runAnalyticsInsights", () => {
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const mood = await getMoodForPeriod(
-      { unit: "day", anchor: "2026-07-14", chatId: "c1" },
+      { unit: "day", anchor: "2026-07-14", chatRef: C1 },
       ctx.db,
     );
 
@@ -484,7 +491,7 @@ describe("runAnalyticsInsights", () => {
 
     // And the chart series reads through the same function.
     const series = await getSeries(
-      { unit: "day", anchor: "2026-07-14", section: "mood", chatId: "c1" },
+      { unit: "day", anchor: "2026-07-14", section: "mood", chatRef: C1 },
       ctx.db,
     );
     expect(series.series[0].data[9]).toBe(70);
@@ -494,16 +501,16 @@ describe("runAnalyticsInsights", () => {
 
   it("chooses the top topic from the sub-periods, never inventing an umbrella phrase", async () => {
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 1,
+      chatRef: C1,
+      sourceMessageId: "1",
       role: "user",
       userId: "u1",
       content: "about the migration",
       sentAt: new Date("2026-07-14T09:00:00Z"),
     });
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 2,
+      chatRef: C1,
+      sourceMessageId: "2",
       role: "user",
       userId: "u1",
       content: "about the outage",
@@ -529,7 +536,7 @@ describe("runAnalyticsInsights", () => {
     const day = await getPeriodInsight(ctx.db, {
       granularity: "day",
       bucket: "2026-07-14",
-      chatId: "c1",
+      chatRef: C1,
     });
     expect(["database migration", "the outage"]).toContain(day?.topTopic);
     expect(["migration", "outage"]).toContain(day?.wordOfPeriod);
@@ -557,8 +564,8 @@ describe("runAnalyticsInsights", () => {
     // A late message lands in an already-scored hour. A scored hour is final until an
     // operator asks for it again, so the nightly spend stays predictable.
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 99,
+      chatRef: C1,
+      sourceMessageId: "99",
       role: "user",
       userId: "u1",
       content: "one more thing",
@@ -576,8 +583,8 @@ describe("runAnalyticsInsights", () => {
 
   it("excludes the in-progress hour", async () => {
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 1,
+      chatRef: C1,
+      sourceMessageId: "1",
       role: "user",
       userId: "u1",
       content: "still talking",
@@ -606,7 +613,7 @@ describe("runAnalyticsInsights", () => {
     expect(result.unitsComputed).toBe(0);
     expect(result.unitsFailed).toBe(1);
 
-    const all = await getPeriodInsight(ctx.db, { granularity: "all", bucket: "all", chatId: "c1" });
+    const all = await getPeriodInsight(ctx.db, { granularity: "all", bucket: "all", chatRef: C1 });
     expect(all).toBeNull();
   });
 });
@@ -614,10 +621,10 @@ describe("runAnalyticsInsights", () => {
 describe("regenerateAnalyticsInsights", () => {
   const NOW = new Date("2026-07-15T12:00:00Z");
 
-  async function seedHour(iso: string, chatId = "c1", id = 1) {
+  async function seedHour(iso: string, chatRef = C1, id = "1") {
     await seedMessage({
-      chatId,
-      telegramMessageId: id,
+      chatRef,
+      sourceMessageId: id,
       role: "user",
       userId: "u1",
       content: "planning the weekend trip",
@@ -643,7 +650,7 @@ describe("regenerateAnalyticsInsights", () => {
     const day = await getPeriodInsight(ctx.db, {
       granularity: "day",
       bucket: "2026-07-14",
-      chatId: "c1",
+      chatRef: C1,
     });
     expect(day?.moodScore).toBe(20);
     expect(day?.wordOfPeriod).toBe("delays");
@@ -667,7 +674,7 @@ describe("regenerateAnalyticsInsights", () => {
       ["year", "2026"],
       ["all", "all"],
     ] as const) {
-      const row = await getPeriodInsight(ctx.db, { granularity, bucket, chatId: "c1" });
+      const row = await getPeriodInsight(ctx.db, { granularity, bucket, chatRef: C1 });
       expect(row?.moodScore, `${granularity} ${bucket}`).toBe(20);
     }
   });
@@ -677,14 +684,14 @@ describe("regenerateAnalyticsInsights", () => {
     // that were not even active that day. Only the regenerated chat's hours get
     // re-armed, so those rows had nothing left to rebuild them — silent data loss
     // recoverable only by re-scoring all history.
-    await seedHour("2026-07-14T09:00:00Z", "c1", 1);
-    await seedHour("2026-06-10T09:00:00Z", "c2", 2);
+    await seedHour("2026-07-14T09:00:00Z", C1, "1");
+    await seedHour("2026-06-10T09:00:00Z", C2, "2");
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const before = await getPeriodInsight(ctx.db, {
       granularity: "all",
       bucket: "all",
-      chatId: "c2",
+      chatRef: C2,
     });
     expect(before).not.toBeNull();
 
@@ -696,19 +703,19 @@ describe("regenerateAnalyticsInsights", () => {
 
     for (const granularity of ["all", "year", "month"] as const) {
       const bucket = granularity === "all" ? "all" : granularity === "year" ? "2026" : "2026-06";
-      const row = await getPeriodInsight(ctx.db, { granularity, bucket, chatId: "c2" });
+      const row = await getPeriodInsight(ctx.db, { granularity, bucket, chatRef: C2 });
       expect(row, `c2 ${granularity}`).not.toBeNull();
       expect(row?.moodScore, `c2 ${granularity}`).toBe(70);
     }
 
     // The regenerated chat did get its overlapping roll-ups rebuilt.
-    const c1 = await getPeriodInsight(ctx.db, { granularity: "all", bucket: "all", chatId: "c1" });
+    const c1 = await getPeriodInsight(ctx.db, { granularity: "all", bucket: "all", chatRef: C1 });
     expect(c1?.moodScore).toBe(20);
   });
 
   it("leaves hours outside the dropped period untouched", async () => {
-    await seedHour("2026-06-10T09:00:00Z", "c1", 1);
-    await seedHour("2026-07-14T09:00:00Z", "c1", 2);
+    await seedHour("2026-06-10T09:00:00Z", C1, "1");
+    await seedHour("2026-07-14T09:00:00Z", C1, "2");
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const result = await regenerateAnalyticsInsights(
@@ -720,14 +727,14 @@ describe("regenerateAnalyticsInsights", () => {
     const june = await getPeriodInsight(ctx.db, {
       granularity: "day",
       bucket: "2026-06-10",
-      chatId: "c1",
+      chatRef: C1,
     });
     expect(june?.moodScore).toBe(70);
   });
 
   it("all/all re-scores the whole history", async () => {
-    await seedHour("2026-06-10T09:00:00Z", "c1", 1);
-    await seedHour("2026-07-14T09:00:00Z", "c1", 2);
+    await seedHour("2026-06-10T09:00:00Z", C1, "1");
+    await seedHour("2026-07-14T09:00:00Z", C1, "2");
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db, content });
 
     const result = await regenerateAnalyticsInsights(
@@ -744,8 +751,8 @@ describe("insight due-scan floor", () => {
 
   it("skips hours below the floor until something resets it", async () => {
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 1,
+      chatRef: C1,
+      sourceMessageId: "1",
       role: "user",
       userId: "u1",
       content: "early chat",
@@ -757,8 +764,8 @@ describe("insight due-scan floor", () => {
     // A row lands in an hour older than the backlog window, via a direct DB
     // write — the one path with no reset hook. The floor hides it…
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 2,
+      chatRef: C1,
+      sourceMessageId: "2",
       role: "user",
       userId: "u1",
       content: "ancient row",
@@ -780,8 +787,8 @@ describe("insight due-scan floor", () => {
 
     // A backlogged update lands 16 h in the past — inside the safety margin.
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 1,
+      chatRef: C1,
+      sourceMessageId: "1",
       role: "user",
       userId: "u1",
       content: "delivered late",
@@ -799,8 +806,8 @@ describe("insight due-scan floor", () => {
     await runAnalyticsInsights(deps());
 
     await seedMessage({
-      chatId: "c9",
-      telegramMessageId: 50,
+      chatRef: C9,
+      sourceMessageId: "50",
       role: "user",
       content: "imported oldie",
       sentAt: new Date("2026-07-10T09:00:00Z"),
@@ -812,15 +819,15 @@ describe("insight due-scan floor", () => {
     const hour = await getPeriodInsight(ctx.db, {
       granularity: "hour",
       bucket: "2026-07-10 09",
-      chatId: "c9",
+      chatRef: C9,
     });
     expect(hour?.moodScore).toBe(70);
   });
 
   it("is reset by a regenerate, so its dropped hours are re-scored", async () => {
     await seedMessage({
-      chatId: "c1",
-      telegramMessageId: 1,
+      chatRef: C1,
+      sourceMessageId: "1",
       role: "user",
       userId: "u1",
       content: "planning the weekend trip",

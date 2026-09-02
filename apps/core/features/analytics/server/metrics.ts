@@ -1,9 +1,10 @@
 import "server-only";
 
+import { parseScopedRef } from "@assistant-hub-swarm/contracts";
+
 import { getStoreDb, type StoreDb } from "@/server/store/db";
-import { requireSourceContent, type SourceContentClient } from "@/server/source/tg-content";
-import { formatKnownUserLabel } from "@/features/known-users/format";
-import { getKnownUsersByIds } from "@/features/known-users/server/repository";
+import { requireSourceContent, type SourceContentClient } from "@/server/source/content";
+import { getUserLabelsByRef } from "@/features/known-users/server/service";
 import { getTimezone } from "@/features/settings/server/service";
 
 import { moodLabelForScore } from "../mood";
@@ -63,8 +64,8 @@ async function resolvePeriod(
   query: MetricsQuery,
 ): Promise<{ ctx: MetricContext; range: { startUtc: Date; endUtc: Date }; scope: MetricScope }> {
   const timezone = await getTimezone();
-  const chatId = query.chatId ?? null;
-  const userId = query.userId ?? null;
+  const chatRef = query.chatRef ?? null;
+  const userRef = query.userRef ?? null;
   // The anchor is resolved against the **operator** timezone, never the browser's:
   // "today" on a dashboard means today where the bot lives.
   const anchor = query.anchor ?? currentAnchor(query.unit, new Date(), timezone);
@@ -74,12 +75,12 @@ async function resolvePeriod(
       unit: query.unit,
       anchor,
       timezone,
-      scope: userId ? "user" : chatId ? "chat" : "global",
-      chatId,
-      userId,
+      scope: userRef ? "user" : chatRef ? "chat" : "global",
+      chatRef,
+      userRef,
     },
     range,
-    scope: { ...range, chatId, userId },
+    scope: { ...range, chatRef, userRef },
   };
 }
 
@@ -169,7 +170,7 @@ async function seriesFor(
       // Read through the same function the Mood tile uses, so the line and the
       // number can never describe the period differently.
       const mood = await getMoodForPeriod(
-        { unit: ctx.unit, anchor: ctx.anchor, chatId: ctx.chatId ?? "" },
+        { unit: ctx.unit, anchor: ctx.anchor, chatRef: ctx.chatRef ?? "" },
         db,
       );
       const byBucket = new Map(mood.points.map((p) => [p.bucket, p.moodScore]));
@@ -211,25 +212,23 @@ export async function getTopUsersCard(
   const rows = await getTopUsers(content ?? requireSourceContent(), {
     startUtc: scope.startUtc,
     endUtc: scope.endUtc,
-    chatId: ctx.chatId,
+    chatRef: ctx.chatRef,
     limit: TOP_USERS,
   });
-  const userIds = rows.map((r) => r.userId);
-  const [labelRows, traces] = await Promise.all([
-    userIds.length > 0 ? getKnownUsersByIds(undefined, userIds) : Promise.resolve([]),
+  const [labels, traces] = await Promise.all([
+    getUserLabelsByRef(rows.map((r) => r.userRef)),
     scanScopeTraces(scope),
   ]);
   const usage = usageRowsFrom(traces, scope);
-  const labelById = new Map(labelRows.map((u) => [u.userId, formatKnownUserLabel(u)]));
   const tokens = tokensByActor(usage);
 
   return {
     ...ctx,
     users: rows.map((r) => ({
-      userId: r.userId,
-      label: labelById.get(r.userId) ?? `User ${r.userId}`,
+      userRef: r.userRef,
+      label: labels.get(r.userRef) ?? `User ${parseScopedRef(r.userRef).id}`,
       messages: r.messages,
-      tokens: tokens.get(r.userId) ?? 0,
+      tokens: tokens.get(parseScopedRef(r.userRef).id) ?? 0,
     })),
   };
 }
@@ -244,23 +243,23 @@ export async function getTopUsersCard(
  * of the line beside it.
  */
 export async function getMoodForPeriod(
-  params: { unit: PeriodUnit; anchor: string; chatId: string },
+  params: { unit: PeriodUnit; anchor: string; chatRef: string },
   db: StoreDb = getStoreDb(),
 ): Promise<MoodPayload> {
-  if (!params.chatId) return { aggregate: null, points: [] };
+  if (!params.chatRef) return { aggregate: null, points: [] };
 
   const buckets = subBucketKeys(params.unit, params.anchor);
   const [row, points] = await Promise.all([
     getPeriodInsight(db, {
       granularity: params.unit,
       bucket: params.anchor,
-      chatId: params.chatId,
+      chatRef: params.chatRef,
     }),
     buckets.length > 0
       ? listPeriodInsights(db, {
           granularity: subUnitOf(params.unit),
           buckets,
-          chatId: params.chatId,
+          chatRef: params.chatRef,
         })
       : Promise.resolve([]),
   ]);
@@ -295,14 +294,14 @@ export async function getPeriodInsightCard(
   const row = await getPeriodInsight(db, {
     granularity: query.unit,
     bucket: anchor,
-    chatId: query.chatId,
+    chatRef: query.chatRef,
   });
   if (!row) return null;
 
   return {
     unit: query.unit,
     anchor,
-    chatId: row.chatId,
+    chatRef: row.chatRef,
     wordOfPeriod: row.wordOfPeriod,
     topTopic: row.topTopic,
     mood: {
@@ -342,7 +341,7 @@ export async function getAvailability(
         endUtc,
         bucketUnit: query.unit,
         timeZone: timezone,
-        chatId: query.chatId ?? null,
+        chatRef: query.chatRef ?? null,
       });
     case "traces":
       return traceAvailabilityFrom(await scanScopeTraces({ startUtc, endUtc }), {
@@ -350,8 +349,8 @@ export async function getAvailability(
         timeZone: timezone,
       });
     case "insights":
-      return query.chatId
-        ? getInsightAvailability(db, { granularity: query.unit, chatId: query.chatId })
+      return query.chatRef
+        ? getInsightAvailability(db, { granularity: query.unit, chatRef: query.chatRef })
         : [];
   }
 }

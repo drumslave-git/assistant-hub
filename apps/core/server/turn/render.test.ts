@@ -165,13 +165,13 @@ describe("renderChatContext", () => {
     });
 
   it("names the telegram surface", () => {
-    expect(renderChatContext(eventIn("tg", "group"))?.content).toContain(
+    expect(renderChatContext(eventIn("tg", "group"), "Telegram")?.content).toContain(
       "This conversation is a Telegram group chat.",
     );
   });
 
   it("names the web-chat surface instead of inheriting telegram's", () => {
-    const context = renderChatContext(eventIn("chat", "direct"));
+    const context = renderChatContext(eventIn("chat", "direct"), "Web chat");
     expect(context?.content).toContain("web chat");
     expect(context?.content).not.toContain("Telegram");
     expect(context?.data).toMatchObject({ source: "chat" });

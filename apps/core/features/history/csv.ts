@@ -10,6 +10,8 @@
  */
 
 /** A parsed CSV table: the header row plus the data rows. */
+import { tryParseScopedRef } from "@assistant-hub-swarm/contracts";
+
 export interface CsvTable {
   headers: string[];
   rows: string[][];
@@ -129,24 +131,24 @@ export function toCsv(headers: string[], rows: readonly (readonly string[])[], d
 /** The mirror's importable columns. Keys double as the canonical CSV headers. */
 export const HISTORY_CSV_FIELDS = [
   {
-    key: "chat_id",
-    label: "Chat ID",
+    key: "chat_ref",
+    label: "Chat ref",
     required: true,
     constant: true,
-    hint: "Telegram chat/group id the message belongs to.",
-    constantHint: "e.g. a per-chat export with no chat column — apply one chat id to every row.",
-    aliases: ["chat", "chatid", "conversation", "conversationid", "peerid", "dialogid"],
+    hint: "Scoped ref of the chat the message belongs to (`<transport>:chat:<id>`, e.g. `tg:chat:-1001`).",
+    constantHint: "e.g. a per-chat export with no chat column — apply one chat ref to every row.",
+    aliases: ["chat", "chatid", "chatref", "conversation", "conversationid", "peerid", "dialogid"],
   },
   {
-    key: "telegram_message_id",
+    key: "source_message_id",
     label: "Message ID",
     required: true,
     // The only field that cannot take a fixed value: it is the per-chat unique
     // key, so one value for every row would collapse the whole file into a
     // single message.
     constant: false,
-    hint: "Telegram message id — unique within the chat, and the key duplicates are detected on.",
-    aliases: ["messageid", "msgid", "id", "telegramid"],
+    hint: "The platform's message id — unique within the chat, and the key duplicates are detected on.",
+    aliases: ["messageid", "msgid", "id", "telegramid", "telegrammessageid", "sourcemessageid"],
   },
   {
     key: "role",
@@ -172,7 +174,7 @@ export const HISTORY_CSV_FIELDS = [
     label: "Sent at",
     required: true,
     constant: true,
-    hint: "When the message existed in Telegram. ISO 8601, or a Unix timestamp.",
+    hint: "When the message was sent. ISO 8601, or a Unix timestamp.",
     constantHint: "e.g. a file with no timestamps — stamp every row with one instant.",
     aliases: ["sent", "date", "timestamp", "time", "when", "createdat"],
   },
@@ -181,7 +183,7 @@ export const HISTORY_CSV_FIELDS = [
     label: "Sender user ID",
     required: false,
     constant: true,
-    hint: "Numeric Telegram user id of the sender. Ignored for assistant rows.",
+    hint: "The platform's user id of the sender. Ignored for assistant rows.",
     constantHint: "e.g. a one-person chat log — apply that sender's id to every human row.",
     aliases: ["userid", "fromid", "senderid", "authorid", "author"],
   },
@@ -190,8 +192,8 @@ export const HISTORY_CSV_FIELDS = [
     label: "Reply to message ID",
     required: false,
     constant: true,
-    hint: "The Telegram message id this one replied to.",
-    aliases: ["replyto", "replytomessageid", "replytoid", "inreplyto"],
+    hint: "The platform's id of the message this one replied to.",
+    aliases: ["replyto", "replytomessageid", "replytoid", "inreplyto", "replytosourcemessageid"],
   },
   {
     key: "edited_at",
@@ -300,12 +302,12 @@ export const MAX_CONTENT_CHARS = 8192;
 
 /** One import row, coerced and ready for persistence. */
 export interface ImportRow {
-  chatId: string;
-  telegramMessageId: number;
+  chatRef: string;
+  sourceMessageId: string;
   role: "user" | "assistant";
   userId: string | null;
   content: string;
-  replyToMessageId: number | null;
+  replyToSourceMessageId: string | null;
   sentAt: Date;
   editedAt: Date | null;
   deletedAt: Date | null;
@@ -352,12 +354,14 @@ const ROLE_ALIASES: Record<string, "user" | "assistant"> = {
   ai: "assistant",
 };
 
-/** Parse an id-like cell: a positive integer, or null when empty. */
-function parseId(value: string): number | null | undefined {
+/**
+ * Parse an id-like cell: a digit string (kept as text — a platform's message
+ * id can exceed a double's integer range), or null when empty.
+ */
+function parseId(value: string): string | null | undefined {
   if (value === "") return null;
   if (!/^\d+$/.test(value)) return undefined;
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+  return value;
 }
 
 /**
@@ -389,12 +393,12 @@ export function missingRequiredFields(mapping: ColumnMapping): HistoryCsvFieldKe
  */
 export function validateFieldValue(key: HistoryCsvFieldKey, raw: string): string | null {
   switch (key) {
-    case "chat_id":
-      return raw === "" ? "chat_id is empty" : null;
-    case "telegram_message_id":
-      return parseId(raw) == null
-        ? `telegram_message_id is not a positive integer: "${raw}"`
-        : null;
+    case "chat_ref":
+      return tryParseScopedRef(raw)?.kind === "chat"
+        ? null
+        : `chat_ref is not a chat ref (<transport>:chat:<id>): "${raw}"`;
+    case "source_message_id":
+      return parseId(raw) == null ? `source_message_id is not a message id: "${raw}"` : null;
     case "role":
       return ROLE_ALIASES[raw.toLowerCase()]
         ? null
@@ -407,7 +411,7 @@ export function validateFieldValue(key: HistoryCsvFieldKey, raw: string): string
       return parseDate(raw) == null ? `sent_at is not a valid date: "${raw}"` : null;
     case "reply_to_message_id":
       return parseId(raw) === undefined
-        ? `reply_to_message_id is not a positive integer: "${raw}"`
+        ? `reply_to_message_id is not a message id: "${raw}"`
         : null;
     case "edited_at":
       return parseDate(raw) === undefined ? `edited_at is not a valid date: "${raw}"` : null;
@@ -492,13 +496,13 @@ export function mapCsvRows(table: CsvTable, mapping: ColumnMapping): MappedRows 
     const role = ROLE_ALIASES[get("role").toLowerCase()];
     const userId = get("user_id");
     rows.push({
-      chatId: get("chat_id"),
-      telegramMessageId: parseId(get("telegram_message_id"))!,
+      chatRef: get("chat_ref"),
+      sourceMessageId: parseId(get("source_message_id"))!,
       role,
       // The bot's own rows have no sender; a stray value there would be a lie.
       userId: role === "assistant" || userId === "" ? null : userId,
       content: get("content"),
-      replyToMessageId: parseId(get("reply_to_message_id")) ?? null,
+      replyToSourceMessageId: parseId(get("reply_to_message_id")) ?? null,
       sentAt: parseDate(get("sent_at"))!,
       editedAt: parseDate(get("edited_at")) ?? null,
       deletedAt: parseDate(get("deleted_at")) ?? null,
@@ -511,25 +515,25 @@ export function mapCsvRows(table: CsvTable, mapping: ColumnMapping): MappedRows 
 /** Render mirror rows as canonical CSV (the export format, and import's input). */
 export function rowsToCsv(
   records: readonly {
-    chatId: string;
-    telegramMessageId: number;
+    chatRef: string;
+    sourceMessageId: string;
     role: string;
     userId: string | null;
     content: string;
-    replyToMessageId: number | null;
+    replyToSourceMessageId: string | null;
     sentAt: string;
     editedAt: string | null;
     deletedAt: string | null;
   }[],
 ): string {
   const rows = records.map((r) => [
-    r.chatId,
-    String(r.telegramMessageId),
+    r.chatRef,
+    r.sourceMessageId,
     r.role,
     r.content,
     r.sentAt,
     r.userId ?? "",
-    r.replyToMessageId == null ? "" : String(r.replyToMessageId),
+    r.replyToSourceMessageId ?? "",
     r.editedAt ?? "",
     r.deletedAt ?? "",
   ]);

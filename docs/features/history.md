@@ -34,7 +34,7 @@ backfill off media the reply is still working on. Non-live writers (imports,
 assistant replies) always land released.
 
 The content plane — the History and Search pages, the summaries, the search
-index and the analytics charts — reads Telegram rows only
+index and the analytics charts — reads every registered transport's rows; chats are named by scoped ref
 (`server/source/tg-content.ts`, `SOURCE = "tg"`, user decision 2026-08-27);
 the web chat keeps its transcripts in its own `web_*` tables
 ([Web chat](web-chat.md)).
@@ -48,7 +48,7 @@ extraction, the analytics volume/user charts, and the history tools.
 ### Transcript format
 
 History is injected as **one** user message containing a transcript, where every
-line is anchored by its Telegram message id:
+line is anchored by its source-local message id:
 
 ```
 [#1042] Alice: what did we decide about the invoice?
@@ -214,7 +214,7 @@ message (whose transcript plays the role of the description).
 | Page | Contents |
 | --- | --- |
 | `/history` | Chats with stored history, each linking to its mirror |
-| `/history/{chatId}` | The full stored conversation (Messages tab) and the chat's topic summaries grouped by day (Summaries tab), plus the summary job card |
+| `/history/{chatRef}` | The full stored conversation (Messages tab) and the chat's topic summaries grouped by day (Summaries tab), plus the summary job card |
 | `/history/transfer` | CSV import/export |
 | `/search` | Message search across every chat — where the top bar's search box lands |
 
@@ -229,7 +229,7 @@ topic's claim against the mirror in the Messages tab.
 finds a photo by what is in it exactly as the bot does. Two differences, both
 because the reader is a person and not a model:
 
-- **Every chat at once.** `searchChatMessagesHybrid` takes `chatId: null` for
+- **Every chat at once.** `searchSourceMessagesHybrid` takes `chat: null` for
   this. Only the dashboard may pass it — a chat-bound tool always names its own
   chat, because one chat may never read another's messages.
 - **Hits are resolved for reading**: the sender's known-user label instead of a
@@ -259,8 +259,8 @@ Canonical columns, in export order:
 
 | Column | Required | Can be a fixed value |
 | --- | --- | --- |
-| `chat_id` | yes | yes |
-| `telegram_message_id` | yes | **no** — it is the per-chat unique key, so one value would collapse the file into a single message |
+| `chat_ref` | yes | yes |
+| `source_message_id` | yes | **no** — it is the per-chat unique key, so one value would collapse the file into a single message |
 | `role` | yes | yes (`user`/`assistant`; `human`/`bot` accepted) |
 | `content` | yes | yes |
 | `sent_at` | yes | yes |
@@ -273,7 +273,7 @@ Each field carries aliases so a foreign export auto-detects its mapping. An expo
 writes the canonical header, so it round-trips straight back through the import.
 
 **Import is idempotent, not destructive.** Imported rows get the group-stream
-dedupe key of their `(chat_id, telegram_message_id)`, and the mirror's unique
+dedupe key of their `(chat_ref, source_message_id)`, and the mirror's unique
 `(source, dedupe_key)` index means writes skip rows that already exist, so a
 partially-applied file can be safely re-run. Export includes deleted rows,
 flagged.
@@ -292,7 +292,7 @@ imported hours are picked up by the next insight run.
 ## API
 
 `GET /api/history/summaries`, `POST /api/history/summaries/run` (fire-and-forget),
-`GET /api/history/export?chatId=`, `POST /api/history/import`, and the search
+`GET /api/history/export?chatRef=`, `POST /api/history/import`, and the search
 index's `GET|POST|DELETE /api/history/search-index` (status, "Index now", and
 empty-and-rebuild).
 

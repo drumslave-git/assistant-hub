@@ -16,10 +16,13 @@ import {
 } from "@/features/analytics/ui/AnalyticsPanels";
 import type { FilterOption } from "@/features/analytics/ui/FilterableCard";
 import { RegenerateCard } from "@/features/analytics/ui/RegenerateCard";
-import { formatKnownUserLabel } from "@/features/known-users/format";
-import { listGroups } from "@/features/known-groups/server/service";
-import { listUsers } from "@/features/known-users/server/service";
 import { getTimezone } from "@/features/settings/server/service";
+import { contentSources } from "@/server/source/content";
+import {
+  directorySources,
+  listDirectoryChats,
+  listDirectoryUsers,
+} from "@/server/source/directory";
 import { featureDebugHref } from "@/lib/features";
 
 // Every metric is read live from the database or the trace files at request time.
@@ -48,20 +51,31 @@ export default async function AnalyticsPage() {
   let data: AnalyticsData | null = null;
   let dbError: string | null = null;
   try {
-    const [job, users, groups, timezone] = await Promise.all([
+    // The content plane reads the registered transports; the filters offer
+    // exactly the chats and people those transports know.
+    const [job, timezone, roster] = await Promise.all([
       getAnalyticsJobInfo(),
-      listUsers(),
-      listGroups(),
       getTimezone(),
+      Promise.all([contentSources(), directorySources()]).then(([sources, all]) =>
+        all.filter((source) => sources.includes(source.id)),
+      ),
     ]);
+    const [users, chats] = await Promise.all([
+      listDirectoryUsers(roster),
+      listDirectoryChats(roster),
+    ]);
+    const userLabel = new Map(users.entries.map((u) => [u.ref, u.label]));
     const now = new Date();
     data = {
       job,
-      chats: [
-        ...users.map((u) => ({ id: u.userId, label: `${formatKnownUserLabel(u)} · DM` })),
-        ...groups.map((g) => ({ id: g.chatId, label: `${g.title ?? `Group ${g.chatId}`} · group` })),
-      ],
-      userOptions: users.map((u) => ({ id: u.userId, label: formatKnownUserLabel(u) })),
+      chats: chats.entries.map((chat) => ({
+        id: chat.ref,
+        label:
+          chat.kind === "group"
+            ? `${chat.title ?? `Group ${chat.id}`} · ${chat.sourceLabel} group`
+            : `${userLabel.get(chat.ref.replace(":chat:", ":user:")) ?? chat.title ?? chat.id} · ${chat.sourceLabel} DM`,
+      })),
+      userOptions: users.entries.map((u) => ({ id: u.ref, label: `${u.label} · ${u.sourceLabel}` })),
       todayAnchors: Object.fromEntries(
         PERIOD_UNITS.map((unit) => [unit, currentAnchor(unit, now, timezone)]),
       ) as Record<PeriodUnit, string>,

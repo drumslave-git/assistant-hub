@@ -3,7 +3,6 @@ import "server-only";
 import { desc, eq } from "drizzle-orm";
 
 import type { StoreDb } from "@/server/store/db";
-import { scopedRef, tryParseScopedRef } from "@assistant-hub-swarm/contracts";
 
 import {
   communicationPreferences,
@@ -20,14 +19,10 @@ import type { CommunicationPreference, SelfCorrection } from "../types";
  * service.
  */
 
-/** The store keys people by scoped ref (Phase 10); this feature is tg-scoped. */
-const refOf = (userId: string) => scopedRef("tg", "user", userId);
-const idOf = (userRef: string) => tryParseScopedRef(userRef)?.id ?? userRef;
-
 function mapPreference(row: CommunicationPreferenceRow): CommunicationPreference {
   return {
     id: row.id,
-    userId: idOf(row.userRef),
+    userRef: row.userRef,
     model: row.model,
     likes: row.likes,
     dislikes: row.dislikes,
@@ -46,13 +41,13 @@ function mapCorrection(row: SelfCorrectionRow): SelfCorrection {
   };
 }
 
-/** The latest preferences version for a user, or null. */
+/** The latest preferences version for a person (by scoped ref), or null. */
 export async function getLatestPreference(
   db: StoreDb,
-  userId: string,
+  userRef: string,
 ): Promise<CommunicationPreference | null> {
   const row = await db.query.communicationPreferences.findFirst({
-    where: eq(communicationPreferences.userRef, refOf(userId)),
+    where: eq(communicationPreferences.userRef, userRef),
     orderBy: (p, { desc: d }) => [d(p.version)],
   });
   return row ? mapPreference(row) : null;
@@ -76,18 +71,14 @@ export async function insertPreference(
   db: StoreDb,
   values: {
     id: string;
-    userId: string;
+    userRef: string;
     model: string;
     likes: string;
     dislikes: string;
     version: number;
   },
 ): Promise<CommunicationPreference> {
-  const { userId, ...rest } = values;
-  const [row] = await db
-    .insert(communicationPreferences)
-    .values({ ...rest, userRef: refOf(userId) })
-    .returning();
+  const [row] = await db.insert(communicationPreferences).values(values).returning();
   return mapPreference(row);
 }
 

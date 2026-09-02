@@ -1,61 +1,21 @@
 import { z } from "zod";
 
-import {
-  HISTORY_CSV_FIELDS,
-  MAX_CONTENT_CHARS,
-  MAX_CSV_CHARS,
-  type ColumnMapping,
-  type ColumnSource,
-} from "../csv";
+import { MAX_CONTENT_CHARS, MAX_CSV_CHARS, HISTORY_CSV_FIELDS, type ColumnMapping, type ColumnSource } from "../csv";
 import type { ChatMessageRecord, ChatSummary } from "./repository";
 
 /**
- * Validation schemas and client-facing types for the history mirror. Unlike most
- * features, history is driven by the Telegram runtime rather than a client form,
- * so these schemas validate the runtime's inputs before they reach persistence.
+ * Validation schemas and client-facing types for the history mirror. The
+ * mirror itself is written by the ingest (every transport's events land in
+ * the conversation store); what is validated here is the operator's own
+ * input — the CSV transfer.
  */
 
 /**
- * Upper bound on a single stored message (mirrors Telegram's own message cap).
- * Defined in the client-safe `../csv` module so the import preview enforces the
- * same cap in the browser, and re-exported here as the mirror's own constant.
+ * Upper bound on a single stored message. Defined in the client-safe `../csv`
+ * module so the import preview enforces the same cap in the browser, and
+ * re-exported here as the mirror's own constant.
  */
 export { MAX_CONTENT_CHARS };
-
-const chatId = z.string().min(1);
-const telegramMessageId = z.number().int().positive();
-
-/** A human/assistant message captured into the mirror. */
-export const recordMessageSchema = z.object({
-  chatId,
-  telegramMessageId,
-  role: z.enum(["user", "assistant"]),
-  userId: z.string().min(1).nullable().optional(),
-  content: z.string().trim().min(1).max(MAX_CONTENT_CHARS),
-  replyToMessageId: z.number().int().positive().nullable().optional(),
-  sentAt: z.date(),
-});
-export type RecordMessageInput = z.infer<typeof recordMessageSchema>;
-
-/**
- * A media-bearing message captured into the mirror. Same shape as
- * {@link recordMessageSchema} but content may be empty (a photo/sticker with no
- * caption still belongs in the transcript — its image is described separately and
- * rendered as a media suffix).
- */
-export const recordMediaMessageSchema = recordMessageSchema.extend({
-  content: z.string().trim().max(MAX_CONTENT_CHARS),
-});
-export type RecordMediaMessageInput = z.infer<typeof recordMediaMessageSchema>;
-
-/** An `edited_message` update rewriting a previously stored row. */
-export const applyEditSchema = z.object({
-  chatId,
-  telegramMessageId,
-  content: z.string().trim().min(1).max(MAX_CONTENT_CHARS),
-  editedAt: z.date(),
-});
-export type ApplyEditInput = z.infer<typeof applyEditSchema>;
 
 /** Where one field's value comes from: a column of the file, or a fixed value. */
 const columnSourceSchema = z.discriminatedUnion("kind", [
@@ -80,9 +40,9 @@ export const importHistorySchema = z.object({
 });
 export type ImportHistoryInput = z.infer<typeof importHistorySchema> & { mapping: ColumnMapping };
 
-/** Which chat to export, or every chat when omitted. */
+/** Which chat (scoped ref) to export, or every chat when omitted. */
 export const exportHistoryQuerySchema = z.object({
-  chatId: z.string().min(1).optional(),
+  chatRef: z.string().min(1).optional(),
 });
 export type ExportHistoryQuery = z.infer<typeof exportHistoryQuerySchema>;
 

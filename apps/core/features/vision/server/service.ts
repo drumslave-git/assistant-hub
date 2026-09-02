@@ -1,7 +1,6 @@
 import "server-only";
 
 import type { SourceId } from "@assistant-hub-swarm/contracts";
-import type { Message } from "@grammyjs/types";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { ApiError } from "@/lib/api-error";
@@ -25,239 +24,31 @@ import { chatCompletion, type LlmPriority } from "@/server/llm/client";
 import { transcribeAudio, type TranscriptionResult } from "@/server/llm/transcription";
 import { toWavForTranscription } from "@/server/media/audio";
 
-import { detectMessageMedia } from "../detect";
-import { frameSequenceHint, renderMediaSuffix } from "../format";
-import type { DetectedMedia, ImagePayload, MediaAnnotation, MediaKind, MediaView } from "../types";
+import { renderMediaSuffix } from "../format";
+import type { ImagePayload, MediaAnnotation, MediaView } from "../types";
 import { buildDescribeMessages } from "./describe";
-import { VIDEO_FRAME_COUNT, extractVideoFrames } from "./frames";
-import { normalizeImageForChat } from "./normalize";
 import {
   getMediaAnnotations,
   getMediaByMessage,
   getMediaById,
-  insertMedia,
-  insertUnavailableMedia,
   markDescribed,
   type MediaRecord,
 } from "./repository";
-import { downloadTelegramFile } from "./telegram-files";
+import { sourceLabels } from "@/server/source/directory";
 
 /**
- * Vision domain service — the boundary the Telegram runtime and dashboard call.
+ * Vision domain service — the boundary the turn pipeline, the backfill and
+ * the dashboard call.
  *
- * Two paths:
- *  - **Ingest** (passive, untraced, high-volume like history capture): every
- *    incoming media message is downloaded, normalized to a bounded JPEG, and
- *    stored (bytes in `media_blobs`) with `status = 'pending'`.
- *  - **Describe** (traced, a meaningful action): for the addressed turn the
- *    stored image is captioned immediately and the bytes are dropped
- *    (`markDescribed`), so past turns read as text in the transcript. The rest
- *    stay pending for the backfill job (priority 8).
+ * Ingest is the transports' job: each one downloads and normalizes its
+ * platform's media and the core's ingest stores the pending row. What lives
+ * here is **describe** (traced, a meaningful action): for the addressed turn
+ * the stored image is captioned immediately and the bytes are dropped
+ * (`markDescribed`), so past turns read as text in the transcript. The rest
+ * stay pending for the backfill job (priority 8).
  */
 
 const FEATURE = FEATURES["vision"];
-
-/** Load-and-normalize an image by Telegram file id. Best-effort — null on any failure. */
-async function loadImage(token: string, fileId: string): Promise<ImagePayload | null> {
-  try {
-    const raw = await downloadTelegramFile(token, fileId);
-    if (!raw) return null;
-    return await normalizeImageForChat(raw.base64);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The loadable image(s) for a detected media, plus the describe `hint` stored on
- * the row and the reply `note` shown to the model this turn. A still image is one
- * image; a video/GIF is the ordered sequence of frames sampled with ffmpeg (the
- * Telegram single-frame thumbnail is the fallback when extraction is
- * unavailable). Best-effort — resolves null when nothing can be read.
- */
-interface LoadedMedia {
-  images: ImagePayload[];
-  /** Raw audio bytes for a voice message (stored as-is, transcribed later). */
-  audio: { base64: string; mimeHint: string } | null;
-  /** Stored on the row + fed to the describe pass (sticker emoji / frame-sequence note). */
-  hint: string | null;
-  /** Injected into the current reply turn so the model reads it in context (video/GIF only). */
-  note: string | null;
-}
-
-/** Sample a video/GIF into an ordered sequence of normalized frames, or null on failure. */
-async function loadVideoFrames(
-  token: string,
-  detected: DetectedMedia,
-): Promise<LoadedMedia | null> {
-  const raw = await downloadTelegramFile(token, detected.fileId);
-  if (!raw) return null;
-  const input = Buffer.from(raw.base64, "base64");
-  const frames = await extractVideoFrames(input, {
-    count: VIDEO_FRAME_COUNT,
-    durationSec: detected.durationSec,
-  });
-  if (frames.length === 0) return null;
-  // Normalize each frame to a bounded JPEG so it is sent full-resolution.
-  const images = await Promise.all(
-    frames.map((frame) => normalizeImageForChat(frame.toString("base64"))),
-  );
-  const kind = detected.kind === "animation" ? "animation" : "video";
-  const hint = frameSequenceHint(kind, images.length);
-  return { images, audio: null, hint, note: hint };
-}
-
-/** Resolve a detected media to loadable images/audio + hints. Best-effort — null on failure. */
-async function loadDetectedMedia(
-  token: string,
-  detected: DetectedMedia,
-): Promise<LoadedMedia | null> {
-  // A voice message stores its bytes as-is (OGG/Opus) — no normalization; the
-  // transcode to a model-readable format happens at transcription time.
-  if (detected.isAudio) {
-    const raw = await downloadTelegramFile(token, detected.fileId).catch(() => null);
-    if (!raw) return null;
-    return {
-      images: [],
-      audio: { base64: raw.base64, mimeHint: raw.mimeHint },
-      hint: detected.visionHint,
-      note: null,
-    };
-  }
-
-  if (!detected.isVideo) {
-    const image = await loadImage(token, detected.fileId);
-    return image ? { images: [image], audio: null, hint: detected.visionHint, note: null } : null;
-  }
-
-  // Video/GIF: sample frames with ffmpeg; on any failure fall back to the
-  // Telegram single-frame thumbnail so the media is still recognized.
-  const sequence = await loadVideoFrames(token, detected).catch(() => null);
-  if (sequence) return sequence;
-
-  if (detected.thumbnailFileId) {
-    const thumb = await loadImage(token, detected.thumbnailFileId);
-    if (thumb) {
-      const kind = detected.kind === "animation" ? "animation" : "video";
-      const hint = frameSequenceHint(kind, 1);
-      return { images: [thumb], audio: null, hint, note: hint };
-    }
-  }
-  return null;
-}
-
-/**
- * Ingest media on an incoming message: download, normalize, and store a pending
- * row. Returns the normalized image(s) for immediate use in the reply pass plus
- * the stored row (or null when the message has no media). Best-effort: media
- * that cannot be loaded is recorded as `unavailable` and returns no images.
- * Passive and untraced — the stored row is the record.
- */
-export async function ingestMessageMedia(
-  params: { token: string; chatId: string; telegramMessageId: number; message: Message },
-  db: StoreDb = getStoreDb(),
-): Promise<{
-  images: ImagePayload[];
-  kind: MediaKind;
-  note: string | null;
-  /**
-   * The stored row for this message: the fresh insert, or — for a re-delivered
-   * update — the row that already existed (possibly already described, so its
-   * text can be reused instead of paying for a second pass). Null only when the
-   * row could not be stored at all (e.g. the history mirror row is missing, so
-   * the FK rejects the insert) — callers must then skip describe/transcribe
-   * work for this turn.
-   */
-  media: MediaRecord | null;
-} | null> {
-  const detected = detectMessageMedia(params.message);
-  if (!detected) return null;
-
-  const loaded = await loadDetectedMedia(params.token, detected);
-  if (!loaded) {
-    await insertUnavailableMedia(db, {
-      id: crypto.randomUUID(),
-      chatId: params.chatId,
-      telegramMessageId: params.telegramMessageId,
-      kind: detected.kind,
-      fileId: detected.fileId,
-      fileUniqueId: detected.fileUniqueId,
-      visionHint: detected.visionHint,
-    }).catch(() => null);
-    publishEvent(FEATURE.realtimeTopic);
-    return null;
-  }
-
-  // A still image stores its single frame; a video/GIF stores the whole frame
-  // sequence (its first frame doubles as the dashboard preview); a voice message
-  // stores its raw audio (played back on the dashboard while pending).
-  const isSequence = loaded.images.length > 1;
-  const inserted = await insertMedia(db, {
-    id: crypto.randomUUID(),
-    chatId: params.chatId,
-    telegramMessageId: params.telegramMessageId,
-    kind: detected.kind,
-    fileId: detected.fileId,
-    fileUniqueId: detected.fileUniqueId,
-    mimeType: loaded.audio ? loaded.audio.mimeHint : loaded.images[0].mimeHint,
-    dataBase64: loaded.audio ? loaded.audio.base64 : loaded.images[0].base64,
-    frames: isSequence ? loaded.images.map((image) => image.base64) : null,
-    visionHint: loaded.hint,
-  }).catch(() => null);
-  // Conflict (re-delivered update) → the existing row is the truth, not a failure.
-  const media =
-    inserted ??
-    (await getMediaByMessage(db, params.chatId, params.telegramMessageId).catch(() => null));
-  publishEvent(FEATURE.realtimeTopic);
-
-  return { images: loaded.images, kind: detected.kind, note: loaded.note, media };
-}
-
-
-/**
- * Images for a replied-to media message, so "what is this?" as a reply to an
- * earlier image resolves to it. Reuses the stored bytes when present, otherwise
- * re-downloads by file id. Returns null when the message has no media or it can't
- * be loaded.
- */
-/**
- * Resolve a message's media to TEXT for the reply: its stored description (or
- * voice transcript), produced right now — describe + store — when the row is
- * still pending, and ingested first when the message's media was never stored
- * (a replied-to message from before the bot watched the chat). Raw bytes never
- * reach a reply request: the vision pass exists precisely so the reply model
- * reads text (user decision, 2026-08-15). Recording rides the given trace like
- * the current-media recognize pass.
- */
-export async function resolveMediaText(
-  params: { token: string; chatId: string; message: Message; trace?: TraceRecorder },
-  db: StoreDb = getStoreDb(),
-): Promise<{ kind: MediaKind; description: string | null } | null> {
-  const detected = detectMessageMedia(params.message);
-  if (!detected) return null;
-  const telegramMessageId = params.message.message_id;
-
-  let media = await getMediaByMessage(db, params.chatId, telegramMessageId).catch(() => null);
-  if (!media) {
-    const ingested = await ingestMessageMedia(
-      { token: params.token, chatId: params.chatId, telegramMessageId, message: params.message },
-      db,
-    ).catch(() => null);
-    media = ingested?.media ?? null;
-  }
-  if (!media) return { kind: detected.kind, description: null };
-
-  const deps = await resolveDescribeDeps().catch(() => null);
-  if (!deps) return { kind: media.kind, description: media.description ?? null };
-  // Reuses an existing description without a call; describes/transcribes a
-  // pending row and stores the result (bytes dropped), exactly like the
-  // current-media pass — one flow for "what does this media say".
-  const described = await describeAndStore({ chatId: params.chatId, telegramMessageId }, deps, {
-    db,
-    ...(params.trace ? { trace: params.trace } : {}),
-  }).catch(() => null);
-  return { kind: media.kind, description: described?.description ?? media.description ?? null };
-}
 
 /** The stored image sequence for a media row (frames for a video, else the single image). */
 function storedMediaImages(media: MediaRecord | null): ImagePayload[] | null {
@@ -273,7 +64,6 @@ function storedMediaImages(media: MediaRecord | null): ImagePayload[] | null {
   return null;
 }
 
-/** Collaborators for the describe pass; injected so it is unit-testable. */
 export interface DescribeDeps {
   /**
    * Run the describe completion. The call records itself (endpoint, model, full
@@ -304,13 +94,8 @@ export interface DescribeDeps {
 
 /**
  * The real {@link DescribeDeps}, resolved from DB settings at call time: the
- * vision runtime for describes (the chat connection unless the vision role is
- * overridden), the chat runtime for the `input_audio` transcription fallback,
- * plus the dedicated audio (STT) endpoint when one is configured. Null when
- * nothing resolves. Shared by the live message path and the backfill
- * scheduler so the two can never resolve differently — only the dispatch
- * priority differs: a describe inside a live turn goes out interactive, the
- * backfill's passes wait for a quiet endpoint.
+ * vision role's connection for describing, plus whichever audio path the
+ * operator configured for voice rows. Null when no vision model is set.
  */
 export async function resolveDescribeDeps(
   priority: LlmPriority = "interactive",
@@ -369,16 +154,17 @@ export async function resolveDescribeDeps(
  * 2026-08-22: core provides the feature, the app provides the storage).
  */
 export interface MediaStorePort {
-  getByMessage(chatId: string, telegramMessageId: number): Promise<MediaRecord | null>;
+  getByMessage(chatId: string, sourceMessageId: string): Promise<MediaRecord | null>;
   /** Store a description on a still-pending row (bytes dropped); null = lost race. */
   markDescribed(id: string, description: string): Promise<MediaRecord | null>;
   getById(id: string): Promise<MediaRecord | null>;
 }
 
-/** The v1 database-backed {@link MediaStorePort}. */
-export function dbMediaStore(db: StoreDb): MediaStorePort {
+/** The database-backed {@link MediaStorePort} for one source (tests, direct reads). */
+export function dbMediaStore(db: StoreDb, source: SourceId): MediaStorePort {
   return {
-    getByMessage: (chatId, telegramMessageId) => getMediaByMessage(db, chatId, telegramMessageId),
+    getByMessage: (chatId, sourceMessageId) =>
+      getMediaByMessage(db, source, chatId, sourceMessageId),
     markDescribed: (id, description) => markDescribed(db, id, description),
     getById: (id) => getMediaById(db, id),
   };
@@ -387,6 +173,8 @@ export function dbMediaStore(db: StoreDb): MediaStorePort {
 /** How a describe/transcribe pass records itself and where it reads/writes. */
 export interface DescribeAndStoreOptions {
   db?: StoreDb;
+  /** The source whose row is described, when no `store` is given (the database-backed port is then built for it). */
+  source?: SourceId;
   /** Storage owner override — see {@link MediaStorePort}. Default: this DB. */
   store?: MediaStorePort;
   /**
@@ -413,12 +201,18 @@ export interface DescribeAndStoreOptions {
  * found — never a stale null because a concurrent pass won the DB write.
  */
 export async function describeAndStore(
-  params: { chatId: string; telegramMessageId: number },
+  params: { chatId: string; sourceMessageId: string },
   deps: DescribeDeps,
   options: DescribeAndStoreOptions = {},
 ): Promise<MediaRecord | null> {
-  const store = options.store ?? dbMediaStore(options.db ?? getStoreDb());
-  const media = await store.getByMessage(params.chatId, params.telegramMessageId).catch(
+  const store =
+    options.store ??
+    (options.source
+      ? dbMediaStore(options.db ?? getStoreDb(), options.source)
+      : (() => {
+          throw new Error("describeAndStore needs a media store or the source whose row this is");
+        })());
+  const media = await store.getByMessage(params.chatId, params.sourceMessageId).catch(
     () => null,
   );
   const isVoice = media?.kind === "voice";
@@ -434,9 +228,9 @@ export async function describeAndStore(
           trigger: {
             kind: "transport",
             actor: params.chatId,
-            correlationId: `${params.chatId}:${params.telegramMessageId}`,
+            correlationId: `${params.chatId}:${params.sourceMessageId}`,
           },
-          inputSummary: `media on message ${params.telegramMessageId}`,
+          inputSummary: `media on message ${params.sourceMessageId}`,
         }
       );
   const trace = options.trace ?? ownTrace!;
@@ -628,25 +422,28 @@ async function storeDescription(
 
 /** Media annotations for a set of messages in a chat (for the history transcript). */
 export async function getMediaAnnotationsForMessages(
+  source: SourceId,
   chatId: string,
-  telegramMessageIds: number[],
+  sourceMessageIds: readonly string[],
   db: StoreDb = getStoreDb(),
-): Promise<Map<number, MediaAnnotation>> {
-  return getMediaAnnotations(db, chatId, telegramMessageIds);
+): Promise<Map<string, MediaAnnotation>> {
+  return getMediaAnnotations(db, source, chatId, sourceMessageIds);
 }
 
 /**
  * Rendered media suffixes (` [photo: <description>]` / ` [photo]`) keyed by
- * Telegram message id — how a media message reads as text. Shared by the reply
- * transcript window and the `/history` display so both show the same annotation.
+ * the platform's message id — how a media message reads as text. Shared by
+ * the reply transcript window and the `/history` display so both show the
+ * same annotation.
  */
 export async function getMediaSuffixesForMessages(
+  source: SourceId,
   chatId: string,
-  telegramMessageIds: number[],
+  sourceMessageIds: readonly string[],
   db: StoreDb = getStoreDb(),
-): Promise<Map<number, string>> {
-  const annotations = await getMediaAnnotations(db, chatId, telegramMessageIds);
-  const suffixes = new Map<number, string>();
+): Promise<Map<string, string>> {
+  const annotations = await getMediaAnnotations(db, source, chatId, sourceMessageIds);
+  const suffixes = new Map<string, string>();
   for (const [id, annotation] of annotations) {
     const suffix = renderMediaSuffix(annotation);
     if (suffix) suffixes.set(id, suffix);
@@ -665,8 +462,8 @@ const BYTES_URL: Partial<Record<SourceId, (id: string) => string>> = {
   chat: (id) => `/api/chat/media/${encodeURIComponent(id)}`,
 };
 
-function toView(record: MediaRecord, source: SourceId): MediaView {
-  // Show the picture whenever the source still has it. A described telegram
+function toView(record: MediaRecord, source: SourceId, sourceLabel: string): MediaView {
+  // Show the picture whenever the source still has it. A described transport
   // row has dropped its bytes and shows none; a web thread keeps them, since
   // it is the only archive its images have.
   const frames =
@@ -676,8 +473,9 @@ function toView(record: MediaRecord, source: SourceId): MediaView {
   return {
     id: record.id,
     source,
+    sourceLabel,
     chatId: record.chatId,
-    telegramMessageId: record.telegramMessageId,
+    sourceMessageId: record.sourceMessageId,
     kind: record.kind,
     status: record.status,
     description: record.description,
@@ -710,11 +508,14 @@ async function requireMediaSources() {
  * an empty gallery, so it is skipped and the rest render.
  */
 export async function listMedia(limit = 100): Promise<MediaView[]> {
+  const [sources, labels] = await Promise.all([requireMediaSources(), sourceLabels()]);
   const perSource = await Promise.all(
-    (await requireMediaSources()).map(async (source) =>
+    sources.map(async (source) =>
       source
         .listRecent(limit)
-        .then((rows) => rows.map((row) => toView(row, source.source)))
+        .then((rows) =>
+          rows.map((row) => toView(row, source.source, labels.get(source.source) ?? source.source)),
+        )
         .catch(() => [] as MediaView[]),
     ),
   );

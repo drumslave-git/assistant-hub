@@ -1,6 +1,6 @@
+import { tryParseScopedRef } from "@assistant-hub-swarm/contracts";
 import { z } from "zod";
 
-import { isGroupChatId } from "@/lib/telegram";
 
 import type { ScheduleKind, TriggerKind } from "../types";
 
@@ -43,8 +43,16 @@ const triggerKind = z.enum([
   "schedule",
 ]) satisfies z.ZodType<TriggerKind>;
 const scheduleKind = z.enum(["once", "daily", "weekly"]) satisfies z.ZodType<ScheduleKind>;
-/** Null means the global scope (applies in every chat; prompt kinds only). */
-const chatId = z.string().trim().min(1).nullable();
+/**
+ * The chat's scoped ref (`tg:chat:-100…`); null means the global scope
+ * (applies in every chat; prompt kinds only).
+ */
+const chatRef = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((ref) => tryParseScopedRef(ref)?.kind === "chat", "Not a chat ref (<transport>:chat:<id>)")
+  .nullable();
 /**
  * Whose messages a task applies to: empty for everyone in the chat. Normalized
  * here (trimmed, de-duplicated, order of appearance kept) so every path stores
@@ -58,6 +66,8 @@ const targetUserIds = z
 /** Only a group-scoped prompt task may name senders. */
 export const TARGETS_SCOPE_MESSAGE =
   "Only a message or on-reply task scoped to a group chat can be limited to specific people";
+/** A chat-scoped write names its chat by scoped ref; anything else is not a chat. */
+export const CHAT_REF_MESSAGE = "chatRef must be a chat ref (<transport>:chat:<id>) or null";
 
 /** Only a prompt-composed task may span every chat. */
 export const GLOBAL_SCOPE_MESSAGE =
@@ -67,22 +77,19 @@ function isPromptKind(kind: string): boolean {
   return kind === "message" || kind === "on-reply";
 }
 
-/** Scope rules a create must satisfy; the update path re-checks in the service. */
+/**
+ * Scope rules a create must satisfy; the service re-checks the group half
+ * (whether the chat IS a group is a directory fact, not an id shape).
+ */
 function checkScope(
-  value: { chatId: string | null; triggerKind: string; targetUserIds: string[] },
+  value: { chatRef: string | null; triggerKind: string; targetUserIds: string[] },
   ctx: z.RefinementCtx,
 ): void {
-  if (value.chatId === null && !isPromptKind(value.triggerKind)) {
-    ctx.addIssue({ code: "custom", path: ["chatId"], message: GLOBAL_SCOPE_MESSAGE });
+  if (value.chatRef === null && !isPromptKind(value.triggerKind)) {
+    ctx.addIssue({ code: "custom", path: ["chatRef"], message: GLOBAL_SCOPE_MESSAGE });
   }
   if (value.targetUserIds.length === 0) return;
-  if (
-    isPromptKind(value.triggerKind) &&
-    value.chatId !== null &&
-    isGroupChatId(value.chatId)
-  ) {
-    return;
-  }
+  if (isPromptKind(value.triggerKind) && value.chatRef !== null) return;
   ctx.addIssue({ code: "custom", path: ["targetUserIds"], message: TARGETS_SCOPE_MESSAGE });
 }
 
@@ -90,6 +97,8 @@ function checkScope(
 export const taskSchema = z.object({
   id: z.string(),
   chatId: z.string().nullable(),
+  chatRef: z.string().nullable(),
+  chatSource: z.string().nullable(),
   threadId: z.number().nullable(),
   createdByUserId: z.string().nullable(),
   source: z.enum(["chat", "dashboard"]),
@@ -126,12 +135,12 @@ const triggerParams = {
     .optional(),
 };
 
-/** Create input. `chatId: null` is the global scope (dashboard only). */
+/** Create input. `chatRef: null` is the global scope (dashboard only). */
 export const createTaskSchema = z
   .object({
     /** The assistant this task belongs to (Phase 3: tasks are per-assistant). */
     assistantId: z.string().min(1, "An assistant is required"),
-    chatId: chatId.optional().default(null),
+    chatRef: chatRef.optional().default(null),
     threadId: z.number().int().nullable().optional(),
     instruction,
     context: context.optional(),
@@ -169,9 +178,9 @@ export const updateTaskSchema = z
 
 export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
 
-/** Dashboard list filter: one chat's tasks, the global set, or everything. */
+/** Dashboard list filter: one chat's tasks (by scoped ref), the global set, or everything. */
 export const listTasksQuerySchema = z.object({
-  chatId: z.string().optional(),
+  chatRef: z.string().optional(),
 });
 
 export type ListTasksQuery = z.infer<typeof listTasksQuerySchema>;

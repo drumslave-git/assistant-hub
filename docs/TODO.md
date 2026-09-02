@@ -164,11 +164,63 @@ Any core edit for a new source id is a bug.
      troubleshooting, deployment checklist, backup, the manual's surfaces
      table. Proof: `server/transports/status.test.ts` (6 tests), `npm run
      typecheck` (8/8), `npm run lint`. Not run live.
-   - **Remaining (`todo`):** the content plane
-     (`server/source/tg-content.ts`), the curated known-users/known-groups
-     pages, the vision repository, the scoped-ref defaults in
-     memory/tasks/self-improvement, and the timed task fire become lookups
-     over the registered transports.
+   - **Every remaining surface is source-generic (`done`, 2026-09-02).**
+     The content plane is `server/source/content.ts` (`tg-content.ts` is
+     gone): chats are named by scoped ref, message ids are TEXT end to end
+     (`sourceMessageId`/`replyToSourceMessageId` — a snowflake would not
+     survive `Number()`), and every cross-chat read (day/hour scans, search,
+     analytics series, the search index, summary counts) walks
+     `contentSources()` — the transports on this core's contract major — with
+     the store's aggregates taking a source list (`sourceIn`). History lives
+     at `/history/<ref>`, the overview lists every transport's chats with
+     the transport's announced name, search hits and the CSV transfer speak
+     `chat_ref`/`source_message_id`, and the summary/extraction markers key
+     by ref directly. `known-users`/`known-groups` take the source on every
+     read and write; a group is a chat with a `source_chats` row (the
+     ingest stores one for non-direct chats only) and a direct chat's
+     participants are its senders (`listChatParticipantIds`), so
+     `lib/telegram.ts` (`isGroupChatId` and the other Telegram constants)
+     is deleted from the core; `getChatLanguage`/`getChatContext` serve the
+     out-of-turn callers (task fires, browser runs). Memory, self-improvement
+     (feedback rows carry `source`, preferences key by `userRef`, exclusions
+     store refs) and the tool context (`source` required) have no default
+     source. Tasks derive `chatRef`/`chatSource` from the stored ref, the
+     API takes `chatRef`, the dashboard picks chats across every transport,
+     and a timed fire binds its tool context to the task's chat's transport.
+     Vision's repository takes the source; the legacy in-core Telegram
+     media ingest (`ingestMessageMedia`, `detect.ts`, `telegram-files.ts`,
+     `frames.ts`) is deleted; the gallery labels rows with the registered
+     name. Browser runs store `chat_ref`/`created_by_user_ref` and deliver
+     through the transport the ref names; the download cap is the operator's
+     limit, not a platform constant. Analytics filters are `chatRef`/`userRef`;
+     `chat_hour_insights`/`period_insights` key by `chat_ref` (migration
+     `0015_chat_refs_in_insights`, hand-written: rename + backfill of the
+     rows that could only have been Telegram's, plus `addressing_exclusions
+     .source_message_id` to text and the browser-run columns). Prompts and
+     dashboard copy no longer say Telegram where the platform is not the
+     point; the chat-context surface line uses the transport's registered
+     name. Docs: the manual's closing section is now "What the dashboard
+     shows for your transport" (the two conventions a transport must
+     follow), `docs/api/{endpoints.md,openapi.yaml}`, `features/{history,
+     analytics,tasks,vision,browser-agent}.md`, `architecture/data-model.md`.
+     Proof: `npm run typecheck` (8/8), `npm run lint`, `npm run test`
+     (contracts 16, service 3, tg 44, core 1158 passed / 26 skipped),
+     `npm run test:integration -w @assistant-hub-swarm/core` (41 files: 420
+     passed, 30 skipped; the suites that walk the roster register a fixture
+     transport via `test/transports.ts` and point the default store handle
+     at their container, like the ingest suite), migration 0015 applied to
+     the dev database (`npm run db:migrate`). Not run live: a boot of core +
+     tg after the change (no dev server was up; the preview cannot sign in
+     after a restart), `npm run build`.
+   - **Known limits carried into phase 2 (`todo`):** the wire contract still
+     carries numeric message ids on the send responses
+     (`InternalSentMessageResponse.messageId`, `SentMessage.messageId` in
+     `features/bot-messaging`) and the turn correlation id is the transport's
+     `<chatId>:<messageId>` in local ids, so trace scoping by chat/user
+     (`features/analytics/server/trace-source.ts`) and the reply-trace lookup
+     compare local ids and would conflate two transports sharing a numeric
+     id — fold both into the contract-major bump (ids as strings on the wire,
+     the source on the correlation).
 2. **SDK package**: `packages/transport-sdk` (build with tsc/tsup to
    `dist/`, `exports` on the built files, semver, `publishConfig` for GitHub
    Packages); the zod → JSON Schema and OpenAPI generators + CI drift check;
@@ -3609,6 +3661,43 @@ the operator note below about `OLLAMA_NUM_PARALLEL`/context sizing.
   grow (summaries days behind), consider a fairness valve.
 
 ## Other open items
+
+- **MCP tools: platform tools on the transport, everything else the user's
+  own (`todo`, raised by the user 2026-09-02)** — The user's direction: a
+  transport exposes only its platform's tools (Telegram: reply, send, react),
+  and a person connects their own MCP servers to an assistant — a Home
+  Assistant server to control a smart home, say — with no relation to any
+  transport. **What exists already matches the split**
+  (`docs/features/tool-connections.md`): each transport's MCP server is a
+  *managed* connection scoped to that source; any account adds a remote MCP
+  server on `/tools` (`POST /api/tool-connections`: URL + auth headers,
+  discover → apply), scoped to all or chosen assistants; the core's own tools
+  (history, memory, tasks, browsing, images) are in-process. **What falls
+  short for the Home Assistant case, to decide with the user:**
+  1. A `user`-role account's connections must target public addresses
+     (`isSafePublicUrl` — the SSRF guard), so a LAN Home Assistant
+     (`http://homeassistant.local:8123/mcp_server/sse`) is refused unless an
+     admin owns the connection. Options: a per-deployment allowlist of private
+     hosts the admin grants; or admin-only for private endpoints (status quo).
+  2. Only header auth (`authHeaders`, e.g. a long-lived Bearer token). OAuth
+     2.1 MCP servers (the growing default) cannot be connected. Would need the
+     authorization-code flow with token storage per connection.
+  3. Discover → Apply is manual: a user who adds a server must press Apply
+     before the assistant sees the tools; a server that adds tools later
+     shows drift until re-applied. Fine for operators, unexplained for a
+     first-time user — the Tools page could apply on create for user-owned
+     connections (the managed rows already do).
+  4. Per-assistant scope only; no per-chat or per-person scope (v2 decision).
+     A person's private tools (their own home) are usable by everyone who can
+     talk to that assistant. Worth revisiting: bind a user-owned connection
+     to the owner's linked identities so only their turns get the tools.
+  5. Transport tools are one server per transport, offered whole. If a
+     transport grows tools that only some assistants should have, the
+     managed connection's assistant selection already covers it.
+  6. The `stdio` transport is modelled but refused (the core makes the calls
+     over HTTP); local stdio MCP servers need a bridge.
+  Recommended next step: confirm items 1, 3 and 4 with the user, then a small
+  entry per item. No tool-routing/capability router (standing decision).
 
 - **Overview bot control calls routes that no longer exist (`done`,
   2026-09-02; found during the documentation audit, 2026-09-01)** —

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { WEB_CHAT_SOURCE } from "@assistant-hub-swarm/contracts";
+
 import type { MediaRecord } from "@/features/vision/server/repository";
 import type { MediaStorePort } from "@/features/vision/server/service";
 
@@ -25,8 +27,9 @@ import {
 function toMediaRecord(media: StoredWebMedia): MediaRecord {
   return {
     id: media.id,
+    source: WEB_CHAT_SOURCE,
     chatId: media.threadId,
-    telegramMessageId: media.messageId,
+    sourceMessageId: String(media.messageId),
     kind: media.kind as MediaRecord["kind"],
     // File ids are a Telegram concept; a web upload has none.
     fileId: "",
@@ -46,8 +49,8 @@ function toMediaRecord(media: StoredWebMedia): MediaRecord {
 /** The per-row store the describe/transcribe passes read and write. */
 export function webChatMediaStore(): MediaStorePort {
   return {
-    async getByMessage(chatId, telegramMessageId) {
-      const row = await getMediaByMessage(chatId, telegramMessageId);
+    async getByMessage(chatId, sourceMessageId) {
+      const row = await getMediaByMessage(chatId, Number(sourceMessageId));
       return row ? toMediaRecord(row) : null;
     },
     async markDescribed(id, description) {
@@ -69,7 +72,7 @@ export const webChatMediaBrowse = {
     return refs.map((ref) => ({
       id: ref.id,
       chatId: ref.threadId,
-      telegramMessageId: ref.messageId,
+      sourceMessageId: String(ref.messageId),
     }));
   },
   async countPending() {

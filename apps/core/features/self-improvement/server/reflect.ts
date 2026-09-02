@@ -97,7 +97,7 @@ export async function reflectOnFeedback(
       trigger: {
         kind: "system",
         actor: "self-improvement",
-        correlationId: `${feedback.chatId}:${feedback.telegramMessageId}`,
+        correlationId: `${feedback.chatId}:${feedback.sourceMessageId}`,
       },
       inputSummary: `${feedback.reaction === "up" ? "👍" : "👎"} ${feedback.feedback}`,
     }
@@ -108,8 +108,9 @@ export async function reflectOnFeedback(
     // answer, and one the operator can see is thinner.
     const replyTrace = await getReplyTrace(
       deps.ports.messages,
+      feedback.source,
       feedback.chatId,
-      feedback.telegramMessageId,
+      feedback.sourceMessageId,
     );
     const evidence = replyTrace ? renderReplyTrace(replyTrace) : null;
     if (evidence) {

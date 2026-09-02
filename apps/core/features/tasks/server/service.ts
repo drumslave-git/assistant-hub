@@ -2,12 +2,13 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { parseScopedRef, scopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
+
 import { getAssistantById } from "@/features/assistants/server/repository";
-import { getGroupMembers } from "@/features/known-groups/server/repository";
+import { getGroupMembers, isGroupChat } from "@/features/known-groups/server/repository";
 import { getTimezone } from "@/features/settings/server/service";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
-import { isGroupChatId } from "@/lib/telegram";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { getStoreDb, type StoreDb } from "@/server/store/db";
@@ -74,8 +75,8 @@ import {
 const FEATURE = FEATURES.tasks;
 
 /** The scope label used in trace summaries and refusals. */
-function scopeLabel(chatId: string | null): string {
-  return chatId === null ? "global" : `chat ${chatId}`;
+function scopeLabel(chatRef: string | null): string {
+  return chatRef === null ? "global" : `chat ${chatRef}`;
 }
 
 /** One-line summary for tool confirmations, trace output, and logs. */
@@ -99,10 +100,11 @@ export async function getTasksView(db: StoreDb = getStoreDb()): Promise<Task[]> 
  */
 export async function getChatVisibleTasks(
   assistantId: string,
+  source: SourceId,
   chatId: string,
   db: StoreDb = getStoreDb(),
 ): Promise<Task[]> {
-  return (await listTasksForChat(db, assistantId, chatId)).filter(isVisibleFromChat);
+  return (await listTasksForChat(db, assistantId, source, chatId)).filter(isVisibleFromChat);
 }
 
 /**
@@ -114,6 +116,7 @@ export async function getChatVisibleTasks(
 export async function getChatVisibleTask(
   id: string,
   assistantId: string,
+  source: SourceId,
   chatId: string,
   db: StoreDb = getStoreDb(),
 ): Promise<Task | null> {
@@ -121,7 +124,7 @@ export async function getChatVisibleTask(
   if (!task || !isVisibleFromChat(task)) return null;
   // Another assistant's task is as unknown from this turn as another chat's.
   if (task.assistantId !== assistantId) return null;
-  if (task.chatId !== null && task.chatId !== chatId) return null;
+  if (task.chatRef !== null && task.chatRef !== scopedRef(source, "chat", chatId)) return null;
   return task;
 }
 
@@ -130,13 +133,13 @@ export async function getTask(id: string, db: StoreDb = getStoreDb()): Promise<T
   return getTaskById(db, id);
 }
 
-/** Substring search over instructions (optionally chat-scoped). */
+/** Substring search over instructions (optionally one chat's, by scoped ref). */
 export async function findTasks(
   query: string,
-  chatId?: string,
+  chatRef?: string,
   db: StoreDb = getStoreDb(),
 ): Promise<Task[]> {
-  return searchTasks(db, query, chatId);
+  return searchTasks(db, query, chatRef);
 }
 
 /**
@@ -153,11 +156,15 @@ export async function findTasks(
  */
 export async function getActiveTasksForChat(
   assistantId: string,
+  source: SourceId,
   chatId: string,
   senderUserId: string | null,
   db: StoreDb = getStoreDb(),
 ): Promise<{ prompt: Task[]; message: Task[] }> {
-  const tasks = tasksForSender(await listTasksForChat(db, assistantId, chatId), senderUserId);
+  const tasks = tasksForSender(
+    await listTasksForChat(db, assistantId, source, chatId),
+    senderUserId,
+  );
   return { prompt: promptTasks(tasks), message: messageTasks(tasks) };
 }
 
@@ -225,28 +232,28 @@ function normalizedTriggerOrNull(input: Parameters<typeof normalizeTrigger>[0]) 
 /**
  * Guard who a task may name: only a group-scoped prompt task can single people
  * out, and only people the bot has actually seen in that group. Both are
- * mechanical facts — a chat id's sign, and a row in the group roster — so a
- * mistyped or invented id fails here rather than becoming a task that silently
- * never fires. A member is someone who has spoken in the group (that is how
- * the roster is built), so a lurker cannot be named until they say something.
+ * directory facts — the chat has a group row, and the person is on its roster
+ * — so a mistyped or invented id fails here rather than becoming a task that
+ * silently never fires. A member is someone who has spoken in the group (that
+ * is how the roster is built), so a lurker cannot be named until they say
+ * something.
  */
 async function assertTargetsAllowed(
   db: StoreDb,
-  chatId: string | null,
+  chat: { source: SourceId; chatId: string } | null,
   triggerKind: TriggerKind,
   targetUserIds: readonly string[],
 ): Promise<void> {
   if (targetUserIds.length === 0) return;
   if (
     !isPromptTask({ triggerKind }) ||
-    chatId === null ||
-    !isGroupChatId(chatId)
+    chat === null ||
+    !(await isGroupChat(db, chat.source, chat.chatId))
   ) {
     throw ApiError.badRequest(TARGETS_SCOPE_MESSAGE);
   }
-  // Membership is a directory read over the source store (Phase 10).
   const members = new Set(
-    (await getGroupMembers(undefined, chatId)).map((member) => member.userId),
+    (await getGroupMembers(db, chat.source, chat.chatId)).map((member) => member.userId),
   );
   const unknown = targetUserIds.filter((id) => !members.has(id));
   if (unknown.length > 0) {
@@ -295,7 +302,7 @@ function sameTrigger(a: Omit<TaskIdentity, "instruction">, b: Omit<TaskIdentity,
 async function findDuplicateTask(
   db: StoreDb,
   assistantId: string,
-  chatId: string | null,
+  chatRef: string | null,
   candidate: TaskIdentity,
   exceptId?: string,
 ): Promise<Task | null> {
@@ -303,7 +310,7 @@ async function findDuplicateTask(
   const matches = await findActiveTasksByInstruction(
     db,
     assistantId,
-    chatId,
+    chatRef,
     candidate.instruction,
     kinds,
     exceptId,
@@ -316,20 +323,20 @@ async function findDuplicateTask(
 async function assertWritable(
   db: StoreDb,
   assistantId: string,
-  chatId: string | null,
+  chatRef: string | null,
   candidate: TaskIdentity,
   exceptId?: string,
 ): Promise<void> {
   if (
     isPromptTask(candidate) &&
     !exceptId &&
-    (await countPromptTasksInScope(db, assistantId, chatId)) >= MAX_PROMPT_TASKS_PER_SCOPE
+    (await countPromptTasksInScope(db, assistantId, chatRef)) >= MAX_PROMPT_TASKS_PER_SCOPE
   ) {
     throw ApiError.conflict(
-      `At most ${MAX_PROMPT_TASKS_PER_SCOPE} standing tasks are allowed for ${scopeLabel(chatId)}`,
+      `At most ${MAX_PROMPT_TASKS_PER_SCOPE} standing tasks are allowed for ${scopeLabel(chatRef)}`,
     );
   }
-  if (await findDuplicateTask(db, assistantId, chatId, candidate, exceptId)) {
+  if (await findDuplicateTask(db, assistantId, chatRef, candidate, exceptId)) {
     throw ApiError.conflict("That task already exists here");
   }
 }
@@ -371,17 +378,19 @@ export async function createTaskService(
   trigger: TraceTrigger,
   db: StoreDb = getStoreDb(),
 ): Promise<Task> {
+  // The chat's ref names its transport; every id on the task lives there.
+  const chat = input.chatRef === null ? null : parseScopedRef(input.chatRef);
   return withTrace(
     {
       feature: FEATURE.id,
       action: "create",
       trigger,
-      inputSummary: `${scopeLabel(input.chatId)}: ${input.instruction}`,
+      inputSummary: `${scopeLabel(input.chatRef)}: ${input.instruction}`,
     },
     async (trace) => {
       const instruction = validateInstruction(input.instruction);
       const kind = input.triggerKind as TriggerKind;
-      if (input.chatId === null && !isPromptTask({ triggerKind: kind })) {
+      if (input.chatRef === null && !isPromptTask({ triggerKind: kind })) {
         throw ApiError.badRequest(GLOBAL_SCOPE_MESSAGE);
       }
       // The task's assistant must exist — the FK would reject it anyway, but
@@ -390,7 +399,12 @@ export async function createTaskService(
         throw ApiError.badRequest("Unknown assistant");
       }
       const targetUserIds = input.targetUserIds ?? [];
-      await assertTargetsAllowed(db, input.chatId, kind, targetUserIds);
+      await assertTargetsAllowed(
+        db,
+        chat ? { source: chat.source, chatId: chat.id } : null,
+        kind,
+        targetUserIds,
+      );
       // Context rides only on timed kinds: a fire has no transcript to lean on,
       // while a prompt task runs inside a live turn that does.
       const context = isTimedTask({ triggerKind: kind }) ? validateContext(input.context) : null;
@@ -400,7 +414,7 @@ export async function createTaskService(
         { ...input, triggerKind: kind },
         now,
       );
-      await assertWritable(db, input.assistantId, input.chatId, { instruction, ...normalized });
+      await assertWritable(db, input.assistantId, input.chatRef, { instruction, ...normalized });
       await trace.event({
         type: "input",
         message: "create task",
@@ -409,7 +423,8 @@ export async function createTaskService(
 
       const values: InsertTask = {
         assistantId: input.assistantId,
-        chatId: input.chatId,
+        chatSource: chat?.source ?? null,
+        chatId: chat?.id ?? null,
         threadId: input.threadId ?? null,
         createdByUserId: input.createdByUserId ?? null,
         source: input.source ?? "dashboard",
@@ -462,7 +477,14 @@ export async function editTaskService(
         ? (patch.targetUserIds ?? current.targetUserIds)
         : [];
       if (patch.targetUserIds !== undefined || patch.triggerKind !== undefined) {
-        await assertTargetsAllowed(db, current.chatId, kind, targetUserIds);
+        await assertTargetsAllowed(
+          db,
+          current.chatSource && current.chatId
+            ? { source: current.chatSource, chatId: current.chatId }
+            : null,
+          kind,
+          targetUserIds,
+        );
       }
 
       const instruction =
@@ -498,7 +520,7 @@ export async function editTaskService(
       // enabled: a task being paused duplicates nothing, and refusing there would
       // block the operator's way of resolving a pair that already exists.
       if (enabled) {
-        await assertWritable(db, current.assistantId, current.chatId, { instruction, ...normalized }, id);
+        await assertWritable(db, current.assistantId, current.chatRef, { instruction, ...normalized }, id);
       }
 
       const record = await updateTask(db, id, {
@@ -574,28 +596,24 @@ export type TaskWriteResult =
 /**
  * May this user create a task of this kind here, from inside the chat?
  * Prompt kinds mirror the old rules gate (user decision, 2026-07-29): in a
- * private chat the user manages their own chat's standing tasks; in a group
+ * direct chat the person manages their own chat's standing tasks; in a group
  * only the owner may — judged by the sender's `isOwner` stamp from the
  * inbound event (the source is authoritative for owner identity since the
- * split). Timed kinds are open — any chat participant may schedule (recorded
- * decision, priority 9). Resolves a refusal reason, or null when allowed.
+ * split). Whether the chat is a group is the directory's fact (the ingest
+ * stores a chat row for groups only). Timed kinds are open — any chat
+ * participant may schedule (recorded decision, priority 9). Resolves a
+ * refusal reason, or null when allowed.
  */
-function createDenyReason(
+async function createDenyReason(
+  db: StoreDb,
+  source: SourceId,
   chatId: string,
-  userId: string | null,
   senderIsOwner: boolean,
   kind: TriggerKind,
-): string | null {
+): Promise<string | null> {
   if (!isPromptTask({ triggerKind: kind })) return null;
-  if (isGroupChatId(chatId)) {
-    if (!senderIsOwner) {
-      return "Only the bot owner can change this group's standing rules.";
-    }
-    return null;
-  }
-  // A private chat's id equals the user id; anything else is not "their own DM".
-  if (!userId || userId !== chatId) {
-    return "You can only change the rules of your own chat.";
+  if ((await isGroupChat(db, source, chatId)) && !senderIsOwner) {
+    return "Only the bot owner can change this group's standing rules.";
   }
   return null;
 }
@@ -614,6 +632,7 @@ async function resolveMutationTarget(
   db: StoreDb,
   input: {
     assistantId: string;
+    source: SourceId;
     chatId: string;
     userId: string | null;
     senderIsOwner?: boolean;
@@ -621,7 +640,7 @@ async function resolveMutationTarget(
     id: string;
   },
 ): Promise<{ ok: true; task: Task } | { ok: false; result: TaskWriteResult }> {
-  const task = await getChatVisibleTask(input.id, input.assistantId, input.chatId, db);
+  const task = await getChatVisibleTask(input.id, input.assistantId, input.source, input.chatId, db);
   if (!task) {
     return { ok: false, result: { status: "not_found" } };
   }
@@ -636,9 +655,10 @@ async function resolveMutationTarget(
     };
   }
   if (isPromptTask(task)) {
-    const denied = createDenyReason(
+    const denied = await createDenyReason(
+      db,
+      input.source,
       input.chatId,
-      input.userId,
       input.senderIsOwner === true,
       task.triggerKind,
     );
@@ -665,6 +685,8 @@ export async function createTaskFromChat(
   input: {
     /** The turn's assistant (from the inbound event); the task is its. */
     assistantId: string;
+    /** The turn's transport — the namespace of the chat and user ids. */
+    source: SourceId;
     chatId: string;
     userId: string | null;
     /** The sender's owner stamp from the inbound event; recorded on the task. */
@@ -683,9 +705,11 @@ export async function createTaskFromChat(
   traceTrigger: TraceTrigger,
   db: StoreDb = getStoreDb(),
 ): Promise<TaskWriteResult> {
-  const denied = createDenyReason(
+  const chatRef = scopedRef(input.source, "chat", input.chatId);
+  const denied = await createDenyReason(
+    db,
+    input.source,
     input.chatId,
-    input.userId,
     input.senderIsOwner === true,
     input.triggerKind,
   );
@@ -705,7 +729,7 @@ export async function createTaskFromChat(
   // by the create below.
   const trigger = normalizedTriggerOrNull({ ...input, triggerKind: input.triggerKind });
   const existing = trigger
-    ? await findDuplicateTask(db, input.assistantId, input.chatId, { instruction, ...trigger })
+    ? await findDuplicateTask(db, input.assistantId, chatRef, { instruction, ...trigger })
     : null;
   if (existing) {
     // …unless a standing task is asked for with a different set of people. That
@@ -721,7 +745,7 @@ export async function createTaskFromChat(
     const task = await createTaskService(
       {
         assistantId: input.assistantId,
-        chatId: input.chatId,
+        chatRef,
         threadId: input.threadId ?? null,
         instruction,
         context: input.context ?? null,
@@ -762,6 +786,7 @@ export async function createTaskFromChat(
 export async function updateTaskFromChat(
   input: {
     assistantId: string;
+    source: SourceId;
     chatId: string;
     userId: string | null;
     senderIsOwner?: boolean;
@@ -795,6 +820,7 @@ export async function updateTaskFromChat(
 export async function deleteTaskFromChat(
   input: {
     assistantId: string;
+    source: SourceId;
     chatId: string;
     userId: string | null;
     senderIsOwner?: boolean;

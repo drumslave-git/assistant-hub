@@ -5,6 +5,7 @@ import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces } from "@/server/trace";
 import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
 import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
+import { registerTestTransport } from "@/test/transports";
 
 import {
   countDaysNeedingSummary,
@@ -35,9 +36,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  await registerTestTransport(ctx.db);
 });
 
-const CHAT = "555";
+const CHAT = "tg:chat:555";
 /** "Now" for the run: the 14th, so the 13th is a finished, summarizable day. */
 const NOW = new Date("2026-07-14T12:00:00.000Z");
 const YESTERDAY = "2026-07-13";
@@ -83,20 +85,20 @@ function deps(
 }
 
 /** Seed a two-message exchange on the given day into the fake source. */
-function seedDay(content: FakeSourceContent, date: string, startId = 1, chatId = CHAT): void {
+function seedDay(content: FakeSourceContent, date: string, startId = 1, chatRef = CHAT): void {
   content.addMessage({
-    chatId,
-    telegramMessageId: startId,
+    chatRef,
+    sourceMessageId: String(startId),
     userId: "100",
     content: "the deploy is broken again",
     sentAt: new Date(`${date}T10:00:00.000Z`),
   });
   content.addMessage({
-    chatId,
-    telegramMessageId: startId + 1,
+    chatRef,
+    sourceMessageId: String(startId + 1),
     role: "assistant",
     content: "I rolled it back",
-    replyToMessageId: startId,
+    replyToSourceMessageId: String(startId),
     sentAt: new Date(`${date}T10:00:05.000Z`),
   });
 }
@@ -111,7 +113,7 @@ describe("summarizeChatDay", () => {
     seedDay(content, YESTERDAY);
 
     const result = await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content),
       { kind: "test" },
       ctx.db,
@@ -124,7 +126,7 @@ describe("summarizeChatDay", () => {
     expect(stored[0]).toMatchObject({
       summaryDate: YESTERDAY,
       content: "They discussed the broken deploy",
-      messageIds: [1, 2],
+      messageIds: ["1", "2"],
       embedded: true,
     });
   });
@@ -134,7 +136,7 @@ describe("summarizeChatDay", () => {
     seedDay(content, YESTERDAY);
     const d = deps(content);
 
-    await summarizeChatDay({ chatId: CHAT, summaryDate: YESTERDAY }, d, { kind: "test" }, ctx.db);
+    await summarizeChatDay({ chatRef: CHAT, summaryDate: YESTERDAY }, d, { kind: "test" }, ctx.db);
 
     const [messages] = (d.complete as unknown as { mock: { calls: [ChatMessage[]][] } }).mock
       .calls[0];
@@ -150,13 +152,13 @@ describe("summarizeChatDay", () => {
     seedDay(content, YESTERDAY);
 
     await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content),
       { kind: "test" },
       ctx.db,
     );
     await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content, {
         complete: async () =>
           completion(JSON.stringify({ topics: [{ content: "A better summary", message_ids: [2] }] })),
@@ -175,7 +177,7 @@ describe("summarizeChatDay", () => {
     seedDay(content, YESTERDAY);
 
     const result = await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content, {
         embed: async () => {
           throw new Error("embedding endpoint down");
@@ -195,7 +197,7 @@ describe("summarizeChatDay", () => {
     seedDay(content, YESTERDAY);
 
     const result = await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content, { embed: null }),
       { kind: "test" },
       ctx.db,
@@ -210,7 +212,7 @@ describe("summarizeChatDay", () => {
     seedDay(content, YESTERDAY);
 
     await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content, { complete: async () => completion('{"topics":[]}') }),
       { kind: "test" },
       ctx.db,
@@ -226,8 +228,8 @@ describe("summarizeChatDay", () => {
     // 40 long messages blow past the batch budget.
     for (let i = 1; i <= 40; i += 1) {
       content.addMessage({
-        chatId: CHAT,
-        telegramMessageId: i,
+        chatRef: CHAT,
+        sourceMessageId: String(i),
         userId: "100",
         content: "x".repeat(1000),
         sentAt: new Date(`${YESTERDAY}T10:00:00.000Z`),
@@ -242,7 +244,7 @@ describe("summarizeChatDay", () => {
     });
 
     const result = await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content, { complete }),
       { kind: "test" },
       ctx.db,
@@ -257,8 +259,8 @@ describe("summarizeChatDay", () => {
     seedDay(content, YESTERDAY);
     // #3: a photo with no caption whose image vision has described.
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 3,
+      chatRef: CHAT,
+      sourceMessageId: "3",
       userId: "100",
       content: "",
       sentAt: new Date(`${YESTERDAY}T11:00:00.000Z`),
@@ -266,8 +268,8 @@ describe("summarizeChatDay", () => {
     });
     // #4: an empty row with nothing readable at all — unreadable.
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 4,
+      chatRef: CHAT,
+      sourceMessageId: "4",
       userId: "100",
       content: "",
       sentAt: new Date(`${YESTERDAY}T11:01:00.000Z`),
@@ -275,7 +277,7 @@ describe("summarizeChatDay", () => {
 
     const d = deps(content);
     const result = await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       d,
       { kind: "test" },
       ctx.db,
@@ -297,8 +299,8 @@ describe("summarizeChatDay", () => {
     const content = fakeSourceContent();
     for (let i = 1; i <= 40; i += 1) {
       content.addMessage({
-        chatId: CHAT,
-        telegramMessageId: i,
+        chatRef: CHAT,
+        sourceMessageId: String(i),
         userId: "100",
         content: "x".repeat(1000),
         sentAt: new Date(`${YESTERDAY}T10:00:00.000Z`),
@@ -320,7 +322,7 @@ describe("summarizeChatDay", () => {
     });
 
     const result = await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content, { complete }),
       { kind: "test" },
       ctx.db,
@@ -337,7 +339,7 @@ describe("summarizeChatDay", () => {
     seedDay(content, YESTERDAY);
 
     await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content),
       { kind: "test" },
       ctx.db,
@@ -357,7 +359,7 @@ describe("listDaysNeedingSummary", () => {
     seedDay(content, "2026-07-14", 10); // today — unfinished
 
     const pending = await pendingDays(content);
-    expect(pending).toEqual([{ chatId: CHAT, summaryDate: YESTERDAY, messageCount: 2 }]);
+    expect(pending).toEqual([{ chatRef: CHAT, summaryDate: YESTERDAY, messageCount: 2 }]);
     expect(
       await countDaysNeedingSummary(content, ctx.db, { timeZone: "UTC", today: "2026-07-14" }),
     ).toBe(1);
@@ -367,7 +369,7 @@ describe("listDaysNeedingSummary", () => {
     const content = fakeSourceContent();
     seedDay(content, YESTERDAY);
     await summarizeChatDay(
-      { chatId: CHAT, summaryDate: YESTERDAY },
+      { chatRef: CHAT, summaryDate: YESTERDAY },
       deps(content),
       { kind: "test" },
       ctx.db,
@@ -376,14 +378,14 @@ describe("listDaysNeedingSummary", () => {
 
     // A late row lands in the already-summarized day.
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 3,
+      chatRef: CHAT,
+      sourceMessageId: "3",
       userId: "100",
       content: "one more thing",
       sentAt: new Date(`${YESTERDAY}T20:00:00.000Z`),
     });
     expect(await pendingDays(content)).toEqual([
-      { chatId: CHAT, summaryDate: YESTERDAY, messageCount: 3 },
+      { chatRef: CHAT, summaryDate: YESTERDAY, messageCount: 3 },
     ]);
   });
 });
@@ -424,7 +426,7 @@ describe("runSummarization", () => {
     expect(result).toMatchObject({ days: 1, failures: 1 });
     // The failed day is still owed; the summarized one is not.
     expect(await pendingDays(content)).toEqual([
-      { chatId: CHAT, summaryDate: "2026-07-12", messageCount: 2 },
+      { chatRef: CHAT, summaryDate: "2026-07-12", messageCount: 2 },
     ]);
   });
 });

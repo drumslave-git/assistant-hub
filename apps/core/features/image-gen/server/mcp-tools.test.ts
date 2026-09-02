@@ -52,7 +52,7 @@ describe("image_generate", () => {
     const handler = toolHandler();
 
     const result = await runWithToolContext(
-      { chatId: "42", collectImage: (b64) => collected.push(b64) },
+      { source: "tg", chatId: "42", collectImage: (b64) => collected.push(b64) },
       () => handler({ prompt: "a red car" }),
     );
 
@@ -68,7 +68,7 @@ describe("image_generate", () => {
     const handler = toolHandler();
 
     // A bound turn with no sink — e.g. a text-only scheduled-task fire.
-    const result = await runWithToolContext({ chatId: "42" }, () =>
+    const result = await runWithToolContext({ source: "tg", chatId: "42" }, () =>
       handler({ prompt: "a red car" }),
     );
 
@@ -90,7 +90,7 @@ describe("image_generate", () => {
     const handler = toolHandler();
 
     const result = await runWithToolContext(
-      { chatId: "42", collectImage: (b64) => collected.push(b64) },
+      { source: "tg", chatId: "42", collectImage: (b64) => collected.push(b64) },
       () => handler({ prompt: "a red car" }),
     );
 

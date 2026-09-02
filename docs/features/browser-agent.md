@@ -281,9 +281,9 @@ tasks poller. A single run executes at a time; the queue **is** the
 One combined message wherever possible (user decision, 2026-08-01 — the earlier
 file-then-recap flow repeated the same filename twice and spammed the chat):
 
-- An attachable download — within Telegram's fixed 50 MB bot upload ceiling
-  (`TELEGRAM_MAX_UPLOAD_MB`; user decision, 2026-08-01, replacing the old
-  `browser_download_max_mb` setting) — is **staged**: the runner holds it and
+- An attachable download — within the operator's download limit (the core
+  sets no platform ceiling; user decision, 2026-09-02 — the transport decides
+  what its platform can carry, and refuses what it cannot) — is **staged**: the runner holds it and
   delivers it at the end of the run **together with the final report as its
   caption**, so the chat gets one message carrying both the file and what the
   agent has to say. On an owner-started run, files over the limit are announced
@@ -343,7 +343,7 @@ file-then-recap flow repeated the same filename twice and spammed the chat):
   delivered deletes it on arrival. The tracking is in-memory (`server/ack.ts`,
   the same `globalThis` pattern as the enqueue signal); a restart mid-run merely
   leaves one acknowledgement standing.
-- A **dashboard-started run has no `chatId`** and delivers nothing; its report is
+- A **dashboard-started run has no `chatRef`** and delivers nothing; its report is
   stored on the run row and read on the page.
 
 ### The size limit
@@ -457,8 +457,8 @@ directly, mirroring the conversational tool without needing Telegram.
 | Owner rights (the assistant's owning account + admins, stamped on the turn as `sender.isOwner`) | Only runs carrying owner rights (the sender's own, or lent by a standing rule) may download — read from `browser_agent_runs.is_owner` / `restricted`, stamped at enqueue |
 | `browserDownloadLimitGb` | Hard ceiling on any single download (1–100, default 10) |
 
-The chat-attach ceiling is fixed at 50 MB — Telegram's bot upload limit
-(`TELEGRAM_MAX_UPLOAD_MB`), not a setting.
+The chat-attach ceiling is the operator's download limit; a platform's own
+upload cap is the transport's to enforce when it sends.
 
 Needs a working Chromium, ffmpeg and yt-dlp. Chromium and ffmpeg come from `apk`;
 yt-dlp does not (see below). Locally they must be on `PATH`; without yt-dlp,

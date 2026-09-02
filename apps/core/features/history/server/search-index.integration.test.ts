@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { fakeSourceContent } from "@/test/fake-source-content";
 import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
+import { registerTestTransport } from "@/test/transports";
 
 import { buildSearchableText, runMessageIndexing } from "./index-messages";
 import { searchHistoryMessages } from "./search";
@@ -19,7 +20,7 @@ import { searchHistoryMessages } from "./search";
  * endpoint actually runs in.
  */
 
-const CHAT = "-1001";
+const CHAT = "tg:chat:-1001";
 const BEA = "200";
 
 let ctx: TestStoreDb;
@@ -34,14 +35,15 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  await registerTestTransport(ctx.db);
 });
 
 describe("buildSearchableText", () => {
   it("renders a message as its text plus what its media shows", () => {
     expect(
       buildSearchableText({
-        chatId: CHAT,
-        telegramMessageId: 1,
+        chatRef: CHAT,
+        sourceMessageId: "1",
         content: "check this",
         media: { kind: "photo", status: "described", description: "a blue front door" },
       }),
@@ -51,8 +53,8 @@ describe("buildSearchableText", () => {
   it("still describes an uncaptioned photo — the case a caption search cannot reach", () => {
     expect(
       buildSearchableText({
-        chatId: CHAT,
-        telegramMessageId: 1,
+        chatRef: CHAT,
+        sourceMessageId: "1",
         content: "",
         media: { kind: "photo", status: "described", description: "a blue front door" },
       }),
@@ -62,8 +64,8 @@ describe("buildSearchableText", () => {
   it("marks media that is not described yet, rather than indexing it as empty", () => {
     expect(
       buildSearchableText({
-        chatId: CHAT,
-        telegramMessageId: 1,
+        chatRef: CHAT,
+        sourceMessageId: "1",
         content: "",
         media: { kind: "video", status: "pending", description: null },
       }),
@@ -75,8 +77,8 @@ describe("runMessageIndexing", () => {
   it("indexes the backlog with composed text and leaves nothing due", async () => {
     const content = fakeSourceContent();
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 41,
+      chatRef: CHAT,
+      sourceMessageId: "41",
       content: "",
       media: {
         kind: "photo",
@@ -84,7 +86,7 @@ describe("runMessageIndexing", () => {
         description: "A weathered blue front door with a brass number 12.",
       },
     });
-    content.addMessage({ chatId: CHAT, telegramMessageId: 42, content: "nice weather" });
+    content.addMessage({ chatRef: CHAT, sourceMessageId: "42", content: "nice weather" });
 
     const result = await runMessageIndexing({}, ctx.db, content);
     expect(result.indexed).toBe(2);
@@ -103,8 +105,8 @@ describe("runMessageIndexing", () => {
   it("re-indexes a message the source marks due again (its description arrived)", async () => {
     const content = fakeSourceContent();
     const row = content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 51,
+      chatRef: CHAT,
+      sourceMessageId: "51",
       content: "",
       media: { kind: "photo", status: "pending", description: null },
     });
@@ -113,7 +115,7 @@ describe("runMessageIndexing", () => {
 
     // The backfill wrote the description — the source re-dues the row.
     row.media = { kind: "photo", status: "described", description: "A weathered blue front door." };
-    content.markDirty(CHAT, 51);
+    content.markDirty(CHAT, "51");
 
     const result = await runMessageIndexing({}, ctx.db, content);
     expect(result.indexed).toBe(1);
@@ -122,7 +124,7 @@ describe("runMessageIndexing", () => {
 
   it("indexes an empty message with no vector rather than handing it back forever", async () => {
     const content = fakeSourceContent();
-    content.addMessage({ chatId: CHAT, telegramMessageId: 103, content: "" });
+    content.addMessage({ chatRef: CHAT, sourceMessageId: "103", content: "" });
 
     const result = await runMessageIndexing({}, ctx.db, content);
     expect(result.indexed).toBe(1);
@@ -132,7 +134,7 @@ describe("runMessageIndexing", () => {
 
 describe("searchHistoryMessages", () => {
   it("resolves a hit for a human reader — every chat, named sender", async () => {
-    await upsertKnownUser(ctx.db, {
+    await upsertKnownUser(ctx.db, "tg", {
       userId: BEA,
       username: "bea",
       firstName: "Bea",
@@ -140,21 +142,21 @@ describe("searchHistoryMessages", () => {
     });
     const content = fakeSourceContent();
     content.addMessage({
-      chatId: "-1002",
-      telegramMessageId: 151,
+      chatRef: "tg:chat:-1002",
+      sourceMessageId: "151",
       userId: BEA,
       content: "the door is stuck",
     });
 
     const hits = await searchHistoryMessages({ query: "door" }, ctx.db, content);
     expect(hits).toHaveLength(1);
-    expect(hits[0].chatId).toBe("-1002");
+    expect(hits[0].chatRef).toBe("tg:chat:-1002");
     expect(hits[0].senderLabel).toContain("Bea");
   });
 
   it("answers an empty search with nothing rather than everything", async () => {
     const content = fakeSourceContent();
-    content.addMessage({ chatId: CHAT, telegramMessageId: 161, content: "hello" });
+    content.addMessage({ chatRef: CHAT, sourceMessageId: "161", content: "hello" });
     expect(await searchHistoryMessages({ query: "   " }, ctx.db, content)).toEqual([]);
   });
 });

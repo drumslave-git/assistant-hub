@@ -307,21 +307,33 @@ describe("media lifecycle", () => {
 describe("search index + hybrid search", () => {
   it("scans due messages, indexes them, and finds them three ways", async () => {
     await seedMessage({ chatId: GROUP, sourceMessageId: "80", content: "the quick brown fox" });
-    const due = await listSourceMessagesNeedingIndex("tg", 10, db);
+    const due = await listSourceMessagesNeedingIndex(["tg"], 10, db);
     expect(due.map((row) => row.sourceMessageId)).toEqual(["80"]);
-    expect(await countSourceMessagesNeedingIndex("tg", db)).toBe(1);
+    expect(await countSourceMessagesNeedingIndex(["tg"], db)).toBe(1);
 
     await upsertSourceMessageIndex(
-      "tg",
-      [{ chatId: GROUP, sourceMessageId: "80", content: "the quick brown fox", embedding: null }],
+      [
+        {
+          source: "tg",
+          chatId: GROUP,
+          sourceMessageId: "80",
+          content: "the quick brown fox",
+          embedding: null,
+        },
+      ],
       db,
     );
-    expect(await countSourceMessagesNeedingIndex("tg", db)).toBe(0);
-    expect(await countEmbeddedSourceMessages("tg", GROUP, db)).toBe(0);
+    expect(await countSourceMessagesNeedingIndex(["tg"], db)).toBe(0);
+    expect(await countEmbeddedSourceMessages({ source: "tg", chatId: GROUP }, db)).toBe(0);
 
     const matches = await searchSourceMessagesHybrid(
-      "tg",
-      { chatId: GROUP, queryText: "brown fox", queryVector: null, limit: 5 },
+      {
+        sources: ["tg"],
+        chat: { source: "tg", chatId: GROUP },
+        queryText: "brown fox",
+        queryVector: null,
+        limit: 5,
+      },
       db,
     );
     expect(matches).toHaveLength(1);
@@ -332,9 +344,9 @@ describe("search index + hybrid search", () => {
     await seedMessage({ chatId: GROUP, sourceMessageId: "90", userId: "42", content: "mine" });
     await seedMessage({ chatId: GROUP, sourceMessageId: "91", userId: "77", content: "theirs" });
     const matches = await searchSourceMessagesHybrid(
-      "tg",
       {
-        chatId: GROUP,
+        sources: ["tg"],
+        chat: { source: "tg", chatId: GROUP },
         queryText: "",
         queryVector: null,
         limit: 5,
@@ -349,9 +361,8 @@ describe("search index + hybrid search", () => {
 describe("summaries", () => {
   it("replaces a day's topics idempotently and searches them lexically", async () => {
     const first = await replaceSourceSummariesForDay(
-      "tg",
+      { source: "tg", chatId: GROUP },
       {
-        chatId: GROUP,
         summaryDate: "2026-08-29",
         topics: [{ content: "planning the autumn trip", messageIds: ["1", "2"], embedding: null }],
       },
@@ -359,9 +370,8 @@ describe("summaries", () => {
     );
     expect(first).toHaveLength(1);
     const replaced = await replaceSourceSummariesForDay(
-      "tg",
+      { source: "tg", chatId: GROUP },
       {
-        chatId: GROUP,
         summaryDate: "2026-08-29",
         topics: [
           { content: "planning the autumn trip", messageIds: ["1", "2"], embedding: null },
@@ -373,8 +383,8 @@ describe("summaries", () => {
     expect(replaced).toHaveLength(2);
 
     const matches = await searchSourceSummariesHybrid(
-      "tg",
-      { chatId: GROUP, queryText: "autumn trip", queryVector: null, limit: 5 },
+      { source: "tg", chatId: GROUP },
+      { queryText: "autumn trip", queryVector: null, limit: 5 },
       db,
     );
     expect(matches[0]).toMatchObject({ content: "planning the autumn trip", messageIds: ["1", "2"] });
@@ -396,7 +406,7 @@ describe("analytics", () => {
     });
 
     const series = await getSourceMessageSeries(
-      "tg",
+      ["tg"],
       {
         fromUtc: new Date("2026-08-29T00:00:00Z"),
         toUtc: new Date("2026-08-30T00:00:00Z"),
@@ -408,7 +418,7 @@ describe("analytics", () => {
     expect(series).toEqual([{ bucket: "2026-08-29", human: 2, bot: 1, activeUsers: 1 }]);
 
     const top = await getSourceTopUsers(
-      "tg",
+      ["tg"],
       {
         fromUtc: new Date("2026-08-29T00:00:00Z"),
         toUtc: new Date("2026-08-30T00:00:00Z"),
@@ -416,10 +426,10 @@ describe("analytics", () => {
       },
       db,
     );
-    expect(top).toEqual([{ userId: "42", messages: 2 }]);
+    expect(top).toEqual([{ source: "tg", userId: "42", messages: 2 }]);
 
-    const days = await listSourceChatDayCounts("tg", { timeZone: "UTC", before: "2026-09-01" }, db);
-    expect(days).toEqual([{ chatId: GROUP, date: "2026-08-29", messageCount: 3 }]);
+    const days = await listSourceChatDayCounts(["tg"], { timeZone: "UTC", before: "2026-09-01" }, db);
+    expect(days).toEqual([{ source: "tg", chatId: GROUP, date: "2026-08-29", messageCount: 3 }]);
   });
 });
 

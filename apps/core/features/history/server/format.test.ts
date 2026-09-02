@@ -16,12 +16,12 @@ import type { ChatMessageRecord } from "./repository";
 function record(over: Partial<ChatMessageRecord>): ChatMessageRecord {
   return {
     id: 1,
-    chatId: "5",
-    telegramMessageId: 10,
+    chatRef: "tg:chat:5",
+    sourceMessageId: "10",
     role: "user",
     userId: "100",
     content: "hello",
-    replyToMessageId: null,
+    replyToSourceMessageId: null,
     sentAt: "2026-07-12T10:00:00.000Z",
     editedAt: null,
     deletedAt: null,
@@ -40,12 +40,12 @@ describe("historyWindowStart", () => {
 
 describe("renderReplyRef", () => {
   it("renders a stored target as an id anchor", () => {
-    expect(renderReplyRef({ kind: "anchor", telegramMessageId: 123 })).toBe("[reply to #123]");
+    expect(renderReplyRef({ kind: "anchor", sourceMessageId: "123" })).toBe("[reply to #123]");
   });
 
   it("appends the partial quote to an anchor", () => {
     expect(
-      renderReplyRef({ kind: "anchor", telegramMessageId: 123, quote: "the sky is green" }),
+      renderReplyRef({ kind: "anchor", sourceMessageId: "123", quote: "the sky is green" }),
     ).toBe('[reply to #123, quoting: "the sky is green"]');
   });
 
@@ -70,7 +70,7 @@ describe("renderReplyRef", () => {
 describe("renderTranscriptLine", () => {
   it("renders an anchored, labelled line", () => {
     const line = renderTranscriptLine({
-      telegramMessageId: 42,
+      sourceMessageId: "42",
       label: "Alice (@alice)",
       content: "hello all",
     });
@@ -79,9 +79,9 @@ describe("renderTranscriptLine", () => {
 
   it("places the reply marker between the label and the content", () => {
     const line = renderTranscriptLine({
-      telegramMessageId: 43,
+      sourceMessageId: "43",
       label: "Bob (@bob)",
-      replyRef: { kind: "anchor", telegramMessageId: 42 },
+      replyRef: { kind: "anchor", sourceMessageId: "42" },
       content: "@bot tell him he is wrong",
     });
     expect(line).toBe("[#43] Bob (@bob) [reply to #42]: @bot tell him he is wrong");
@@ -105,14 +105,14 @@ describe("toTranscriptLine", () => {
 
   it("labels an assistant row with the bot label", () => {
     const line = toTranscriptLine(
-      record({ role: "assistant", userId: null, content: "hi back", replyToMessageId: 9 }),
+      record({ role: "assistant", userId: null, content: "hi back", replyToSourceMessageId: "9" }),
       { botLabel: "You (@MyBot)" },
     );
     expect(line).toBe("[#10] You (@MyBot) [reply to #9]: hi back");
   });
 
   it("renders a stored reply target as an id anchor", () => {
-    const line = toTranscriptLine(record({ content: "so wrong", replyToMessageId: 7 }), {
+    const line = toTranscriptLine(record({ content: "so wrong", replyToSourceMessageId: "7" }), {
       speakerLabels: new Map([["100", "Bob"]]),
     });
     expect(line).toBe("[#10] Bob [reply to #7]: so wrong");
@@ -121,7 +121,7 @@ describe("toTranscriptLine", () => {
   it("appends a media suffix for a message that carries an image", () => {
     const line = toTranscriptLine(record({ content: "look", userId: "100" }), {
       speakerLabels: new Map([["100", "Alice"]]),
-      mediaSuffixes: new Map([[10, " [photo: a red car]"]]),
+      mediaSuffixes: new Map([["10", " [photo: a red car]"]]),
     });
     expect(line).toBe("[#10] Alice: look [photo: a red car]");
   });
@@ -129,7 +129,7 @@ describe("toTranscriptLine", () => {
   it("ignores a media suffix for an unrelated message id", () => {
     const line = toTranscriptLine(record({ content: "hi", userId: "100" }), {
       speakerLabels: new Map([["100", "Alice"]]),
-      mediaSuffixes: new Map([[999, " [photo]"]]),
+      mediaSuffixes: new Map([["999", " [photo]"]]),
     });
     expect(line).toBe("[#10] Alice: hi");
   });
@@ -142,7 +142,7 @@ describe("toTranscriptLine", () => {
       record({ content: "look", userId: "100", botReaction: "👍" }),
       {
         speakerLabels: new Map([["100", "Alice"]]),
-        mediaSuffixes: new Map([[10, " [photo: a red car]"]]),
+        mediaSuffixes: new Map([["10", " [photo: a red car]"]]),
       },
     );
     expect(line).toBe("[#10] Alice: look [photo: a red car] [you reacted: 👍]");
@@ -164,15 +164,15 @@ describe("renderTranscript", () => {
   it("renders the preamble plus one line per row, in order", () => {
     const transcript = renderTranscript(
       [
-        record({ telegramMessageId: 1, content: "earth is flat", userId: "100" }),
+        record({ sourceMessageId: "1", content: "earth is flat", userId: "100" }),
         record({
           id: 2,
-          telegramMessageId: 2,
+          sourceMessageId: "2",
           content: "no it is not",
           userId: "200",
-          replyToMessageId: 1,
+          replyToSourceMessageId: "1",
         }),
-        record({ id: 3, telegramMessageId: 3, role: "assistant", userId: null, content: "indeed" }),
+        record({ id: 3, sourceMessageId: "3", role: "assistant", userId: null, content: "indeed" }),
       ],
       { speakerLabels: new Map([["100", "Alice"], ["200", "Bob"]]), botLabel: "You (@MyBot)" },
     );

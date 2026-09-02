@@ -99,7 +99,7 @@ describe("memory through person links", () => {
     await link();
 
     const context = await getMemoryContext(
-      { chatId: CHAT_ID, senderId: PERSONAL, isGroup: false },
+      { source: "tg", chatId: CHAT_ID, senderId: PERSONAL, isGroup: false },
       ctx.db,
     );
 
@@ -115,7 +115,7 @@ describe("memory through person links", () => {
     await remember(`tg:user:${WORK}`, "Lives in Lisbon.");
 
     expect(
-      await getMemoryContext({ chatId: CHAT_ID, senderId: STRANGER, isGroup: false }, ctx.db),
+      await getMemoryContext({ source: "tg", chatId: CHAT_ID, senderId: STRANGER, isGroup: false }, ctx.db),
     ).toBeNull();
   });
 
@@ -128,7 +128,7 @@ describe("memory through person links", () => {
     await link();
 
     const context = await getMemoryContext(
-      { chatId: GROUP_ID, senderId: WORK, isGroup: true },
+      { source: "tg", chatId: GROUP_ID, senderId: WORK, isGroup: true },
       ctx.db,
     );
 
@@ -146,7 +146,7 @@ describe("memory through person links", () => {
     await remember(`tg:user:${PERSONAL}`, "Works nights.");
     await link();
 
-    const facts = await readMemory({ userId: PERSONAL }, ctx.db);
+    const facts = await readMemory({ userId: PERSONAL, source: "tg" }, ctx.db);
     expect(facts.map((fact) => fact.content).sort()).toEqual([
       "Lives in Lisbon.",
       "Works nights.",
@@ -185,7 +185,7 @@ describe("memory through person links", () => {
 
     // And in Telegram: what was learned in the web thread is known there too.
     const inTelegram = await getMemoryContext(
-      { chatId: CHAT_ID, senderId: WORK, isGroup: false },
+      { source: "tg", chatId: CHAT_ID, senderId: WORK, isGroup: false },
       ctx.db,
     );
     expect(inTelegram?.content).toContain("Prefers short answers.");

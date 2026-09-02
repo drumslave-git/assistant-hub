@@ -46,7 +46,7 @@ import type { ChatMessage } from "@/server/llm/client";
 
 export const TASK_MATCH_SYSTEM_PROMPT = `You decide whether a chat message triggers one of the chat's standing rules.
 
-A Telegram bot is in this chat, and the people here have given it standing rules — instructions about what it must do when certain things are said or posted. Your only job is to decide which of the listed rules, if any, this specific message triggers. You are not writing a reply, and you are not judging whether the message was addressed to the bot.
+A chat bot is in this chat, and the people here have given it standing rules — instructions about what it must do when certain things are said or posted. Your only job is to decide which of the listed rules, if any, this specific message triggers. You are not writing a reply, and you are not judging whether the message was addressed to the bot.
 
 Take each rule in two steps, and stop at the first step it fails.
 

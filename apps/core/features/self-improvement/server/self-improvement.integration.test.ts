@@ -121,7 +121,7 @@ function fakePorts(): FeedbackPorts & {
     },
   };
   const messages: SourceMessagePort = {
-    async getMessage(chatId, sourceMessageId) {
+    async getMessage(_source, chatId, sourceMessageId) {
       return msgs.get(`${chatId}:${sourceMessageId}`) ?? null;
     },
   };
@@ -143,8 +143,9 @@ function fakePorts(): FeedbackPorts & {
     seedCompleted(input) {
       const row: UserFeedback = {
         id: `fb-${++seq}`,
+        source: "tg",
         chatId: CHAT_ID,
-        telegramMessageId: input.messageId ?? BOT_MSG_ID,
+        sourceMessageId: String(input.messageId ?? BOT_MSG_ID),
         userId: input.userId ?? USER_ID,
         reaction: input.reaction ?? "down",
         feedback: input.feedback,
@@ -445,7 +446,7 @@ describe("daily incorporation (runSelfImprovement)", () => {
     }
 
     for (const userId of ["100", "200"]) {
-      expect(await getLatestPreference(ctx.db, userId)).toMatchObject({
+      expect(await getLatestPreference(ctx.db, `tg:user:${userId}`)).toMatchObject({
         version: 1,
         likes: "short answers",
         dislikes: "rambling",
@@ -511,7 +512,7 @@ describe("daily incorporation (runSelfImprovement)", () => {
     // The preference fold started from version 1's profile.
     const prefsCall = llm.calls.find((c) => String(c[0].content).includes("factual profile"))!;
     expect(String(prefsCall.at(-1)!.content)).toContain("short answers");
-    expect(await getLatestPreference(ctx.db, USER_ID)).toMatchObject({ version: 2, likes: "brevity" });
+    expect(await getLatestPreference(ctx.db, `tg:user:${USER_ID}`)).toMatchObject({ version: 2, likes: "brevity" });
     expect(await getLatestCorrection(ctx.db)).toMatchObject({ version: 2, correction: "Keep it short." });
   });
 
@@ -545,7 +546,7 @@ describe("daily incorporation (runSelfImprovement)", () => {
     // outputs land in the same tables that read serves from.
     await insertPreference(ctx.db, {
       id: crypto.randomUUID(),
-      userId: USER_ID,
+      userRef: `tg:user:${USER_ID}`,
       model: "gemma3:12b",
       likes: "short answers",
       dislikes: "emoji walls",
@@ -557,7 +558,7 @@ describe("daily incorporation (runSelfImprovement)", () => {
       correction: "Answer in fewer words.",
       version: 1,
     });
-    expect(await getLatestPreference(ctx.db, USER_ID)).toMatchObject({ likes: "short answers" });
+    expect(await getLatestPreference(ctx.db, `tg:user:${USER_ID}`)).toMatchObject({ likes: "short answers" });
     expect(await getLatestCorrection(ctx.db)).toMatchObject({
       correction: "Answer in fewer words.",
     });
@@ -570,13 +571,13 @@ describe("feedback.recorded consumer", () => {
       v: 1,
       eventId: `evt-${feedback.id}`,
       occurredAt: new Date().toISOString(),
-      correlationId: `${feedback.chatId}:${feedback.telegramMessageId}`,
+      correlationId: `${feedback.chatId}:${feedback.sourceMessageId}`,
       type: "feedback.recorded",
       source: "tg",
       feedback: {
         id: feedback.id,
         chatRef: `tg:chat:${feedback.chatId}`,
-        sourceMessageId: String(feedback.telegramMessageId),
+        sourceMessageId: String(feedback.sourceMessageId),
         userRef: `tg:user:${feedback.userId}`,
         reaction: feedback.reaction,
         text: feedback.feedback ?? "",
@@ -712,9 +713,9 @@ describe("addressing report (👎 → \"Wasn't talking to you\")", () => {
       term: "Георгій",
       normalized: "георгій",
       botDisplayName: "Aria",
-      chatId: CHAT_ID,
-      telegramMessageId: BOT_MSG_ID,
-      userId: USER_ID,
+      chatRef: `tg:chat:${CHAT_ID}`,
+      sourceMessageId: String(BOT_MSG_ID),
+      userRef: `tg:user:${USER_ID}`,
     });
     // The analyzer reads it back as a plain term list.
     expect(await listAddressingExclusionTerms(ctx.db)).toEqual(["Георгій"]);

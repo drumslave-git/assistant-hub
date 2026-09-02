@@ -550,7 +550,7 @@ export function SettingsForm({
     role: spc,
     labels: {
       intro:
-        "Speech lets the bot answer a voice message with a voice message: the reply text is synthesized on this endpoint and sent as a Telegram voice bubble. Without a speech model the bot still understands voice messages — it just always answers in text.",
+        "Speech lets the bot answer a voice message with a voice message: the reply text is synthesized on this endpoint and sent as a voice message. Without a speech model the bot still understands voice messages — it just always answers in text.",
       backendHint: "The host serving /v1/audio/speech.",
       modelLabel: "Speech model",
       modelHint:
@@ -753,7 +753,7 @@ export function SettingsForm({
   const generalTab = (
     <div className="space-y-5">
       <p className="text-sm text-muted">
-        Operational defaults that are not tied to any one backend or to Telegram.
+        Operational defaults that are not tied to any one backend or transport.
       </p>
 
       <Field
@@ -950,7 +950,7 @@ export function SettingsForm({
 
   const tabs: TabItem[] = [
     { id: "models", label: "Models", content: modelsTab },
-    { id: "telegram", label: "Telegram", content: telegramTab },
+    { id: "bots", label: "Bots", content: telegramTab },
     { id: "general", label: "General", content: generalTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },
     { id: "security", label: "Security", content: <ChangePasswordSection /> },

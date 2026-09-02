@@ -292,7 +292,7 @@ export interface BotMessagingDeps {
   /** Persist the delivered assistant reply into the history mirror (best-effort). */
   recordReply: (input: {
     content: string;
-    telegramMessageId: number;
+    sourceMessageId: number;
     replyToMessageId: number;
   }) => Promise<void>;
   /**
@@ -1236,7 +1236,7 @@ export async function handleIncomingMessage(
         try {
           await deps.recordReply({
             content: outgoing,
-            telegramMessageId: sent.messageId,
+            sourceMessageId: sent.messageId,
             replyToMessageId: incoming.messageId,
           });
         } catch {

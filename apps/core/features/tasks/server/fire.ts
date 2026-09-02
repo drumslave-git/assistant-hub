@@ -141,7 +141,7 @@ export function buildTaskDirectiveMessage(
     `send "Hey, don't forget to call your mom").\n` +
     `- Address people by name when you know it; if it concerns the person who set the task up, ` +
     `address them directly ("you").\n` +
-    `- A bare name or nickname notifies NOBODY on Telegram — a message meant for a specific ` +
+    `- A bare name or nickname notifies NOBODY on most platforms — a message meant for a specific ` +
     `person must mention them by their exact @username (copy it from the chat participants ` +
     `context, @ included) so they actually get notified. Only when no @username is listed for ` +
     `them, use their name.\n` +
@@ -258,10 +258,9 @@ export async function fireTask(
       // rather than generate into a void.
       reply = await runWithToolContext(
         {
-          // The task store still hands out raw telegram ids (its own note), so
-          // a fire delivers through tg until that surface is generalized —
-          // named here because the source decides which tools are offered.
-          source: "tg",
+          // The task's chat names its transport — which decides which tools
+          // are offered and where `send_message` lands.
+          source: task.chatSource!,
           chatId: task.chatId!,
           // The fire's tool calls act as the task's assistant (Phase 3).
           assistantId: task.assistantId,

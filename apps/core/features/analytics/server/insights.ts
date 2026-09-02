@@ -12,7 +12,7 @@ import type { JobProgress } from "@/server/jobs/progress";
 import {
   requireSourceContent,
   type SourceContentClient,
-} from "@/server/source/tg-content";
+} from "@/server/source/content";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
@@ -113,11 +113,11 @@ const EMPTY: Omit<AnalyticsInsightsResult, "summary"> = {
 interface PeriodTarget {
   granularity: Granularity;
   bucket: string;
-  chatId: string;
+  chatRef: string;
 }
 
 function targetKey(t: PeriodTarget): string {
-  return `${t.granularity}|${t.bucket}|${t.chatId}`;
+  return `${t.granularity}|${t.bucket}|${t.chatRef}`;
 }
 
 /**
@@ -144,7 +144,7 @@ const ROLLUP_CHILD: Record<Exclude<Granularity, "hour">, Granularity> = {
 };
 
 /** Every period bucket a (hour, chat) touches — hour/day/week/month/year/all. */
-function periodsForHour(insightHour: string, chatId: string): PeriodTarget[] {
+function periodsForHour(insightHour: string, chatRef: string): PeriodTarget[] {
   const date = insightHour.slice(0, 10);
   const [year, month] = date.split("-");
   const buckets: [Granularity, string][] = [
@@ -155,7 +155,7 @@ function periodsForHour(insightHour: string, chatId: string): PeriodTarget[] {
     ["year", year],
     ["all", "all"],
   ];
-  return buckets.map(([granularity, bucket]) => ({ granularity, bucket, chatId }));
+  return buckets.map(([granularity, bucket]) => ({ granularity, bucket, chatRef }));
 }
 
 /** Message-weighted mean mood across a period's child rows. */
@@ -310,19 +310,19 @@ async function runInsightPass(
       });
       const [messages, topics] = await Promise.all([
         getHourMessages(content, {
-          chatId: unit.chatId,
+          chatRef: unit.chatRef,
           insightHour: unit.insightHour,
           timeZone: deps.timeZone,
         }),
         getDaySummaryTopics(content, {
-          chatId: unit.chatId,
+          chatRef: unit.chatRef,
           date: unit.insightHour.slice(0, 10),
         }),
       ]);
       const transcript = formatTranscript(messages);
       if (!transcript) {
         await upsertChatHourInsight(db, {
-          chatId: unit.chatId,
+          chatRef: unit.chatRef,
           insightHour: unit.insightHour,
           moodScore: 50,
           moodLabel: moodLabelForScore(50),
@@ -333,7 +333,7 @@ async function runInsightPass(
           model: "n/a",
         });
         result.unitsComputed += 1;
-        for (const t of periodsForHour(unit.insightHour, unit.chatId)) touched.set(targetKey(t), t);
+        for (const t of periodsForHour(unit.insightHour, unit.chatRef)) touched.set(targetKey(t), t);
         continue;
       }
 
@@ -353,13 +353,13 @@ async function runInsightPass(
           type: "step",
           level: "warn",
           message: "unusable hour insight — left for the next run",
-          data: { chatId: unit.chatId, hour: unit.insightHour, content: out.content },
+          data: { chatRef: unit.chatRef, hour: unit.insightHour, content: out.content },
         });
         continue;
       }
 
       await upsertChatHourInsight(db, {
-        chatId: unit.chatId,
+        chatRef: unit.chatRef,
         insightHour: unit.insightHour,
         moodScore: parsed.moodScore,
         moodLabel: parsed.moodLabel,
@@ -370,12 +370,12 @@ async function runInsightPass(
         model: out.model,
       });
       result.unitsComputed += 1;
-      for (const t of periodsForHour(unit.insightHour, unit.chatId)) touched.set(targetKey(t), t);
+      for (const t of periodsForHour(unit.insightHour, unit.chatRef)) touched.set(targetKey(t), t);
 
       await trace.event({
         type: "step",
         level: "success",
-        message: `hour scored: ${unit.chatId} ${unit.insightHour}`,
+        message: `hour scored: ${unit.chatRef} ${unit.insightHour}`,
         data: { ...parsed, messageCount: unit.messageCount },
       });
     }
@@ -482,7 +482,7 @@ async function rollUpPeriod(
   await upsertPeriodInsight(db, {
     granularity: target.granularity,
     bucket: target.bucket,
-    chatId: target.chatId,
+    chatRef: target.chatRef,
     wordOfPeriod: word,
     topTopic,
     moodScore,
@@ -515,7 +515,7 @@ async function loadChildren(db: StoreDb, target: PeriodTarget): Promise<RollupSo
     const rows = await listHourInsightsForPeriod(db, {
       granularity: "hour",
       bucket: target.bucket,
-      chatId: target.chatId,
+      chatRef: target.chatRef,
     });
     return rows.map((r) => ({
       bucket: r.insightHour,
@@ -532,7 +532,7 @@ async function loadChildren(db: StoreDb, target: PeriodTarget): Promise<RollupSo
   const rows = await listPeriodInsights(db, {
     granularity: childGranularity,
     buckets: childBuckets(target),
-    chatId: target.chatId,
+    chatRef: target.chatRef,
   });
   return rows.map((r) => ({
     bucket: r.bucket,

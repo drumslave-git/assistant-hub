@@ -1,10 +1,10 @@
 import "server-only";
 
 import {
+  WEB_CHAT_SOURCE,
   parseScopedRef,
   type InboundMessageEvent,
   type HistoryMessage,
-  type SourceId,
 } from "@assistant-hub-swarm/contracts";
 
 import {
@@ -84,10 +84,10 @@ function toLine(entry: HistoryMessage, botLabel: string, voices?: TranscriptVoic
         fallbackSpeakerLabel(entry.senderRef ? parseScopedRef(entry.senderRef).id : null));
   const replyRef: ReplyRef | null =
     entry.replyToSourceMessageId != null
-      ? { kind: "anchor", telegramMessageId: Number(entry.replyToSourceMessageId) }
+      ? { kind: "anchor", sourceMessageId: entry.replyToSourceMessageId }
       : null;
   const line = renderTranscriptLine({
-    telegramMessageId: Number(entry.sourceMessageId),
+    sourceMessageId: entry.sourceMessageId,
     label,
     replyRef,
     content: entry.content,
@@ -143,7 +143,7 @@ export function renderCurrentTurn(
     replyRef = replyTo.stored
       ? {
           kind: "anchor",
-          telegramMessageId: Number(replyTo.sourceMessageId),
+          sourceMessageId: replyTo.sourceMessageId,
           quote: replyTo.quote ?? null,
         }
       : {
@@ -153,7 +153,7 @@ export function renderCurrentTurn(
         };
   }
   const content = renderTranscriptLine({
-    telegramMessageId: Number(event.message.sourceMessageId),
+    sourceMessageId: event.message.sourceMessageId,
     label: speakerLabel,
     replyRef,
     content: options?.contentOverride ?? event.message.content,
@@ -164,7 +164,7 @@ export function renderCurrentTurn(
     data: {
       line: content,
       replyTo: replyTo
-        ? { telegramMessageId: Number(replyTo.sourceMessageId), resolved: replyRef?.kind ?? null }
+        ? { sourceMessageId: replyTo.sourceMessageId, resolved: replyRef?.kind ?? null }
         : null,
     },
   };
@@ -179,28 +179,28 @@ export function renderCurrentTurn(
  * Where the conversation is happening, in one sentence. The model used to be
  * told "a Telegram chat" by the base prompt, which became a lie the moment a
  * second source existed — a web thread would confidently place itself in
- * Telegram. One lookup keyed by source id, so a new source app adds a phrase
- * rather than a branch.
+ * Telegram. A transport's turn is placed by the name the transport announced
+ * at registration (`sourceName`), so a new transport needs no phrase here;
+ * the hub's own web chat, the one built-in in-process source, keeps its own.
  */
-const SURFACE: Record<SourceId, { direct: string; group: string }> = {
-  tg: {
-    direct: "a direct Telegram chat with this person",
-    group: "a Telegram group chat",
-  },
-  chat: {
-    direct: "a named thread in this hub's own web chat, typed in a browser",
-    group: "a web chat thread",
-  },
-};
-
-export function surfaceLine(event: InboundMessageEvent): string {
-  return `This conversation is ${SURFACE[event.source][event.chat.kind]}.`;
+export function surfaceLine(event: InboundMessageEvent, sourceName: string): string {
+  const where =
+    event.source === WEB_CHAT_SOURCE
+      ? event.chat.kind === "group"
+        ? "a web chat thread"
+        : "a named thread in this hub's own web chat, typed in a browser"
+      : event.chat.kind === "group"
+        ? `a ${sourceName} group chat`
+        : `a direct ${sourceName} chat with this person`;
+  return `This conversation is ${where}.`;
 }
 
 export function renderChatContext(
   event: InboundMessageEvent,
+  /** The human name of the turn's transport ("Telegram"), as it registered. */
+  sourceName: string,
 ): { content: string; data?: Record<string, unknown> } | null {
-  const where = surfaceLine(event);
+  const where = surfaceLine(event, sourceName);
   if (event.chat.kind === "group") {
     const members = event.context.participants.map((participant) => ({
       userId: parseScopedRef(participant.ref).id,

@@ -67,7 +67,7 @@ function turnMeta(scope: ToolScope): TurnToolMeta | null {
   const ctx = tryGetToolContext();
   if (!ctx) return null;
   return {
-    source: ctx.source ?? scope.source ?? "tg",
+    source: ctx.source,
     chatId: ctx.chatId,
     assistantId: ctx.assistantId ?? scope.assistantId ?? null,
     threadId: ctx.threadId ?? null,

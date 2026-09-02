@@ -46,7 +46,12 @@ export async function recordAddressingExclusion(
   trace: TraceRecorder,
 ): Promise<AddressingReportOutcome> {
   try {
-    const replyTrace = await getReplyTrace(messages, feedback.chatId, feedback.telegramMessageId);
+    const replyTrace = await getReplyTrace(
+      messages,
+      feedback.source,
+      feedback.chatId,
+      feedback.sourceMessageId,
+    );
     const decision = replyTrace ? readAddressingCheck(replyTrace) : null;
     if (!decision) {
       return await noMatch(
@@ -91,8 +96,9 @@ export async function recordAddressingExclusion(
       id: randomUUID(),
       term: decision.matchedText,
       botDisplayName: displayName || decision.matchedText,
+      source: feedback.source,
       chatId: feedback.chatId,
-      telegramMessageId: feedback.telegramMessageId,
+      sourceMessageId: feedback.sourceMessageId,
       userId: feedback.userId,
       // Transitional: the v1 column FKs the local users_feedbacks table,
       // which the source-store rows can never satisfy since the split. The

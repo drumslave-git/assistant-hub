@@ -23,7 +23,7 @@ import {
 import {
   requireSourceContent,
   type SourceContentClient,
-} from "@/server/source/tg-content";
+} from "@/server/source/content";
 
 import { completeTranscriptBatches } from "./batched-completion";
 import { loadChatDayTranscript } from "./service";
@@ -85,7 +85,7 @@ export interface SummarizeDeps {
 
 /** Outcome of summarizing one chat-day. */
 export interface SummarizeDayResult {
-  chatId: string;
+  chatRef: string;
   summaryDate: SummaryDate;
   messageCount: number;
   topicCount: number;
@@ -103,11 +103,11 @@ export interface SummarizeDayResult {
  * forever.
  */
 export async function summarizeChatDay(
-  params: { chatId: string; summaryDate: SummaryDate },
+  params: { chatRef: string; summaryDate: SummaryDate },
   deps: SummarizeDeps,
   // The actor is the CHAT the day belongs to — see `extractChatDay`'s note:
   // ids are clickable facets, and the job's identity is the trace's feature.
-  trigger: TraceTrigger = { kind: "cron", actor: params.chatId },
+  trigger: TraceTrigger = { kind: "cron", actor: params.chatRef },
   db: StoreDb = getStoreDb(),
 ): Promise<SummarizeDayResult> {
   const trace = await startTrace(
@@ -115,7 +115,7 @@ export async function summarizeChatDay(
       feature: FEATURE.id,
       action: "summarize",
       trigger,
-      inputSummary: `chat ${params.chatId} · ${params.summaryDate}`,
+      inputSummary: `chat ${params.chatRef} · ${params.summaryDate}`,
     }
   );
 
@@ -124,7 +124,7 @@ export async function summarizeChatDay(
     const { messages, dayMessageCount } = await loadChatDayTranscript(
       content,
       db,
-      params.chatId,
+      params.chatRef,
       params.summaryDate,
       deps.timeZone,
     );
@@ -132,7 +132,7 @@ export async function summarizeChatDay(
       type: "step",
       message: "day loaded",
       data: {
-        chatId: params.chatId,
+        chatRef: params.chatRef,
         summaryDate: params.summaryDate,
         messageCount: dayMessageCount,
         transcriptMessages: messages.length,
@@ -143,16 +143,16 @@ export async function summarizeChatDay(
     // A day with nothing readable (all rows deleted, or only blank media rows)
     // still needs its marker stamped, so it stops showing up as pending work.
     if (messages.length === 0) {
-      await content.replaceSummaries(params.chatId, params.summaryDate, []);
+      await content.replaceSummaries(params.chatRef, params.summaryDate, []);
       await upsertSummaryDayMarker(db, {
-        chatId: params.chatId,
+        chatRef: params.chatRef,
         summaryDate: params.summaryDate,
         messageCount: dayMessageCount,
         topicCount: 0,
       });
       await trace.skip("no messages", { outputSummary: "no messages to summarize" });
       return {
-        chatId: params.chatId,
+        chatRef: params.chatRef,
         summaryDate: params.summaryDate,
         messageCount: dayMessageCount,
         topicCount: 0,
@@ -197,9 +197,9 @@ export async function summarizeChatDay(
     // Topics land in the source's store first, then the coverage marker on
     // this side — a crash between the two just re-summarizes the day (the
     // replace is idempotent), never loses it.
-    const stored = await content.replaceSummaries(params.chatId, params.summaryDate, rows);
+    const stored = await content.replaceSummaries(params.chatRef, params.summaryDate, rows);
     await upsertSummaryDayMarker(db, {
-      chatId: params.chatId,
+      chatRef: params.chatRef,
       summaryDate: params.summaryDate,
       messageCount: dayMessageCount,
       topicCount: stored.length,
@@ -224,7 +224,7 @@ export async function summarizeChatDay(
     });
 
     return {
-      chatId: params.chatId,
+      chatRef: params.chatRef,
       summaryDate: params.summaryDate,
       messageCount: dayMessageCount,
       topicCount: stored.length,
@@ -273,15 +273,15 @@ export async function listDaysNeedingSummary(
   content: SourceContentClient,
   db: StoreDb,
   params: { timeZone: string; today: SummaryDate; limit: number },
-): Promise<{ chatId: string; summaryDate: SummaryDate; messageCount: number }[]> {
+): Promise<{ chatRef: string; summaryDate: SummaryDate; messageCount: number }[]> {
   const [days, markers] = await Promise.all([
     content.dayCounts(params.timeZone, params.today),
     listSummaryDayMarkers(db),
   ]);
   return days
-    .filter((day) => markers.get(`${day.chatId}|${day.date}`) !== day.messageCount)
+    .filter((day) => markers.get(`${day.chatRef}|${day.date}`) !== day.messageCount)
     .slice(0, params.limit)
-    .map((day) => ({ chatId: day.chatId, summaryDate: day.date, messageCount: day.messageCount }));
+    .map((day) => ({ chatRef: day.chatRef, summaryDate: day.date, messageCount: day.messageCount }));
 }
 
 /** How many (chat, day) pairs are still awaiting summarization — for the dashboard. */
@@ -319,20 +319,20 @@ export async function runSummarization(
     });
     // Days that already failed this run keep matching the scan (they are still
     // unsummarized), so skip them here rather than retrying them in a tight loop.
-    const next = pending.filter((day) => !failed.has(`${day.chatId}|${day.summaryDate}`));
+    const next = pending.filter((day) => !failed.has(`${day.chatRef}|${day.summaryDate}`));
     if (next.length === 0) break;
 
     for (const day of next) {
       deps.onProgress?.({
-        step: `Summarizing ${day.chatId} ${day.summaryDate}`,
+        step: `Summarizing ${day.chatRef} ${day.summaryDate}`,
         current: days + failed.size + 1,
         total,
       });
       try {
         const result = await summarizeChatDay(
-          { chatId: day.chatId, summaryDate: day.summaryDate },
+          { chatRef: day.chatRef, summaryDate: day.summaryDate },
           deps,
-          { kind: "cron", actor: day.chatId, correlationId: runId },
+          { kind: "cron", actor: day.chatRef, correlationId: runId },
           db,
         );
         topics += result.topicCount;
@@ -340,7 +340,7 @@ export async function runSummarization(
       } catch {
         // Already recorded on the day's own trace. Keep going so one bad day does
         // not block the rest of the backlog; it stays pending for the next run.
-        failed.add(`${day.chatId}|${day.summaryDate}`);
+        failed.add(`${day.chatRef}|${day.summaryDate}`);
       }
     }
   }

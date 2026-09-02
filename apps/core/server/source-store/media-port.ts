@@ -26,8 +26,9 @@ import {
 function toMediaRecord(media: StoredSourceMedia): MediaRecord {
   return {
     id: media.id,
+    source: media.source,
     chatId: media.chatId,
-    telegramMessageId: Number(media.sourceMessageId),
+    sourceMessageId: media.sourceMessageId,
     kind: media.kind as MediaRecord["kind"],
     fileId: media.fileId,
     fileUniqueId: media.fileUniqueId,
@@ -45,8 +46,8 @@ function toMediaRecord(media: StoredSourceMedia): MediaRecord {
 /** The per-row store the describe/transcribe passes read and write. */
 export function sourceStoreMediaPort(source: SourceId): MediaStorePort {
   return {
-    async getByMessage(chatId, telegramMessageId) {
-      const row = await getSourceMediaByMessage(source, chatId, String(telegramMessageId));
+    async getByMessage(chatId, sourceMessageId) {
+      const row = await getSourceMediaByMessage(source, chatId, sourceMessageId);
       return row ? toMediaRecord(row) : null;
     },
     async markDescribed(id, description) {
@@ -68,7 +69,7 @@ export function sourceStoreMediaBrowse(source: SourceId) {
       return refs.map((ref) => ({
         id: ref.id,
         chatId: ref.chatId,
-        telegramMessageId: Number(ref.sourceMessageId),
+        sourceMessageId: ref.sourceMessageId,
       }));
     },
     async countPending() {

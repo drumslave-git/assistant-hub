@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { SourceId } from "@assistant-hub-swarm/contracts";
+
 import { FEATURES } from "@/lib/features";
 import type { Trace } from "@/lib/trace";
 import { getLatestTraceIdsByCorrelation, getTrace } from "@/server/trace";
@@ -68,14 +70,15 @@ const PRODUCER_FEATURES = [FEATURES["bot-messaging"].id, FEATURES.tasks.id];
  */
 export async function getReplyTrace(
   messages: SourceMessagePort,
+  source: SourceId,
   chatId: string,
-  telegramMessageId: number,
+  sourceMessageId: string,
 ): Promise<Trace | null> {
   try {
-    const direct = await producerTrace(`${chatId}:${telegramMessageId}`);
+    const direct = await producerTrace(`${chatId}:${sourceMessageId}`);
     if (direct) return direct;
 
-    const replyRow = await messages.getMessage(chatId, String(telegramMessageId));
+    const replyRow = await messages.getMessage(source, chatId, sourceMessageId);
     const anchor = replyRow?.replyToSourceMessageId;
     if (anchor == null) return null;
     return await producerTrace(`${chatId}:${anchor}`);
@@ -105,12 +108,12 @@ export async function renderExchange(
   feedback: UserFeedback,
 ): Promise<string> {
   const reply = await messages
-    .getMessage(feedback.chatId, String(feedback.telegramMessageId))
+    .getMessage(feedback.source, feedback.chatId, feedback.sourceMessageId)
     .catch(() => null);
   const asked =
     reply?.replyToSourceMessageId != null
       ? await messages
-          .getMessage(feedback.chatId, reply.replyToSourceMessageId)
+          .getMessage(feedback.source, feedback.chatId, reply.replyToSourceMessageId)
           .catch(() => null)
       : null;
   const lines = [

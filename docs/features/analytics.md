@@ -12,7 +12,7 @@ topic).
 
 | Source | Feeds |
 | --- | --- |
-| `source_messages` (live SQL through `server/source/tg-content.ts` — Telegram rows only, user decision 2026-08-27) | Message volume, active/new users, top users |
+| `source_messages` (live SQL through `server/source/content.ts`, across every registered transport) | Message volume, active/new users, top users |
 | The **trace files** (`server/trace/store.ts`) | Tokens, model performance, traffic tiles |
 | `chat_hour_insights` / `period_insights` | Mood, word of the period, top topic |
 
@@ -174,8 +174,8 @@ so the button confirms before it fires and says exactly what it is about to thro
 
 ## Data
 
-`chat_hour_insights` (unique on `(chat_id, insight_hour)`) and `period_insights`
-(unique on `(granularity, bucket, chat_id)`). Nothing else — the numeric metrics have
+`chat_hour_insights` (unique on `(chat_ref, insight_hour)`) and `period_insights`
+(unique on `(granularity, bucket, chat_ref)`); both key chats by scoped ref. Nothing else — the numeric metrics have
 no stored table.
 
 ## Configuration

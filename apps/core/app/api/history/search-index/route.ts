@@ -2,7 +2,7 @@ import {
   getMessageIndexingStatus,
   runMessageIndexingNow,
 } from "@/features/history/server/index-scheduler";
-import { requireSourceContent } from "@/server/source/tg-content";
+import { requireSourceContent } from "@/server/source/content";
 import { defineRoute, ok } from "@/server/http";
 
 /**

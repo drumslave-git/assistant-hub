@@ -27,7 +27,7 @@ describe("MCP tool context", () => {
     // Guard the guard: without a genuinely separate instance this asserts nothing.
     expect(reloaded.getToolContext).not.toBe(getToolContext);
 
-    const seen = await runWithToolContext({ chatId: "chat-1", userId: "user-1" }, async () =>
+    const seen = await runWithToolContext({ source: "tg", chatId: "chat-1", userId: "user-1" }, async () =>
       reloaded.getToolContext(),
     );
 
@@ -43,7 +43,7 @@ describe("MCP tool context", () => {
   });
 
   it("unbinds again once the turn is over", async () => {
-    await runWithToolContext({ chatId: "chat-1" }, async () => undefined);
+    await runWithToolContext({ source: "tg", chatId: "chat-1" }, async () => undefined);
 
     expect(tryGetToolContext()).toBeNull();
     expect(() => getToolContext()).toThrow(/no chat is bound/);
@@ -53,12 +53,12 @@ describe("MCP tool context", () => {
 describe("toolContextTrigger", () => {
   it("stamps the turn's correlation so tool-driven traces join their turn's flow", () => {
     expect(
-      toolContextTrigger({ chatId: "100", userId: "77", correlationId: "100:41" }),
+      toolContextTrigger({ source: "tg", chatId: "100", userId: "77", correlationId: "100:41" }),
     ).toEqual({ kind: "transport", actor: "77", correlationId: "100:41" });
   });
 
   it("falls back to the chat id when the context carries no correlation", () => {
-    expect(toolContextTrigger({ chatId: "100" })).toEqual({
+    expect(toolContextTrigger({ source: "tg", chatId: "100" })).toEqual({
       kind: "transport",
       actor: "100",
       correlationId: "100",

@@ -86,8 +86,11 @@ export interface MediaView {
   id: string;
   /** Which source app holds this row (the gallery tags each card with it). */
   source: SourceId;
+  /** The source's human name, as it announced itself ("Telegram", "Web chat"). */
+  sourceLabel: string;
   chatId: string;
-  telegramMessageId: number;
+  /** The platform's id of the message carrying the media. */
+  sourceMessageId: string;
   kind: MediaKind;
   status: MediaStatus;
   description: string | null;

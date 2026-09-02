@@ -20,21 +20,21 @@ import type { ChatMessageWithTrace } from "../server/schema";
 
 /**
  * Read-only mirror of one chat's stored messages, oldest first. Shows the full
- * captured metadata (Telegram ids, reply pointer, timestamps) and flags edited
- * and deleted rows. Server Component — no interactivity.
+ * captured metadata (the platform's ids, reply pointer, timestamps) and flags
+ * edited and deleted rows. Server Component — no interactivity.
  */
 export function ChatHistoryTable({
-  chatId,
+  chatRef,
   messages,
 }: {
-  chatId: string;
+  chatRef: string;
   messages: ChatMessageWithTrace[];
 }) {
   return (
     <Card>
       <CardHeader>
         <div>
-          <CardTitle className="font-mono text-base">{chatId}</CardTitle>
+          <CardTitle className="font-mono text-base">{chatRef}</CardTitle>
           <CardDescription>
             {messages.length} stored message{messages.length === 1 ? "" : "s"}, newest first.
           </CardDescription>
@@ -59,13 +59,13 @@ export function ChatHistoryTable({
                 <TableCell className="whitespace-nowrap text-xs text-faint">
                   <Timestamp iso={m.sentAt} />
                 </TableCell>
-                <TableCell className="font-mono text-xs text-faint">{m.telegramMessageId}</TableCell>
+                <TableCell className="font-mono text-xs text-faint">{m.sourceMessageId}</TableCell>
                 <TableCell>
                   <Badge tone={m.role === "assistant" ? "primary" : "neutral"}>{m.role}</Badge>
                 </TableCell>
                 <TableCell className="font-mono text-xs text-muted">{m.userId ?? "—"}</TableCell>
                 <TableCell className="font-mono text-xs text-faint">
-                  {m.replyToMessageId ?? "—"}
+                  {m.replyToSourceMessageId ?? "—"}
                 </TableCell>
                 <TableCell className="max-w-[36rem] align-top">
                   <span

@@ -1,3 +1,5 @@
+import type { SourceId } from "@assistant-hub-swarm/contracts";
+
 /**
  * Client-safe types for the self-improvement feature: user feedback collected
  * via 👍/👎 reactions, and the versioned artifacts the daily job distills from
@@ -27,9 +29,11 @@ export type FeedbackTopic = "quality" | "addressing";
 /** One collected feedback row (client-safe). */
 export interface UserFeedback {
   id: string;
+  /** The transport the reaction came from — the namespace of every id below. */
+  source: SourceId;
   chatId: string;
-  /** Telegram message id of the reacted bot reply. */
-  telegramMessageId: number;
+  /** The platform's id of the reacted bot reply. */
+  sourceMessageId: string;
   userId: string;
   reaction: FeedbackReaction;
   /** The chosen option text or the user's own words; null until answered. */
@@ -59,7 +63,8 @@ export interface UserFeedback {
 /** One versioned per-user preferences snapshot (client-safe). */
 export interface CommunicationPreference {
   id: string;
-  userId: string;
+  /** Scoped ref of the person (`tg:user:123`) — the store's key. */
+  userRef: string;
   model: string;
   likes: string;
   dislikes: string;

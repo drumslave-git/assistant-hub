@@ -22,9 +22,9 @@ import {
 /** Input to enqueue a run (chat-bound from a tool, or chat-less from the dashboard). */
 export interface EnqueueBrowserRunInput {
   goal: string;
-  chatId: string | null;
+  chatRef: string | null;
   threadId?: number | null;
-  createdByUserId?: string | null;
+  createdByUserRef?: string | null;
   isOwner: boolean;
   /** Rule-driven group run, or rights lent to a non-owner (default false). */
   restricted?: boolean;
@@ -42,9 +42,9 @@ export async function enqueueBrowserRun(
   db: StoreDb = getStoreDb(),
 ): Promise<BrowserAgentRun> {
   const values: InsertBrowserAgentRun = {
-    chatId: input.chatId,
+    chatRef: input.chatRef,
     threadId: input.threadId ?? null,
-    createdByUserId: input.createdByUserId ?? null,
+    createdByUserRef: input.createdByUserRef ?? null,
     isOwner: input.isOwner,
     restricted: input.restricted ?? false,
     sourceUrls: input.sourceUrls ?? [],
@@ -55,10 +55,10 @@ export async function enqueueBrowserRun(
 
 /** All runs (optionally chat-scoped), newest first — for the dashboard. */
 export async function getBrowserAgentRuns(
-  chatId?: string,
+  chatRef?: string,
   db: StoreDb = getStoreDb(),
 ): Promise<BrowserAgentRun[]> {
-  return listBrowserAgentRuns(db, chatId);
+  return listBrowserAgentRuns(db, chatRef);
 }
 
 /** One run plus its screenshot sequence numbers, or null. */

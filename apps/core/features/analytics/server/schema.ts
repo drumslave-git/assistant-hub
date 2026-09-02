@@ -18,10 +18,10 @@ import { GRANULARITIES, METRIC_SOURCES, PERIOD_UNITS, SERIES_SECTIONS } from "..
 export const metricsQuerySchema = z.object({
   unit: z.enum(PERIOD_UNITS).default("day"),
   anchor: z.string().trim().min(1).optional(),
-  /** Restrict to one chat (Telegram chat id). */
-  chatId: z.string().trim().min(1).optional(),
-  /** Restrict to one user's own messages (Telegram user id). */
-  userId: z.string().trim().min(1).optional(),
+  /** Restrict to one chat (scoped chat ref, `tg:chat:-100…`). */
+  chatRef: z.string().trim().min(1).optional(),
+  /** Restrict to one user's own messages (scoped user ref, `tg:user:123`). */
+  userRef: z.string().trim().min(1).optional(),
 });
 
 export type MetricsQuery = z.infer<typeof metricsQuerySchema>;
@@ -34,13 +34,13 @@ export const seriesQuerySchema = metricsQuerySchema.extend({
 export type SeriesQuery = z.infer<typeof seriesQuerySchema>;
 
 /**
- * The insight/mood cards' query. `chatId` is **required**: insights are scored per
+ * The insight/mood cards' query. `chatRef` is **required**: insights are scored per
  * chat, and averaging unrelated conversations produces a number describing nobody.
  */
 export const insightsQuerySchema = z.object({
   unit: z.enum(PERIOD_UNITS).default("day"),
   anchor: z.string().trim().min(1).optional(),
-  chatId: z.string().trim().min(1),
+  chatRef: z.string().trim().min(1),
 });
 
 export type InsightsQuery = z.infer<typeof insightsQuerySchema>;
@@ -55,7 +55,7 @@ export const availabilityQuerySchema = z.object({
   /** Inclusive anchor range the calendar is showing. */
   from: z.string().trim().min(1),
   to: z.string().trim().min(1),
-  chatId: z.string().trim().min(1).optional(),
+  chatRef: z.string().trim().min(1).optional(),
 });
 
 export type AvailabilityQuery = z.infer<typeof availabilityQuerySchema>;

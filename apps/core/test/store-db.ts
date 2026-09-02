@@ -61,7 +61,7 @@ export async function startTestStoreDb(): Promise<TestStoreDb> {
  */
 export async function seedSourceMessage(
   ctx: Pick<TestStoreDb, "pool">,
-  input: { chatId: string; telegramMessageId: number; processed?: boolean; content?: string },
+  input: { chatId: string; sourceMessageId: number; processed?: boolean; content?: string },
 ): Promise<void> {
   await ctx.pool.query(
     `INSERT INTO source_messages
@@ -70,8 +70,8 @@ export async function seedSourceMessage(
      ON CONFLICT DO NOTHING`,
     [
       input.chatId,
-      String(input.telegramMessageId),
-      `${input.chatId}:${input.telegramMessageId}`,
+      String(input.sourceMessageId),
+      `${input.chatId}:${input.sourceMessageId}`,
       input.content ?? "",
       input.processed ?? true,
     ],

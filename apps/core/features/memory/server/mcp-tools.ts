@@ -148,11 +148,11 @@ export function registerMemoryMcpTools(server: McpServer): void {
       },
     },
     async ({ scope, person, content }) => {
-      const { chatId, userId: speakerId } = getToolContext();
+      const { source, chatId, userId: speakerId } = getToolContext();
 
       let subjectId: string | null = null;
       if (scope === "user") {
-        const subject = await resolveMemorySubject({ person, chatId, speakerId });
+        const subject = await resolveMemorySubject({ person, source, chatId, speakerId });
         if (!subject.ok) {
           return { content: [{ type: "text" as const, text: subject.error }], isError: true };
         }
@@ -160,13 +160,13 @@ export function registerMemoryMcpTools(server: McpServer): void {
       } else {
         // A general note may be about a person — but only one this chat cannot
         // file under an id of their own.
-        const allowed = await checkGeneralNoteSubject({ person, chatId });
+        const allowed = await checkGeneralNoteSubject({ person, source, chatId });
         if (!allowed.ok) {
           return { content: [{ type: "text" as const, text: allowed.error }], isError: true };
         }
       }
 
-      const outcome = await saveMemoryNote({ scope, userId: subjectId, content, chatId });
+      const outcome = await saveMemoryNote({ scope, userId: subjectId, content, source, chatId });
       if (!outcome.ok) {
         return {
           content: [{ type: "text" as const, text: outcome.error }],
@@ -222,7 +222,7 @@ export function registerMemoryMcpTools(server: McpServer): void {
     },
     async ({ person }) => {
       const { chatId, userId: speakerId, source } = getToolContext();
-      const subject = await resolveMemorySubject({ person, chatId, speakerId });
+      const subject = await resolveMemorySubject({ person, source, chatId, speakerId });
       if (!subject.ok) {
         return { content: [{ type: "text" as const, text: subject.error }], isError: true };
       }

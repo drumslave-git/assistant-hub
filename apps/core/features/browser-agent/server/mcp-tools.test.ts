@@ -18,6 +18,12 @@ import { BROWSE_WEB_TOOL, registerBrowserAgentMcpTools } from "./mcp-tools";
 
 vi.mock("./service", () => ({ enqueueBrowserRun: vi.fn() }));
 vi.mock("./signal", () => ({ emitRunEnqueued: vi.fn() }));
+// A "group" is a chat the directory holds a row for, and the tool asks the
+// repository; stubbed so this unit test needs no database.
+const { GROUP } = vi.hoisted(() => ({ GROUP: "-1001" }));
+vi.mock("@/features/known-groups/server/repository", () => ({
+  isGroupChat: vi.fn(async (_db: unknown, _source: string, chatId: string) => chatId === GROUP),
+}));
 
 const service = vi.mocked(await import("./service"));
 
@@ -49,7 +55,7 @@ async function enqueuedFrom(ctx: {
   chatId?: string;
 }) {
   const run = handler();
-  await runWithToolContext({ chatId: "-1001", ...ctx }, () =>
+  await runWithToolContext({ source: "tg", chatId: GROUP, ...ctx }, () =>
     run({ goal: "Download the video at https://example.com/clip" }),
   );
   return vi.mocked(service.enqueueBrowserRun).mock.calls[0][0];
@@ -60,14 +66,14 @@ describe(`${BROWSE_WEB_TOOL} download rights`, () => {
     expect(await enqueuedFrom({ userId: OWNER, senderIsOwner: true })).toMatchObject({
       isOwner: true,
       restricted: false,
-      createdByUserId: OWNER,
+      createdByUserRef: `tg:user:${OWNER}`,
     });
   });
 
   it("withholds them from anyone else's own request", async () => {
     expect(await enqueuedFrom({ userId: OTHER })).toMatchObject({
       isOwner: false,
-      createdByUserId: OTHER,
+      createdByUserRef: `tg:user:${OTHER}`,
     });
   });
 
@@ -79,7 +85,7 @@ describe(`${BROWSE_WEB_TOOL} download rights`, () => {
     expect(enqueued).toMatchObject({ isOwner: true, restricted: true });
     // Authority is permission, never identity: the run is still recorded as
     // started by the person whose message triggered it.
-    expect(enqueued).toMatchObject({ createdByUserId: OTHER });
+    expect(enqueued).toMatchObject({ createdByUserRef: `tg:user:${OTHER}` });
   });
 
   it("restricts the owner's own rule-driven run in a group", async () => {
@@ -129,7 +135,7 @@ describe(`${BROWSE_WEB_TOOL} acknowledgement wiring`, () => {
     const run = handler();
 
     await runWithToolContext(
-      { chatId: "-1001", userId: OWNER, onBrowserRunEnqueued: (id) => runIds.push(id) },
+      { source: "tg", chatId: GROUP, userId: OWNER, onBrowserRunEnqueued: (id) => runIds.push(id) },
       () => run({ goal: "Download the video at https://example.com/clip" }),
     );
 

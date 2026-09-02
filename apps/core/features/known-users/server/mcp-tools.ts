@@ -85,7 +85,7 @@ export function registerKnownUsersMcpTools(server: McpServer): void {
       const ctx = getToolContext();
       const list = Array.isArray(aliases) ? aliases : [aliases];
       const result = await addAliasByReference(
-        { chatId: ctx.chatId, reference: name, aliases: list },
+        { source: ctx.source, chatId: ctx.chatId, reference: name, aliases: list },
         toolContextTrigger(ctx),
       );
       const { text, isError } = resultMessage(name, result);

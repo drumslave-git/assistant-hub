@@ -2,7 +2,7 @@ import "server-only";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { formatKnownUserLabel } from "@/features/known-users/format";
-import { tryParseScopedRef } from "@assistant-hub-swarm/contracts";
+import { WEB_CHAT_SOURCE, tryParseScopedRef } from "@assistant-hub-swarm/contracts";
 
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { FEATURES } from "@/lib/features";
@@ -189,11 +189,13 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
       const entries = (await getPendingUserEntries(db, userId)).slice(0, budget);
       if (entries.length === 0) continue;
 
-      // The backlog keys are scoped refs (Phase 10); label tg identities
-      // from the directory, everyone else by their ref.
+      // The backlog keys are scoped refs (Phase 10); label a transport's
+      // identities from its directory, everyone else by their ref.
       const parsed = tryParseScopedRef(userId);
       const [user] =
-        parsed?.source === "tg" ? await getKnownUsersByIds(db, [parsed.id]) : [undefined];
+        parsed && parsed.source !== WEB_CHAT_SOURCE
+          ? await getKnownUsersByIds(db, parsed.source, [parsed.id])
+          : [undefined];
       const label = user ? formatKnownUserLabel(user) : `User ${userId}`;
       deps.onProgress?.({ step: `Consolidating memory of ${label}`, current: ++processed, total });
       const existing = await getUserMemory(db, userId);

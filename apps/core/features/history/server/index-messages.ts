@@ -14,7 +14,7 @@ import {
   requireSourceContent,
   type SourceContentClient,
   type SourceUnindexedMessage,
-} from "@/server/source/tg-content";
+} from "@/server/source/content";
 
 /**
  * Message search-indexing job — build the searchable text of every mirrored
@@ -198,8 +198,8 @@ export async function runMessageIndexing(
           }
 
           const rows = batch.map((message, i) => ({
-            chatId: message.chatId,
-            telegramMessageId: message.telegramMessageId,
+            chatRef: message.chatRef,
+            sourceMessageId: message.sourceMessageId,
             content: texts[i],
             embedding: vectorByIndex.get(i) ?? null,
           }));

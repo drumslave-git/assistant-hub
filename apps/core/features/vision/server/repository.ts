@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { SourceId } from "@assistant-hub-swarm/contracts";
 import { and, asc, count, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 
 import {
@@ -12,27 +13,29 @@ import type { StoreDb } from "@/server/store/db";
 import type { MediaAnnotation, MediaKind, MediaStatus } from "../types";
 
 /**
- * Typed persistence for telegram media — since the Phase 10 cutover an
- * adapter over the source store's `source_media` + `source_media_blobs`
- * rows (`source = 'tg'`). The record shape and the function surface are
- * unchanged from the v1 tables this replaces (`telegramMessageId` stays a
- * number at this boundary; the store keys messages by source-local TEXT
- * ids, so the adapter converts).
+ * Typed persistence for a transport's media — an adapter over the source
+ * store's `source_media` + `source_media_blobs` rows. Every read and write
+ * names the source whose rows it touches; message ids are the platform's
+ * own, as text. This is the record shape the vision pipeline speaks
+ * ({@link MediaRecord}); the live path reaches the same rows through
+ * `server/source-store/media-port.ts`, this module serves the test
+ * fixtures and the direct reads.
  *
  * Bytes live in `source_media_blobs` (real `bytea`, one row per frame, only
  * while the media row is `pending`); this module converts to/from the
  * base64 strings the rest of the app speaks, so callers never see Buffers.
  */
 
-const SOURCE = "tg" as const;
-
 type MediaRow = typeof sourceMedia.$inferSelect;
 
 /** A stored media row. */
 export interface MediaRecord {
   id: string;
+  /** The source whose chat this media was posted in. */
+  source: SourceId;
   chatId: string;
-  telegramMessageId: number;
+  /** The platform's id of the message carrying the media. */
+  sourceMessageId: string;
   kind: MediaKind;
   fileId: string;
   fileUniqueId: string | null;
@@ -49,8 +52,9 @@ export interface MediaRecord {
 
 export interface InsertMedia {
   id: string;
+  source: SourceId;
   chatId: string;
-  telegramMessageId: number;
+  sourceMessageId: string;
   kind: MediaKind;
   fileId: string;
   fileUniqueId?: string | null;
@@ -72,8 +76,9 @@ export interface InsertMedia {
 function mapRow(row: MediaRow, images: string[] = []): MediaRecord {
   return {
     id: row.id,
+    source: row.source,
     chatId: row.chatId,
-    telegramMessageId: Number(row.sourceMessageId),
+    sourceMessageId: row.sourceMessageId,
     kind: row.kind as MediaKind,
     fileId: row.fileId,
     fileUniqueId: row.fileUniqueId,
@@ -112,8 +117,9 @@ async function loadImagesByMediaId(
 }
 
 /**
- * Insert a pending media row. Idempotent on `(chat, message)` so a re-delivered
- * update does not duplicate. Returns the stored row, or null when one existed.
+ * Insert a pending media row. Idempotent on `(source, chat, message)` so a
+ * re-delivered update does not duplicate. Returns the stored row, or null
+ * when one existed.
  */
 export async function insertMedia(db: StoreDb, values: InsertMedia): Promise<MediaRecord | null> {
   const images = values.frames && values.frames.length > 0 ? values.frames : [values.dataBase64];
@@ -122,9 +128,9 @@ export async function insertMedia(db: StoreDb, values: InsertMedia): Promise<Med
       .insert(sourceMedia)
       .values({
         id: values.id,
-        source: SOURCE,
+        source: values.source,
         chatId: values.chatId,
-        sourceMessageId: String(values.telegramMessageId),
+        sourceMessageId: values.sourceMessageId,
         kind: values.kind,
         fileId: values.fileId,
         fileUniqueId: values.fileUniqueId ?? null,
@@ -157,9 +163,9 @@ export async function insertUnavailableMedia(
     .insert(sourceMedia)
     .values({
       id: values.id,
-      source: SOURCE,
+      source: values.source,
       chatId: values.chatId,
-      sourceMessageId: String(values.telegramMessageId),
+      sourceMessageId: values.sourceMessageId,
       kind: values.kind,
       fileId: values.fileId,
       fileUniqueId: values.fileUniqueId ?? null,
@@ -184,30 +190,27 @@ async function withImages(db: StoreDb, row: MediaRow): Promise<MediaRecord> {
 /** The media row for a specific message (bytes included while pending), or null. */
 export async function getMediaByMessage(
   db: StoreDb,
+  source: SourceId,
   chatId: string,
-  telegramMessageId: number,
+  sourceMessageId: string,
 ): Promise<MediaRecord | null> {
   const rows = await db
     .select()
     .from(sourceMedia)
     .where(
       and(
-        eq(sourceMedia.source, SOURCE),
+        eq(sourceMedia.source, source),
         eq(sourceMedia.chatId, chatId),
-        eq(sourceMedia.sourceMessageId, String(telegramMessageId)),
+        eq(sourceMedia.sourceMessageId, sourceMessageId),
       ),
     )
     .limit(1);
   return rows[0] ? withImages(db, rows[0]) : null;
 }
 
-/** One media row by id (bytes included while pending), or null. */
+/** One media row by id (bytes included while pending), or null. Ids are unique across sources. */
 export async function getMediaById(db: StoreDb, id: string): Promise<MediaRecord | null> {
-  const rows = await db
-    .select()
-    .from(sourceMedia)
-    .where(and(eq(sourceMedia.source, SOURCE), eq(sourceMedia.id, id)))
-    .limit(1);
+  const rows = await db.select().from(sourceMedia).where(eq(sourceMedia.id, id)).limit(1);
   return rows[0] ? withImages(db, rows[0]) : null;
 }
 
@@ -239,15 +242,16 @@ export async function markDescribed(
 }
 
 /**
- * Media annotations for a set of messages in a chat, keyed by Telegram message
- * id — how each media message reads in the history transcript.
+ * Media annotations for a set of messages in a chat, keyed by the platform's
+ * message id — how each media message reads in the history transcript.
  */
 export async function getMediaAnnotations(
   db: StoreDb,
+  source: SourceId,
   chatId: string,
-  telegramMessageIds: number[],
-): Promise<Map<number, MediaAnnotation>> {
-  if (telegramMessageIds.length === 0) return new Map();
+  sourceMessageIds: readonly string[],
+): Promise<Map<string, MediaAnnotation>> {
+  if (sourceMessageIds.length === 0) return new Map();
   const rows = await db
     .select({
       sourceMessageId: sourceMedia.sourceMessageId,
@@ -258,29 +262,33 @@ export async function getMediaAnnotations(
     .from(sourceMedia)
     .where(
       and(
-        eq(sourceMedia.source, SOURCE),
+        eq(sourceMedia.source, source),
         eq(sourceMedia.chatId, chatId),
-        inArray(sourceMedia.sourceMessageId, telegramMessageIds.map(String)),
+        inArray(sourceMedia.sourceMessageId, [...sourceMessageIds]),
       ),
     );
   return new Map(
     rows.map((r) => [
-      Number(r.sourceMessageId),
+      r.sourceMessageId,
       { kind: r.kind as MediaKind, status: r.status as MediaStatus, description: r.description },
     ]),
   );
 }
 
 /**
- * Recent media rows for the dashboard, newest first. The scan itself never
- * touches bytes; frames are then fetched in one query for just the pending
- * rows — the only ones whose preview is rendered.
+ * Recent media rows of one source for the dashboard, newest first. The scan
+ * itself never touches bytes; frames are then fetched in one query for just
+ * the pending rows — the only ones whose preview is rendered.
  */
-export async function listRecentMedia(db: StoreDb, limit = 100): Promise<MediaRecord[]> {
+export async function listRecentMedia(
+  db: StoreDb,
+  source: SourceId,
+  limit = 100,
+): Promise<MediaRecord[]> {
   const rows = await db
     .select()
     .from(sourceMedia)
-    .where(eq(sourceMedia.source, SOURCE))
+    .where(eq(sourceMedia.source, source))
     .orderBy(desc(sourceMedia.createdAt))
     .limit(limit);
   const pendingIds = rows.filter((row) => row.status === "pending").map((row) => row.id);
@@ -292,7 +300,7 @@ export async function listRecentMedia(db: StoreDb, limit = 100): Promise<MediaRe
 export interface PendingMediaRef {
   id: string;
   chatId: string;
-  telegramMessageId: number;
+  sourceMessageId: string;
 }
 
 /**
@@ -304,9 +312,10 @@ export interface PendingMediaRef {
 const LIVE_HOLD_TIMEOUT = sql`now() - interval '10 minutes'`;
 
 /**
- * Oldest pending media rows, for the vision backfill job. Oldest-first so the
- * backlog drains in arrival order. Deliberately byte-free: `describeAndStore`
- * re-reads each row (with bytes) when its turn comes.
+ * Oldest pending media rows of one source, for the vision backfill job.
+ * Oldest-first so the backlog drains in arrival order. Deliberately
+ * byte-free: `describeAndStore` re-reads each row (with bytes) when its turn
+ * comes.
  *
  * Rows whose message is still held by the live reply pipeline
  * (`source_messages.processed = false`) are excluded — backfill only ever
@@ -314,7 +323,11 @@ const LIVE_HOLD_TIMEOUT = sql`now() - interval '10 minutes'`;
  * expired (crashed pipeline). A DM message may mirror into several
  * per-assistant streams, hence the DISTINCT.
  */
-export async function listPendingMedia(db: StoreDb, limit = 20): Promise<PendingMediaRef[]> {
+export async function listPendingMedia(
+  db: StoreDb,
+  source: SourceId,
+  limit = 20,
+): Promise<PendingMediaRef[]> {
   const rows = await db
     .select({
       id: sourceMedia.id,
@@ -332,7 +345,7 @@ export async function listPendingMedia(db: StoreDb, limit = 20): Promise<Pending
     )
     .where(
       and(
-        eq(sourceMedia.source, SOURCE),
+        eq(sourceMedia.source, source),
         eq(sourceMedia.status, "pending"),
         or(eq(sourceMessages.processed, true), lt(sourceMedia.createdAt, LIVE_HOLD_TIMEOUT)),
       ),
@@ -344,17 +357,17 @@ export async function listPendingMedia(db: StoreDb, limit = 20): Promise<Pending
   for (const row of rows) {
     if (seen.has(row.id)) continue;
     seen.add(row.id);
-    out.push({ id: row.id, chatId: row.chatId, telegramMessageId: Number(row.sourceMessageId) });
+    out.push({ id: row.id, chatId: row.chatId, sourceMessageId: row.sourceMessageId });
     if (out.length >= limit) break;
   }
   return out;
 }
 
-/** How many media rows are still awaiting a description (backfill backlog size). */
-export async function countPendingMedia(db: StoreDb): Promise<number> {
+/** How many of one source's media rows are still awaiting a description. */
+export async function countPendingMedia(db: StoreDb, source: SourceId): Promise<number> {
   const [row] = await db
     .select({ value: count() })
     .from(sourceMedia)
-    .where(and(eq(sourceMedia.source, SOURCE), eq(sourceMedia.status, "pending")));
+    .where(and(eq(sourceMedia.source, source), eq(sourceMedia.status, "pending")));
   return row?.value ?? 0;
 }

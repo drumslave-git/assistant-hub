@@ -1,31 +1,33 @@
 import "server-only";
 
 import type { StoreDb } from "@/server/store/db";
-import { scopedRef, tryParseScopedRef } from "@assistant-hub-swarm/contracts";
 
 import { chatSummaryDays } from "../../../store/schema";
 import type { SummaryDate } from "../summary";
 
-export type { SourceSummary as ChatSummaryRecord } from "@/server/source/tg-content";
+export type { SourceSummary as ChatSummaryRecord } from "@/server/source/content";
 
 /**
  * The summarization job's own coverage markers (`chat_summary_days`) — which
  * chat-days are done, at what message count. Job state, so it stays on the
  * core's side (user decision, 2026-08-22); the summaries themselves are
- * conversation-derived content and live with the owning source's mirror,
- * written through its internal API. The due scan is therefore split: the
- * source serves per-(chat, day) message counts, and {@link listSummaryDayMarkers}
- * is the half they are compared against.
+ * conversation-derived content and live in the conversation store. The due
+ * scan is therefore split: the content plane serves per-(chat, day) message
+ * counts, and {@link listSummaryDayMarkers} is the half they are compared
+ * against. Chats are keyed by scoped ref, like the rest of the core.
  */
 
 /** Marker state for one (chat, day): the counts recorded when it was summarized. */
 export interface SummaryDayMarker {
-  chatId: string;
+  chatRef: string;
   summaryDate: SummaryDate;
   messageCount: number;
 }
 
-/** Every marker, keyed `chatId|date` for the scan's comparison. */
+/** The scan's comparison key for one (chat, day). */
+export const chatDayKey = (chatRef: string, date: string): string => `${chatRef}|${date}`;
+
+/** Every marker, keyed `chatRef|date` for the scan's comparison. */
 export async function listSummaryDayMarkers(db: StoreDb): Promise<Map<string, number>> {
   const rows = await db
     .select({
@@ -34,14 +36,7 @@ export async function listSummaryDayMarkers(db: StoreDb): Promise<Map<string, nu
       messageCount: chatSummaryDays.messageCount,
     })
     .from(chatSummaryDays);
-  // The store keys markers by scoped ref (Phase 10); the scan compares by
-  // the tg-local chat id it walks.
-  return new Map(
-    rows.map((row) => [
-      `${tryParseScopedRef(row.chatRef)?.id ?? row.chatRef}|${row.summaryDate}`,
-      row.messageCount,
-    ]),
-  );
+  return new Map(rows.map((row) => [chatDayKey(row.chatRef, row.summaryDate), row.messageCount]));
 }
 
 /**
@@ -52,14 +47,13 @@ export async function listSummaryDayMarkers(db: StoreDb): Promise<Map<string, nu
 export async function upsertSummaryDayMarker(
   db: StoreDb,
   input: {
-    chatId: string;
+    chatRef: string;
     summaryDate: SummaryDate;
     messageCount: number;
     topicCount: number;
   },
 ): Promise<void> {
-  const { chatId, ...rest } = input;
-  const marker = { ...rest, chatRef: scopedRef("tg", "chat", chatId), summarizedAt: new Date() };
+  const marker = { ...input, summarizedAt: new Date() };
   await db
     .insert(chatSummaryDays)
     .values(marker)

@@ -7,7 +7,7 @@ import {
   requireSourceContent,
   type SourceContentClient,
   type SourceMessageMatch,
-} from "@/server/source/tg-content";
+} from "@/server/source/content";
 import { getLatestTraceIdsByCorrelation } from "@/server/trace";
 
 import { resolveSpeakerLabels, traceCorrelationFor } from "./service";
@@ -53,7 +53,7 @@ export interface MessageSearchHit extends SourceMessageMatch {
  * working search, which is the same degraded mode the bot's tool runs in.
  */
 export async function searchHistoryMessages(
-  params: { query: string; chatId?: string | null; limit?: number },
+  params: { query: string; chatRef?: string | null; limit?: number },
   db: StoreDb = getStoreDb(),
   content: SourceContentClient = requireSourceContent(),
 ): Promise<MessageSearchHit[]> {
@@ -64,7 +64,7 @@ export async function searchHistoryMessages(
   const vector = embedding ? await embedOne(embedding, query).catch(() => null) : null;
 
   const matches = await content.searchMessages({
-    chatId: params.chatId ?? null,
+    chatRef: params.chatRef ?? null,
     queryText: query,
     queryVector: vector,
     limit: params.limit ?? MESSAGE_SEARCH_LIMIT,

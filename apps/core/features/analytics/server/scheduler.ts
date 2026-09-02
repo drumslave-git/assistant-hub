@@ -7,7 +7,7 @@ import { createDailyScheduler } from "@/server/jobs/daily-scheduler";
 import type { IntervalRunContext } from "@/server/jobs/interval-scheduler";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { chatCompletion } from "@/server/llm/client";
-import { resolveSourceContent } from "@/server/source/tg-content";
+import { requireSourceContent } from "@/server/source/content";
 
 import { bucketKeyOfInstant, weekBucketOf } from "../period";
 
@@ -156,19 +156,14 @@ export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
     getBackgroundRuntime().catch(() => null),
   ]);
   const currentHour = bucketKeyOfInstant(new Date(), "hour", base.timezone);
-  // With no source API configured there is no mirror to scan — an empty
-  // backlog, not an error.
-  const content = resolveSourceContent();
   const [pendingUnits, regenerateBuckets] = await Promise.all([
-    content
-      ? countHoursNeedingInsight(content, getStoreDb(), {
-          timeZone: base.timezone,
-          currentHour,
-          // Read-only use of the due-scan floor: the count answers the same
-          // question the scan does, so it may skip the same proven-scored span.
-          floorHour: getInsightScanFloor(base.timezone) ?? undefined,
-        }).catch(() => 0)
-      : Promise.resolve(0),
+    countHoursNeedingInsight(requireSourceContent(), getStoreDb(), {
+      timeZone: base.timezone,
+      currentHour,
+      // Read-only use of the due-scan floor: the count answers the same
+      // question the scan does, so it may skip the same proven-scored span.
+      floorHour: getInsightScanFloor(base.timezone) ?? undefined,
+    }).catch(() => 0),
     getRegenerateBuckets(),
   ]);
 

@@ -360,7 +360,7 @@ session only; the media id is the capability.
 | `GET` | `/api/history/search-index` | admin | — | `SearchIndexStatus` |
 | `POST` | `/api/history/search-index` | admin | — | `SearchIndexStatus` immediately (fire-and-forget) |
 | `DELETE` | `/api/history/search-index` | admin | — | `SearchIndexStatus` + `{ cleared }` |
-| `GET` | `/api/history/export` | admin | `?chatId=` (optional) | A CSV attachment: `history-<scope>.csv` |
+| `GET` | `/api/history/export` | admin | `?chatRef=` (optional; a scoped chat ref such as `tg:chat:-100…`) | A CSV attachment: `history-<scope>.csv` |
 | `POST` | `/api/history/import` | admin | `{ csv, mapping, delimiter? }` | `ImportResult` |
 
 `SummaryJobInfo` = `DailyJobInfoBase` + `{ pendingDays, embeddingsConfigured }`.
@@ -369,11 +369,11 @@ session only; the media id is the capability.
 index and re-arms a rebuild — the recovery path after configuring an embedding
 model, since rows indexed without one keep their null vector otherwise.
 
-`ImportResult` = `{ totalRows, imported, skippedDuplicates, errors: [{ line, message }], chatIds }`.
-Import is idempotent — rows whose `(chatId, telegramMessageId)` already exists are
+`ImportResult` = `{ totalRows, imported, skippedDuplicates, errors: [{ line, message }], chatRefs }`.
+Import is idempotent — rows whose `(chatRef, sourceMessageId)` already exists are
 skipped, not overwritten — so a partially-applied file can be safely re-run. The
-column mapping keys are the canonical CSV fields (`chat_id`,
-`telegram_message_id`, `role`, `content`, `sent_at`, `user_id`,
+column mapping keys are the canonical CSV fields (`chat_ref`,
+`source_message_id`, `role`, `content`, `sent_at`, `user_id`,
 `reply_to_message_id`, `edited_at`, `deleted_at`), each sourced from a column
 (`{ kind: "column", header }`) or a fixed value (`{ kind: "constant", value }`);
 see [History](../features/history.md#csv-transfer). At most 5000 rows per file.
@@ -412,14 +412,14 @@ account deletes its *own* documents through `DELETE /api/profile/memory`.
 | Method | Path | Access | Body | Returns |
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/tasks` | account | — | `Task[]` (a user-role account: its own assistants' tasks) |
-| `POST` | `/api/tasks` | account | `{ assistantId, chatId (null = global), threadId?, instruction, triggerKind, context?, targetUserIds?, everyMinutes?, delayMinutes?, scheduleKind?, timeOfDay?, weekdays?, runDate?, enabled? }` | The created task — **201** |
+| `POST` | `/api/tasks` | account | `{ assistantId, chatRef (a scoped chat ref; null = global), threadId?, instruction, triggerKind, context?, targetUserIds?, everyMinutes?, delayMinutes?, scheduleKind?, timeOfDay?, weekdays?, runDate?, enabled? }` | The created task — **201** |
 | `PATCH` | `/api/tasks/{id}` | account | Any subset of the editable fields, ≥1 | The updated task |
 | `DELETE` | `/api/tasks/{id}` | account | — | `{ deleted: true }` |
 | `POST` | `/api/tasks/{id}/fire` | account | — | `{ ok, sent: string[] }` — fires one **timed** task now, off the schedule's books |
 | `GET` | `/api/tasks/run` | admin | — | `TaskSchedulerJobInfo` |
 | `POST` | `/api/tasks/run` | admin | — | The same, after one immediate tick |
 
-`Task` = `{ id, assistantId, chatId, threadId, createdByUserId, source,
+`Task` = `{ id, assistantId, chatId, chatRef, chatSource, threadId, createdByUserId, source,
 createdByOwner, instruction, context, triggerKind, targetUserIds, everyMinutes,
 delayMinutes, timeOfDay, weekdays, runDate, enabled, attempts,
 recentDeliveries, lastRunAt, nextRunAt, createdAt, updatedAt }`. Every task
@@ -465,7 +465,7 @@ are (an unreachable source is an outage on the page, never "no feedback yet").
 | `GET` | `/api/browser/{id}/screenshot/{seq}` | admin | — | `image/jpeg`, `Cache-Control: private, max-age=3600` |
 | `POST` | `/api/browser/ytdlp/run` | admin | — | The yt-dlp updater's job info immediately (fire-and-forget) |
 
-A dashboard-started run has `chatId: null` and delivers nothing — its report is read
+A dashboard-started run has `chatRef: null` and delivers nothing — its report is read
 on the page. It is treated as the **operator's own**, so `isOwner` is true and the
 download tools are enabled.
 
@@ -480,8 +480,8 @@ All the card endpoints share the filter query:
 | --- | --- |
 | `unit` | `day` \| `week` \| `month` \| `year` \| `all` (default `day`) |
 | `anchor` | The period key: `2026-07-18`, `2026-07`, `2026`, `all`. Defaults to the current period |
-| `chatId` | Optional — restrict to one chat |
-| `userId` | Optional — restrict to one user's own messages |
+| `chatRef` | Optional — restrict to one chat (scoped ref) |
+| `userRef` | Optional — restrict to one user's own messages |
 
 | Method | Path | Access | Extra params | Returns |
 | --- | --- | --- | --- | --- |
@@ -489,14 +489,14 @@ All the card endpoints share the filter query:
 | `GET` | `/api/analytics/series` | admin | `section` = `volume` \| `tokens` \| `users` \| `mood` | `SeriesPayload` — `{ buckets, series, bucketUnit, yMax? }` |
 | `GET` | `/api/analytics/models` | admin | — | `ModelsPayload` — per model, per call kind |
 | `GET` | `/api/analytics/top-users` | admin | — | `TopUsersPayload` |
-| `GET` | `/api/analytics/insights` | admin | `chatId` **required** | `PeriodInsight` or `null` when the period is not rolled up yet |
+| `GET` | `/api/analytics/insights` | admin | `chatRef` **required** | `PeriodInsight` or `null` when the period is not rolled up yet |
 | `GET` | `/api/analytics/availability` | admin | `source` = `messages` \| `traces` \| `insights`; `from`, `to` **required** | `string[]` — the anchors in range that hold data |
 | `GET` | `/api/analytics/insights/run` | admin | — | `AnalyticsJobInfo` |
 | `POST` | `/api/analytics/insights/run` | admin | — | The same, after one run |
 | `POST` | `/api/analytics/insights/regenerate` | admin | Body `{ granularity, bucket }` | `AnalyticsJobInfo`. **Destructive and billable** |
 
 Every section answers with the same `{ buckets, series }` shape, so one client card
-component drives them all. `mood` requires a `chatId`.
+component drives them all. `mood` requires a `chatRef`.
 
 ## Traces / Debug
 

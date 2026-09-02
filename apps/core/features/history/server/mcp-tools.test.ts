@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildResult, mergeMatches, SELF_AUTHORED_ONLY_NOTE, unquote } from "./mcp-tools";
 import type { ChatMessageRecord } from "./repository";
-import type { SourceMessageMatch } from "@/server/source/tg-content";
+import type { SourceMessageMatch } from "@/server/source/content";
 
 /**
  * The history tools' result format, pinned on the one property grounding depends
@@ -14,12 +14,12 @@ import type { SourceMessageMatch } from "@/server/source/tg-content";
 function record(over: Partial<ChatMessageRecord> = {}): ChatMessageRecord {
   return {
     id: 1,
-    chatId: "-100",
-    telegramMessageId: 11,
+    chatRef: "tg:chat:-100",
+    sourceMessageId: "11",
     role: "user",
     userId: "42",
     content: "hello",
-    replyToMessageId: null,
+    replyToSourceMessageId: null,
     sentAt: "2026-07-28T10:00:00.000Z",
     editedAt: null,
     deletedAt: null,
@@ -38,8 +38,8 @@ describe("buildResult", () => {
   it("names the author of each line in words, not as a wire role", () => {
     const text = textOf(
       buildResult([
-        record({ id: 1, telegramMessageId: 11, role: "user", content: "who is X?" }),
-        record({ id: 2, telegramMessageId: 12, role: "assistant", userId: null, content: "X is Y" }),
+        record({ id: 1, sourceMessageId: "11", role: "user", content: "who is X?" }),
+        record({ id: 2, sourceMessageId: "12", role: "assistant", userId: null, content: "X is Y" }),
       ]),
     );
     expect(text).toContain("[#11] [2026-07-28T10:00:00.000Z] a participant: who is X?");
@@ -48,15 +48,15 @@ describe("buildResult", () => {
   });
 
   it("keeps the reply anchor between the author and the text", () => {
-    const text = textOf(buildResult([record({ replyToMessageId: 7 })]));
+    const text = textOf(buildResult([record({ replyToSourceMessageId: "7" })]));
     expect(text).toContain("a participant [reply to #7]: hello");
   });
 
   it("flags a result that is entirely the bot's own messages", () => {
     const text = textOf(
       buildResult([
-        record({ id: 1, telegramMessageId: 11, role: "assistant", userId: null }),
-        record({ id: 2, telegramMessageId: 12, role: "assistant", userId: null }),
+        record({ id: 1, sourceMessageId: "11", role: "assistant", userId: null }),
+        record({ id: 2, sourceMessageId: "12", role: "assistant", userId: null }),
       ]),
     );
     expect(text).toContain(SELF_AUTHORED_ONLY_NOTE);
@@ -66,8 +66,8 @@ describe("buildResult", () => {
   it("does not flag a result containing even one participant message", () => {
     const text = textOf(
       buildResult([
-        record({ id: 1, telegramMessageId: 11, role: "assistant", userId: null }),
-        record({ id: 2, telegramMessageId: 12, role: "user" }),
+        record({ id: 1, sourceMessageId: "11", role: "assistant", userId: null }),
+        record({ id: 2, sourceMessageId: "12", role: "user" }),
       ]),
     );
     expect(text).not.toContain(SELF_AUTHORED_ONLY_NOTE);
@@ -80,14 +80,14 @@ describe("buildResult", () => {
   });
 
   it("keeps the raw role on the structured payload for machine consumers", () => {
-    const result = buildResult([record({ role: "assistant", userId: null, replyToMessageId: 7 })]);
+    const result = buildResult([record({ role: "assistant", userId: null, replyToSourceMessageId: "7" })]);
     expect(result.structuredContent).toEqual({
       ok: true,
       count: 1,
       messages: [
         {
-          id: 11,
-          replyTo: 7,
+          id: "11",
+          replyTo: "7",
           role: "assistant",
           content: "hello",
           at: "2026-07-28T10:00:00.000Z",
@@ -110,7 +110,7 @@ describe("buildResult", () => {
   });
 
   it("appends the media annotation, so an uncaptioned photo reads as what it shows", () => {
-    const mediaSuffixes = new Map([[11, " [photo: a weathered blue front door]"]]);
+    const mediaSuffixes = new Map([["11", " [photo: a weathered blue front door]"]]);
     const result = buildResult([record({ content: "" })], { mediaSuffixes });
     expect(textOf(result)).toContain("[photo: a weathered blue front door]");
     // The structured payload carries the same text — a machine consumer reading
@@ -123,7 +123,7 @@ describe("buildResult", () => {
   it("still calls out a self-authored-only result when the hits carry media", () => {
     const text = textOf(
       buildResult([record({ role: "assistant", userId: null, content: "" })], {
-        mediaSuffixes: new Map([[11, " [photo: a chart]"]]),
+        mediaSuffixes: new Map([["11", " [photo: a chart]"]]),
       }),
     );
     expect(text).toContain(SELF_AUTHORED_ONLY_NOTE);
@@ -137,7 +137,7 @@ describe("search result size", () => {
   it("cuts each hit to a snippet and marks the cut", () => {
     const text = textOf(
       buildResult([record({ content: "" })], {
-        mediaSuffixes: new Map([[11, longDescription]]),
+        mediaSuffixes: new Map([["11", longDescription]]),
         maxContentChars: 220,
       }),
     );
@@ -159,7 +159,7 @@ describe("search result size", () => {
 
   it("keeps every hit in full on the structured payload, which is trace-only", () => {
     const result = buildResult([record({ content: "" })], {
-      mediaSuffixes: new Map([[11, longDescription]]),
+      mediaSuffixes: new Map([["11", longDescription]]),
       maxContentChars: 220,
     });
     // The loop feeds the model `result.text`; Debug records this verbatim, so
@@ -205,7 +205,7 @@ describe("unquote", () => {
 describe("mergeMatches", () => {
   function match(over: Partial<SourceMessageMatch> & { id: number; score: number }): SourceMessageMatch {
     return {
-      ...record({ id: over.id, telegramMessageId: over.id + 10 }),
+      ...record({ id: over.id, sourceMessageId: String(over.id + 10) }),
       indexedContent: null,
       mediaKind: null,
       ...over,

@@ -104,7 +104,7 @@ describe.skipIf(!LLM_LIVE)("browser agent — real browse (live)", () => {
       // A dashboard run has no chat — nothing is sent to Telegram; the report and
       // the activity feed land on the run row, which is exactly what the UI reads.
       const run = await enqueueBrowserRun(
-        { goal: "Open https://example.com and tell me its main heading.", chatId: null, isOwner: true },
+        { goal: "Open https://example.com and tell me its main heading.", chatRef: null, isOwner: true },
         db,
       );
       startBrowserAgentRunner(db);

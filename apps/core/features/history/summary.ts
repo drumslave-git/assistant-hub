@@ -21,7 +21,7 @@ import { extractJsonObject } from "@/lib/json";
  * (`features/memory/server/extract.ts`).
  */
 export interface SummarizableMessage {
-  telegramMessageId: number;
+  sourceMessageId: string;
   role: "user" | "assistant";
   content: string;
   /** Resolved speaker label (known-user name, or the bot). */
@@ -38,7 +38,8 @@ export interface SummarizableMessage {
 /** One topic the model distilled from a day. */
 export interface SummaryTopic {
   content: string;
-  messageIds: number[];
+  /** Source-local ids of the messages the topic distilled (as the transcript anchored them). */
+  messageIds: string[];
 }
 
 /** A `YYYY-MM-DD` wall-clock day in the operator timezone. */
@@ -81,7 +82,7 @@ Respond with JSON only, in exactly this shape:
 
 /** Render one stored message as an id-anchored transcript line for the summarizer. */
 export function toSummaryLine(message: SummarizableMessage): string {
-  return `[#${message.telegramMessageId}] [${message.sentAt}] ${message.label}: ${message.content}`;
+  return `[#${message.sourceMessageId}] [${message.sentAt}] ${message.label}: ${message.content}`;
 }
 
 /** The user half of the summary prompt: the day being summarized + its transcript. */
@@ -120,7 +121,8 @@ export function batchMessages(
 /**
  * Parse the model's topics. Lenient by design (see {@link extractJsonObject}):
  * a day's summary is not worth failing over a code fence. A topic with no usable
- * `content` is dropped; non-integer ids are filtered out rather than poisoning the
+ * `content` is dropped; ids that are not digit strings (a message id is one in
+ * every transport the core has met) are filtered out rather than poisoning the
  * id array.
  */
 export function parseSummaryTopics(raw: string): SummaryTopic[] {
@@ -135,7 +137,9 @@ export function parseSummaryTopics(raw: string): SummaryTopic[] {
     const content = typeof obj.content === "string" ? obj.content.trim() : "";
     if (!content) continue;
     const ids = Array.isArray(obj.message_ids)
-      ? obj.message_ids.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+      ? obj.message_ids
+          .map((id) => (typeof id === "number" || typeof id === "string" ? String(id).trim() : ""))
+          .filter((id) => /^\d+$/.test(id))
       : [];
     result.push({ content, messageIds: [...new Set(ids)] });
   }

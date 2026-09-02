@@ -5,6 +5,7 @@ import type { ChatCompletionResult } from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { listTraces } from "@/server/trace";
 import { seedSourceMessage, startTestStoreDb, type TestStoreDb } from "@/test/store-db";
+import { registerTestTransport } from "@/test/transports";
 
 import { sourceMedia } from "../../../store/schema";
 
@@ -24,22 +25,26 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  // The media sources are the registered transports — the roster is empty
+  // after a truncate, so the fixture transport announces itself first.
+  await registerTestTransport(ctx.db);
 });
 
 async function seedPending(
-  telegramMessageId: number,
+  sourceMessageId: number,
   chatId = "5",
   over?: { processed?: boolean },
 ) {
   // Media rows require their mirrored message (FK) — mirror first, like the pipeline.
-  await seedSourceMessage(ctx, { chatId, telegramMessageId, processed: over?.processed });
+  await seedSourceMessage(ctx, { chatId, sourceMessageId, processed: over?.processed });
   return insertMedia(ctx.db, {
     id: crypto.randomUUID(),
+    source: "tg",
     chatId,
-    telegramMessageId,
+    sourceMessageId: String(sourceMessageId),
     kind: "photo",
-    fileId: `file-${telegramMessageId}`,
-    fileUniqueId: `u${telegramMessageId}`,
+    fileId: `file-${sourceMessageId}`,
+    fileUniqueId: `u${sourceMessageId}`,
     mimeType: "image/jpeg",
     dataBase64: "QUJD",
     visionHint: null,
@@ -49,9 +54,9 @@ async function seedPending(
 /** The source seam over this test's database — what the tg API provides live. */
 function source(): VisionBackfillSource {
   return {
-    store: dbMediaStore(ctx.db),
-    listPending: (limit) => listPendingMedia(ctx.db, limit),
-    countPending: () => countPendingMedia(ctx.db),
+    store: dbMediaStore(ctx.db, "tg"),
+    listPending: (limit) => listPendingMedia(ctx.db, "tg", limit),
+    countPending: () => countPendingMedia(ctx.db, "tg"),
   };
 }
 
@@ -82,7 +87,7 @@ describe("runVisionBackfill", () => {
     expect(result.described).toBe(3);
     expect(result.unresolved).toBe(0);
     expect(result.interrupted).toBe(false);
-    expect(await countPendingMedia(ctx.db)).toBe(0);
+    expect(await countPendingMedia(ctx.db, "tg")).toBe(0);
 
     // The batch run is traced under vision-backfill; each row under vision.
     const runTraces = await listTraces({ feature: "vision-backfill" });
@@ -116,7 +121,7 @@ describe("runVisionBackfill", () => {
     );
     expect(result.described).toBe(0);
     expect(result.unresolved).toBe(1);
-    expect(await countPendingMedia(ctx.db)).toBe(1);
+    expect(await countPendingMedia(ctx.db, "tg")).toBe(1);
   });
 
   it("stops early when aborted, leaving the rest pending", async () => {
@@ -139,7 +144,7 @@ describe("runVisionBackfill", () => {
 
     expect(result.interrupted).toBe(true);
     expect(result.described).toBe(1);
-    expect(await countPendingMedia(ctx.db)).toBe(2);
+    expect(await countPendingMedia(ctx.db, "tg")).toBe(2);
   });
 
   it("leaves media alone while its message is still held by the live pipeline", async () => {
@@ -147,7 +152,7 @@ describe("runVisionBackfill", () => {
     await seedPending(11); // released — a genuine leftover
 
     // The scan itself excludes the held row…
-    expect((await listPendingMedia(ctx.db)).map((r) => r.telegramMessageId)).toEqual([11]);
+    expect((await listPendingMedia(ctx.db, "tg")).map((r) => r.sourceMessageId)).toEqual(["11"]);
 
     // …so a run describes only the leftover and never races the live pass.
     const result = await runVisionBackfill(
@@ -157,7 +162,7 @@ describe("runVisionBackfill", () => {
       ctx.db,
     );
     expect(result.described).toBe(1);
-    expect(await countPendingMedia(ctx.db)).toBe(1);
+    expect(await countPendingMedia(ctx.db, "tg")).toBe(1);
   });
 
   it("reclaims a held row once the hold times out (crashed pipeline)", async () => {
@@ -169,7 +174,7 @@ describe("runVisionBackfill", () => {
       .set({ createdAt: new Date(Date.now() - 11 * 60_000) })
       .where(eq(sourceMedia.id, row!.id));
 
-    expect(await listPendingMedia(ctx.db)).toHaveLength(1);
+    expect(await listPendingMedia(ctx.db, "tg")).toHaveLength(1);
   });
 
   it("skips (does not run) when the advisory lock is already held", async () => {
@@ -190,7 +195,7 @@ describe("runVisionBackfill", () => {
       expect(inner.result.described).toBe(0);
     }
     // The row was never touched — still pending for the next run.
-    expect(await listPendingMedia(ctx.db)).toHaveLength(1);
+    expect(await listPendingMedia(ctx.db, "tg")).toHaveLength(1);
   });
 });
 

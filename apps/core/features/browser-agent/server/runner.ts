@@ -9,11 +9,11 @@ import {
   getBotPolicy,
   getBrowserLlmRuntime,
 } from "@/features/settings/server/service";
-import { getGroupLanguage } from "@/features/known-groups/server/service";
-import { getUserLanguage } from "@/features/known-users/server/service";
+import { parseScopedRef } from "@assistant-hub-swarm/contracts";
+
+import { getChatLanguage } from "@/features/known-groups/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
-import { isGroupChatId, TELEGRAM_MAX_UPLOAD_MB } from "@/lib/telegram";
 import { chatCompletion, type LlmConnection } from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { publishEvent } from "@/server/realtime/hub";
@@ -64,31 +64,33 @@ let pumping = false;
 let active = false;
 
 /**
- * The source's outbound port, or an audible failure — post-split the runner
- * delivers through the owning source's internal API, which mirrors what it
- * sends; an unconfigured API fails a delivery exactly like v1's stopped
- * poller did.
+ * The outbound port of the transport a chat ref names, or an audible failure
+ * — the runner delivers through the owning transport's internal API, which
+ * mirrors what it sends; an unregistered transport fails a delivery exactly
+ * like v1's stopped poller did.
  */
-function requireOutbound() {
-  // Browser runs still record a raw telegram chat id (v1 shape); they get a
-  // scoped ref — and with it any source — when the run store is generalized.
-  const port = sourceOutbound("tg");
+function requireOutbound(chatRef: string) {
+  const { source } = parseScopedRef(chatRef);
+  const port = sourceOutbound(source);
   if (!port) {
-    throw new Error("telegram source API is not configured (TG_API_URL / INTERNAL_API_TOKEN)");
+    throw new Error(`the ${source} transport is not registered — nothing can deliver to ${chatRef}`);
   }
   return port;
 }
 
-/** Deliver text to the run's chat (the source mirrors the sent message). */
+/** The transport-local chat id a ref names. */
+const chatIdOf = (chatRef: string): string => parseScopedRef(chatRef).id;
+
+/** Deliver text to the run's chat (the transport mirrors the sent message). */
 async function deliverText(
   run: BrowserAgentRun,
   text: string,
   opts: { silent?: boolean } = {},
 ): Promise<number | null> {
-  if (!run.chatId || !text.trim()) return null;
+  if (!run.chatRef || !text.trim()) return null;
   // Sent whole — the report is already concise, and a run recap rarely
   // exceeds one message.
-  const { messageId } = await requireOutbound().sendMessage(run.chatId, {
+  const { messageId } = await requireOutbound(run.chatRef).sendMessage(chatIdOf(run.chatRef), {
     text,
     threadId: run.threadId,
     ...(opts.silent ? { silent: true } : {}),
@@ -96,8 +98,13 @@ async function deliverText(
   return messageId;
 }
 
-/** Telegram caps a media caption at 1024 characters. */
-const TELEGRAM_CAPTION_MAX = 1024;
+/**
+ * How long a file's caption may be before the report travels as a separate
+ * message. Every platform the core has met caps captions well below a
+ * message; the transport still cuts whatever it must — this only picks the
+ * nicer of two honest shapes.
+ */
+const CAPTION_MAX = 1024;
 
 /** One attachable file held until the end of the run, delivered with the report. */
 interface StagedFile {
@@ -117,9 +124,9 @@ async function sendStagedFile(
   staged: StagedFile,
   caption: string,
 ): Promise<number | null> {
-  if (!run.chatId) return null;
+  if (!run.chatRef) return null;
   try {
-    const { messageId } = await requireOutbound().sendFile(run.chatId, {
+    const { messageId } = await requireOutbound(run.chatRef).sendFile(chatIdOf(run.chatRef), {
       buffer: staged.file.buffer,
       filename: staged.file.filename,
       mime: staged.file.mime,
@@ -159,11 +166,11 @@ async function deliverRunOutcome(
   staged: StagedFile[],
   downloads: BrowserDownloadRecord[],
 ): Promise<{ content: string; messageId: number; hasMedia: boolean } | null> {
-  if (!run.chatId) return null;
+  if (!run.chatRef) return null;
   if (staged.length === 1) {
     const others = downloads.filter((d) => d !== staged[0].record && !d.deliveredToChat);
     const caption = formatRunReport(report, others);
-    if (caption.length <= TELEGRAM_CAPTION_MAX) {
+    if (caption.length <= CAPTION_MAX) {
       const messageId = await sendStagedFile(run, staged[0], caption);
       if (messageId != null) return { content: caption, messageId, hasMedia: true };
       // Fall through: the file could not be sent, so it is undelivered and the
@@ -209,7 +216,7 @@ async function removeRunAck(runId: string): Promise<void> {
     try {
       // The source deletes and soft-deletes its mirror row together;
       // `deleted: false` (older than 48h) just leaves the ack standing.
-      await requireOutbound().deleteMessage(ack.chatId, messageId);
+      await requireOutbound(ack.chatRef).deleteMessage(chatIdOf(ack.chatRef), messageId);
     } catch (err) {
       console.error(
         `browser-agent: could not remove the acknowledgement message ${messageId} for run ${runId}:`,
@@ -270,8 +277,8 @@ async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
     feature: FEATURE.id,
     action: "run",
     trigger: {
-      kind: run.chatId ? "transport" : "dashboard",
-      actor: run.chatId ?? "dashboard",
+      kind: run.chatRef ? "transport" : "dashboard",
+      actor: run.chatRef ?? "dashboard",
       correlationId: run.id,
     },
     inputSummary: run.goal,
@@ -298,8 +305,8 @@ async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
 
     const [downloadLimitBytes, storedLanguage] = await Promise.all([
       getBrowserDownloadLimitBytes(),
-      run.chatId
-        ? (isGroupChatId(run.chatId) ? getGroupLanguage(run.chatId) : getUserLanguage(run.chatId)).catch(
+      run.chatRef
+        ? getChatLanguage(parseScopedRef(run.chatRef).source, chatIdOf(run.chatRef)).catch(
             () => null,
           )
         : Promise.resolve(null),
@@ -313,8 +320,10 @@ async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
       // A rule lends the owner's rights only for the links that triggered it;
       // an owner-started (or dashboard) run downloads without a URL fence.
       allowedDownloadUrls: run.restricted ? run.sourceUrls : null,
-      // Telegram's own upload ceiling — not a tunable (user decision, 2026-08-01).
-      downloadMaxMb: TELEGRAM_MAX_UPLOAD_MB,
+      // The core sets no platform ceiling (user decision, 2026-09-02): a file
+      // is attachable up to the operator's own download limit, and the
+      // transport decides what its platform can carry.
+      downloadMaxMb: Math.max(1, Math.floor(downloadLimitBytes / (1024 * 1024))),
       downloadLimitBytes,
       downloads,
       onAction: (action, url) => {
@@ -353,18 +362,18 @@ async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
       },
       onDownload: async (record, file) => {
         let outcome: DownloadOutcome = "kept";
-        if (run.chatId && file) {
+        if (run.chatRef && file) {
           // Held for the end of the run: the file goes out together with the
           // report as one combined message instead of two.
           staged.push({ record, file });
           outcome = "staged";
-        } else if (run.chatId && run.restricted) {
+        } else if (run.chatRef && run.restricted) {
           // Attach or fail (user decision, 2026-08-01): a restricted run's
           // audience cannot reach the server's disk, so a file the chat cannot
           // take is deleted by the dispatcher, not archived. No announcement —
           // the final report carries the failure.
           outcome = "discarded";
-        } else if (run.chatId) {
+        } else if (run.chatRef) {
           // Owner's run, too large to attach — announce it by name as it lands
           // (silent); the recap points at the downloads folder.
           await deliverText(run, formatDownloadLine(record), { silent: true }).catch((err: unknown) => {
@@ -424,7 +433,7 @@ async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
     // owning source mirrors what it delivers (caption or text), so there is
     // nothing to record here beyond the trace. A failed goal delivers the
     // same way: the report IS the honest failure message.
-    if (run.chatId) {
+    if (run.chatRef) {
       const delivered = await deliverRunOutcome(run, report, staged, downloads);
       if (delivered != null) {
         await trace.event({
@@ -467,7 +476,7 @@ async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     // A file the run did download must still reach the chat, failure or not —
     // delivered before the settle so the persisted records say what happened.
-    if (run.chatId) {
+    if (run.chatRef) {
       for (const one of staged) {
         await sendStagedFile(run, one, formatDownloadLine({ ...one.record, deliveredToChat: true }));
       }
@@ -478,7 +487,7 @@ async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
       downloads,
     }).catch(() => undefined);
     // Tell the chat the run failed, so a user is never left waiting on a promise.
-    if (run.chatId) {
+    if (run.chatRef) {
       await deliverText(run, "I hit a problem while browsing and had to stop.").catch(() => undefined);
       await removeRunAck(run.id);
     }

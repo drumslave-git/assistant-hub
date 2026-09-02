@@ -4,6 +4,7 @@ import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { listTraces, startTrace } from "@/server/trace";
 import { fakeSourceContent, type FakeSourceContent } from "@/test/fake-source-content";
 import { startTestStoreDb, type TestStoreDb } from "@/test/store-db";
+import { registerTestTransport } from "@/test/transports";
 
 import { getChatHistory, getHistoryOverview, loadChatDayTranscript } from "./service";
 
@@ -17,9 +18,21 @@ import { getChatHistory, getHistoryOverview, loadChatDayTranscript } from "./ser
  */
 
 let content: FakeSourceContent;
-vi.mock("@/server/source/tg-content", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/server/source/tg-content")>();
-  return { ...actual, requireSourceContent: () => content, resolveSourceContent: () => content };
+const holder = vi.hoisted(() => ({ db: null as unknown }));
+
+// Production code that walks the registered transports reads the default
+// store handle; point it at this suite's container.
+vi.mock("@/server/store/db", () => ({
+  getStoreDb: () => holder.db,
+  getStorePool: () => {
+    throw new Error("not used in this suite");
+  },
+  closeStorePool: async () => {},
+}));
+
+vi.mock("@/server/source/content", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/source/content")>();
+  return { ...actual, requireSourceContent: () => content };
 });
 vi.mock("@/server/source-store/directory-client", () => ({
   sourceDirectoryClient: () => ({
@@ -52,6 +65,7 @@ let ctx: TestStoreDb;
 
 beforeAll(async () => {
   ctx = await startTestStoreDb();
+  holder.db = ctx.db;
 });
 
 afterAll(async () => {
@@ -60,30 +74,32 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  await registerTestTransport(ctx.db);
   content = fakeSourceContent();
 });
 
-const CHAT = "555";
+const CHAT_ID = "555";
+const CHAT = `tg:chat:${CHAT_ID}`;
 
 describe("getChatHistory", () => {
   it("annotates rows with media descriptions, reactions, and trace links", async () => {
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 10,
+      chatRef: CHAT,
+      sourceMessageId: "10",
       userId: "100",
       content: "what's this?",
       botReaction: "👍",
     });
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 11,
+      chatRef: CHAT,
+      sourceMessageId: "11",
       role: "assistant",
       content: "a lighthouse",
-      replyToMessageId: 10,
+      replyToSourceMessageId: "10",
     });
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 12,
+      chatRef: CHAT,
+      sourceMessageId: "12",
       userId: "100",
       content: "",
       media: { kind: "photo", status: "described", description: "a striped lighthouse" },
@@ -92,15 +108,15 @@ describe("getChatHistory", () => {
     const trace = await startTrace({
       feature: "bot-messaging",
       action: "reply",
-      trigger: { kind: "transport", actor: "100", correlationId: `${CHAT}:10` },
+      trigger: { kind: "transport", actor: "100", correlationId: `${CHAT_ID}:10` },
     });
     await trace.succeed();
 
     const rows = await getChatHistory(CHAT);
     expect(rows).toHaveLength(3);
-    const asked = rows.find((r) => r.telegramMessageId === 10)!;
-    const answered = rows.find((r) => r.telegramMessageId === 11)!;
-    const photo = rows.find((r) => r.telegramMessageId === 12)!;
+    const asked = rows.find((r) => r.sourceMessageId === "10")!;
+    const answered = rows.find((r) => r.sourceMessageId === "11")!;
+    const photo = rows.find((r) => r.sourceMessageId === "12")!;
     expect(asked.traceId).not.toBeNull();
     expect(answered.traceId).toBe(asked.traceId);
     expect(asked.mediaSuffix).toContain("you reacted");
@@ -113,7 +129,13 @@ describe("getHistoryOverview", () => {
   it("lists chats with traffic, from the source's aggregates", async () => {
     const overview = await getHistoryOverview();
     expect(overview).toEqual([
-      { chatId: "-1009", messageCount: 3, lastSentAt: "2026-07-14T12:00:00.000Z" },
+      {
+        chatRef: "tg:chat:-1009",
+        sourceLabel: "Telegram",
+        label: "Fixture Group",
+        messageCount: 3,
+        lastSentAt: "2026-07-14T12:00:00.000Z",
+      },
     ]);
     const { traces } = await listTraces({ feature: "history" });
     // Reads stay untraced, like every dashboard read.
@@ -123,38 +145,38 @@ describe("getHistoryOverview", () => {
 
 describe("loadChatDayTranscript", () => {
   it("loads one wall-clock day with labels and annotations, dropping blank rows", async () => {
-    await upsertKnownUser(ctx.db, {
+    await upsertKnownUser(ctx.db, "tg", {
       userId: "100",
       username: "alice_example",
       firstName: "Alice",
       lastName: null,
     });
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 1,
+      chatRef: CHAT,
+      sourceMessageId: "1",
       userId: "100",
       content: "morning",
       sentAt: new Date("2026-07-13T08:00:00.000Z"),
     });
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 2,
+      chatRef: CHAT,
+      sourceMessageId: "2",
       role: "assistant",
       content: "good morning",
       sentAt: new Date("2026-07-13T08:00:05.000Z"),
     });
     // Blank and unreadable — counted, not rendered.
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 3,
+      chatRef: CHAT,
+      sourceMessageId: "3",
       userId: "100",
       content: "",
       sentAt: new Date("2026-07-13T09:00:00.000Z"),
     });
     // The next day stays out of this day's read.
     content.addMessage({
-      chatId: CHAT,
-      telegramMessageId: 4,
+      chatRef: CHAT,
+      sourceMessageId: "4",
       userId: "100",
       content: "next day",
       sentAt: new Date("2026-07-14T08:00:00.000Z"),
@@ -162,7 +184,7 @@ describe("loadChatDayTranscript", () => {
 
     const day = await loadChatDayTranscript(content, ctx.db, CHAT, "2026-07-13", "UTC");
     expect(day.dayMessageCount).toBe(3);
-    expect(day.messages.map((m) => m.telegramMessageId)).toEqual([1, 2]);
+    expect(day.messages.map((m) => m.sourceMessageId)).toEqual(["1", "2"]);
     expect(day.messages[0].label).toContain("Alice");
     expect(day.messages[1].label).toBe("Bot");
   });

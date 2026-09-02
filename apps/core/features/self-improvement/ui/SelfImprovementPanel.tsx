@@ -181,8 +181,8 @@ export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
       </CardHeader>
       <CardContent>
         {feedbacksError ? (
-          // The rows live in the telegram service's store — an unreachable
-          // service is an outage to surface, never an empty listing.
+          // An unreadable feedback store is an outage to surface, never an
+          // empty listing.
           <p className="text-sm text-danger">
             Feedback could not be loaded: {feedbacksError}
           </p>
@@ -190,7 +190,7 @@ export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
           <EmptyState
             icon={MessageSquareHeart}
             title="No feedback yet"
-            description="When someone reacts to a bot reply with 👍 or 👎, their answer shows up here. In groups, Telegram only delivers reactions when the bot is an admin."
+            description="When someone reacts to a bot reply with 👍 or 👎, their answer shows up here. Some platforms only deliver reactions in groups when the bot is an admin."
           />
         ) : (
           <Table>

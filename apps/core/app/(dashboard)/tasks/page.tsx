@@ -1,5 +1,6 @@
 import { Bug, Database } from "lucide-react";
 import Link from "next/link";
+import { scopedRef } from "@assistant-hub-swarm/contracts";
 
 import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
@@ -21,6 +22,7 @@ import {
 import { featureDebugHref } from "@/lib/features";
 import { actingAccount } from "@/server/auth/acting";
 import { chatKey, ownedAssistantIds, servedChatKeys } from "@/server/ownership";
+import { contentSources } from "@/server/source/content";
 
 // Tasks and the chats they can live in are read at request time.
 export const dynamic = "force-dynamic";
@@ -39,58 +41,64 @@ export default async function TasksPage() {
 
   let tasks: Task[] | null = null;
   let job: TaskSchedulerJobInfo | null = null;
-  let chats: TaskChat[] = [];
+  const chats: TaskChat[] = [];
   let assistants: { id: string; name: string }[] = [];
-  let authors: Record<string, string> = {};
+  const authors: Record<string, string> = {};
   let dbError: string | null = null;
   try {
-    const [view, groups, users, memberships, jobInfo, assistantRows, owned, served] =
-      await Promise.all([
-        getTasksView(),
-        listGroups(),
-        listUsers(),
-        listMemberships(),
-        getTaskSchedulerInfo(),
-        getAssistants(),
-        ownedAssistantIds(account),
-        servedChatKeys(account),
-      ]);
+    const [view, sources, jobInfo, assistantRows, owned, served] = await Promise.all([
+      getTasksView(),
+      contentSources(),
+      getTaskSchedulerInfo(),
+      getAssistants(),
+      ownedAssistantIds(account),
+      servedChatKeys(account),
+    ]);
     tasks = owned === null ? view : view.filter((task) => owned.has(task.assistantId));
     job = jobInfo;
     assistants = assistantRows
       .filter((a) => owned === null || owned.has(a.id))
       .map((a) => ({ id: a.id, name: a.name }));
-    const chatVisible = (chatId: string) =>
-      served === null || served.has(chatKey("tg", chatId));
-    // The people a group rule can be limited to: whoever has spoken there, in
-    // the roster's order (most recently active first), labelled like everywhere.
-    const labels = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
-    const membersByChat = new Map<string, TaskChatMember[]>();
-    for (const { chatId, userId } of memberships) {
-      const label = labels.get(userId);
-      if (!label) continue;
-      membersByChat.set(chatId, [...(membersByChat.get(chatId) ?? []), { userId, label }]);
+    // Every registered transport's chats: its groups with their rosters, and
+    // its people as direct chats. A task's chat picker spans them all.
+    for (const source of sources) {
+      const [groups, users, memberships] = await Promise.all([
+        listGroups(source),
+        listUsers(source),
+        listMemberships(source),
+      ]);
+      const chatVisible = (chatId: string) => served === null || served.has(chatKey(source, chatId));
+      // The people a group rule can be limited to: whoever has spoken there, in
+      // the roster's order (most recently active first), labelled like everywhere.
+      const labels = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
+      const membersByChat = new Map<string, TaskChatMember[]>();
+      for (const { chatId, userId } of memberships) {
+        const label = labels.get(userId);
+        if (!label) continue;
+        membersByChat.set(chatId, [...(membersByChat.get(chatId) ?? []), { userId, label }]);
+      }
+      chats.push(
+        ...groups
+          .filter((g) => chatVisible(g.chatId))
+          .map((g) => ({
+            chatRef: scopedRef(source, "chat", g.chatId),
+            label: g.title ?? `Group ${g.chatId}`,
+            kind: "group" as const,
+            members: membersByChat.get(g.chatId) ?? [],
+          })),
+        // A person's direct chat is addressed by their own id on every
+        // transport the core has met; the ingest keeps no separate row for it.
+        ...users
+          .filter((u) => chatVisible(u.userId))
+          .map((u) => ({
+            chatRef: scopedRef(source, "chat", u.userId),
+            label: formatKnownUserLabel(u),
+            kind: "dm" as const,
+            members: [],
+          })),
+      );
+      for (const u of users) authors[scopedRef(source, "user", u.userId)] = formatKnownUserLabel(u);
     }
-    // A private chat's id equals the user id, so a DM is addressable by user.
-    chats = [
-      ...groups
-        .filter((g) => chatVisible(g.chatId))
-        .map((g) => ({
-          chatId: g.chatId,
-          label: g.title ?? `Group ${g.chatId}`,
-          kind: "group" as const,
-          members: membersByChat.get(g.chatId) ?? [],
-        })),
-      ...users
-        .filter((u) => chatVisible(u.userId))
-        .map((u) => ({
-          chatId: u.userId,
-          label: formatKnownUserLabel(u),
-          kind: "dm" as const,
-          members: [],
-        })),
-    ];
-    authors = Object.fromEntries(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read tasks from the database";
   }

@@ -6,7 +6,8 @@ import { loadChatDayTranscript } from "@/features/history/server/service";
 import {
   requireSourceContent,
   type SourceContentClient,
-} from "@/server/source/tg-content";
+} from "@/server/source/content";
+import { parseScopedRef } from "@assistant-hub-swarm/contracts";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { currentSummaryDate, type SummaryDate } from "@/features/history/summary";
 import { FEATURES } from "@/lib/features";
@@ -94,7 +95,7 @@ export interface ExtractDeps {
 
 /** Outcome of extracting one chat-day. */
 export interface ExtractDayResult {
-  chatId: string;
+  chatRef: string;
   extractionDate: SummaryDate;
   messageCount: number;
   /** Facts actually queued (after validation and duplicate filtering). */
@@ -104,12 +105,13 @@ export interface ExtractDayResult {
 /** Queue one day's extracted facts, counting only what the service accepted. */
 async function queueNotes(
   notes: readonly ExtractedNote[],
-  chatId: string,
+  chatRef: string,
   db: StoreDb,
 ): Promise<{ queued: ExtractedNote[]; rejected: { note: ExtractedNote; error: string }[] }> {
   const queued: ExtractedNote[] = [];
   const rejected: { note: ExtractedNote; error: string }[] = [];
 
+  const { source, id: chatId } = parseScopedRef(chatRef);
   for (const note of notes) {
     // Through the same service the tool writes with, so a passively extracted note
     // clears exactly the same bar as one the model saved by hand — in particular
@@ -120,6 +122,7 @@ async function queueNotes(
         scope: note.scope,
         userId: note.scope === "user" ? note.userId : null,
         content: note.content,
+        source,
         chatId,
       },
       db,
@@ -148,13 +151,13 @@ async function queueNotes(
  * chit-chat is never re-spent on the LLM.
  */
 export async function extractChatDay(
-  params: { chatId: string; extractionDate: SummaryDate },
+  params: { chatRef: string; extractionDate: SummaryDate },
   deps: ExtractDeps,
   // The actor is the CHAT the day belongs to (like a task fire's), so the chat
-  // id is a clickable, filterable facet (`/debug?actor=<chatId>`) — the job's
+  // id is a clickable, filterable facet (`/debug?actor=<chatRef>`) — the job's
   // own identity is already the trace's feature. User rule, 2026-08-15: every
   // URL filter is a UI affordance, and ids must be facets, not free text.
-  trigger: TraceTrigger = { kind: "cron", actor: params.chatId },
+  trigger: TraceTrigger = { kind: "cron", actor: params.chatRef },
   db: StoreDb = getStoreDb(),
 ): Promise<ExtractDayResult> {
   const trace = await startTrace(
@@ -162,7 +165,7 @@ export async function extractChatDay(
       feature: FEATURE.id,
       action: "extract",
       trigger,
-      inputSummary: `chat ${params.chatId} · ${params.extractionDate}`,
+      inputSummary: `chat ${params.chatRef} · ${params.extractionDate}`,
     }
   );
 
@@ -171,7 +174,7 @@ export async function extractChatDay(
     const { messages, dayMessageCount } = await loadChatDayTranscript(
       content,
       db,
-      params.chatId,
+      params.chatRef,
       params.extractionDate,
       deps.timeZone,
     );
@@ -181,7 +184,11 @@ export async function extractChatDay(
     // never registered — imported history routinely does — and offering their ids
     // to the model just yields good facts the store then refuses. So the roster is
     // the storable subset, and the rest stay in the transcript as context only.
-    const known = await getKnownUsersByIds(db, speakers.map((s) => s.userId));
+    const known = await getKnownUsersByIds(
+      db,
+      parseScopedRef(params.chatRef).source,
+      speakers.map((s) => s.userId),
+    );
     // Aliases come from `known_users`, never from the transcript: the roster has to
     // be matchable against the nicknames the group actually uses, or a person's own
     // statement about themselves goes unattributed and is dropped.
@@ -195,7 +202,7 @@ export async function extractChatDay(
       type: "step",
       message: "day loaded",
       data: {
-        chatId: params.chatId,
+        chatRef: params.chatRef,
         extractionDate: params.extractionDate,
         messageCount: dayMessageCount,
         transcriptMessages: messages.length,
@@ -246,7 +253,7 @@ export async function extractChatDay(
       parseExtractedNotes(content, rosterIds),
     );
 
-    const { queued, rejected } = await queueNotes(proposed, params.chatId, db);
+    const { queued, rejected } = await queueNotes(proposed, params.chatRef, db);
 
     if (rejected.length > 0) {
       await trace.event({
@@ -334,20 +341,20 @@ export async function runMemoryExtraction(
     });
     // Days that already failed this run still match the scan (they are still
     // unextracted), so skip them rather than retrying in a tight loop.
-    const next = pending.filter((day) => !failed.has(`${day.chatId}|${day.extractionDate}`));
+    const next = pending.filter((day) => !failed.has(`${day.chatRef}|${day.extractionDate}`));
     if (next.length === 0) break;
 
     for (const day of next) {
       deps.onProgress?.({
-        step: `Extracting memory from ${day.chatId} ${day.extractionDate}`,
+        step: `Extracting memory from ${day.chatRef} ${day.extractionDate}`,
         current: days + failed.size + 1,
         total,
       });
       try {
         const result = await extractChatDay(
-          { chatId: day.chatId, extractionDate: day.extractionDate },
+          { chatRef: day.chatRef, extractionDate: day.extractionDate },
           deps,
-          { kind: "cron", actor: day.chatId, correlationId: runId },
+          { kind: "cron", actor: day.chatRef, correlationId: runId },
           db,
         );
         notes += result.noteCount;
@@ -355,7 +362,7 @@ export async function runMemoryExtraction(
       } catch {
         // Already recorded on the day's own trace. Keep going so one bad day does
         // not block the backlog; it stays pending for the next run.
-        failed.add(`${day.chatId}|${day.extractionDate}`);
+        failed.add(`${day.chatRef}|${day.extractionDate}`);
       }
     }
   }

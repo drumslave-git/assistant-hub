@@ -40,7 +40,7 @@ export interface SourceMediaBrowse {
   /** Which app this surface reads — rows are tagged with it. */
   source: SourceId;
   store: MediaStorePort;
-  listPending(limit: number): Promise<{ id: string; chatId: string; telegramMessageId: number }[]>;
+  listPending(limit: number): Promise<{ id: string; chatId: string; sourceMessageId: string }[]>;
   countPending(): Promise<number>;
   listRecent(limit: number): Promise<MediaRecord[]>;
 }

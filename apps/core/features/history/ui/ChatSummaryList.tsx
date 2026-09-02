@@ -44,22 +44,26 @@ export function ChatSummaryList({ chats }: { chats: ChatSummaryView[] }) {
           <Table minWidth={560}>
             <TableHead>
               <TableRow header>
-                <TableHeaderCell>Chat ID</TableHeaderCell>
+                <TableHeaderCell>Chat</TableHeaderCell>
+                <TableHeaderCell>Transport</TableHeaderCell>
+                <TableHeaderCell>Ref</TableHeaderCell>
                 <TableHeaderCell>Messages</TableHeaderCell>
                 <TableHeaderCell>Last activity</TableHeaderCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {chats.map((chat) => (
-                <TableRow key={chat.chatId}>
-                  <TableCell className="font-mono text-xs">
+                <TableRow key={chat.chatRef}>
+                  <TableCell>
                     <Link
-                      href={`/history/${encodeURIComponent(chat.chatId)}`}
+                      href={`/history/${encodeURIComponent(chat.chatRef)}`}
                       className="text-primary hover:underline"
                     >
-                      {chat.chatId}
+                      {chat.label}
                     </Link>
                   </TableCell>
+                  <TableCell className="text-muted">{chat.sourceLabel}</TableCell>
+                  <TableCell className="font-mono text-xs text-faint">{chat.chatRef}</TableCell>
                   <TableCell className="text-muted">{chat.messageCount}</TableCell>
                   <TableCell className="text-muted">
                     <Timestamp iso={chat.lastSentAt} />

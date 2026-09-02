@@ -13,7 +13,7 @@ import { MAX_FACT_LENGTH } from "./prompt";
 
 function message(overrides: Partial<SummarizableMessage> = {}): SummarizableMessage {
   return {
-    telegramMessageId: 1,
+    sourceMessageId: "1",
     role: "user",
     content: "hello",
     label: "Alice",
@@ -69,7 +69,7 @@ describe("buildExtractionRequest", () => {
       "2026-07-13",
       [
         message({ userId: "1001", label: "Alice", content: "I'm a vet" }),
-        message({ telegramMessageId: 2, userId: "1002", label: "Bob", content: "nice" }),
+        message({ sourceMessageId: "2", userId: "1002", label: "Bob", content: "nice" }),
       ],
       [alice, bob],
     );
@@ -111,7 +111,7 @@ describe("buildExtractionRequest", () => {
       "2026-07-13",
       [
         message({ userId: "1001", label: "Alice", content: "I'm a vet" }),
-        message({ telegramMessageId: 2, userId: "9999", label: "User 9999", content: "I live in Porto" }),
+        message({ sourceMessageId: "2", userId: "9999", label: "User 9999", content: "I live in Porto" }),
       ],
       [alice],
     );

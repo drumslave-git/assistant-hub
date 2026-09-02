@@ -37,7 +37,7 @@ export function PeriodPicker({
   anchor,
   units,
   source,
-  chatId,
+  chatRef,
   todayAnchors,
   label,
   onChange,
@@ -48,7 +48,7 @@ export function PeriodPicker({
   units: PeriodUnit[];
   /** The card's data source, so the calendar marks what this card can actually show. */
   source: MetricSource;
-  chatId: string | null;
+  chatRef: string | null;
   /** The current period per unit, resolved server-side in the operator timezone. */
   todayAnchors: Record<PeriodUnit, string>;
   /** Names the control for screen readers, e.g. the card title. */
@@ -128,7 +128,7 @@ export function PeriodPicker({
               unit={unit}
               anchor={anchor}
               source={source}
-              chatId={chatId}
+              chatRef={chatRef}
               today={todayAnchors.day}
               onClose={() => setOpen(false)}
               onSelect={(next) => {
@@ -147,7 +147,7 @@ function CalendarPopover({
   unit,
   anchor,
   source,
-  chatId,
+  chatRef,
   today,
   onSelect,
   onClose,
@@ -155,7 +155,7 @@ function CalendarPopover({
   unit: Exclude<PeriodUnit, "all">;
   anchor: string;
   source: MetricSource;
-  chatId: string | null;
+  chatRef: string | null;
   today: string;
   onSelect: (anchor: string) => void;
   onClose: () => void;
@@ -163,7 +163,7 @@ function CalendarPopover({
   const ref = useRef<HTMLDivElement>(null);
   const mode = unit as CalendarMode;
   const [range, setRange] = useState(() => initialViewRange(mode, anchor, today));
-  const available = useAvailability(source, unit, chatId, range);
+  const available = useAvailability(source, unit, chatRef, range);
 
   // Dismiss on an outside click or Escape — a popover that traps the reader on a
   // dashboard of a dozen cards is worse than no popover.
@@ -215,7 +215,7 @@ function CalendarPopover({
 function useAvailability(
   source: MetricSource,
   unit: PeriodUnit,
-  chatId: string | null,
+  chatRef: string | null,
   range: { from: string; to: string },
 ): ReadonlySet<string> {
   const [keys, setKeys] = useState<ReadonlySet<string>>(() => new Set<string>());
@@ -225,7 +225,7 @@ function useAvailability(
     unit,
     from: range.from,
     to: range.to,
-    ...(chatId ? { chatId } : {}),
+    ...(chatRef ? { chatRef } : {}),
   }).toString();
 
   useEffect(() => {

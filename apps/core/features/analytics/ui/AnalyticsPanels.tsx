@@ -189,7 +189,7 @@ function InsightBody({ kind, filters }: { kind: InsightKind; filters: CardFilter
       error={error}
       hasData={data != null}
       emptyMessage={
-        filters.chatId
+        filters.chatRef
           ? "Not computed yet — the insight job scores each finished hour."
           : "Pick a chat to see its insight."
       }
@@ -445,7 +445,7 @@ function TopUsersBody({ filters }: { filters: CardFilters }) {
           </TableHead>
           <TableBody>
             {data.users.map((u) => (
-              <TableRow key={u.userId}>
+              <TableRow key={u.userRef}>
                 <TableCell className="font-medium">{u.label}</TableCell>
                 <TableCell align="right" className="tabular-nums">
                   {formatNumber(u.messages)}

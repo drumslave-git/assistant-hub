@@ -78,18 +78,18 @@ export function FilterableCard({
   const [filters, setFilters] = useState<CardFilters>(() => ({
     unit: defaultUnit,
     anchor: todayAnchors[defaultUnit],
-    chatId: chatRequired ? (chats?.[0]?.id ?? null) : null,
-    userId: null,
+    chatRef: chatRequired ? (chats?.[0]?.id ?? null) : null,
+    userRef: null,
   }));
 
   // Chat and user are mutually exclusive scopes: a chat is a conversation, a user is
   // a person across conversations, and intersecting them answers a question nobody
   // asked. Choosing one clears the other.
-  function setChat(chatId: string | null) {
-    setFilters((f) => ({ ...f, chatId, userId: null }));
+  function setChat(chatRef: string | null) {
+    setFilters((f) => ({ ...f, chatRef, userRef: null }));
   }
-  function setUser(userId: string | null) {
-    setFilters((f) => ({ ...f, userId, chatId: null }));
+  function setUser(userRef: string | null) {
+    setFilters((f) => ({ ...f, userRef, chatRef: null }));
   }
 
   return (
@@ -105,7 +105,7 @@ export function FilterableCard({
             anchor={filters.anchor}
             units={units}
             source={source}
-            chatId={filters.chatId}
+            chatRef={filters.chatRef}
             todayAnchors={todayAnchors}
             label={title}
             onChange={({ unit, anchor }) => setFilters((f) => ({ ...f, unit, anchor }))}
@@ -114,7 +114,7 @@ export function FilterableCard({
             <Select
               aria-label={`Chat for ${title}`}
               className="h-8 w-auto min-w-32 max-w-44 text-xs"
-              value={filters.chatId ?? ""}
+              value={filters.chatRef ?? ""}
               onChange={(e) => setChat(e.target.value || null)}
             >
               {chatRequired ? null : <option value="">All chats</option>}
@@ -129,7 +129,7 @@ export function FilterableCard({
             <Select
               aria-label={`User for ${title}`}
               className="h-8 w-auto min-w-32 max-w-44 text-xs"
-              value={filters.userId ?? ""}
+              value={filters.userRef ?? ""}
               onChange={(e) => setUser(e.target.value || null)}
             >
               <option value="">All users</option>

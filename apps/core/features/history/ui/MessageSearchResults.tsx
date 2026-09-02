@@ -69,20 +69,20 @@ export function MessageSearchResults({
             </TableHead>
             <TableBody>
               {hits.map((hit) => (
-                <TableRow key={`${hit.chatId}:${hit.telegramMessageId}`}>
+                <TableRow key={`${hit.chatRef}:${hit.sourceMessageId}`}>
                   <TableCell className="whitespace-nowrap text-xs text-faint">
                     <Timestamp iso={hit.sentAt} />
                   </TableCell>
                   <TableCell className="font-mono text-xs">
                     <Link
-                      href={`/history/${encodeURIComponent(hit.chatId)}`}
+                      href={`/history/${encodeURIComponent(hit.chatRef)}`}
                       className="text-primary hover:underline"
                     >
-                      {hit.chatId}
+                      {hit.chatRef}
                     </Link>
                   </TableCell>
                   <TableCell className="font-mono text-xs text-faint">
-                    {hit.telegramMessageId}
+                    {hit.sourceMessageId}
                   </TableCell>
                   <TableCell>
                     <Badge tone={hit.role === "assistant" ? "primary" : "neutral"}>

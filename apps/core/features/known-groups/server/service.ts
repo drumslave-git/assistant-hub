@@ -1,9 +1,11 @@
 import "server-only";
 
-import { parseScopedRef } from "@assistant-hub-swarm/contracts";
+import { parseScopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { formatKnownUserLabel } from "@/features/known-users/format";
+import { getUserContext, getUserLanguage } from "@/features/known-users/server/service";
+import { listSourceChatSenderIds } from "@/server/source-store/repository";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
@@ -21,9 +23,10 @@ import {
   setKnownGroupLanguage,
   setKnownGroupNotes,
   upsertKnownGroup,
+  isGroupChat,
   type KnownGroupRecord,
   type KnownGroupSummaryRecord,
-  type TelegramGroupProfile,
+  type SourceGroupProfile,
 } from "./repository";
 import type {
   KnownGroup,
@@ -34,9 +37,10 @@ import type {
 
 /**
  * Known-groups domain service — the boundary Route Handlers, Server Components,
- * and the Telegram runtime call. Capturing group activity is a high-frequency
+ * and the turn runtime call. Capturing group activity is a high-frequency
  * passive upsert (not traced); editing notes is an operator action (traced).
- * Mirrors the known-users service.
+ * Mirrors the known-users service. Every read names the source the ids belong
+ * to; a curated write is addressed by scoped ref, which names it.
  */
 
 const FEATURE = FEATURES["known-groups"];
@@ -53,9 +57,12 @@ function toClientSummary(record: KnownGroupSummaryRecord): KnownGroupSummary {
   return record;
 }
 
-/** All known groups (with member counts), most-recently-seen first. */
-export async function listGroups(db: StoreDb = getStoreDb()): Promise<KnownGroupSummary[]> {
-  return (await listKnownGroups(db)).map(toClientSummary);
+/** All of one source's known groups (with member counts), most-recently-seen first. */
+export async function listGroups(
+  source: SourceId,
+  db: StoreDb = getStoreDb(),
+): Promise<KnownGroupSummary[]> {
+  return (await listKnownGroups(db, source)).map(toClientSummary);
 }
 
 /**
@@ -64,9 +71,10 @@ export async function listGroups(db: StoreDb = getStoreDb()): Promise<KnownGroup
  * people picker).
  */
 export async function listMemberships(
+  source: SourceId,
   db: StoreDb = getStoreDb(),
 ): Promise<{ chatId: string; userId: string }[]> {
-  return listGroupMemberships(db);
+  return listGroupMemberships(db, source);
 }
 
 /**
@@ -77,22 +85,23 @@ export async function listMemberships(
  * it first) so the membership FK is satisfied.
  */
 export async function rememberGroupActivity(
-  params: TelegramGroupProfile & { userId: string | null },
+  source: SourceId,
+  params: SourceGroupProfile & { userId: string | null },
   db: StoreDb = getStoreDb(),
 ): Promise<void> {
   try {
-    const before = await getKnownGroup(db, params.chatId);
+    const before = await getKnownGroup(db, source, params.chatId);
     const memberExisted =
       params.userId != null
-        ? await groupMembershipExists(db, params.chatId, params.userId)
+        ? await groupMembershipExists(db, source, params.chatId, params.userId)
         : true;
-    await upsertKnownGroup(db, {
+    await upsertKnownGroup(db, source, {
       chatId: params.chatId,
       title: params.title,
       type: params.type,
     });
     if (params.userId) {
-      await recordGroupMembership(db, params.chatId, params.userId);
+      await recordGroupMembership(db, source, params.chatId, params.userId);
     }
     publishEvent(FEATURE.realtimeTopic);
     await traceGroupCapture(before, memberExisted, params);
@@ -102,7 +111,7 @@ export async function rememberGroupActivity(
 }
 
 /** Whether the freshly captured group profile differs from the stored one. */
-function groupProfileChanged(before: KnownGroupRecord, params: TelegramGroupProfile): boolean {
+function groupProfileChanged(before: KnownGroupRecord, params: SourceGroupProfile): boolean {
   return before.title !== params.title || before.type !== params.type;
 }
 
@@ -116,7 +125,7 @@ function groupProfileChanged(before: KnownGroupRecord, params: TelegramGroupProf
 async function traceGroupCapture(
   before: KnownGroupRecord | null,
   memberExisted: boolean,
-  params: TelegramGroupProfile & { userId: string | null },
+  params: SourceGroupProfile & { userId: string | null },
 ): Promise<void> {
   const groupAdded = !before;
   const groupChanged = before ? groupProfileChanged(before, params) : false;
@@ -175,9 +184,7 @@ export async function updateNotes(
   trigger: TraceTrigger,
   db: StoreDb = getStoreDb(),
 ): Promise<KnownGroup> {
-  // The shadow row is keyed by the source-local id — see the known-users
-  // service for why the transitional shadow directory stays telegram-shaped.
-  const chatId = parseScopedRef(chatRef).id;
+  const { source, id: chatId } = parseScopedRef(chatRef);
   return withTrace(
     { feature: FEATURE.id, action: "update-notes", trigger, inputSummary: `group ${chatRef}` },
     async (trace) => {
@@ -185,7 +192,7 @@ export async function updateNotes(
       // The source owns the directory: the edit lands there first, then in
       // the local shadow (the next event refresh would otherwise revert it).
       await writeSourceChat(chatRef, { notes: input.notes });
-      const record = await setKnownGroupNotes(db, chatId, input.notes);
+      const record = await setKnownGroupNotes(db, source, chatId, input.notes);
       if (!record) throw ApiError.notFound("Unknown group");
       await trace.event({ type: "db", message: "notes updated (source + shadow)" });
       publishEvent(FEATURE.realtimeTopic);
@@ -205,7 +212,7 @@ export async function updateLanguage(
   trigger: TraceTrigger,
   db: StoreDb = getStoreDb(),
 ): Promise<KnownGroup> {
-  const chatId = parseScopedRef(chatRef).id;
+  const { source, id: chatId } = parseScopedRef(chatRef);
   return withTrace(
     { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `group ${chatRef}` },
     async (trace) => {
@@ -216,7 +223,7 @@ export async function updateLanguage(
       });
       // Source first, shadow second — see updateNotes.
       await writeSourceChat(chatRef, { language: input.language });
-      const record = await setKnownGroupLanguage(db, chatId, input.language);
+      const record = await setKnownGroupLanguage(db, source, chatId, input.language);
       if (!record) throw ApiError.notFound("Unknown group");
       await trace.event({ type: "db", message: "language updated (source + shadow)" });
       publishEvent(FEATURE.realtimeTopic);
@@ -234,11 +241,59 @@ export async function updateLanguage(
  * none is set (the runtime falls back to the default). Read on the message path.
  */
 export async function getGroupLanguage(
+  source: SourceId,
   chatId: string,
   db: StoreDb = getStoreDb(),
 ): Promise<string | null> {
-  const group = await getKnownGroup(db, chatId);
+  const group = await getKnownGroup(db, source, chatId);
   return group?.language ?? null;
+}
+
+/**
+ * The person on the other side of a direct chat: whoever has messaged in
+ * it (a direct chat keeps no roster row). Null when nobody has yet, or the
+ * chat is a group.
+ */
+async function directChatPeer(
+  db: StoreDb,
+  source: SourceId,
+  chatId: string,
+): Promise<string | null> {
+  if (await isGroupChat(db, source, chatId)) return null;
+  const [peer] = await listSourceChatSenderIds(source, chatId, db);
+  return peer ?? null;
+}
+
+/**
+ * The operator-configured reply language for any chat: the group's own
+ * setting, or the peer's DM setting for a direct chat. Null when none is set.
+ * For the out-of-turn callers (a timed task's fire, a browser run's report)
+ * that hold a chat id and no event to say what kind of chat it is.
+ */
+export async function getChatLanguage(
+  source: SourceId,
+  chatId: string,
+  db: StoreDb = getStoreDb(),
+): Promise<string | null> {
+  if (await isGroupChat(db, source, chatId)) return getGroupLanguage(source, chatId, db);
+  const peer = await directChatPeer(db, source, chatId);
+  return peer ? getUserLanguage(source, peer, db) : null;
+}
+
+/**
+ * The identity context block for any chat: a group's roster, or the one
+ * person of a direct chat. Null when there is nothing useful to inject.
+ */
+export async function getChatContext(
+  source: SourceId,
+  chatId: string,
+  db: StoreDb = getStoreDb(),
+): Promise<string | null> {
+  if (await isGroupChat(db, source, chatId)) {
+    return (await getGroupContext(source, chatId, db))?.content ?? null;
+  }
+  const peer = await directChatPeer(db, source, chatId);
+  return peer ? ((await getUserContext(source, peer, db))?.content ?? null) : null;
 }
 
 /** The current-day group context block injected into a group reply, or null. */
@@ -254,12 +309,13 @@ export interface GroupContext {
  * when there is nothing useful to inject.
  */
 export async function getGroupContext(
+  source: SourceId,
   chatId: string,
   db: StoreDb = getStoreDb(),
 ): Promise<GroupContext | null> {
   const [group, members] = await Promise.all([
-    getKnownGroup(db, chatId),
-    getGroupMembers(db, chatId, ROSTER_LIMIT),
+    getKnownGroup(db, source, chatId),
+    getGroupMembers(db, source, chatId, ROSTER_LIMIT),
   ]);
   const content = formatGroupContext({
     title: group?.title ?? null,

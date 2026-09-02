@@ -119,7 +119,7 @@ export async function runVisionBackfill(
             attempted.add(row.id);
             onProgress({ step: "Describing media", current: attempted.size, total });
             const result = await describeAndStore(
-              { chatId: row.chatId, telegramMessageId: row.telegramMessageId },
+              { chatId: row.chatId, sourceMessageId: row.sourceMessageId },
               deps,
               { store: source.store },
             );

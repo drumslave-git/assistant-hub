@@ -15,8 +15,8 @@ import {
   MAX_IMPORT_ROWS,
   type RowError,
 } from "../csv";
-import { requireSourceContent } from "@/server/source/tg-content";
-import { sourceDirectoryClient } from "@/server/source-store/directory-client";
+import { requireSourceContent } from "@/server/source/content";
+import { getHistoryOverview } from "./service";
 import type { ImportHistoryInput } from "./schema";
 
 /**
@@ -36,16 +36,15 @@ const FEATURE = FEATURES["history"];
 /** Rows are written in chunks so one statement never carries the whole file. */
 const IMPORT_CHUNK_SIZE = 500;
 
-/** The mirror as CSV — one chat, or every chat when `chatId` is omitted. */
-export async function exportHistoryCsv(chatId?: string): Promise<string> {
+/** The mirror as CSV — one chat, or every chat of every transport when `chatRef` is omitted. */
+export async function exportHistoryCsv(chatRef?: string): Promise<string> {
   const content = requireSourceContent();
-  if (chatId) return rowsToCsv(await content.allMessages(chatId));
-  const operator = sourceDirectoryClient("tg");
-  const chats = await operator.listChats();
+  if (chatRef) return rowsToCsv(await content.allMessages(chatRef));
+  const chats = await getHistoryOverview();
   const records = [];
   // Ordered by chat then insertion, like the v1 export.
-  for (const chat of [...chats].sort((a, b) => a.id.localeCompare(b.id))) {
-    records.push(...(await content.allMessages(chat.id)));
+  for (const chat of [...chats].sort((a, b) => a.chatRef.localeCompare(b.chatRef))) {
+    records.push(...(await content.allMessages(chat.chatRef)));
   }
   return rowsToCsv(records);
 }
@@ -56,12 +55,12 @@ export interface ImportResult {
   totalRows: number;
   /** Rows written. */
   imported: number;
-  /** Rows whose `(chatId, telegramMessageId)` was already in the mirror. */
+  /** Rows whose `(chatRef, sourceMessageId)` was already in the mirror. */
   skippedDuplicates: number;
   /** Rows that failed validation, with the reason, per line. */
   errors: RowError[];
-  /** The chats the imported rows landed in. */
-  chatIds: string[];
+  /** The chats (scoped refs) the imported rows landed in. */
+  chatRefs: string[];
 }
 
 /**
@@ -126,21 +125,21 @@ export async function importHistoryCsv(
     const content = requireSourceContent();
     const byChat = new Map<string, typeof rows>();
     for (const row of rows) {
-      const list = byChat.get(row.chatId);
+      const list = byChat.get(row.chatRef);
       if (list) list.push(row);
-      else byChat.set(row.chatId, [row]);
+      else byChat.set(row.chatRef, [row]);
     }
     let imported = 0;
-    for (const [chatId, chatRows] of byChat) {
+    for (const [chatRef, chatRows] of byChat) {
       for (let i = 0; i < chatRows.length; i += IMPORT_CHUNK_SIZE) {
         imported += await content.importMessages(
-          chatId,
+          chatRef,
           chatRows.slice(i, i + IMPORT_CHUNK_SIZE).map((row) => ({
-            telegramMessageId: row.telegramMessageId,
+            sourceMessageId: row.sourceMessageId,
             role: row.role,
             userId: row.userId ?? null,
             content: row.content,
-            replyToMessageId: row.replyToMessageId ?? null,
+            replyToSourceMessageId: row.replyToSourceMessageId ?? null,
             sentAt: row.sentAt,
             editedAt: row.editedAt ?? null,
             deletedAt: row.deletedAt ?? null,
@@ -154,7 +153,7 @@ export async function importHistoryCsv(
       imported,
       skippedDuplicates: rows.length - imported,
       errors,
-      chatIds: [...byChat.keys()].sort(),
+      chatRefs: [...byChat.keys()].sort(),
     };
     await trace.event({
       type: "db",
@@ -162,7 +161,7 @@ export async function importHistoryCsv(
       data: {
         imported: result.imported,
         skippedDuplicates: result.skippedDuplicates,
-        chatIds: result.chatIds,
+        chatRefs: result.chatRefs,
       },
     });
 
@@ -175,7 +174,7 @@ export async function importHistoryCsv(
     }
     await trace.succeed({
       outputSummary: `imported ${result.imported}, skipped ${result.skippedDuplicates}, invalid ${errors.length}`,
-      relatedIds: { [FEATURE.relatedIdsKey]: result.chatIds },
+      relatedIds: { [FEATURE.relatedIdsKey]: result.chatRefs },
     });
     return result;
   } catch (err) {

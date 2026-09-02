@@ -1,23 +1,25 @@
 import "server-only";
 
 /**
- * The history feature's record shapes. The mirror itself lives in the
- * owning source app's store since the source split — reads and writes go
- * through its internal API (`server/source/tg-content.ts`), whose client
- * maps rows back into these v1 shapes so the composition code (transcripts,
- * views, tools) is unchanged. Nothing here touches a database any more.
+ * The history feature's record shapes. The mirror lives in the core's
+ * conversation store (`server/source/content.ts`), whose client maps rows
+ * into these shapes so the composition code (transcripts, views, tools) is
+ * the same for every registered transport. Nothing here touches a database.
  */
 
-/** One mirrored message (v1 `chat_messages` row shape). */
+/** One mirrored message. */
 export interface ChatMessageRecord {
   /** The store's monotonic insertion id. */
   id: number;
-  chatId: string;
-  telegramMessageId: number;
+  /** Scoped ref of the chat this message belongs to (`tg:chat:-100…`). */
+  chatRef: string;
+  /** Source-local message id (`#<id>` anchors, trace correlations). */
+  sourceMessageId: string;
   role: "user" | "assistant";
+  /** Sender's source-local user id for `user` rows; null for the assistant. */
   userId: string | null;
   content: string;
-  replyToMessageId: number | null;
+  replyToSourceMessageId: string | null;
   sentAt: string;
   editedAt: string | null;
   deletedAt: string | null;
@@ -27,7 +29,11 @@ export interface ChatMessageRecord {
 
 /** Per-chat rollups for the History dashboard overview. */
 export interface ChatSummary {
-  chatId: string;
+  chatRef: string;
+  /** Human name of the transport the chat lives on ("Telegram"). */
+  sourceLabel: string;
+  /** The chat's title (a group), or its source-local id. */
+  label: string;
   messageCount: number;
   lastSentAt: string;
 }

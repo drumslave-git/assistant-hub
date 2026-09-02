@@ -149,8 +149,8 @@ the message itself, which passes by construction.
 
 Every task belongs to **one assistant** (`tasks.assistant_id`, a NOT NULL
 foreign key that cascades on delete): it is that assistant's standing order,
-composed only into its turns (`getActiveTasksForChat(assistantId, chatId,
-senderId)`), fired as that assistant with its persona, and gone with it. The
+composed only into its turns (`getActiveTasksForChat(assistantId, source,
+chatId, senderId)`), fired as that assistant with its persona, and gone with it. The
 dashboard picks the assistant at creation and never moves it afterwards, like
 the chat; from a chat, a task takes the turn's assistant. A user-role account
 sees and edits only its own assistants' tasks ([Assistants](assistants.md)).
@@ -347,7 +347,10 @@ One table, `tasks`, created with the v2 store's first migration (`0000`); the
 v1 `chat_rules` + `scheduled_tasks` split was cut cleanly when the two merged
 (user decision 2026-08-13) and never entered this store. Chats and people are
 scoped refs (`chat_ref`, `created_by_user_ref`, `target_user_refs`);
-`thread_id` stays a source-local delivery detail (a Telegram forum topic). See
+`thread_id` stays a source-local delivery detail (a forum topic on Telegram). A
+task's chat ref names its transport (`chatSource` on the record), and a timed
+fire binds its tool context to that transport, so the fire's `send_message` is
+the chat's own. See
 `docs/architecture/data-model.md` for columns. Scope and assistant are **not**
 editable (moving a task between chats or assistants is delete + create); the
 trigger, audience, timing, and context are.
