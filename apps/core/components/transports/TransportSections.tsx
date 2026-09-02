@@ -2,11 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-import {
-  TransportConnectionSection,
-  fetchTransports,
-  type TransportSummary,
-} from "./TransportConnectionSection";
+import { fetchTransports, type TransportSummary } from "./api";
+import { TransportConnectionSection } from "./TransportConnectionSection";
 
 /**
  * One connection section per registered transport, for the assistant editor.

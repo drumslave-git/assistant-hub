@@ -36,8 +36,6 @@ import {
   type StatusTone,
   type TabItem,
 } from "@/components/ui";
-import type { OperatorConnection } from "@assistant-hub/contracts";
-
 import { getAssistants } from "@/features/assistants/server/service";
 import { BotControl } from "@/features/bot-messaging/ui/BotControl";
 import { getAllJobs } from "@/features/jobs/server/registry";
@@ -46,7 +44,8 @@ import { buildInfo } from "@/lib/build-info";
 import type { RealtimeTopic } from "@/lib/realtime";
 import { getOverviewActivity, OVERVIEW_WINDOW_HOURS } from "@/server/overview";
 import { getSystemStatus, type EndpointStatus } from "@/server/status";
-import { listSourceConnections, summarizeConnections } from "@/server/transports/status";
+import { listConnectionViews, type TransportConnectionView } from "@/server/transports/service";
+import { summarizeConnections, toOperatorConnection } from "@/server/transports/status";
 
 // Probe real state at request time (DB query + LLM endpoint call + trace reads),
 // so the overview reflects what actually works, not build-time or env-presence
@@ -255,11 +254,12 @@ async function ActivityStatsSection() {
 async function SystemStatusSection() {
   const [connectionsResult, assistants, status] = await Promise.all([
     // Connections are per assistant since Phase 3; every status surface here
-    // summarizes across all of them.
-    listSourceConnections().then(
+    // summarizes across all of them. One read serves both the summary card
+    // and the per-connection controls (each read probes the transport).
+    listConnectionViews("tg").then(
       (connections) => ({ connections, error: null as string | null }),
       (err: unknown) => ({
-        connections: [] as OperatorConnection[],
+        connections: [] as TransportConnectionView[],
         error: err instanceof Error ? err.message : String(err),
       }),
     ),
@@ -276,7 +276,7 @@ async function SystemStatusSection() {
         },
         configured: false,
       }
-    : summarizeConnections(connectionsResult.connections);
+    : summarizeConnections(connectionsResult.connections.map(toOperatorConnection));
 
   const botItem: StatusItem =
     botStatus.state === "running"
@@ -431,6 +431,7 @@ async function SystemStatusSection() {
         <div className="flex flex-col gap-2 border-t border-border pt-5">
           <span className="text-sm font-medium text-foreground">Telegram bots</span>
           <BotControl
+            transportId="tg"
             initial={connectionsResult.connections}
             serviceError={connectionsResult.error}
             assistantNames={Object.fromEntries(assistants.map((a) => [a.id, a.name]))}

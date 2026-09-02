@@ -3439,18 +3439,27 @@ the operator note below about `OLLAMA_NUM_PARALLEL`/context sizing.
 
 ## Other open items
 
-- **Overview bot control calls routes that no longer exist (`todo`; code bug
-  found during the documentation audit, 2026-09-01)** —
-  `features/bot-messaging/ui/BotControl.tsx` fetches
-  `/api/telegram/connections` and `/api/telegram/connections/{id}`, but no
-  `app/api/telegram/**` route survived the transport split; the live routes
-  are `GET /api/transports/{id}/connections?assistantId=` and
-  `PATCH|DELETE /api/transports/{id}/connections/{connectionId}` (transport id
-  `tg`). The Overview card's Start/Stop therefore 404s. Fix: point the
-  component at the transport routes, or reuse
-  `components/transports/TransportConnectionSection.tsx` rather than keep a
-  second copy of the same control. Verify in the browser, then lint /
-  typecheck / test.
+- **Overview bot control calls routes that no longer exist (`done`,
+  2026-09-02; found during the documentation audit, 2026-09-01)** —
+  `features/bot-messaging/ui/BotControl.tsx` fetched
+  `/api/telegram/connections` and `/api/telegram/connections/{id}`, routes
+  that did not survive the transport split, so the Overview card's Start/Stop
+  404'd. Fix: one shared client for the transport routes,
+  `components/transports/api.ts` (`fetchTransports`, `fetchConnections`,
+  `createConnection`, `patchConnection`, `deleteConnection` on
+  `@assistant-hub/ui`'s `apiFetch`), used by both the assistant editor's
+  section (`TransportConnectionSection.tsx`, which also exports the shared
+  `connectionStatusView`) and the Overview control (`BotControl.tsx`, now
+  taking a `transportId` and the transport's connection views — the Overview
+  page reads `listConnectionViews("tg")` once and derives the summary card
+  through `toOperatorConnection`, exported from `server/transports/status.ts`).
+  Proof: `components/transports/api.test.ts` pins every route's URL and
+  method with a stubbed `fetch` (7 tests); `npm run lint`, `npm run
+  typecheck`, `npm run test` (107 files, 1182 passed) green; in the dev
+  server `GET /api/telegram/connections` answers 404 and
+  `GET /api/transports/tg/connections` answers the session 401 (route
+  exists). Not verified: a signed-in click on Start/Stop — the preview
+  browser holds no session.
 
 - **A transport's admin on/off switch has no route or UI (`todo`, 2026-09-01)**
   — `server/transports/service.ts` has `setTransportEnabled` and the

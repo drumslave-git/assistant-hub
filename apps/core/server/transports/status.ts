@@ -2,7 +2,7 @@ import "server-only";
 
 import type { OperatorConnection } from "@assistant-hub/contracts";
 
-import { listConnectionViews } from "./service";
+import { listConnectionViews, type TransportConnectionView } from "./service";
 
 /**
  * The dashboard's telegram status surfaces over the transport registry —
@@ -22,12 +22,9 @@ export interface BotStatus {
   error: string | null;
 }
 
-/** Every telegram connection (optionally one assistant's), with poller state. */
-export async function listSourceConnections(
-  assistantId?: string,
-): Promise<OperatorConnection[]> {
-  const views = await listConnectionViews("tg", assistantId);
-  return views.map((view) => ({
+/** The operator-contract shape of one connection view (the summary's input). */
+export function toOperatorConnection(view: TransportConnectionView): OperatorConnection {
+  return {
     id: view.id,
     assistantId: view.assistantId,
     enabled: view.enabled,
@@ -36,7 +33,15 @@ export async function listSourceConnections(
     createdAt: view.createdAt,
     updatedAt: view.updatedAt,
     status: view.status,
-  }));
+  };
+}
+
+/** Every telegram connection (optionally one assistant's), with poller state. */
+export async function listSourceConnections(
+  assistantId?: string,
+): Promise<OperatorConnection[]> {
+  const views = await listConnectionViews("tg", assistantId);
+  return views.map(toOperatorConnection);
 }
 
 /**

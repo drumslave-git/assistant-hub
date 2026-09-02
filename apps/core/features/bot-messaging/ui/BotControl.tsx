@@ -5,26 +5,33 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
-import type { OperatorConnection } from "@assistant-hub/contracts";
-
 import { useLiveEvent } from "@/components/realtime/useLiveEvent";
+import {
+  fetchConnections,
+  patchConnection,
+  type ConnectionView,
+} from "@/components/transports/api";
+import { connectionStatusView } from "@/components/transports/TransportConnectionSection";
 import { Badge, Button } from "@/components/ui";
-import type { ApiErrorBody } from "@/lib/api-error";
 
 /**
- * Per-connection start/stop controls for the Telegram pollers, which live in
- * the tg source app since the source split — one row per assistant's bot
- * (connections are per assistant since Phase 3; they are created and
- * re-tokened from the assistant editor's tg section). Client Component:
- * writes desired state through the connections proxy, and re-reads on every
- * `status` event so a crash or reconnect shows up without a reload.
+ * Per-connection start/stop controls for a transport's pollers, which live
+ * in the transport service since the source split — one row per assistant's
+ * bot (connections are per assistant since Phase 3; they are created and
+ * re-tokened from the assistant editor's transport section). Client
+ * Component: writes desired state through the shared transport client, and
+ * re-reads on every `status` event so a crash or reconnect shows up without
+ * a reload.
  */
 export function BotControl({
+  transportId,
   initial,
   assistantNames,
   serviceError,
 }: {
-  initial: OperatorConnection[];
+  /** The transport whose connections these are (`tg`). */
+  transportId: string;
+  initial: ConnectionView[];
   /** Assistant display names by id, for labelling each row. */
   assistantNames: Record<string, string>;
   /** Why the connection listing failed, when it did (service down/unconfigured). */
@@ -37,41 +44,30 @@ export function BotControl({
 
   const reload = useCallback(async () => {
     try {
-      const res = await fetch("/api/telegram/connections");
-      if (!res.ok) return;
-      const body = (await res.json()) as { data?: { connections: OperatorConnection[] } };
-      if (body.data) setConnections(body.data.connections);
+      setConnections(await fetchConnections(transportId));
     } catch {
       // Keep the last known rows; the status card carries reachability errors.
     }
-  }, []);
+  }, [transportId]);
   useLiveEvent("status", reload);
 
-  async function toggle(connection: OperatorConnection) {
+  async function toggle(connection: ConnectionView) {
     setBusyId(connection.id);
     setError(null);
     try {
-      const res = await fetch(`/api/telegram/connections/${encodeURIComponent(connection.id)}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ enabled: !connection.enabled }),
+      const updated = await patchConnection(transportId, connection.id, {
+        enabled: !connection.enabled,
       });
-      const body = (await res.json()) as {
-        data?: { connection: OperatorConnection };
-      } & ApiErrorBody;
-      if (!res.ok) {
-        setError(body.error?.message ?? `Request failed (${res.status})`);
-        return;
-      }
-      if (body.data) {
-        const updated = body.data.connection;
-        setConnections((rows) => rows.map((row) => (row.id === updated.id ? updated : row)));
-      }
+      // The route answers with the run switch alone; the live poller state
+      // follows on the transport's next `status` event.
+      setConnections((rows) =>
+        rows.map((row) => (row.id === updated.id ? { ...row, enabled: updated.enabled } : row)),
+      );
       // The server-rendered status cards around this control read the same
       // state — refresh them along with the rows.
       router.refresh();
-    } catch {
-      setError("Network error — could not reach the server");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error — could not reach the server");
     } finally {
       setBusyId(null);
     }
@@ -97,12 +93,11 @@ export function BotControl({
   return (
     <div className="space-y-2">
       {connections.map((connection) => {
-        const running = connection.status?.state === "running";
-        const failed = connection.status?.state === "error";
+        const view = connectionStatusView(connection);
         return (
           <div key={connection.id} className="flex flex-wrap items-center gap-3">
-            <Badge tone={running ? "success" : failed ? "danger" : "neutral"} dot>
-              {running ? "Running" : failed ? "Error" : "Stopped"}
+            <Badge tone={view.tone} dot>
+              {view.label}
             </Badge>
             <span className="text-sm text-foreground">
               {assistantNames[connection.assistantId] ?? connection.assistantId}
@@ -110,7 +105,9 @@ export function BotControl({
             <span className="text-sm text-muted">
               {connection.status?.username
                 ? `@${connection.status.username}`
-                : `token …${connection.botTokenHint}`}
+                : Object.entries(connection.configPreview)
+                    .map(([key, preview]) => `${key} ${preview}`)
+                    .join(" · ")}
             </span>
             <Button
               size="sm"
@@ -123,8 +120,10 @@ export function BotControl({
             >
               {busyId === connection.id ? "Working…" : connection.enabled ? "Stop" : "Start"}
             </Button>
-            {failed && connection.status?.error ? (
-              <span className="text-sm text-danger">{connection.status.error}</span>
+            {view.tone !== "success" && view.detail ? (
+              <span className={view.tone === "danger" ? "text-sm text-danger" : "text-sm text-muted"}>
+                {view.detail}
+              </span>
             ) : null}
           </div>
         );
