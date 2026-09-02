@@ -15,7 +15,7 @@ import { connectionStatusView } from "@/components/transports/TransportConnectio
 import { Badge, Button } from "@/components/ui";
 
 /**
- * Per-connection start/stop controls for a transport's pollers, which live
+ * Per-connection start/stop controls for one registered transport's pollers, which live
  * in the transport service since the source split — one row per assistant's
  * bot (connections are per assistant since Phase 3; they are created and
  * re-tokened from the assistant editor's transport section). Client
@@ -29,7 +29,7 @@ export function BotControl({
   assistantNames,
   serviceError,
 }: {
-  /** The transport whose connections these are (`tg`). */
+  /** The registered transport whose connections these are (its source id). */
   transportId: string;
   initial: ConnectionView[];
   /** Assistant display names by id, for labelling each row. */

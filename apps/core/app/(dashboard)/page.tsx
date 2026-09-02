@@ -44,8 +44,11 @@ import { buildInfo } from "@/lib/build-info";
 import type { RealtimeTopic } from "@/lib/realtime";
 import { getOverviewActivity, OVERVIEW_WINDOW_HOURS } from "@/server/overview";
 import { getSystemStatus, type EndpointStatus } from "@/server/status";
-import { listConnectionViews, type TransportConnectionView } from "@/server/transports/service";
-import { summarizeConnections, toOperatorConnection } from "@/server/transports/status";
+import {
+  listTransportRosters,
+  summarizeTransports,
+  type TransportRoster,
+} from "@/server/transports/status";
 
 // Probe real state at request time (DB query + LLM endpoint call + trace reads),
 // so the overview reflects what actually works, not build-time or env-presence
@@ -252,50 +255,59 @@ async function ActivityStatsSection() {
 
 /** The live-probe status card — the slow section, streamed on its own. */
 async function SystemStatusSection() {
-  const [connectionsResult, assistants, status] = await Promise.all([
-    // Connections are per assistant since Phase 3; every status surface here
-    // summarizes across all of them. One read serves both the summary card
-    // and the per-connection controls (each read probes the transport).
-    listConnectionViews("tg").then(
-      (connections) => ({ connections, error: null as string | null }),
+  const [rostersResult, assistants, status] = await Promise.all([
+    // Connections are per assistant since Phase 3, per registered transport
+    // since the open registration; every status surface here summarizes
+    // across all of them. One read serves both the summary card and the
+    // per-connection controls (each read probes its transport).
+    listTransportRosters().then(
+      (rosters) => ({ rosters, error: null as string | null }),
       (err: unknown) => ({
-        connections: [] as TransportConnectionView[],
+        rosters: [] as TransportRoster[],
         error: err instanceof Error ? err.message : String(err),
       }),
     ),
     getAssistants().catch(() => []),
     getSystemStatus(),
   ]);
-  const { status: botStatus, configured: telegramConfigured } = connectionsResult.error
+  const { rosters } = rostersResult;
+  const { status: botStatus, configured: botsConfigured } = rostersResult.error
     ? {
-        status: {
-          state: "error" as const,
-          username: null,
-          since: null,
-          error: connectionsResult.error,
-        },
+        status: { state: "error" as const, username: null, since: null, error: rostersResult.error },
         configured: false,
       }
-    : summarizeConnections(connectionsResult.connections.map(toOperatorConnection));
+    : summarizeTransports(rosters);
+  const runningCount = rosters
+    .flatMap((roster) => roster.connections)
+    .filter((connection) => connection.status?.state === "running").length;
 
   const botItem: StatusItem =
     botStatus.state === "running"
       ? {
-          label: "Telegram bots",
+          label: "Bots",
           tone: "ok",
           value: "Running",
-          hint: botStatus.username ? `@${botStatus.username} — long polling` : "long polling",
+          hint: botStatus.username
+            ? `@${botStatus.username}`
+            : `${runningCount} connections running`,
         }
       : botStatus.state === "error"
-        ? { label: "Telegram bots", tone: "error", value: "Error", hint: botStatus.error ?? "unknown error" }
-        : telegramConfigured
-          ? { label: "Telegram bots", tone: "warn", value: "Stopped", hint: "Ready — start below" }
-          : {
-              label: "Telegram bots",
-              tone: "warn",
-              value: "Not configured",
-              hint: "Connect a bot to an assistant",
-            };
+        ? { label: "Bots", tone: "error", value: "Error", hint: botStatus.error ?? "unknown error" }
+        : botsConfigured
+          ? { label: "Bots", tone: "warn", value: "Stopped", hint: "Ready — start below" }
+          : rosters.length === 0
+            ? {
+                label: "Bots",
+                tone: "warn",
+                value: "No transport",
+                hint: "No transport has registered with this core",
+              }
+            : {
+                label: "Bots",
+                tone: "warn",
+                value: "Not configured",
+                hint: "Connect a bot to an assistant",
+              };
 
   const llmItem: StatusItem =
     status.llm.state === "connected"
@@ -428,15 +440,31 @@ async function SystemStatusSection() {
           );
         })}
 
-        <div className="flex flex-col gap-2 border-t border-border pt-5">
-          <span className="text-sm font-medium text-foreground">Telegram bots</span>
-          <BotControl
-            transportId="tg"
-            initial={connectionsResult.connections}
-            serviceError={connectionsResult.error}
-            assistantNames={Object.fromEntries(assistants.map((a) => [a.id, a.name]))}
-          />
-        </div>
+        {rosters.length === 0 ? (
+          <div className="flex flex-col gap-2 border-t border-border pt-5">
+            <span className="text-sm font-medium text-foreground">Bots</span>
+            <p className={rostersResult.error ? "text-sm text-danger" : "text-sm text-muted"}>
+              {rostersResult.error ??
+                "No transport has registered with this core yet — start one next to it and it appears here."}
+            </p>
+          </div>
+        ) : (
+          rosters.map((roster) => (
+            <div key={roster.id} className="flex flex-col gap-2 border-t border-border pt-5">
+              <span className="text-sm font-medium text-foreground">{roster.name} bots</span>
+              {roster.refusedReason ? (
+                <p className="text-sm text-danger">Refused: {roster.refusedReason}</p>
+              ) : (
+                <BotControl
+                  transportId={roster.id}
+                  initial={roster.connections}
+                  serviceError={roster.error}
+                  assistantNames={Object.fromEntries(assistants.map((a) => [a.id, a.name]))}
+                />
+              )}
+            </div>
+          ))
+        )}
       </CardContent>
     </Card>
   );

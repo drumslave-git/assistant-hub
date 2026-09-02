@@ -150,7 +150,21 @@ Any core edit for a new source id is a bug.
      ("You split"), `telegram-pipeline.md` Stage 7, `features/bot-messaging.md`.
      Proof: `npm run typecheck` (8/8), `npm run lint`, `npm run test` (tg 44
      incl. `split.test.ts` + `send.test.ts`, core 1175). Not run live.
-   - **Remaining (`todo`):** the Overview card, the content plane
+   - **The Overview and the shell summarize every transport (`done`,
+     2026-09-02).** `server/transports/status.ts` walks `listTransports()`
+     into per-transport rosters (`listTransportRosters`), and
+     `summarizeTransports` ranks a refused transport, a failed listing, then
+     the first failing connection (named by handle, else by transport + masked
+     config) above running/stopped; `getTransportsStatus` feeds the shell. The
+     Overview's card is "Bots" (with "No transport" when nothing registered)
+     and renders one start/stop block per transport titled with its announced
+     name (a refused one shows its reason). The dead Telegram-shaped operator
+     contracts (`operatorConnection*`, `operatorSourceSettings*`, unused since
+     the registration slice) left `packages/contracts`. Docs: operator guide,
+     troubleshooting, deployment checklist, backup, the manual's surfaces
+     table. Proof: `server/transports/status.test.ts` (6 tests), `npm run
+     typecheck` (8/8), `npm run lint`. Not run live.
+   - **Remaining (`todo`):** the content plane
      (`server/source/tg-content.ts`), the curated known-users/known-groups
      pages, the vision repository, the scoped-ref defaults in
      memory/tasks/self-improvement, and the timed task fire become lookups

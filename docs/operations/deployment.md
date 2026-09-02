@@ -279,7 +279,7 @@ over the Compose network. Two things need care on the core:
       does every admin; a person links their Telegram identity to their account by
       sending the code from `/profile` to the bot.
 - [ ] `GET /api/health` returns 200.
-- [ ] Overview's **Telegram bots** card reads Running, and each assistant's
+- [ ] Overview's **Bots** card reads Running, and each assistant's
       connection in its editor reads Running with the bot's `@username`.
 - [ ] A backup routine exists for the database, the Redis directory **and** the
       trace directory — see [Backup and restore](backup-and-restore.md).

@@ -148,7 +148,7 @@ tar czf "/backups/traces-$(date +%F).tar.gz" -C /srv/assistant-hub/data traces
 5. Sign in with a **restored** account (the dump carries the password hashes — you do
    not run setup again). If nobody remembers a password, see
    [Locked out of the dashboard](troubleshooting.md#locked-out-of-the-dashboard).
-6. Check Overview. Core: Database, LLM endpoint, Model, Telegram bots. Storage: Trace
+6. Check Overview. Core: Database, LLM endpoint, Model, Bots. Storage: Trace
    storage, Downloads. All six should be green; the bots card reads Running with the
    bot's `@username`.
 7. Start any connection that shows Stopped — from its assistant's editor on

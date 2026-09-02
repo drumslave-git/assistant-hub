@@ -8,7 +8,7 @@ import { getTimezone } from "@/features/settings/server/service";
 import { SESSION_COOKIE } from "@/lib/auth";
 import { judgeSessionToken } from "@/server/auth";
 import { getConfigReadiness } from "@/server/status";
-import { getSourceBotStatus } from "@/server/transports/status";
+import { getTransportsStatus } from "@/server/transports/status";
 
 /**
  * The authenticated dashboard shell. This layout is the *real* page-side auth
@@ -41,12 +41,12 @@ export default async function DashboardLayout({
       : { displayName: "Operator", role: "admin" as const };
 
   const readiness = await getConfigReadiness();
-  // The poller's live state (probed from the tg service, which owns it since
-  // the source split) joins the config readiness so the shell's Bot status
-  // card says what the bot is *doing*, not merely that it was once
-  // configured. Re-read on every `status` event via the shell's live
-  // refresh, so a crash or reconnect shows up without a reload.
-  const { status: bot } = await getSourceBotStatus();
+  // The pollers' live state (probed from every registered transport, which
+  // own them since the source split) joins the config readiness so the
+  // shell's Bot status card says what the bots are *doing*, not merely that
+  // one was once configured. Re-read on every `status` event via the shell's
+  // live refresh, so a crash or reconnect shows up without a reload.
+  const { status: bot } = await getTransportsStatus();
   // Every dashboard timestamp renders in this zone. Falls back to UTC when the
   // database is unreachable — the shell still renders its "database
   // unavailable" state rather than erroring on a formatting concern.

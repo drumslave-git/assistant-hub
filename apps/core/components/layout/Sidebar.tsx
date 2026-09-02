@@ -150,7 +150,7 @@ export function Sidebar({
             {botStatus.bot.state === "running" ? (
               <>
                 {/* A null username while running means several bots are up. */}
-                {botStatus.bot.username ? `@${botStatus.bot.username}` : "Bots"} — polling
+                {botStatus.bot.username ? `@${botStatus.bot.username}` : "Bots"} — running
                 {botStatus.bot.since ? (
                   <>
                     {" "}
@@ -161,7 +161,7 @@ export function Sidebar({
             ) : botStatus.bot.state === "error" ? (
               (botStatus.bot.error ?? "Unknown error")
             ) : botStatus.configured ? (
-              "The poller is stopped — start it from the Overview."
+              "Every bot is stopped — start one from the Overview."
             ) : (
               botStatus.detail
             )}

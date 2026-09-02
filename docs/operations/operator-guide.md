@@ -81,7 +81,7 @@ never an "is the variable set" guess:
 | Database | An actual `SELECT 1` |
 | LLM endpoint | An actual `/v1/models` call against the chat backend, with the model count |
 | Model | Whether a chat model is selected, and which |
-| Telegram bots | The transport's `/health`, summarized across **every** connection: Running (with the `@username` when exactly one bot is up), Error (the first failing connection's message — an enabled connection the transport reports nothing for counts as one), Stopped ("Ready — start below"), or Not configured ("Connect a bot to an assistant") |
+| Bots | Every registered transport's `/health`, summarized across **every** connection of every transport: Running (with the `@username` when exactly one bot is up, else the count), Error (a transport this core refused, a transport whose listing failed, or the first failing connection's message — an enabled connection its transport reports nothing for counts as one), Stopped ("Ready — start below"), Not configured ("Connect a bot to an assistant"), or No transport (nothing has registered yet) |
 | Trace storage | Opening the current month's file for append — the same operation the flusher performs |
 | Downloads | Creating and removing a file in the downloads directory — the same thing a download does |
 
@@ -107,11 +107,14 @@ nothing is silently lost, browsing and reporting still work, and only saving a f
 fails — loudly, on the run that attempted it. The probe exists so you find out from
 this page rather than from a user's failed request.
 
-Under the status grid, **Telegram bots** lists one row per connection: its state
-badge (Running / Error / Stopped), the assistant it serves, the bot's `@username`
-(or `token …xxxx` while nothing is polling yet), a Start/Stop button, and the error
-text when there is one. With no connection at all the block says "No bot connections
-yet — connect a bot to an assistant" and links to Assistants. The full control surface
+Under the status grid, one block per registered transport (titled with the name
+it announced — **Telegram bots**, **Discord bots**, …) lists one row per
+connection: its state badge (Running / Error / Stopped), the assistant it serves,
+the bot's `@username` (or the masked config, `botToken …xxxx`, while nothing is
+polling yet), a Start/Stop button, and the error text when there is one. A
+transport this core refused shows its reason instead of rows. With no connection
+at all a block says "No bot connections yet — connect a bot to an assistant" and
+links to Assistants; with no transport registered at all the page says so. The full control surface
 — connect, replace the token, start/stop, disconnect — is each assistant's editor on
 `/assistants`; the rows here re-read on every `status` event, so a crash or reconnect
 shows up without a reload.

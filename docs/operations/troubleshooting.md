@@ -6,8 +6,8 @@ because guessing is exactly what the trace archive exists to avoid.
 ## Start here
 
 1. **Overview** (`/`) — real probes in three groups. Core: database, LLM endpoint,
-   model, and **Telegram bots** (a summary of every bot connection, read from the
-   transport's `/health`). Model roles: one card per optional role. Storage: trace
+   model, and **Bots** (a summary of every bot connection of every registered
+   transport, read from each transport's `/health`). Model roles: one card per optional role. Storage: trace
    storage, downloads. Any red Core card explains most downstream symptoms.
 2. **`/jobs`** — every background job's *notice* field: the reason a job is currently
    not doing its work.
@@ -24,9 +24,11 @@ because guessing is exactly what the trace archive exists to avoid.
 
 | Check | Fix |
 | --- | --- |
-| Overview → Telegram bots says "Not configured" | No bot connection exists. Create an assistant on `/assistants` and connect a bot token in its editor |
+| Overview → Bots says "No transport" | No transport has registered with the core. Check the transport container is up and its `CORE_API_URL` / `INTERNAL_API_TOKEN` point at this core |
+| Says "Not configured" | No bot connection exists. Create an assistant on `/assistants` and connect a bot token in its editor |
 | Says "Stopped" | Every connection is parked. Start it from the assistant's editor (or the row under Overview's status grid) |
-| Says "Error" ending in `no poller is tracked — is the telegram service running?` | The transport reports nothing for an enabled connection — see [A connection reads "Not tracked"](#a-connection-reads-not-tracked) |
+| Says "Error" ending in `no poller is tracked — is the <transport> transport running?` | The transport reports nothing for an enabled connection — see [A connection reads "Not tracked"](#a-connection-reads-not-tracked) |
+| Says "Error" naming a contract major | The transport was built against another contract major and this core refused it — rebuild one side on the same major |
 | Says "Error" ending in `reconnecting automatically` | The network dropped and the transport is retrying every 15s — nothing to do but restore the connection |
 | Says "Error" with anything else | Telegram refused: an invalid token, or another process holding the same token's `getUpdates` lock |
 | Says "Running" but nothing happens | Continue below |

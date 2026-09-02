@@ -632,13 +632,14 @@ under that id, its history window is composed from its own rows, memory and
 owner rights resolve through scoped refs, its tools are scoped to its own
 turns, and it is listed wherever the core enumerates sources (the managed
 tool connections, the Users and Groups roster, the media backfill and
-gallery, the app-scope select). What is still literally Telegram in the core
-today, so you know what a new transport's operator will and will not see —
-each is being widened under the "Transport SDK" entry in `docs/TODO.md`:
+gallery, the app-scope select, the Overview's Bots card and its per-transport
+start/stop blocks, the shell's bot status). What is still literally Telegram
+in the core today, so you know what a new transport's operator will and will
+not see — each is being widened under the "Transport SDK" entry in
+`docs/TODO.md`:
 
 | Surface | Where | Effect on a second transport |
 | --- | --- | --- |
-| Overview bot-status card | `apps/core/server/transports/status.ts` (`"tg"`) | Only Telegram connections summarize into the card |
 | History, search, summaries, analytics content plane | `apps/core/server/source/tg-content.ts` (`SOURCE = "tg"`) | The History and Analytics pages, the nightly summaries and the search index read Telegram rows only |
 | Curated Users and Groups pages | `apps/core/features/known-users`, `known-groups` (`SOURCE = "tg"`) | Your people and chats are in the roster, but the curated pages (aliases, notes, languages) edit Telegram rows |
 | Vision gallery and backfill rows | `apps/core/features/vision/server/repository.ts` (`"tg"`) | Media is stored and described per source; the gallery view lists Telegram |
