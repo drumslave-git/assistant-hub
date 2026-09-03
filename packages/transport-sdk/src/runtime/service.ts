@@ -107,6 +107,20 @@ export async function startTransportService<TRaw>(
     connectionFor: (assistantId) => manager.connectionFor(assistantId),
   };
 
+  /**
+   * Whether a chat is direct, for the consumers that only have a ref. Asked
+   * of whichever connection runs; with none running the answer is `false`,
+   * which is the safe way to be wrong — it keeps two people's direct chats in
+   * separate dedupe streams rather than merging them into a shared one.
+   */
+  const isDirect = async (chatId: string): Promise<boolean> => {
+    try {
+      return await manager.connectionFor(null).isDirectChat(chatId);
+    } catch {
+      return false;
+    }
+  };
+
   const runtime: TransportRuntime<TRaw> = {
     descriptor,
     manager,
@@ -197,7 +211,7 @@ export async function startTransportService<TRaw>(
     redisUrl,
     descriptor,
     send,
-    isDirect: (chatId) => manager.connectionFor(null).isDirectChat(chatId),
+    isDirect,
   });
 
   let shuttingDown = false;
