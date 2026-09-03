@@ -400,12 +400,21 @@ Any core edit for a new source id is a bug.
      does not exist, so `docker compose up` cannot start the `tg` service, and
      `npm run dev` here starts only the core. Both resolve the moment step (2)
      below lands.
-   - **On the user, in this order:** (1) publish the SDK — bump the root or SDK
-     version and push to `main` so `release.yml` runs, then flip the npm package
-     public; (2) create `assistant-hub-swarm/ahw-transport-telegram`, push the
-     staged repo, let its workflow publish the first image, flip that package
-     public. Then `npm install` there and commit a real lockfile (its
-     `.gitignore` says so).
+   - **Pushed by the user, 2026-09-03**, and its first CI run failed on
+     `actions/setup-node`'s `cache: npm`, which hashes a lockfile and hard-fails
+     when there is none — the state this repository is in until the SDK is
+     published. Fixed there (cache dropped, with a note to restore it in the
+     same commit as the lockfile), along with a **correction**: GitHub Packages
+     wants a token on every npm request, so "public, so pulling it needs no
+     token" was wrong in that repo's Dockerfile, `.npmrc` and README, and in
+     this repo's manual and SDK README. The image build now takes the token as
+     a BuildKit secret and the workflow passes its own `GITHUB_TOKEN`.
+   - **Still on the user:** publish the SDK — bump the root or SDK version and
+     push to `main` so `release.yml` runs — then flip the npm package public.
+     Until then the transport's own CI cannot install, so its release will keep
+     failing at `npm install` with a 404. After that: `npm install` in the
+     transport repo and commit a real lockfile, restoring `cache: npm` in the
+     same commit (its `.gitignore` says so).
 5. **Discord transport** in `assistant-hub-swarm/ahw-transport-discord`
    (second proof).
 
@@ -419,10 +428,13 @@ images. Proof: `npm run typecheck` (8/8), `npm run lint`, `npm run test`
 (contracts 16, service 3, tg 44, core 1175). Not run: the release workflow
 itself (needs a version bump on main).
 
-**Still manual, on the user:** create `ahw-transport-telegram` and
-`ahw-transport-discord` under the org when phases 4 and 5 start; after the
-first publish, flip each GitHub package (npm and container) to public so
-operators and transport authors can pull without a token.
+**Still manual, on the user:** create `ahw-transport-discord` under the org
+when phase 5 starts; after the first publish, flip each GitHub package (npm and
+container) to public. Note what "public" buys on each registry: a public
+**container** image pulls anonymously, but the npm registry asks for a token on
+every request even for a public package — so a transport author always needs
+one with `read:packages`, and the docs say so (corrected 2026-09-03, after the
+first CI run; the earlier claim that the SDK needed no token was wrong).
 
 **Supersedes** the "Telegram-only surfaces in the core" entry under Other
 open items (its list is phase 1's checklist; prune it when phase 1 lands).

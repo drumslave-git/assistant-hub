@@ -28,6 +28,18 @@ look for the `@assistant-hub-swarm` scope. In your project:
 @assistant-hub-swarm:registry=https://npm.pkg.github.com
 ```
 
+That registry wants a **token on every request**: a package published there is
+readable by any account once it is public, but not anonymously. Put one with
+`read:packages` in your user-level `~/.npmrc`, where it stays out of every
+repository you write:
+
+```
+//npm.pkg.github.com/:_authToken=<token>
+```
+
+In CI it is the workflow's own `GITHUB_TOKEN`; in an image build, pass it as a
+BuildKit secret rather than a build arg, so it never lands in a layer.
+
 ```bash
 npm install @assistant-hub-swarm/transport-sdk hono @hono/node-server @modelcontextprotocol/sdk zod
 ```

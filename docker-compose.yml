@@ -15,7 +15,7 @@
 # registers itself with the core, and the core needs no dependency on it.
 services:
   app:
-    image: ghcr.io/assistant-hub-swarm/ahw-core:${AHW_VERSION:-1.48.0}
+    image: ghcr.io/assistant-hub-swarm/ahw-core:${AHW_VERSION:-1.48.1}
     ports:
       - "${PORT:-3200}:3200"
     depends_on:

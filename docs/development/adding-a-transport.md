@@ -95,6 +95,18 @@ scope lives on GitHub Packages, so point npm at it first:
 @assistant-hub-swarm:registry=https://npm.pkg.github.com
 ```
 
+That registry wants a **token on every request**: a package published there is
+readable by any account once it is public, but not anonymously. Put one with
+`read:packages` in your user-level `~/.npmrc`, where it stays out of every
+repository you write:
+
+```
+//npm.pkg.github.com/:_authToken=<token>
+```
+
+In CI it is the workflow's own `GITHUB_TOKEN`; in an image build, pass it as a
+BuildKit secret rather than a build arg, so it never lands in a layer.
+
 ```bash
 npm install @assistant-hub-swarm/transport-sdk \
             hono @hono/node-server @modelcontextprotocol/sdk zod
@@ -575,10 +587,16 @@ one process, one HTTP port, no database, no migrations, no volumes.
 **Dockerfile.** Install dependencies, copy your source, install whatever
 system packages your platform needs (Telegram's needs `ffmpeg` for video frame
 sampling; `sharp`, which the SDK brings for image normalization, ships its own
-libvips), run as a non-root user, and start your entrypoint. Build the
-`.npmrc` line for the `@assistant-hub-swarm` scope into the install step, or
-mount it as a build secret — the package is public, so no token is needed to
-pull it.
+libvips), run as a non-root user, and start your entrypoint. Commit the
+`.npmrc` line for the scope and mount the registry token as a **BuildKit
+secret**, appended and deleted inside the same layer so nothing about it
+survives in the image:
+
+```dockerfile
+COPY package.json .npmrc ./
+RUN --mount=type=secret,id=npm_token     set -eu;     printf '//npm.pkg.github.com/:_authToken=%s
+' "$(cat /run/secrets/npm_token)" >> .npmrc;     npm install --no-audit --no-fund;     rm -f .npmrc
+```
 
 **Publish it** wherever the operator can pull from — a container registry of
 your own, or your repository's (`ghcr.io/<you>/<repo>`). Tag a real version

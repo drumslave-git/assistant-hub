@@ -330,8 +330,10 @@ code, announced at registration and refused by name on a mismatch.
 No registry secrets: the publish jobs authenticate with the workflow's own
 `GITHUB_TOKEN` (`packages: write` for the push, `contents: write` for the tag).
 A package's first push makes it private to the org — flip both the container
-images and the npm package to public in their settings once, so operators and
-transport authors can pull without a token.
+images and the npm package to public in their settings once. "Public" means
+different things on the two registries: a public **container** image pulls
+anonymously, while the npm registry asks for a token on every request even for
+a public package, so a transport author needs one with `read:packages`.
 
 Note that `verify` uses `npm install` rather than `npm ci` for the same lockfile
 reason as the Dockerfiles.
