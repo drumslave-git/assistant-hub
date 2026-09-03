@@ -153,8 +153,8 @@ Boot order matters (worked example: [src/index.ts](https://github.com/assistant-
 
 ## Step 2 — Register, receive desired state, reconcile
 
-Reference: [src/desired-state.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/desired-state.ts),
-[src/bot-manager.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/bot-manager.ts) (`applyDesiredState`).
+Reference: [src/core/desired-state.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/core/desired-state.ts),
+[src/telegram/manager.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/manager.ts) (`applyDesiredState`).
 
 ### Registration
 
@@ -231,10 +231,10 @@ retrying.
 
 ## Step 3 — Forward every update
 
-Reference: [src/inbound.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound.ts),
-[src/updates.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/updates.ts),
-[src/addressing.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/addressing.ts),
-[src/media/ingest.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/media/ingest.ts).
+Reference: [src/inbound/normalize.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/normalize.ts),
+[src/core/updates.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/core/updates.ts),
+[src/inbound/addressing.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/addressing.ts),
+[src/telegram/media/ingest.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/media/ingest.ts).
 
 Everything leaves as one job per event on the BullMQ queue
 `TRANSPORT_UPDATES_QUEUE` (`transport-updates`), payload validated by
@@ -322,7 +322,7 @@ talk to your platform's file API — and attach them:
 
 Run every image through `normalizeImageForChat` (longest edge 768 px, under
 900 KB). Video and GIF frames are sampled with ffmpeg in tg
-(`src/media/frames.ts`); the thumbnail is the fallback. The core
+(`src/telegram/media/frames.ts`); the thumbnail is the fallback. The core
 stores the row as pending media, describes or transcribes it, drops the bytes,
 and from then on the transcript line reads ` [photo: …]`. A failed download
 still opens the turn — the pipeline answers from the text.
@@ -355,7 +355,7 @@ very next turn).
 
 Published for **every** send you perform, on every path — reply-delivery
 events, the internal send API, your MCP tools — from one function
-([src/send.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/send.ts), `publishDelivered`):
+([src/outbound/send.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound/send.ts), `publishDelivered`):
 
 | Field | Meaning |
 | --- | --- |
@@ -374,7 +374,7 @@ failed send.
 
 ## Step 4 — Consume deliveries and render the turn lifecycle
 
-Reference: [src/delivery.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/delivery.ts).
+Reference: [src/outbound/delivery.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound/delivery.ts).
 
 Subscribe to `BUS_EVENTS_CHANNEL` (`assistant-hub-swarm:events`), parse by `type`,
 and ignore anything whose `source` is not yours. Failures are logged, never
@@ -396,13 +396,13 @@ every chat.
 Render the text for your platform at this boundary and nowhere earlier: the
 mirror, the traces and the pipeline all keep the raw text. Telegram converts
 Markdown to its small HTML tag set by construction
-([src/telegram-html.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram-html.ts)) and
+([src/telegram/html.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/html.ts)) and
 falls back to a plain-text send when the platform still rejects the markup —
 that fallback triggers only on a parse error, because any other retry could
 double-deliver. **You split.** The core publishes the whole answer as one
 `reply.delivery` and knows no platform's cap (user decision, 2026-09-02):
 cut a long text at natural boundaries under yours (Telegram:
-[src/split.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/split.ts), paragraph → line →
+[src/outbound/split.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound/split.ts), paragraph → line →
 sentence → word), send the parts in order with the same reply target, and
 report every part as `message.delivered` so the mirror holds the whole
 answer.
@@ -430,8 +430,8 @@ You do nothing else on `settled` — the core releases its own mirror hold.
 
 ## Step 5 — The HTTP surface
 
-Reference: [src/api.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/api.ts),
-[src/outbound.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound.ts).
+Reference: [src/http/api.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/http/api.ts),
+[src/telegram/sender.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/sender.ts).
 
 Guard everything under `/internal` and `/mcp` with
 `internalTokenGuard(INTERNAL_API_TOKEN)`. `/health` stays open: it carries no
@@ -472,8 +472,8 @@ no reaction tool. The contract carries no capability flags.
 
 ## Step 6 — The MCP server
 
-Reference: [src/mcp.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/mcp.ts),
-[src/reactions.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/reactions.ts).
+Reference: [src/http/mcp.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/http/mcp.ts),
+[src/telegram/reactions.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/reactions.ts).
 
 Serve an `McpServer` at the `mcpPath` you announced, with `serveMcp` from the
 SDK: one server instance per request, no session ids — every call carries its
@@ -534,7 +534,7 @@ Your tools may need the core's mirror: `set_message_reaction` asks
 `GET /api/internal/transports/messages?source=&chatId=&sourceMessageId=&assistantId=&direct=`
 → `{ found, role, assistantId }` before touching the platform, so a guessed
 id or the bot's own message is refused without a call
-([src/core-client.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/core-client.ts)).
+([src/core/client.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/core/client.ts)).
 
 ## Step 7 — Synchronous calls back into the core
 
@@ -674,9 +674,9 @@ rather than in a queue that drops the job. The seams worth pinning are the
 ones the Telegram transport pins: one event per platform update (with dedupe
 and per-assistant streams), the structural addressing verdicts and their
 reasons, and the split-and-send path
-([src/inbound.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound.test.ts),
-[addressing.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/addressing.test.ts),
-[send.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/send.test.ts)).
+([src/inbound/normalize.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/normalize.test.ts),
+[inbound/addressing.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/addressing.test.ts),
+[outbound/send.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound/send.test.ts)).
 
 ## Reference: the worked example, duty by duty
 
@@ -688,18 +688,24 @@ once, not only per step.
 | Duty | File |
 | --- | --- |
 | Boot order, shutdown | `src/index.ts` |
-| Registration, desired-state fetch, retry | `src/desired-state.ts` |
-| Poller lifecycle, reconcile, supervision, update handlers | `src/bot-manager.ts` |
-| Normalizing a message into `transport.message`, media, receivers | `src/inbound.ts`, `src/media/*` |
-| Structural addressing verdicts | `src/addressing.ts` |
-| Queue publisher, envelope, seen-cache | `src/updates.ts` |
-| The one send: split under the cap, each part sent and reported as `message.delivered` | `src/send.ts`, `src/split.ts` |
-| Bus consumer: reply delivery, typing loops, deliver trace | `src/delivery.ts` |
-| Platform sends (HTML render, link whitelist, files by mime, menus, reactions) | `src/outbound.ts`, `src/telegram-html.ts`, `src/telegram.ts` |
-| HTTP surface: health, `/internal/*`, `/mcp` | `src/api.ts` |
-| MCP tools and the turn binding | `src/mcp.ts`, `src/reactions.ts` |
-| Calls into the core (callback toast, mirror lookup) | `src/core-client.ts` |
-| Running-connection roster | `src/connections.ts` |
+| Registration, desired-state fetch, retry | `src/core/desired-state.ts` |
+| Queue publisher, envelope, seen-cache | `src/core/updates.ts` |
+| Calls into the core (callback toast, mirror lookup) | `src/core/client.ts` |
+| Normalizing a message into `transport.message`, media, receivers | `src/inbound/normalize.ts`, `src/telegram/media/*` |
+| Structural addressing verdicts | `src/inbound/addressing.ts` |
+| Bus consumer: reply delivery, typing loops, deliver trace | `src/outbound/delivery.ts` |
+| The one send: split under the cap, each part sent and reported as `message.delivered` | `src/outbound/send.ts`, `src/outbound/split.ts` |
+| Poller lifecycle, reconcile, supervision, update handlers | `src/telegram/manager.ts` |
+| Running-connection roster | `src/telegram/connections.ts` |
+| Platform sends (HTML render, link whitelist, files by mime, menus, reactions) | `src/telegram/sender.ts`, `src/telegram/html.ts`, `src/telegram/ids.ts` |
+| HTTP surface: health, `/internal/*`, `/mcp` | `src/http/api.ts` |
+| MCP tools and the turn binding | `src/http/mcp.ts`, `src/telegram/reactions.ts` |
+
+Its folders follow the **direction of travel** — `core/` speaks to the core,
+`inbound/` is platform → core, `outbound/` is core → platform, `http/` is the
+transport's own surface, and `telegram/` is the only code that knows the Bot
+API exists. That last boundary is the one worth copying: it is what you would
+replace to get a different transport.
 
 ## What the dashboard shows for your transport
 
