@@ -34,10 +34,12 @@ rather than crash-looping.
 | `TZ` | `UTC` | Process timezone. The *operator* timezone used for rendering and scheduling is the DB setting, not this |
 | `NODE_ENV` | — | `development` \| `production` \| `test` |
 
-### The Telegram transport (`apps/tg`)
+### A transport
 
-Read directly from the environment (`packages/service`'s `requireEnv` /
-`optionalEnv`; no `_FILE` variants):
+Every transport is its own service and its own repository; these are the
+variables the contract gives them, read straight from the environment (the
+SDK's `requireEnv` / `optionalEnv`; no `_FILE` variants). Telegram's is
+[ahw-transport-telegram](https://github.com/assistant-hub-swarm/ahw-transport-telegram).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

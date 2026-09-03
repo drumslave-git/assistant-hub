@@ -357,9 +357,55 @@ Any core edit for a new source id is a bug.
      run: an actual `docker compose up` against the registry (the images for
      this version are not published yet — the release workflow has never run),
      and the Docker daemon was down for anything needing it.
-4. **tg split**: `assistant-hub-swarm/ahw-transport-telegram` consuming
-   `@assistant-hub-swarm/transport-sdk`, its own release workflow and image;
-   `apps/tg` deleted here; the manual points at it as the worked example.
+4. **tg split** (`done` in this repository, 2026-09-03 — the new repository is
+   **staged locally and unpushed**; see "on the user" below).
+   - **The new repository is staged at `E:/projects/ahw-transport-telegram`**
+     (a sibling of this one; `git init`, three commits, **no remote — nothing
+     was pushed**). 39 files: `src/**` moved verbatim, a standalone
+     `package.json`/`tsconfig.json`, a standalone `Dockerfile` (no workspace
+     context, `.npmrc` for the SDK's scope, its own `HEALTHCHECK`), its own
+     `release.yml` (a changed `version` on main builds, pushes
+     `ghcr.io/<owner>/ahw-transport-telegram:<version>` + `:latest`, tags), and
+     a README that doubles as the worked example's index.
+   - **Every import is the SDK's.** The 14 files that imported
+     `@assistant-hub-swarm/{contracts,bus,service,media}` now import
+     `@assistant-hub-swarm/transport-sdk`, merged into one statement per file.
+     Comments naming files that repository does not have were rewritten; the
+     README explains that "Phase N"/"v1" citations refer to this repo's history.
+   - **The split found a real dependency bug.** `apps/tg` declared
+     `@grammyjs/types ^3.28.0` while current grammy pins `5.0.0` exactly. The
+     monorepo lockfile hid it (grammy 1.44, one hoisted copy); a fresh
+     standalone install took grammy 1.46 and **two** copies of the types, and
+     nothing compiled. Fixed there: `grammy ^1.46.0` + `@grammyjs/types ^5.0.0`.
+   - **Proof (new repo)**: with the SDK installed from a locally packed tarball,
+     `npm run typecheck` passes and `npm run test` is **44 passed / 5 files** —
+     the same suite, with no access to this repository. No lockfile is committed
+     there: the only install that works today resolves the SDK from a `file:`
+     path on one machine.
+   - **The core-side cutover is done here** (user decision, 2026-09-03: cut over
+     now rather than waiting for the new repo to publish). `apps/tg` is deleted;
+     the release matrix has one entry (`ahw-core`); `docker-compose.yml`'s `tg`
+     service is `ghcr.io/assistant-hub-swarm/ahw-transport-telegram` on its own
+     `AHW_TELEGRAM_VERSION` (it no longer follows `AHW_VERSION`);
+     `docker-compose.dev.yml` builds only the core. Every `apps/tg` reference in
+     the docs and in core comments is gone — the manual's worked-example links
+     point at the new repository, and the code pointers in the pipeline and
+     feature docs read `ahw-transport-telegram/src/…`.
+   - **Proof (this repo)**: `npm run lint`, `npm run typecheck` (8/8),
+     `npm run test` (contracts 20, service 3, transport-sdk 3, core 1161 passed
+     / 26 skipped), `docker compose config` on base and base+dev, the compose
+     pin check. `git grep apps/tg` is empty outside `PROGRESS.md` (history).
+   - **Known window, accepted by the user:** until the new repository is pushed
+     and releases its first image, `ghcr.io/assistant-hub-swarm/ahw-transport-telegram:1.0.0`
+     does not exist, so `docker compose up` cannot start the `tg` service, and
+     `npm run dev` here starts only the core. Both resolve the moment step (2)
+     below lands.
+   - **On the user, in this order:** (1) publish the SDK — bump the root or SDK
+     version and push to `main` so `release.yml` runs, then flip the npm package
+     public; (2) create `assistant-hub-swarm/ahw-transport-telegram`, push the
+     staged repo, let its workflow publish the first image, flip that package
+     public. Then `npm install` there and commit a real lockfile (its
+     `.gitignore` says so).
 5. **Discord transport** in `assistant-hub-swarm/ahw-transport-discord`
    (second proof).
 

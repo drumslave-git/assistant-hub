@@ -3,7 +3,7 @@
 Postgres, accessed through [Drizzle ORM](https://orm.drizzle.team). One
 database serves the whole platform: `store/schema.ts` is the single source of
 truth and the SQL migrations under `store/migrations/` are generated from it
-(`drizzle.config.ts` points at both). `apps/tg` has no database of its own —
+(`drizzle.config.ts` points at both). A transport has no database of its own —
 it is a stateless transport; everything it needs remembered lands in the
 tables below.
 

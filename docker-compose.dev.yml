@@ -16,17 +16,12 @@
 # are unambiguous — a locally built `ahw-core:1.48.0` simply shadows the
 # registry's until you pull again.
 #
-# This is for working ON the platform. Working on a TRANSPORT needs none of it:
-# a transport is its own repository and its own image, and it reaches a core
-# that is running however the operator likes (see
-# docs/development/adding-a-transport.md).
+# Only the core is here, because the core is all this repository builds. Every
+# transport — including Telegram's — lives in its own repository and is pulled
+# as a released image either way; to run one from source, start it on the host
+# against this stack (see docs/development/adding-a-transport.md).
 services:
   app:
     build:
       context: .
       dockerfile: apps/core/Dockerfile
-
-  tg:
-    build:
-      context: .
-      dockerfile: apps/tg/Dockerfile

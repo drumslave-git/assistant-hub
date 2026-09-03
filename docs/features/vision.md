@@ -17,7 +17,7 @@ and the bytes can be dropped.
 **Ingest** is split along the transport contract. The transport downloads the
 file with the connection's token — only it can talk to its platform's file API —
 normalizes it, and attaches the payload to the `transport.message` event as
-ordered base64 `frames` plus a `visionHint` (`apps/tg/src/media/ingest.ts`,
+ordered base64 `frames` plus a `visionHint` (`ahw-transport-telegram/src/media/ingest.ts`,
 `telegram-files.ts`, `normalize.ts`, `frames.ts` — all in the transport; the core
 holds no platform download code). The core's ingest stores the
 row `status = 'pending'` with its bytes in `source_media_blobs`
@@ -51,7 +51,7 @@ carry images are the describe pass itself and the browser agent's own loop.
 
 ## Detection
 
-`apps/tg/src/media/detect.ts` (pure, ported verbatim from the core's
+`ahw-transport-telegram/src/media/detect.ts` (pure, ported verbatim from the core's
 `features/vision/detect.ts`, which stays as the unit-tested reference) decides
 *what* file to read and how to hint the describer. Precedence mirrors the MVP, with
 one change:
@@ -67,7 +67,7 @@ one change:
 ## Normalization and frames
 
 - **Normalization** (`normalizeImageForChat` — `@assistant-hub-swarm/media`, and the
-  transport's `apps/tg/src/media/normalize.ts`): any image — WebP stickers,
+  transport's `ahw-transport-telegram/src/media/normalize.ts`): any image — WebP stickers,
   PNGs, oversized photos — is converted to a bounded JPEG via `sharp` (longest
   edge 768 px, under 900 KB), so OpenAI-compatible vision endpoints accept it
   reliably and the base64 stays small enough to store and send.
@@ -78,7 +78,7 @@ one change:
   not say), so short and long clips alike are covered end to end rather than
   just the opening seconds; the frames travel as an ordered image sequence with
   a sequence hint. The Telegram transport samples them for its own ingest path
-  (`apps/tg/src/media/frames.ts`, on `apps/tg/src/media/ffmpeg.ts`). The core
+  (`ahw-transport-telegram/src/media/frames.ts`, on `ahw-transport-telegram/src/media/ffmpeg.ts`). The core
   keeps its own sampler (`features/vision/server/frames.ts`, on
   `server/media/ffmpeg.ts`) behind `ingestMessageMedia` / `resolveMediaText` in
   `features/vision/server/service.ts`; nothing on the live turn path calls

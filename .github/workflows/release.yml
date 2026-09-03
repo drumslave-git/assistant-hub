@@ -121,15 +121,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       # Per-app images, all released together on the same version. Every app
-      # that ships an image adds a matrix entry here - the publish job picks
-      # up whatever this matrix produced.
+      # in THIS repository that ships an image adds a matrix entry here - the
+      # publish job picks up whatever this matrix produced. Transports are not
+      # here: each one is its own repository and releases on its own schedule.
       matrix:
         include:
           - image: ahw-core
             dockerfile: apps/core/Dockerfile
-          - image: ahw-tg
-            dockerfile: apps/tg/Dockerfile
-      # Let the other image finish (and warm its cache) even if one fails; the
+      # Let any other image finish (and warm its cache) even if one fails; the
       # publish job still refuses to run unless all of them succeeded.
       fail-fast: false
     env:

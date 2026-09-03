@@ -13,7 +13,7 @@ messages, `web_media` for the web chat's, `kind = 'voice'`).
 ## Hearing: voice → text
 
 1. A `voice` message is detected by the transport's media detector
-   (`apps/tg/src/media/detect.ts`); the raw OGG/Opus bytes ride the update event
+   (`ahw-transport-telegram/src/media/detect.ts`); the raw OGG/Opus bytes ride the update event
    and the core's ingest stores them as a pending media row. A web-chat voice
    note (`audio/webm`, as the browser records it) is stored raw the same way.
 2. It is transcribed **eagerly** — before the reply flow starts, with its own typing
@@ -43,7 +43,7 @@ OpenAI-compatible `input_audio` parts do not accept (the spec allows only `wav` 
 **16 kHz mono WAV** — whisper-class models' native rate and the most universally
 decodable container — on the core's system-ffmpeg runner
 (`server/media/ffmpeg.ts`). The transport ships a runner of its own
-(`apps/tg/src/media/ffmpeg.ts`) for its frame sampling; transcoding for
+(`ahw-transport-telegram/src/media/ffmpeg.ts`) for its frame sampling; transcoding for
 transcription happens in the core, where the transcribe models run.
 
 ### Two transcription backends
@@ -91,7 +91,7 @@ distinction before anyone could ask for it.
 `features/voice/server/speak.ts`: reply text → MP3 on the configured speech
 endpoint → OGG/Opus. The audio then crosses the owning source's outbound port
 (`server/turn/source-outbound.ts`): for Telegram, `POST /internal/chats/:chatId/voice`
-on the transport, which performs `sendVoice` (`apps/tg/src/outbound.ts`) and
+on the transport, which performs `sendVoice` (`ahw-transport-telegram/src/outbound.ts`) and
 falls back to a text send of the spoken words when Telegram refuses the voice
 bubble, reporting `asVoice: false`; the web chat stores the audio on the
 assistant message and plays it in the thread (`asVoice` is always true there).

@@ -12,7 +12,7 @@ dashboard. Everything a transport must do is published:
 | --- | --- |
 | The contract, as code | [`@assistant-hub-swarm/transport-sdk`](../../packages/transport-sdk/README.md) on GitHub Packages — zod schemas, the Redis helpers, the token guard, an MCP server over Hono, the trace client, image normalization |
 | The contract, language-neutral | [`docs/api/transport/events.schema.json`](../api/transport/events.schema.json) (JSON Schema for every event) and [`docs/api/transport/openapi.yaml`](../api/transport/openapi.yaml) (the HTTP in both directions) — generated from the same schemas and checked against them in CI |
-| A working version of every step | The Telegram transport, referenced per step below. It still lives in this repository as `apps/tg` and moves to `assistant-hub-swarm/ahw-transport-telegram`; the duties, not the paths, are the thing to read |
+| A working version of every step | [`assistant-hub-swarm/ahw-transport-telegram`](https://github.com/assistant-hub-swarm/ahw-transport-telegram) — the Telegram transport, referenced file by file below. It is a separate repository built on the SDK, exactly like yours will be |
 
 This document walks the contract in the order a new transport meets it. Read
 [Architecture overview](../architecture/overview.md) first for where a
@@ -40,7 +40,7 @@ name check and the LLM analyzer are the core's.
 ## The shape at a glance
 
 ```
- platform API ◄──► apps/<transport>/            ◄── Redis pub/sub `assistant-hub:events`
+ platform API ◄──► your transport service      ◄── Redis pub/sub `assistant-hub:events`
                     ├─ pollers / webhook           reply.delivery, turn.lifecycle,
                     ├─ HTTP :PORT                  transport.config.changed, assistant.deleted
                     │   /health                 ──► Redis queue `transport-updates`
@@ -127,7 +127,7 @@ Environment (bootstrap only — runtime config comes from the core):
 | `CORE_API_URL` | no | The core's base URL (default `http://localhost:3200`) |
 | `SELF_URL` | no | The base URL you **announce** — what the core will call. Default `http://localhost:<PORT>`; under compose `http://<service>:<PORT>` |
 
-Boot order matters (worked example: [apps/tg/src/index.ts](../../apps/tg/src/index.ts)):
+Boot order matters (worked example: [src/index.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/index.ts)):
 
 1. Open the update publisher (queue) and the platform manager.
 2. Start the HTTP server **first** so `/health` answers from the first
@@ -141,8 +141,8 @@ Boot order matters (worked example: [apps/tg/src/index.ts](../../apps/tg/src/ind
 
 ## Step 2 — Register, receive desired state, reconcile
 
-Reference: [apps/tg/src/desired-state.ts](../../apps/tg/src/desired-state.ts),
-[apps/tg/src/bot-manager.ts](../../apps/tg/src/bot-manager.ts) (`applyDesiredState`).
+Reference: [src/desired-state.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/desired-state.ts),
+[src/bot-manager.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/bot-manager.ts) (`applyDesiredState`).
 
 ### Registration
 
@@ -219,10 +219,10 @@ retrying.
 
 ## Step 3 — Forward every update
 
-Reference: [apps/tg/src/inbound.ts](../../apps/tg/src/inbound.ts),
-[apps/tg/src/updates.ts](../../apps/tg/src/updates.ts),
-[apps/tg/src/addressing.ts](../../apps/tg/src/addressing.ts),
-[apps/tg/src/media/ingest.ts](../../apps/tg/src/media/ingest.ts).
+Reference: [src/inbound.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound.ts),
+[src/updates.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/updates.ts),
+[src/addressing.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/addressing.ts),
+[src/media/ingest.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/media/ingest.ts).
 
 Everything leaves as one job per event on the BullMQ queue
 `TRANSPORT_UPDATES_QUEUE` (`transport-updates`), payload validated by
@@ -310,7 +310,7 @@ talk to your platform's file API — and attach them:
 
 Run every image through `normalizeImageForChat` (longest edge 768 px, under
 900 KB). Video and GIF frames are sampled with ffmpeg in tg
-(`apps/tg/src/media/frames.ts`); the thumbnail is the fallback. The core
+(`src/media/frames.ts`); the thumbnail is the fallback. The core
 stores the row as pending media, describes or transcribes it, drops the bytes,
 and from then on the transcript line reads ` [photo: …]`. A failed download
 still opens the turn — the pipeline answers from the text.
@@ -343,7 +343,7 @@ very next turn).
 
 Published for **every** send you perform, on every path — reply-delivery
 events, the internal send API, your MCP tools — from one function
-([apps/tg/src/send.ts](../../apps/tg/src/send.ts), `publishDelivered`):
+([src/send.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/send.ts), `publishDelivered`):
 
 | Field | Meaning |
 | --- | --- |
@@ -362,7 +362,7 @@ failed send.
 
 ## Step 4 — Consume deliveries and render the turn lifecycle
 
-Reference: [apps/tg/src/delivery.ts](../../apps/tg/src/delivery.ts).
+Reference: [src/delivery.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/delivery.ts).
 
 Subscribe to `BUS_EVENTS_CHANNEL` (`assistant-hub:events`), parse by `type`,
 and ignore anything whose `source` is not yours. Failures are logged, never
@@ -384,13 +384,13 @@ every chat.
 Render the text for your platform at this boundary and nowhere earlier: the
 mirror, the traces and the pipeline all keep the raw text. Telegram converts
 Markdown to its small HTML tag set by construction
-([apps/tg/src/telegram-html.ts](../../apps/tg/src/telegram-html.ts)) and
+([src/telegram-html.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram-html.ts)) and
 falls back to a plain-text send when the platform still rejects the markup —
 that fallback triggers only on a parse error, because any other retry could
 double-deliver. **You split.** The core publishes the whole answer as one
 `reply.delivery` and knows no platform's cap (user decision, 2026-09-02):
 cut a long text at natural boundaries under yours (Telegram:
-[apps/tg/src/split.ts](../../apps/tg/src/split.ts), paragraph → line →
+[src/split.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/split.ts), paragraph → line →
 sentence → word), send the parts in order with the same reply target, and
 report every part as `message.delivered` so the mirror holds the whole
 answer.
@@ -418,8 +418,8 @@ You do nothing else on `settled` — the core releases its own mirror hold.
 
 ## Step 5 — The HTTP surface
 
-Reference: [apps/tg/src/api.ts](../../apps/tg/src/api.ts),
-[apps/tg/src/outbound.ts](../../apps/tg/src/outbound.ts).
+Reference: [src/api.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/api.ts),
+[src/outbound.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound.ts).
 
 Guard everything under `/internal` and `/mcp` with
 `internalTokenGuard(INTERNAL_API_TOKEN)`. `/health` stays open: it carries no
@@ -460,8 +460,8 @@ no reaction tool. The contract carries no capability flags.
 
 ## Step 6 — The MCP server
 
-Reference: [apps/tg/src/mcp.ts](../../apps/tg/src/mcp.ts),
-[apps/tg/src/reactions.ts](../../apps/tg/src/reactions.ts).
+Reference: [src/mcp.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/mcp.ts),
+[src/reactions.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/reactions.ts).
 
 Serve an `McpServer` at the `mcpPath` you announced, with `serveMcp` from the
 SDK: one server instance per request, no session ids — every call carries its
@@ -522,7 +522,7 @@ Your tools may need the core's mirror: `set_message_reaction` asks
 `GET /api/internal/transports/messages?source=&chatId=&sourceMessageId=&assistantId=&direct=`
 → `{ found, role, assistantId }` before touching the platform, so a guessed
 id or the bot's own message is refused without a call
-([apps/tg/src/core-client.ts](../../apps/tg/src/core-client.ts)).
+([src/core-client.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/core-client.ts)).
 
 ## Step 7 — Synchronous calls back into the core
 
@@ -656,15 +656,16 @@ rather than in a queue that drops the job. The seams worth pinning are the
 ones the Telegram transport pins: one event per platform update (with dedupe
 and per-assistant streams), the structural addressing verdicts and their
 reasons, and the split-and-send path
-([apps/tg/src/inbound.test.ts](../../apps/tg/src/inbound.test.ts),
-[addressing.test.ts](../../apps/tg/src/addressing.test.ts),
-[send.test.ts](../../apps/tg/src/send.test.ts)).
+([src/inbound.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound.test.ts),
+[addressing.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/addressing.test.ts),
+[send.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/send.test.ts)).
 
 ## Reference: the worked example, duty by duty
 
-The Telegram transport, as the files that carry each duty. It lives in this
-repository today and moves to its own; read it for the shape of each step, not
-for the paths.
+[The Telegram transport](https://github.com/assistant-hub-swarm/ahw-transport-telegram),
+as the files that carry each duty. It is a separate repository on the published
+SDK — the same position yours will be in — so it is worth reading as a whole
+once, not only per step.
 
 | Duty | File |
 | --- | --- |

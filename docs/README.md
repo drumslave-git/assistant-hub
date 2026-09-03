@@ -90,7 +90,7 @@ its behavior, configuration, data, traces and tests.
 | Document | What it covers |
 | --- | --- |
 | [Contributing](development/contributing.md) | Engineering standards, the feature contract, where code goes |
-| [Adding a transport](development/adding-a-transport.md) | The transport contract with `apps/tg` as the reference: registration, events, delivery, the HTTP surface, MCP tools, deployment |
+| [Adding a transport](development/adding-a-transport.md) | The transport contract, for an author with no access to this repository: registration, events, delivery, the HTTP surface, MCP tools, shipping an image |
 | [Testing](development/testing.md) | Unit tests, Testcontainers integration tests, exercising the pipeline without Telegram |
 | [UI kit](development/ui-kit.md) | The design system, shared components, and the UI conventions features must follow |
 | [TODO](TODO.md) | The working tracker: pending features with their agreed specs, and open items |

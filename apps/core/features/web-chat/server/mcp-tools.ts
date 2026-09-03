@@ -12,9 +12,10 @@ import { pingThreads } from "./service";
 
 /**
  * The web chat's delivery tools — what used to be the chat app's own MCP
- * server (Phase 5), as in-process registry tools since the dissolve. tg's
- * twin still lives in `apps/tg`; a web thread's tools have nowhere to travel
- * to, so they went back in-process — under the same `chat_`-prefixed names
+ * server (Phase 5), as in-process registry tools since the dissolve. A
+ * transport's twin lives in the transport; a web thread's tools have nowhere
+ * to travel to, so they went back in-process — under the same `chat_`-prefixed
+ * names
  * their connection era gave them, so task instructions and traces that name
  * them keep meaning the same call.
  *

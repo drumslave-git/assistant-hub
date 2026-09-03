@@ -52,25 +52,28 @@ apps/
               identity links, transport registrations and connection
               config, all conversation data (chats, messages, media)
               from every transport, web threads, and all traces.
-  tg/         Stateless Telegram transport: one grammY poller per enabled
-              connection, media fetching, update normalization, reply
-              delivery, turn-lifecycle rendering (typing), and an MCP
-              server exposing Telegram outbound actions (reply_to_message,
-              send_message, set_message_reaction). No database.
 packages/
   db/         Database tooling for the core's store: drizzle helpers,
               migration runner, repository conventions.
   contracts/  Zod schemas shared across apps: the transport contract
               (registration, events, delivery, link codes), queue
               payloads, bus events, scoped refs, API DTOs.
+  transport-sdk/  The published package a transport is built on: the
+              wire half of the private packages, as built output.
   ui/         Shared dashboard components.
 ```
+
+Transports are not workspaces here. Each is its own repository and its own
+image, built on `transport-sdk` — the Telegram one (one grammY poller per
+enabled connection, media fetching, update normalization, reply delivery,
+typing, and an MCP server for Telegram's outbound actions) is
+`assistant-hub-swarm/ahw-transport-telegram`. None has a database.
 
 Domain logic lives inside `apps/core`; only genuinely cross-app code is a
 package. The build-time extension registry from the original design is
 retired: transports contribute dashboard UI through published config
-schemas (see Dashboard), not compiled-in UI packages, so `apps/tg/ui` and
-`apps/chat/ui` go away.
+schemas (see Dashboard), not compiled-in UI packages, so a transport ships
+no UI package at all.
 
 ### Runtime topology
 
@@ -80,7 +83,7 @@ Browser ── HTTP/SSE ── apps/core ──┬── LLM endpoint(s)
                           │        ├── transport MCP servers (tg, …)
                           │        └── Playwright / media pipelines
                           │
-Telegram ─ pollers ─ apps/tg ── Redis (queue + pub/sub) ── apps/core
+Telegram ─ pollers ─ transport ── Redis (queue + pub/sub) ── apps/core
 
 (transports: inbound events out, reply-delivery + lifecycle events in;
  each hosts an MCP server for its platform's outbound actions)
@@ -152,9 +155,10 @@ There are no capability flags anywhere in the contract. The core supports
 all media kinds natively; typing is lifecycle rendering; platform actions
 are MCP tools.
 
-`apps/tg` is the first implementation; adding Signal later means writing
-another transport on the SDK, publishing its image, and adding one
-service to the operator's compose file.
+The Telegram transport (`assistant-hub-swarm/ahw-transport-telegram`) is
+the first implementation; adding Signal later means writing another
+transport on the SDK, publishing its image, and adding one service to the
+operator's compose file.
 
 The wire has one number both sides must agree on: `CONTRACT_MAJOR`,
 announced at registration. A core that speaks another major refuses the
@@ -340,11 +344,13 @@ runbook with a rollback path (restore backup, redeploy last v1 image).
 
 ## Deployment
 
-Per-app Docker images on the org's GitHub Container Registry:
-`ghcr.io/assistant-hub-swarm/ahw-core`, `ghcr.io/assistant-hub-swarm/ahw-tg`,
-and one per future transport (from its own repository, named after it). The release pipeline builds and publishes all of
-them from the same version bump; compose pins every service to the same
-tag. Compose runs one Postgres database (core's) and one Redis.
+Docker images on the org's GitHub Container Registry:
+`ghcr.io/assistant-hub-swarm/ahw-core` from this repository, and one per
+transport from its own (`ahw-transport-telegram`, …), each named after its
+repository. Each release pipeline builds and publishes on its own version
+bump; compose pins every service to a version, the core's and each
+transport's separately. Compose runs one Postgres database (core's) and one
+Redis.
 
 ## Build phases
 
@@ -362,7 +368,7 @@ criteria in PROGRESS.md when it starts.
   (all messages, edits, deletions, membership) and hands media bytes to
   the core; context composition moves into the core; connection config
   becomes opaque sections on assistants with schema-driven forms
-  replacing `apps/tg/ui`; transport self-registration + reconcile over
+  replacing `ahw-transport-telegram's UI`; transport self-registration + reconcile over
   the bus; the transport contract replaces the source-app contract; tg's
   database is deleted.
 - **Phase 8 — Accounts.** The users table, roles, sessions; first-run

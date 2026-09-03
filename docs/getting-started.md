@@ -3,7 +3,7 @@
 Two ways to run it: local Node dev servers against your own Postgres and Redis,
 or the bundled Docker Compose stack. Both end at the same place — a dashboard on
 port 3200 that you must claim with the first admin account before anyone else
-does, and a Telegram service that registers with it.
+does, and a Telegram transport that registers with it.
 
 ## Prerequisites
 
@@ -11,8 +11,8 @@ does, and a Telegram service that registers with it.
 | --- | --- |
 | Node.js ≥ 24 | Enforced by `package.json` `engines`; the runtime targets Node 24 |
 | Postgres with `pgvector` | Semantic recall over history summaries and memories stores `vector(1024)` columns; the search index uses `pg_trgm` |
-| Redis | The queue every incoming message travels on and the bus the two apps talk over. Without it the core boots but processes no messages |
-| `ffmpeg` on `PATH` | Video/GIF frame sampling (in the Telegram service), audio transcoding for voice both ways, and HLS/DASH muxing for the browser agent (in the core) |
+| Redis | The queue every incoming message travels on and the bus the core and its transports talk over. Without it the core boots but processes no messages |
+| `ffmpeg` on `PATH` | Audio transcoding for voice both ways and HLS/DASH muxing for the browser agent (in the core); a transport needs its own for video frame sampling |
 | `yt-dlp` on `PATH` | The browser agent's `browser_download_media` tool. Optional — without it that one tool reports it is not installed. The app also keeps a self-updated copy in `data/bin` and prefers it |
 | Chromium (via Playwright) | The browser agent drives a headless browser |
 | Docker | For `npm run test:integration` (Testcontainers) and for the Compose stack. Also the easiest way to get Postgres and Redis for local development |
@@ -20,7 +20,7 @@ does, and a Telegram service that registers with it.
 | An OpenAI-compatible LLM endpoint | Anything serving `/v1/chat/completions` and `/v1/models` — Ollama, llama.cpp, vLLM, LocalAI, or a hosted API. Anthropic, Google and Z.ai are supported natively as backend types |
 
 Env holds bootstrap plumbing only — where the database and Redis are, and the
-shared secret the two apps present to each other. Everything else — LLM
+shared secret the core and its transports present to each other. Everything else — LLM
 endpoints, models, bot tokens, personas, tasks — lives in the database and is
 entered through the dashboard. See [Configuration](configuration.md).
 
@@ -42,33 +42,35 @@ Each app reads its own `.env`:
 cp apps/core/.env.example apps/core/.env
 ```
 
-```bash
-cp apps/tg/.env.example apps/tg/.env
-```
-
-In `apps/core/.env` set `DATABASE_URL`, `REDIS_URL` and `INTERNAL_API_TOKEN`; in
-`apps/tg/.env` set `REDIS_URL` and the **same** `INTERNAL_API_TOKEN`. The token
-is what lets the Telegram service register with the core — with it unset on the
-core side every internal route answers 401 and the service retries registration
-forever. Then apply the schema:
+In `apps/core/.env` set `DATABASE_URL`, `REDIS_URL` and `INTERNAL_API_TOKEN`.
+That token is what lets a transport register with the core — with it unset,
+every internal route answers 401 and any transport retries registration
+forever. A transport is a separate service with its own checkout and its own
+`.env` carrying the **same** token (Telegram's is
+[ahw-transport-telegram](https://github.com/assistant-hub-swarm/ahw-transport-telegram)); the core runs fine with none, it just has
+no platform to speak on. Then apply the schema:
 
 ```bash
 npm run db:migrate
 ```
 
-Start both apps (turbo runs every workspace's `dev` script):
+Start the core (turbo runs every workspace's `dev` script):
 
 ```bash
 npm run dev
 ```
 
-The dashboard is at <http://localhost:3200>; the Telegram service listens on
-3210 and logs `registered with the core` once the dashboard is up. On first
-contact the dashboard redirects to `/setup`.
+The dashboard is at <http://localhost:3200>. On first contact it redirects to
+`/setup`.
 
-Code in the Telegram service and in the core's boot-time modules (the queue
-consumers, the schedulers) does not hot-reload the way a page does — restart
-before judging a live check.
+To talk to Telegram as well, run its transport from its own checkout against
+the same Redis and token ([ahw-transport-telegram](https://github.com/assistant-hub-swarm/ahw-transport-telegram)): it listens on 3210
+and logs `registered with the core` once the dashboard is up. The core runs
+fine without it — there is simply no platform to speak on.
+
+The core's boot-time modules (the queue consumers, the schedulers) do not
+hot-reload the way a page does, and neither does a transport's registration —
+restart before judging a live check.
 
 ### Chromium for local runs
 

@@ -35,11 +35,14 @@ Clean, readable, DRY. Concretely:
 - **Server-only logic must not leak into client bundles.** Modules touching the
   database, filesystem, Playwright, LLM credentials or secrets import
   `server-only`.
-- **Apps never import each other.** `apps/core` and `apps/tg` share code only
-  through `packages/*`; a cross-app pointer is a scoped ref (`tg:user:123`),
-  never a foreign key. Anything that touches a platform's API belongs in that
-  platform's transport; the core stays platform-agnostic. A change to what
-  crosses the boundary is a change to `packages/contracts` and to both sides.
+- **Apps never import each other.** The core and a transport share code only
+  through `packages/*` — and a transport, living in its own repository, only
+  through the published `packages/transport-sdk`; a cross-app pointer is a
+  scoped ref (`tg:user:123`), never a foreign key. Anything that touches a
+  platform's API belongs in that platform's transport; the core stays
+  platform-agnostic. A change to what crosses the boundary is a change to
+  `packages/contracts`, to the SDK's version, and to both sides — and, when
+  it is incompatible, to `CONTRACT_MAJOR`.
 
 ## Layer discipline
 
@@ -53,7 +56,7 @@ Clean, readable, DRY. Concretely:
 | `lib/` | Pure contracts both client and server need | DB, secrets, `server-only` |
 | `server/` | Shared infrastructure: auth, ownership, HTTP, the queue consumers, the bus, LLM, MCP, jobs, trace, realtime, the conversation store | Feature-specific policy |
 | `packages/contracts` | What crosses between apps: zod schemas and pure helpers | Anything app-specific, any runtime dependency beyond zod |
-| `apps/tg` | Everything Telegram: the wire format, the platform API, the platform's tools | Any decision about replying, any storage |
+| a transport (its own repository) | Everything about one platform: the wire format, the platform API, the platform's tools | Any decision about replying, any storage |
 
 A repository takes a `StoreDb` argument (defaulting to `getStoreDb()`) so the
 same code runs against the production pool and a Testcontainers instance.
@@ -204,8 +207,9 @@ Local-development cautions:
 - **Never `rm -rf .next` or run a production build while `next dev` is live** — it
   kills the running server.
 - **Boot-time code needs a restart.** The queue consumers, the schedulers and
-  everything in `apps/tg` are started once; `next dev` and `tsx watch` do not
-  re-run them the way a page re-renders. Restart before judging a live check.
+  everything a transport does at boot (registration, the reconcile, the bus
+  subscriptions) are started once; `next dev` and `tsx watch` do not re-run
+  them the way a page re-renders. Restart before judging a live check.
 - **Commits go straight to `main`** — this project has no feature branches.
   Never push on the user's behalf.
 

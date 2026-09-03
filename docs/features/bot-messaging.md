@@ -35,9 +35,9 @@ failure modes.
 | `server/turn/loop-guard.ts` | Pure | The bot-to-bot loop guard |
 | `server/turn/render.ts` | Pure | History window, chat context and current turn rendered from the event |
 | `server/ingest/consumer.ts` | Core | The ingest stage: mirror, presence, fan-out |
-| `apps/tg/src/addressing.ts` | Transport, pure | The structural half of addressing (entities, replies, commands) |
-| `apps/tg/src/telegram-html.ts` | Transport, pure | Model Markdown → Telegram HTML |
-| `apps/tg/src/mcp.ts` | Transport | The reply, send and reaction tools |
+| `ahw-transport-telegram/src/addressing.ts` | Transport, pure | The structural half of addressing (entities, replies, commands) |
+| `ahw-transport-telegram/src/telegram-html.ts` | Transport, pure | Model Markdown → Telegram HTML |
+| `ahw-transport-telegram/src/mcp.ts` | Transport | The reply, send and reaction tools |
 | `ui/BotControl.tsx` | Client | Per-connection Start/Stop of the transport's pollers, live on the `status` topic |
 
 Collaborators (reply generation, delivery, history load, vision load, analyzer)
@@ -91,7 +91,7 @@ The deterministic check is split along the contract:
 
 | Half | Where | Verdicts |
 | --- | --- | --- |
-| Structural — what the wire shape alone proves | The transport (`apps/tg/src/addressing.ts`), per receiving bot | `private` (always), `reply` to one of this bot's messages, `/command@thisbot`, an @mention entity or literal `@username` |
+| Structural — what the wire shape alone proves | The transport (`ahw-transport-telegram/src/addressing.ts`), per receiving bot | `private` (always), `reply` to one of this bot's messages, `/command@thisbot`, an @mention entity or literal `@username` |
 | Name — does the text speak the **assistant's** name | The core (`server/turn/consume.ts` → `matchBotName`) | `name` on a literal match; a name too generic to match skips the analyzer entirely (a bot named "Bot" must not answer every message about bots) |
 
 The transport never matches the assistant's display name: the name lives in
@@ -219,9 +219,9 @@ rather than being sent the notes or left in silence.
 - The core keeps the model's **raw text**: history, traces and the pipeline all
   see it unrendered. A long answer leaves whole as one `reply.delivery`; the
   core knows no platform's cap, so the transport splits it under its own
-  (Telegram: `apps/tg/src/split.ts`, never truncated) and reports every part.
+  (Telegram: `ahw-transport-telegram/src/split.ts`, never truncated) and reports every part.
 - Markdown → Telegram HTML at the transport boundary only
-  (`apps/tg/src/telegram-html.ts`). Telegram's HTML mode accepts a small tag
+  (`ahw-transport-telegram/src/telegram-html.ts`). Telegram's HTML mode accepts a small tag
   set and rejects the entire send otherwise, so conversion is by-construction
   (code spans lifted out, everything else entity-escaped, tags only from paired
   replacements) and the transport falls back to a plain-text send if Telegram
@@ -239,7 +239,7 @@ rather than being sent the notes or left in silence.
 - **The reply always lands under the message it answers.** The model cannot
   move it: the delivery tools take text and nothing else. They are the
   transport's own, served from its MCP server and reached as the managed
-  connection `tg` (`apps/tg/src/mcp.ts`, offered as `tg__reply_to_message`,
+  connection `tg` (`ahw-transport-telegram/src/mcp.ts`, offered as `tg__reply_to_message`,
   `tg__send_message`, `tg__set_message_reaction` on Telegram turns only); the
   web chat has its in-process twins `chat_reply_to_message` /
   `chat_send_message` and no reaction tool. Which delivery tool a turn is
@@ -334,8 +334,8 @@ instead of sending something untrue or nothing at all.
 | File | Covers |
 | --- | --- |
 | `server/addressing.test.ts` | The name half and the undecided cases |
-| `apps/tg/src/addressing.test.ts` | Every structural verdict, with its reason |
-| `apps/tg/src/inbound.test.ts` | One event per update, dedupe and DM streams, reply-author recognition, what is dropped |
+| `ahw-transport-telegram/src/addressing.test.ts` | Every structural verdict, with its reason |
+| `ahw-transport-telegram/src/inbound.test.ts` | One event per update, dedupe and DM streams, reply-author recognition, what is dropped |
 | `server/address-analyzer.test.ts` | Prompt building, enum parsing, citation verification |
 | `exclusions.test.ts` | Normalization and matching |
 | `server/policy.test.ts` | Maintenance decisions |
@@ -345,7 +345,7 @@ instead of sending something untrue or nothing at all.
 | `server/action-claim.test.ts` | The honesty gate's prompt and verdict parsing |
 | `server/service.test.ts` | The whole policy with injected collaborators |
 | `addressing-trace.test.ts` | The shared event shape |
-| `apps/tg/src/telegram-html.test.ts` | Conversion, including that output cannot contain an unbalanced tag |
+| `ahw-transport-telegram/src/telegram-html.test.ts` | Conversion, including that output cannot contain an unbalanced tag |
 | `server/turn/loop-guard.test.ts`, `server/turn/render.test.ts` | The streak arithmetic; transcript rendering with several assistants' voices |
 | `server/ingest/ingest.integration.test.ts` | The ingest over the whole event contract against a real database: persistence, presence fan-out, dedupe, media, cross-feed, edits, reactions, the self-link short-circuit |
 | `server/turn/turn-consumer.integration.test.ts` | The turn end to end: composed context in, delivery + lifecycle out; web threads; conversation naming; cross-fed turns and the loop guard; retry and settle semantics; media and voice turns |

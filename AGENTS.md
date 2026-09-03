@@ -16,10 +16,12 @@ docs, code, scripts, or tests.
 
 Two apps in a Turborepo: **apps/core** (Next.js — dashboard, web chat, the
 whole brain/pipeline, ONE Postgres database whose schema and migration
-chain live in `apps/core/store/`) and **apps/tg** (a stateless Telegram
-transport — it self-registers with the core at boot, forwards every update
-as transport events over the Redis queue, performs sends, and hosts the
-platform's MCP tools). Shared zod contracts live in `packages/contracts`
+chain live in `apps/core/store/`). Transports are **not** in this
+repository: each is its own repository and image (Telegram's is
+`assistant-hub-swarm/ahw-transport-telegram`), self-registering with the
+core at boot, forwarding every update as transport events over the Redis
+queue, performing sends, and hosting its platform's MCP tools. Shared zod
+contracts live in `packages/contracts`
 and reach transport authors as the published
 `packages/transport-sdk` (built output, with the private packages bundled
 in) plus a generated language-neutral copy under `docs/api/transport/`;

@@ -4,7 +4,7 @@ Three tiers, three different costs, three different purposes.
 
 | Tier | Command | Needs | Count |
 | --- | --- | --- | --- |
-| **Unit** | `npm run test` | Nothing | 115 files (108 in `apps/core`, 3 in `apps/tg`, 3 in `packages/contracts`, 1 in `packages/service`) |
+| **Unit** | `npm run test` | Nothing | 112 files (107 in `apps/core`, 3 in `packages/contracts`, 1 in `packages/service`, 1 in `packages/transport-sdk`) |
 | **Integration** | `npm run test:integration` | Docker (Testcontainers) | 41 `*.integration.test.ts` files (40 in `apps/core`, 1 in `packages/bus`) |
 | **Live** (a subset of integration) | `npm run test:integration` with a configured LLM | Docker + a reachable LLM endpoint | Marked `*-live` / tool-selection |
 
@@ -14,16 +14,17 @@ Tests are **colocated** with the code they cover: `addressing.test.ts` sits besi
 ## Root scripts vs. per-workspace commands
 
 The root scripts are turbo fan-outs: `npm run test` runs `vitest run` in every
-workspace that has a `test` script (`apps/core`, `apps/tg`, `packages/contracts`,
-`packages/service`), and `npm run test:integration` runs `test:integration` where it
-exists (`apps/core` and `packages/bus`). `npm run test:watch` is core-only.
+workspace that has a `test` script (`apps/core`, `packages/contracts`,
+`packages/service`, `packages/transport-sdk`), and `npm run test:integration` runs
+`test:integration` where it exists (`apps/core` and `packages/bus`).
+`npm run test:watch` is core-only.
 
 To run one workspace, or one file, go there and call vitest directly:
 
 ```bash
 cd apps/core && npx vitest run features/bot-messaging
 cd apps/core && npx vitest run --config vitest.integration.config.ts server/turn
-cd apps/tg && npx vitest run
+cd packages/transport-sdk && npx vitest run
 cd packages/bus && npx vitest run --config vitest.integration.config.ts
 ```
 
@@ -82,8 +83,6 @@ that the interesting logic *is* pure and does not need a database or a model:
 | `features/bot-messaging/server/addressing.ts` | Every deterministic addressing rule, and the undecided cases |
 | `features/bot-messaging/server/address-analyzer.ts` | Prompt building, enum parsing, citation verification |
 | `features/bot-messaging/server/policy.ts` | The maintenance decision |
-| `apps/tg/src/telegram-html.ts` | That the output cannot contain an unbalanced tag (the renderer moved to the transport with the sends) |
-| `apps/tg/src/addressing.ts`, `apps/tg/src/inbound.ts` | The structural verdict the transport stamps on each receiver, and the one-forward-per-group-message rule |
 | `server/turn/render.ts`, `server/turn/loop-guard.ts` | The transcript the model sees, and when assistants sharing a chat go quiet |
 | `features/analytics/period.ts` | The bucket math — including that the JS keys match Postgres's `to_char(date_trunc(...))` |
 | `features/tasks/schedule.ts` | Wall-clock ↔ UTC conversion across timezones |
@@ -241,13 +240,20 @@ They need a reachable LLM and a configured model, and they cost tokens. In this
 project's dev setup the LLM is local and self-hosted, so **token spend is not a reason
 to skip them** — run the jobs.
 
-## The transport's own tests
+## A transport's own tests
 
-`apps/tg` has a plain `vitest.config.ts` (no aliases — the app has no `@/` paths and
-no `server-only` guard) and three unit files under `src/`: `addressing.test.ts`,
-`inbound.test.ts`, `telegram-html.test.ts`. It has no integration suite of its own:
-the transport is stateless, and what it forwards is proved on the core side by the
-ingest suite above.
+A transport is its own repository and runs its own suite; nothing here executes
+it. What the core guarantees about any transport is proved on this side by the
+ingest suite above, which drives the whole event contract against a real store —
+so a transport author can validate their events against
+[`events.schema.json`](../api/transport/events.schema.json) and trust that the
+core's half is covered.
+
+The [Telegram transport](https://github.com/assistant-hub-swarm/ahw-transport-telegram) is the worked example: a plain `vitest.config.ts`
+(no aliases, no `server-only` guard) and five unit files under `src/` covering
+the structural addressing verdicts, one-event-per-update, the HTML renderer's
+balance, and the split-and-send path. It has no integration suite: it is
+stateless, and what it forwards is what the core's ingest suite already proves.
 
 ## Running a subset
 

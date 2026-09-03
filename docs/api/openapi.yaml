@@ -3014,7 +3014,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
 
   # ------------------------- internal transport API ---------------
-  # Called by the transport services (apps/tg today), never by the dashboard.
+  # Called by the transport services, never by the dashboard.
   # No session, no `data` wrapper, errors as `{ "error": { message } }`. The
   # whole contract lives in docs/development/adding-a-transport.md.
   /api/internal/transports/register:

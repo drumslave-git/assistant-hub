@@ -140,8 +140,8 @@ export type AccountLinkCodeRow = typeof accountLinkCodes.$inferSelect;
  * Application settings — the shared brain configuration. A single typed row
  * (`id = 'singleton'`), exactly the v1 table minus what left the core:
  *
- * - `telegram_bot_token` — became a tg-store connection row (bot token per
- *   assistant, owned by apps/tg).
+ * - `telegram_bot_token` — became a transport connection row (bot token per
+ *   assistant, stored opaquely and handed to the transport as desired state).
  * - `active_personality_id` — personalities became assistants; "active" is
  *   replaced by transport connections binding an assistant to a chat.
  * - `owner_username` / `owner_user_id` — the global owner identity is

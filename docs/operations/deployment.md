@@ -15,23 +15,27 @@ running one more is one more service and no change to the rest.
 docker compose up -d
 ```
 
-Four services, and the two application ones run **released images** — nothing is
-built on the host:
+Four services, every one of them a **released image** — nothing is built on the
+host:
 
 | Service | Image | Notes |
 | --- | --- | --- |
 | `app` | `ghcr.io/assistant-hub-swarm/ahw-core:${AHW_VERSION}` | The dashboard, the web chat and the whole pipeline. Publishes `${PORT:-3200}:3200` |
-| `tg` | `ghcr.io/assistant-hub-swarm/ahw-tg:${AHW_VERSION}` | The Telegram transport: stateless pollers that register with the core, forward every update as transport events, perform the sends, and host the platform's MCP tools. **No published port** — its internal API is for the core only |
+| `tg` | `ghcr.io/assistant-hub-swarm/ahw-transport-telegram:${AHW_TELEGRAM_VERSION}` | The Telegram transport: stateless pollers that register with the core, forward every update as transport events, perform the sends, and host the platform's MCP tools. Its own repository and its own version, so it does **not** follow `AHW_VERSION`. **No published port** — its internal API is for the core only |
 | `redis` | `redis:7-alpine`, started with `--appendonly yes` | The cross-app bus and the two queues (`transport-updates`, `inbound-messages`). Publishes `${REDIS_PORT:-6379}:6379` |
 | `db` | `pgvector/pgvector:pg17` | The one database. Publishes `${POSTGRES_PORT:-5432}:5432` |
 
 `AHW_VERSION` defaults to the version this checkout releases, so a clone runs a
-known-good set rather than a moving `latest`. Set it in `.env` to run another
+known-good core rather than a moving `latest`. Set it in `.env` to run another
 one; `npm run release:*` rewrites the default when the version is bumped, and
-the release workflow refuses to ship if the two ever drift.
+the release workflow refuses to ship if the two ever drift. Each transport
+carries its own variable (`AHW_TELEGRAM_VERSION`) because each releases on its
+own schedule; the only thing the two sides must agree on is the wire's
+`CONTRACT_MAJOR`.
 
 To build the working tree instead of pulling, add the dev override — it adds a
-`build:` to the two application services and changes nothing else:
+`build:` to the core and changes nothing else. A transport is never built here:
+to run one from source, start it from its own checkout against this stack.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
@@ -123,9 +127,9 @@ and downloads fail per-run, reported on the run row.
 ### Environment
 
 Compose has working defaults; a root `.env` is optional and is read only for the
-`${…}` substitutions in `docker-compose.yml`. There is no root `.env.example`: the
-per-app examples are `apps/core/.env.example` and `apps/tg/.env.example`, and they
-document local (non-Docker) development as well.
+`${…}` substitutions in `docker-compose.yml`. There is no root `.env.example`:
+`apps/core/.env.example` documents local (non-Docker) development, and each
+transport ships its own.
 
 **One variable is not optional in production: `INTERNAL_API_TOKEN`.** It is the shared
 secret the core and the transport present to each other (registration, desired state,
@@ -148,7 +152,8 @@ Every core variable also accepts a `<NAME>_FILE` variant pointing at a file whos
 contents are used instead (Docker secrets). Transport base URLs are **not** env on the
 core side: a transport announces its own at registration.
 
-The Telegram transport (`apps/tg`) reads:
+The Telegram transport ([its own repository](https://github.com/assistant-hub-swarm/ahw-transport-telegram)) reads — as any transport
+does, these are the contract's variables:
 
 | Variable | Compose sets it to | Notes |
 | --- | --- | --- |
@@ -222,21 +227,15 @@ intentionally absent from the slim image. The image copies the SQL chain from
 directory so they never touch the app's traced `node_modules`. With `DATABASE_URL`
 unset it warns and exits 0 rather than failing the container.
 
-### `ahw-tg`
+### A transport's image
 
-A plain long-running Node service, also from `node:24-alpine`, two stages:
-
-```
-base ──► deps (npm install of apps/tg + the packages it links) ──► runner
-```
-
-| Choice | Why |
-| --- | --- |
-| Runs from TypeScript source via `tsx` (`npx tsx src/index.ts`) — the app's own `start` script | The shared packages export TS sources directly and the entrypoint uses top-level await, which rules out a plain CJS compile; a build step would only add a second module resolution to keep correct |
-| Only the manifests this app's tree needs are copied (`apps/tg`, `packages/{contracts,bus,media,service}`) | The install skips the other apps' dependencies |
-| `ffmpeg` from apk | Media ingestion samples video/GIF frames and probes durations with it |
-| No migrations, no volumes | Stateless: it registers with the core and goes |
-| Non-root `app` user, `EXPOSE 3210` | Same hardening as the core |
+Not built here — each transport builds its own, in its own repository, and this
+repo's release workflow has one entry: the core. The Telegram one
+([Dockerfile](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/Dockerfile)) is the shape to copy: `node:24-alpine`,
+`npm install` (its own manifest, no workspace context), the SDK pulled from
+GitHub Packages, `ffmpeg` from apk for video frame sampling, a non-root user,
+`EXPOSE 3210`, and `npx tsx src/index.ts`. No migrations and no volumes:
+stateless is the contract.
 
 ## Upgrading
 
@@ -289,8 +288,9 @@ release of the current version instead (re-runs, or proving a fresh repo); every
 step below is idempotent, so a manual run is safe to repeat.
 
 A release is all-or-nothing: nothing reaches the registry and no tag is created
-unless every image built. Images live in the org's GitHub Container Registry as
-`ghcr.io/assistant-hub-swarm/ahw-core` and `ghcr.io/assistant-hub-swarm/ahw-tg`. The workflow:
+unless every image built. This repository's image is
+`ghcr.io/assistant-hub-swarm/ahw-core`; each transport publishes its own from
+its own repository (`ahw-transport-telegram`, …). The workflow:
 
 1. **version** — wakes only when a version manifest is touched (the root
    `package.json` or the SDK's), then diffs each `version` field against
@@ -303,10 +303,11 @@ unless every image built. Images live in the org's GitHub Container Registry as
    released, so a compose file that would start operators on an older build
    cannot ship. `npm run release:*` keeps them in step; this catches a version
    bumped any other way.
-3. **build** — a matrix with one entry per app image (`ahw-core` from
-   `apps/core/Dockerfile`, `ahw-tg` from `apps/tg/Dockerfile`) builds
-   each with GitHub Actions layer caching and hands it to the next job as an
-   artifact — nothing is pushed. One failing image fails the release.
+3. **build** — a matrix with one entry per app image in this repository
+   (`ahw-core` from `apps/core/Dockerfile`) builds each with GitHub Actions
+   layer caching and hands it to the next job as an artifact — nothing is
+   pushed. One failing image fails the release. Transports are not in the
+   matrix: each releases from its own repository, on its own version.
 4. **publish** — runs only when every build succeeded: loads all images, pushes
    every `ghcr.io/<org>/<image>:<version>` first, then moves every `:latest`, and finally
    creates the `v<version>` git tag (skipped if it already exists). The ordering

@@ -292,7 +292,7 @@ file-then-recap flow repeated the same filename twice and spammed the chat):
   (`sendFile` in `server/turn/source-outbound.ts` — the transport's
   `POST /internal/chats/:chatId/files`, allowed 500 s for Telegram's own
   upload; the web chat keeps the file on the message). The transport sends
-  files **as the media they are** (`apps/tg/src/outbound.ts`): an
+  files **as the media they are** (`ahw-transport-telegram/src/outbound.ts`): an
   MP4/QuickTime video goes out via `sendVideo` (playable straight in Telegram,
   streaming enabled), an MP3/M4A via `sendAudio` (music player), anything else
   as a document. A container Telegram rejects as media falls back to a document

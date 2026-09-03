@@ -296,7 +296,7 @@ Tools are exposed through the Model Context Protocol in two ways. The feature
 tools are **in-process** — no sockets, no HTTP. Everything else is a remote MCP
 server over Streamable HTTP: the tool connections an operator adds on the Tools
 page, and the managed connection the core provisions for every registered
-transport's own server (`apps/tg` serves its reply, send and reaction tools at
+transport's own server (the Telegram one serves its reply, send and reaction tools at
 `/mcp`).
 
 ```
@@ -308,7 +308,7 @@ BotMcpRegistry ── in-memory transport pair ── McpServer
       │
       └─► one trace per call, feature `mcp-tools-<owner>`
 
-resolveConnectionToolset(scope) ── http-client.ts ── remote McpServer (tool connection / apps/tg /mcp)
+resolveConnectionToolset(scope) ── http-client.ts ── remote McpServer (tool connection / a transport's /mcp)
       │  applied snapshot, `<slug>__<tool>` names, turn binding as `_meta`
       └─► one trace per call, feature `mcp-tools-connections`
 ```
@@ -440,7 +440,7 @@ bot-vs-participant distinction and the self-authored-only warning are unchanged.
 
 Platform actions are not core tools: they are the transport's, served by its
 own MCP server and reached as a managed connection scoped to that transport's
-turns (`apps/tg/src/mcp.ts`, offered to the model as `tg__<tool>`). Their calls
+turns (the transport's own `src/mcp.ts`, offered to the model as `tg__<tool>`). Their calls
 trace under `mcp-tools-connections` with the connection slug on the trace.
 
 | Tool | Input | Purpose |
@@ -456,7 +456,7 @@ and it refuses one target Telegram would happily accept — **the bot's own
 messages** (an `assistant` row in the mirror), because a badge the bot puts on
 its own message tells nobody anything. Another bot's message arrives as an
 ordinary `user` row and stays fair game. The allowed emoji are Telegram's fixed
-set, single-sourced in `apps/tg/src/reactions.ts` from the Bot API type and
+set, single-sourced in the transport's `src/reactions.ts` from the Bot API type and
 carried in the tool's own description. Validity is checked in the **handler**,
 not by a `z.enum`: the local backends this bot usually runs on template tool
 JSON without enforcing schemas, so an off-list emoji has to come back as a

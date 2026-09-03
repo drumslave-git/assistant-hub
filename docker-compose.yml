@@ -61,7 +61,13 @@ services:
     # forward every update as transport events, and perform the sends. One
     # service among however many transports this deployment runs; the core
     # learns about each one when it registers, never from this file.
-    image: ghcr.io/assistant-hub-swarm/ahw-tg:${AHW_VERSION:-1.48.0}
+    #
+    # Its own repository, its own release schedule, its own version — which is
+    # why it does NOT follow AHW_VERSION. The number the two sides must agree
+    # on is the wire's CONTRACT_MAJOR, and a mismatch is refused by name on the
+    # dashboard rather than failing quietly.
+    # https://github.com/assistant-hub-swarm/ahw-transport-telegram
+    image: ghcr.io/assistant-hub-swarm/ahw-transport-telegram:${AHW_TELEGRAM_VERSION:-1.0.0}
     depends_on:
       redis:
         condition: service_healthy

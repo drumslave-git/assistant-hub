@@ -10,12 +10,12 @@ Paths are relative to `apps/core/` unless they start with `apps/`.
 ## The seam
 
 Since the source split the core runs **no** Telegram code. The transport
-(`apps/tg`) is only an event **source** (it forwards every update as a
+(`ahw-transport-telegram`) is only an event **source** (it forwards every update as a
 normalized event) and a **sink** (it performs sends and shows typing).
 Everything between is transport-agnostic and runs in the core:
 
 ```
-Telegram update ─► apps/tg ─► queue `transport-updates` ─► server/ingest/consumer.ts
+Telegram update ─► the transport ─► queue `transport-updates` ─► server/ingest/consumer.ts
                                                                     │  one `message.inbound` per assistant
                                                                     ▼
                                                           queue `inbound-messages`
@@ -30,7 +30,7 @@ web thread message ─► features/web-chat (in-process) ───────�
                                                                     │
                                               bus ◄── `reply.delivery`, `turn.lifecycle`
                                                │
-                                               └─► apps/tg sends, shows typing, reports `message.delivered`
+                                               └─► the transport sends, shows typing, reports `message.delivered`
 ```
 
 The exact same core code runs with no Telegram at all: the ingest's integration
@@ -40,11 +40,11 @@ turn consumer's suite drives `handleInboundJob` with stubbed LLM collaborators
 in `packages/contracts` and documented in
 [Adding a transport](../development/adding-a-transport.md).
 
-## Stage 0 — the Telegram edge (`apps/tg`)
+## Stage 0 — the Telegram edge (`ahw-transport-telegram`)
 
 - Long polling via `@grammyjs/runner`, one poller per enabled assistant
   connection, started by the transport's own boot from the desired state the
-  core answers at registration (`apps/tg/src/bot-manager.ts`).
+  core answers at registration (`ahw-transport-telegram/src/bot-manager.ts`).
 - Updates are processed **concurrently across chats**, with `sequentialize`
   keeping each chat strictly in order (user decision, 2026-07-20).
 - `allowed_updates`: `message`, `edited_message`, `message_reaction`,
@@ -172,7 +172,7 @@ cannot:
 Two halves, in two processes, and no trace is opened for a message the cheap
 checks reject.
 
-**Structural** (`apps/tg/src/addressing.ts` — pure, reads the wire shape):
+**Structural** (`ahw-transport-telegram/src/addressing.ts` — pure, reads the wire shape):
 
 | Chat type | Addressed when |
 | --- | --- |
@@ -355,10 +355,10 @@ verbatim.
    the mirror-checked whitelist of `#<id>` citations that may become links.
    It knows no platform's cap: the transport cuts a long answer at natural
    boundaries under Telegram's hard 4096-character limit
-   (`apps/tg/src/split.ts`), sends the parts in order, and reports each as
+   (`ahw-transport-telegram/src/split.ts`), sends the parts in order, and reports each as
    its own `message.delivered`. It renders each part at its boundary —
    Telegram converts to its small HTML tag set by construction
-   (`apps/tg/src/telegram-html.ts`) and falls back to a plain text send if
+   (`ahw-transport-telegram/src/telegram-html.ts`) and falls back to a plain text send if
    Telegram still rejects the markup. History, traces and the pipeline all
    keep the raw text.
 2. **Voice reply**, when a speech endpoint is configured and the turn was a

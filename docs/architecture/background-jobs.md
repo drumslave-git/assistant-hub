@@ -5,7 +5,7 @@ Postgres advisory locks. There is no external cron, no separate worker service
 and no on-demand-only work. That is the recorded operating model for this app: the
 core container already runs in-process singletons (the queue consumers, the MCP
 registry, Chromium, the realtime hub), and jobs run the same way. The Telegram
-poller is not one of them — it lives in the `apps/tg` service.
+poller is not one of them — it lives in the transport's own service.
 
 ## The three primitives
 

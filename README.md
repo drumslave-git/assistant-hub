@@ -3,10 +3,11 @@
 A multi-user assistant platform: accounts run their own AI assistants —
 personas, Telegram bots, standing tasks, tools — on one shared brain (an
 OpenAI-compatible chat completions API, or a native Anthropic, Google or Z.ai
-backend), with a web chat and a control/observability dashboard. Two apps: the
-**core** (dashboard, web chat, the whole pipeline, one Postgres database) and a
-stateless **Telegram transport** that registers with it; another messaging
-platform connects the same way. Grown out of the
+backend), with a web chat and a control/observability dashboard. This
+repository is the **core**: dashboard, web chat, the whole pipeline, one
+Postgres database. Messaging platforms connect as **transports** — separate
+services in their own repositories that register themselves; Telegram's is
+[ahw-transport-telegram](https://github.com/assistant-hub-swarm/ahw-transport-telegram). Grown out of the
 [ollama-tg-bot](https://github.com/drumslave-git/ollama-tg-bot) MVP through a
 full Next.js rewrite and the v2 redesign (see [docs/PLAN.md](docs/PLAN.md)).
 Pending work is tracked in [`docs/TODO.md`](docs/TODO.md).
@@ -32,11 +33,10 @@ The rest of this file is the quick reference.
 
 ```bash
 npm install
-docker compose up -d db redis          # or point the .env files at your own Postgres + Redis
+docker compose up -d db redis          # or point the .env file at your own Postgres + Redis
 cp apps/core/.env.example apps/core/.env
-cp apps/tg/.env.example apps/tg/.env   # same INTERNAL_API_TOKEN in both
 npm run db:migrate
-npm run dev                            # core on http://localhost:3200, Telegram service on :3210
+npm run dev                            # the core on http://localhost:3200
 ```
 
 ## Run with Docker
@@ -46,11 +46,10 @@ docker compose up -d
 # dashboard: http://localhost:3200  ·  health: http://localhost:3200/api/health
 ```
 
-That runs **released images** from the org's registry
-(`ghcr.io/assistant-hub-swarm/ahw-core` and `ahw-tg`), pinned to one version —
-no toolchain on the host and no build to wait for. `AHW_VERSION=1.47.0 docker
-compose up -d` runs a different one. To build this working tree instead, add
-the dev override:
+That runs **released images** — the core on `AHW_VERSION` (pinned, so a clone
+runs a known-good build) and the Telegram transport on its own version from its
+own repository. No toolchain on the host and no build to wait for. To build
+this working tree's core instead, add the dev override:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
@@ -76,7 +75,7 @@ Root scripts fan out across the workspaces through turbo.
 
 | Script | Purpose |
 | --- | --- |
-| `npm run dev` | Dev servers: the core on 3200 and the Telegram service on 3210 |
+| `npm run dev` | The core's dev server on 3200 (a transport runs from its own checkout) |
 | `npm run build` | Production build of every workspace (`next build`, standalone output, for the core) |
 | `npm run start` | Serve the core's production build |
 | `npm run lint` | ESLint |
@@ -93,9 +92,11 @@ Root scripts fan out across the workspaces through turbo.
 ## Repository Layout
 
 Turborepo with npm workspaces. Root `npm run lint|typecheck|test|build` fan out
-across every workspace via turbo. Boundaries are intentional: `apps/*` never
-import each other's code — only packages — and cross-app pointers are scoped
-refs (`tg:user:123`), never foreign keys into another app's data.
+across every workspace via turbo. Boundaries are intentional: apps never import
+each other's code — only packages — and cross-app pointers are scoped refs
+(`tg:user:123`), never foreign keys into another app's data. That rule is what
+let the Telegram transport leave for its own repository without a single
+change to the core.
 
 | Path | Responsibility |
 | --- | --- |
@@ -107,7 +108,7 @@ refs (`tg:user:123`), never foreign keys into another app's data.
 | `apps/core/store/` | THE database module: the Drizzle schema (`schema.ts`) and the one migration chain (`migrations/`). |
 | `apps/core/lib/` | Small shared utilities and pure contracts importable by both client and server. |
 | `apps/core/test/` | Test support (stubs, fixtures, the Testcontainers database helper). |
-| `apps/tg/` | The Telegram transport: stateless pollers that register with the core, forward every update as transport events, perform sends, and host the platform's MCP tools. The reference for [adding a transport](docs/development/adding-a-transport.md). |
+| — | Transports are **not** in this repository. Each is its own repository and its own image, built on `packages/transport-sdk` and connected by registration alone; Telegram's is [ahw-transport-telegram](https://github.com/assistant-hub-swarm/ahw-transport-telegram), the reference for [adding a transport](docs/development/adding-a-transport.md). |
 | `packages/contracts/` | Cross-app zod schemas (`@assistant-hub-swarm/contracts`): scoped refs, transport events, reply delivery and turn lifecycle, the internal APIs, the trace contract, realtime topics. |
 | `packages/bus/` | Redis plumbing (`@assistant-hub-swarm/bus`): BullMQ queues with `attempts: 1` and the pub/sub bus. |
 | `packages/service/` | What every transport service needs once (`@assistant-hub-swarm/service`): env access, the internal-token guard, serving an MCP server over Hono, the bus trace client. |

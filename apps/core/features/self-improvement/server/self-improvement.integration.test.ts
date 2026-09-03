@@ -63,7 +63,7 @@ const USER_ID = "100";
 /** How every trace here names the chat and the reactor — refs, like the app. */
 const CHAT_REF = `tg:chat:${CHAT_ID}`;
 const USER_REF = `tg:user:${USER_ID}`;
-/** The tg menu option that files an addressing report (owned by apps/tg). */
+/** The menu option that files an addressing report (rendered by the transport). */
 const NOT_ADDRESSED_OPTION = "Wasn't talking to you";
 
 /**

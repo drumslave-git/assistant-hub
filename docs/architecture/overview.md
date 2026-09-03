@@ -1,16 +1,20 @@
 # Architecture overview
 
-Two applications in one Turborepo, one Postgres database, one Redis, one brain.
+One application in this Turborepo, one Postgres database, one Redis, one brain.
 **`apps/core`** is a Next.js 16 App Router application: the dashboard, the web
 chat, the whole reply pipeline, every background job, the MCP tool runtime and
-the trace store. **`apps/tg`** is a stateless Telegram transport: it owns the
-platform connection and nothing else. They talk over Redis (a BullMQ queue and a
-pub/sub channel) and over two small token-authenticated HTTP surfaces. A new
-platform connects by deploying another transport container — see
+the trace store.
+
+Messaging platforms are **transports**: stateless services that own a platform
+connection and nothing else, each in its own repository and its own image
+(Telegram's is [ahw-transport-telegram](https://github.com/assistant-hub-swarm/ahw-transport-telegram)). They talk to the core over
+Redis (a BullMQ queue and a pub/sub channel) and over two small
+token-authenticated HTTP surfaces, and they connect by registering — the core
+holds no list of them. A new platform is another container; see
 [Adding a transport](../development/adding-a-transport.md).
 
 ```
-   Telegram ◄──long polling──► apps/tg  (stateless transport, :3210)
+   Telegram ◄──long polling──► transport  (stateless, its own repo, :3210)
                                   │  queue `transport-updates`          ▲ `reply.delivery`, `turn.lifecycle`
                                   ▼  (every message, edit, reaction,    │ (Redis pub/sub `assistant-hub:events`)
                                      delivery — media bytes attached)   │
@@ -23,18 +27,18 @@ platform connects by deploying another transport container — see
            Postgres (store/)   data/traces/         server/llm + server/mcp
            one schema, one     NDJSON, append-only   OpenAI-compatible + native providers;
            migration chain                           in-process tools + remote MCP servers
-                                                     (apps/tg's own is one of them)
+                                                     (each transport's own is one)
 ```
 
 Paths in this document are relative to `apps/core/` unless they start with
 `apps/` or `packages/`.
 
-## The two apps and the shared packages
+## The app, the transports and the shared packages
 
 | Workspace | Responsibility | State |
 | --- | --- | --- |
 | `apps/core` | Dashboard (admin and user roles), web chat, the conversation store, the reply pipeline, background jobs, LLM clients, MCP runtime, traces, realtime | The Postgres database (`store/`), trace files, downloads |
-| `apps/tg` | Telegram: pollers per assistant connection, media download, structural addressing, sends, typing, the platform's MCP tools | **None.** It registers with the core at boot and reconciles from the desired state the core answers with |
+| *(each transport, elsewhere)* | One platform: connections per assistant, media download, structural addressing, sends, typing, the platform's MCP tools | **None.** It registers with the core at boot and reconciles from the desired state the core answers with |
 | `packages/contracts` | Every cross-app zod schema: scoped refs, transport events, reply delivery, turn lifecycle, the internal APIs, the trace contract, realtime topics | — |
 | `packages/bus` | BullMQ queues (`attempts: 1`) and the ioredis pub/sub bus | — |
 | `packages/service` | What every transport service needs once: env access, the internal-token guard, serving an MCP server over Hono, the bus trace client and dashboard-refresh ping | — |
@@ -158,7 +162,7 @@ is kept fresh over SSE — see [Observability](observability.md#live-updates).
 
 The full walk-through is [The message pipeline](telegram-pipeline.md). In short:
 
-1. **The transport forwards.** `apps/tg` receives an update, downloads any
+1. **The transport forwards.** It receives an update, downloads any
    media, computes the structural addressing verdict for each running bot, and
    publishes one `transport.message` job on the `transport-updates` queue.
    Everything is forwarded, addressed or not.
@@ -247,7 +251,7 @@ Nothing here gates readiness. A missing Redis, an unreachable LLM, a transport
 that has not registered yet, or an unwritable trace directory surfaces on the
 dashboard instead of crashing boot.
 
-The transport's boot is its own: `apps/tg/src/index.ts` serves `/health` first,
+The transport's boot is its own: it serves `/health` first,
 registers with the core (retrying until it answers), reconciles its pollers
 from the desired state, subscribes to config changes, and starts its delivery
 consumer.
@@ -263,7 +267,7 @@ consumer.
 | Browser-agent downloads | `data/downloads/` on disk | Delivered to the chat as they land |
 | Live job progress, browser live state, running web-chat turns | RAM (`globalThis`) | Transient by design |
 | Running (unsettled) traces | RAM | A crash drops them |
-| The transport's poller state | RAM in `apps/tg` | Reported on `/health`; rebuilt from the desired state at boot |
+| The transport's poller state | RAM in the transport | Reported on `/health`; rebuilt from the desired state at boot |
 
 ## Key architectural decisions
 
