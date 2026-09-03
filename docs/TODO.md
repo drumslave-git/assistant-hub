@@ -554,9 +554,8 @@ images. Proof: `npm run typecheck` (8/8), `npm run lint`, `npm run test`
 (contracts 16, service 3, tg 44, core 1175). Not run: the release workflow
 itself (needs a version bump on main).
 
-**Still manual, on the user:** create `ahw-transport-discord` under the org
-when phase 5 starts; after the first publish, flip each GitHub package (npm and
-container) to public. Note what "public" buys on each registry: a public
+**Still manual, on the user:** after each first publish, flip the GitHub package
+(npm or container) to public. Note what "public" buys on each registry: a public
 **container** image pulls anonymously, but the npm registry asks for a token on
 every request even for a public package — so a transport author always needs
 one with `read:packages`, and the docs say so. **Confirmed empirically**
