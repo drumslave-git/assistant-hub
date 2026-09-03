@@ -448,6 +448,51 @@ the SDK needed no token was wrong; do not reinstate it.
 **Supersedes** the "Telegram-only surfaces in the core" entry under Other
 open items (its list is phase 1's checklist; prune it when phase 1 lands).
 
+## Dependency CVEs: every high cleared (`done`, 2026-09-03)
+
+`npm audit` reported 17 in the core (10 high, 7 moderate) and 2 high in the
+Telegram transport. All ten highs are gone; four moderates remain and have no
+upstream fix.
+
+- **Non-breaking (`npm audit fix`)**: undici, nanoid, js-yaml, ip-address,
+  fast-uri, browserslist, brace-expansion, qs, hono, `@hono/node-server`.
+  Lockfile only — no declared range moved.
+- **sharp `^0.34.5` → `^0.35.4`** (high: inherited libvips CVEs
+  `GHSA-f88m-g3jw-g9cj`) in `packages/media`, `packages/transport-sdk` and
+  `apps/core`. This is the one that also reached the **transport**, through the
+  SDK's own dependency — so `packages/transport-sdk` goes to **1.0.1**, and the
+  transport picks the fix up on its next install once that is published.
+  Verified beyond the type checker: a real round-trip through
+  `normalizeImageForChat` on sharp 0.35.4 resizes a 2000×1200 PNG to 768×461
+  JPEG, passes a small in-bounds JPEG through byte-identical, and converts a
+  WebP sticker to JPEG. One 0.35 change worth knowing: `sharp/package.json` is
+  no longer an exported subpath, so `require("sharp/package.json")` throws —
+  nothing in either repository does that, but a version probe written that way
+  will break.
+- **next `16.2.10` → `16.3.4`** (high, plus `postcss` transitively). Same major.
+  It also carries its own `sharp`, which is why the root tree kept resolving
+  0.34.5 until this landed; `npm ls sharp` is now 0.35.4 everywhere.
+- **Left alone: the `drizzle-kit` → `@esbuild-kit/*` → `esbuild` chain** (4
+  moderate). `npm audit` proposes drizzle-kit `0.18.1`, which is a **downgrade**
+  from the installed 0.31.10 — and 0.31.10 is the latest published, so there is
+  no forward fix. It is a dev-only migration generator that never runs in an
+  image or in production, and downgrading it to satisfy an advisory would trade
+  a real capability for a cosmetic count. Revisit when drizzle-kit drops the
+  deprecated `@esbuild-kit` packages.
+
+Proof: `npm run lint`, `npm run typecheck` (8/8), `npm run test` (contracts 20,
+service 3, transport-sdk 3, core 1161 passed / 26 skipped), `npm run build`
+(the core's production build on Next 16.3.4), the image round-trip above, and
+`npm audit` down to 4 moderate. In the transport repo: `npm run typecheck` and
+44 tests against the **published** SDK 1.0.0, with the lockfile now committed.
+Not run: the integration suite (Docker was up, but nothing in this change
+touches persistence).
+
+**On the user:** publish SDK **1.0.1** (its version changed, so pushing `main`
+runs the `publish-sdk` job), then `npm update @assistant-hub-swarm/transport-sdk`
+in the transport and commit its lockfile — that is what clears the transport's
+own two highs.
+
 ## Documentation overhaul for the two-app platform + the transport manual (`done`, 2026-09-02)
 
 The docs still described the pre-redesign app: one Next.js process with an

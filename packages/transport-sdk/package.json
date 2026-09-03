@@ -1,6 +1,6 @@
 {
   "name": "@assistant-hub-swarm/transport-sdk",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Everything a transport needs to connect a messaging platform to an assistant-hub core: the wire contracts, the Redis queue and bus helpers, the internal-token guard, an MCP server over Hono, the trace client and image normalization.",
   "license": "MIT",
   "type": "module",
@@ -45,7 +45,7 @@
   "dependencies": {
     "bullmq": "^5.66.5",
     "ioredis": "^5.9.3",
-    "sharp": "^0.34.5"
+    "sharp": "^0.35.4"
   },
   "peerDependencies": {
     "@hono/node-server": "^1.14.0",
