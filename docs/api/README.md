@@ -14,6 +14,22 @@ is hidden:
 - [Endpoint reference](endpoints.md) - every route, grouped by feature.
 - [`openapi.yaml`](openapi.yaml) - OpenAPI 3.1 description of the whole surface.
 
+Those two are hand-maintained and describe the **dashboard's** API. The
+transport wire contract is a separate, **generated** pair, because a transport
+author works in another repository and often another language:
+
+- [`transport/events.schema.json`](transport/events.schema.json) - JSON Schema
+  for every event that crosses the Redis queue and bus, in both directions.
+- [`transport/openapi.yaml`](transport/openapi.yaml) - the HTTP in both
+  directions: the surface the core calls on a transport, and the core's own
+  `/api/internal/transports/*`.
+
+Both are generated from the zod schemas of
+`@assistant-hub-swarm/transport-sdk` by `npm run wire:generate -w
+@assistant-hub-swarm/transport-sdk`, and the SDK's test suite regenerates them
+and fails when the committed copies differ - so the shapes cannot drift from
+the code, and `npm run test` is where you find out.
+
 ## Base URL
 
 Relative to the app origin, e.g. `http://localhost:3200/api/...`. There is no

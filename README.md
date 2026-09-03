@@ -101,6 +101,7 @@ refs (`tg:user:123`), never foreign keys into another app's data.
 | `packages/media/` | Image normalization to a bounded JPEG (`@assistant-hub-swarm/media`), shared by the core and the transports. |
 | `packages/db/` | Shared database tooling (`@assistant-hub-swarm/db`): pool helpers, the production migration runner (`migrate/`), Testcontainers helpers (`/testing`). |
 | `packages/ui/` | Shared dashboard components and the live-event hook (`@assistant-hub-swarm/ui`). |
+| `packages/transport-sdk/` | The one **published** package (`@assistant-hub-swarm/transport-sdk`): the wire half of the four packages above, bundled into built output so a transport in its own repository resolves nothing private. Also generates the language-neutral wire contract in [`docs/api/transport/`](docs/api/transport/). |
 
 ### Import boundary
 

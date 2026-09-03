@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The four packages this SDK is assembled from are private and export raw
+    // TypeScript. Mapping them to their sources puts them in this package's
+    // own compilation, which is what lets the declaration build inline their
+    // types instead of emitting `from "@assistant-hub-swarm/contracts"` into a
+    // published .d.ts that resolves to nothing on the installer's machine.
+    "paths": {
+      "@assistant-hub-swarm/contracts": ["../contracts/src/index.ts"],
+      "@assistant-hub-swarm/bus": ["../bus/src/index.ts"],
+      "@assistant-hub-swarm/service": ["../service/src/index.ts"],
+      "@assistant-hub-swarm/media": ["../media/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

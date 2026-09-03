@@ -212,21 +212,121 @@ Any core edit for a new source id is a bug.
      the dev database (`npm run db:migrate`). Not run live: a boot of core +
      tg after the change (no dev server was up; the preview cannot sign in
      after a restart), `npm run build`.
-   - **Known limits carried into phase 2 (`todo`):** the wire contract still
-     carries numeric message ids on the send responses
-     (`InternalSentMessageResponse.messageId`, `SentMessage.messageId` in
-     `features/bot-messaging`) and the turn correlation id is the transport's
-     `<chatId>:<messageId>` in local ids, so trace scoping by chat/user
-     (`features/analytics/server/trace-source.ts`) and the reply-trace lookup
-     compare local ids and would conflate two transports sharing a numeric
-     id — fold both into the contract-major bump (ids as strings on the wire,
-     the source on the correlation).
-2. **SDK package**: `packages/transport-sdk` (build with tsc/tsup to
-   `dist/`, `exports` on the built files, semver, `publishConfig` for GitHub
-   Packages); the zod → JSON Schema and OpenAPI generators + CI drift check;
-   a `publish` job in `release.yml` gated like the images; the manual
-   rewritten for an author with no repo access (install the SDK, implement
-   the contract, build an image, publish).
+   - **Ids are strings, correlations carry the source (`done`, 2026-09-03).**
+     Contract major **2**: the turn binding a tool call carries
+     (`threadId`, `replyToSourceMessageId`) and the delivery a tool reports
+     back (`sourceMessageId`) were `z.number()` — a Discord snowflake does not
+     survive `Number()`. Inside the core the same ids stopped being numbers on
+     the whole turn path: `SourceOutboundPort` (every send answers
+     `{ sourceMessageId }`, `deleteMessage` takes one, `threadId`/
+     `replyToSourceMessageId` are strings — the four `Number(body.sourceMessageId)`
+     round-trips are gone), `IncomingMessage`/`SentMessage`/`recordReply` in
+     `features/bot-messaging`, the browser-agent ack registry, the tasks fire's
+     delivery accounting, and `tasks.thread_id`/`browser_agent_runs.thread_id`
+     (migration `0016_thread_ids_as_text`). The web chat's own serial ids cross
+     the port as strings and are parsed back only in its own port and tools;
+     `apps/tg` parses Telegram's at its boundary through one helper
+     (`telegramId`). `turnCorrelationId` now takes the chat's **ref**
+     (`tg:chat:-100:42:assistant`, and `tg:chat:-100:42` for work that belongs
+     to the message rather than one assistant's turn), every trace actor is a
+     scoped ref, and `toolContextTrigger` is the one place that shape is built
+     (`tool-trace.ts` calls it instead of repeating it). Analytics' `inScope`
+     compares refs whole; the reply-trace lookup uses a new
+     `getLatestTraceIdForMessage`, which also fixes a turn trace being
+     unfindable because the assistant is part of its id. `turbo.json`'s
+     `typecheck`/`test` now depend on `^typecheck` — without it turbo served a
+     cached `apps/tg` typecheck while `packages/contracts` had changed under
+     it, which is how a broken tg build passed `npm run typecheck` here.
+     Proof: `npm run lint`, `npm run typecheck` (8/8), `npm run test`
+     (contracts 20, service 3, tg 44, core 1159 passed / 26 skipped),
+     `npm run test:integration -w @assistant-hub-swarm/core` (41 files: 420
+     passed, 30 skipped), migration 0016 applied to the dev database. Docs:
+     the manual (contract major 2, the binding's field names), `contributing.md`,
+     `architecture/{observability,data-model}.md`, `docs/api/openapi.yaml`.
+     Not run live: a boot of core + tg after the change.
+2. **SDK package** (`done`, 2026-09-03).
+   - `packages/transport-sdk` at **1.0.0**: one curated public surface
+     (`src/index.ts`) over `contracts` + `bus` + `service` + `media`, built by
+     tsup to `dist/` as ESM + `.d.ts` with `noExternal: [/^@assistant-hub-swarm\//]`
+     — the four packages are `devDependencies` and are **bundled in**, so the
+     published manifest names no dependency an outsider cannot install. Hono,
+     its node adapter, the MCP SDK and zod are `peerDependencies` (the author
+     constructs those objects and hands them across; two `McpServer` classes
+     in one process is a bug worth designing out); bullmq, ioredis and sharp
+     are ordinary dependencies. `publishConfig` points at GitHub Packages.
+     The surface is deliberately narrower than the contracts package: the
+     core's dashboard DTOs, operator listings and content plane are not in it,
+     because a transport never speaks them and the SDK's semver would
+     otherwise promise shapes the dashboard changes freely.
+   - **The dead internal-API contracts are gone.** `internalMedia*` and
+     `internalFeedback*` in `packages/contracts/src/internal-api.ts` described
+     routes no transport has served since the Phase 7 de-storing, and nothing
+     in either app imported them — publishing them as "the wire" would have
+     been a document that lies. The surface is sends-only now.
+   - **The wire ships language-neutral**: `packages/transport-sdk/scripts/
+     generate-wire-contract.ts` (`npm run wire:generate -w
+     @assistant-hub-swarm/transport-sdk`) writes `docs/api/transport/
+     events.schema.json` (JSON Schema 2020-12 for every event, from
+     `z.toJSONSchema` with `unrepresentable: "throw"`) and `docs/api/transport/
+     openapi.yaml` (OpenAPI 3.1 for both HTTP directions). Only prose is
+     hand-written there; every body shape comes from the zod schemas.
+   - **Drift check**: `packages/transport-sdk/src/wire.test.ts` regenerates
+     both files and compares byte for byte, with the generator command in the
+     failure message. It runs in `npm run test`, which is the release
+     workflow's own gate — so the check is in CI without adding a second
+     workflow (there is no PR/push CI in this repo; asking for one is a
+     decision for the user, not a thing to add silently).
+   - **`publish-sdk` in `release.yml`**, gated like the images: the `version`
+     job now applies one `check()` to each shippable manifest and outputs
+     `sdk_changed`/`sdk_version`; `verify` runs when either changed; the new
+     job builds, publishes to GitHub Packages with the workflow's own
+     `GITHUB_TOKEN` (skipping a version already published, so a re-run is a
+     no-op) and tags `transport-sdk-v<version>`. The push trigger's `paths`
+     gained the SDK manifest. `turbo.json`'s `build` outputs gained `dist/**`
+     — an undeclared output caches as "nothing produced".
+   - **The manual is rewritten for an outsider**: it opens with "you do not
+     need this repository" and a table of the three things that are published,
+     Step 1 is an ordinary npm project with an `.npmrc` line (plus what to do
+     in another language), Step 9 is "ship an image" and ends at the one
+     compose service an operator adds, Step 10 leads with validating your
+     fixtures against the JSON Schema, and the `apps/tg` links are marked as
+     the worked example that will move. Every `packages/*` path is gone from
+     it. Also updated: `docs/api/README.md`, `docs/architecture/overview.md`,
+     `docs/development/testing.md` (the drift check and the turbo cache
+     gotcha), `docs/operations/deployment.md` (the second release artifact),
+     `docs/PLAN.md`, `README.md`, `AGENTS.md`, `.gitignore`.
+   - **The declaration build was the whole difficulty, and it is fixed.**
+     `noExternal` inlines the JS, but tsup's dts pass is a separate program
+     that ignored it and emitted `export { … } from
+     "@assistant-hub-swarm/contracts"` — a 3 KB `.d.ts` that resolves to
+     nothing on an installer's machine, so every type in the package would
+     have been `any` for the author who installed it. `dts: { resolve: [...] }`
+     did not help either: the private packages export raw `.ts`, which
+     rollup-plugin-dts cannot take as a declaration input. What fixes it is
+     `paths` in `packages/transport-sdk/tsconfig.json` mapping the four
+     packages to their sources, which puts them in the SDK's own compilation
+     — the declaration is 73 KB now and its only remaining imports are
+     `zod`, `hono`, `@modelcontextprotocol/sdk` and `bullmq`.
+   - **Proof.** `npm run lint`; `npm run typecheck` (9/9); `npm run test`
+     (contracts 20, service 3, tg 44, **transport-sdk 3**, core 1161 passed /
+     26 skipped); `npm run build -w @assistant-hub-swarm/transport-sdk`
+     (ESM 45 KB + d.ts 73 KB). The integration suite's 420-passed run is the
+     one recorded on the entry above, taken **before** this slice's contracts
+     pruning; Docker Desktop stopped before it could be repeated. What the
+     pruning removed had no importers anywhere (`grep` across both apps) and
+     is covered by typecheck and the unit suites, but the honest statement is
+     that the integration suite has not run against this exact tree. The drift
+     check was proved to actually fail: flipping `x-contract-major` in the
+     committed JSON failed `wire.test.ts` with the regenerate command in the
+     message, and passed again on restore. `npm pack` ships 5 files (README,
+     dist, manifest; 60 KB). **End to end**: the packed tarball was installed
+     into a scratch project outside the repository together with the four
+     peers — it typechecks (`skipLibCheck: true`, `@types/node`) and runs,
+     printing `contractMajor: 2`, `signal:chat:group.abc:42:assistant-1` from
+     `turnCorrelationId`, the reply target read back off a turn binding, and
+     a `delivery` result — with no `@assistant-hub-swarm/*` anywhere in its
+     `node_modules`. Not run: the release workflow itself (needs a version
+     bump on main), and a live boot of core + tg.
 3. **Compose on images**: `image:` lines pinned to the released version,
    `docker-compose.dev.yml` for source builds, `depends_on: tg` removed,
    README + `docs/operations/deployment.md` updated with the "add a

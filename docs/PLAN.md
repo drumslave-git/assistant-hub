@@ -112,9 +112,13 @@ durable of its own.
 
 ### The transport contract
 
-`packages/contracts` defines what any transport is. The design goal is
-hard: **a new transport connects to a running core with zero core
-changes.**
+`packages/contracts` defines what any transport is, and
+`packages/transport-sdk` publishes it: an author installs one package
+(built output, with the private packages bundled in) or reads the
+generated JSON Schema and OpenAPI under `docs/api/transport/` and speaks
+Redis and HTTP directly. The design goal is hard: **a new transport
+connects to a running core with zero core changes**, from its own
+repository, in any language.
 
 A transport:
 
@@ -149,7 +153,13 @@ all media kinds natively; typing is lifecycle rendering; platform actions
 are MCP tools.
 
 `apps/tg` is the first implementation; adding Signal later means writing
-another transport app and deploying its container.
+another transport on the SDK, publishing its image, and adding one
+service to the operator's compose file.
+
+The wire has one number both sides must agree on: `CONTRACT_MAJOR`,
+announced at registration. A core that speaks another major refuses the
+transport by name with a reason its dashboard shows — never a silent
+drop. The SDK's own semver is separate, and covers its API.
 
 ### Message flow
 

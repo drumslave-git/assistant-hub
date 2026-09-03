@@ -23,6 +23,9 @@ out/
 # production
 /build
 
+# built package output (the transport SDK ships this; it is never committed)
+/packages/*/dist
+
 # local data (bind-mounted Postgres data at the root; per-app runtime data)
 /data
 /downloads

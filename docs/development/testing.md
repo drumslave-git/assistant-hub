@@ -271,6 +271,22 @@ integration suite needs Docker and is not part of the release gate, so **run it
 locally** when you touch persistence, migrations, a job's idempotency, or either
 pipeline stage.
 
+`npm run test` also carries the **wire-contract drift check**
+(`packages/transport-sdk/src/wire.test.ts`): it regenerates
+`docs/api/transport/{events.schema.json,openapi.yaml}` from the zod schemas and
+fails when the committed copies differ. When it does, the fix is to run the
+generator and commit its output:
+
+```bash
+npm run wire:generate -w @assistant-hub-swarm/transport-sdk
+```
+
+`npm run typecheck` and `npm run test` declare `dependsOn: ["^typecheck"]` in
+`turbo.json`, so a change to a package invalidates the cached result of every
+workspace that compiles against it. Without that, turbo happily serves a stale
+pass — which is how a transport that no longer compiled against the contracts
+package once went green here.
+
 CI uses `npm install` rather than `npm ci` for the same lockfile reason as the
 Dockerfiles: the lockfile is generated on Windows and omits Linux-only optional native
 dependencies.

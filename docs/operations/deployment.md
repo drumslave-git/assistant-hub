@@ -205,8 +205,10 @@ the Redis queue across the restart.
 
 ## Releases
 
-`.github/workflows/release.yml` ships every app image whenever the `version`
-field in the root `package.json` changes on `main`.
+`.github/workflows/release.yml` ships two kinds of artifact, each on its own
+version field: the **app images** on the root `package.json` version, and the
+**transport SDK** on `packages/transport-sdk/package.json`'s. A version field
+that changed on `main` is a release; neither waits for the other.
 
 ```bash
 npm run release:patch
@@ -221,9 +223,10 @@ A release is all-or-nothing: nothing reaches the registry and no tag is created
 unless every image built. Images live in the org's GitHub Container Registry as
 `ghcr.io/assistant-hub-swarm/ahw-core` and `ghcr.io/assistant-hub-swarm/ahw-tg`. The workflow:
 
-1. **version** — wakes only when the root `package.json` is touched, then diffs the
-   `version` field against `HEAD~1`. Unchanged → nothing ships. A manual dispatch
-   skips the diff and releases the current version.
+1. **version** — wakes only when a version manifest is touched (the root
+   `package.json` or the SDK's), then diffs each `version` field against
+   `HEAD~1`. Unchanged → that artifact does not ship. A manual dispatch skips
+   the diff and releases the current versions.
 2. **verify** — `npm install`, `npm run lint`, `npm run typecheck`, `npm run test`
    (fanned out across the workspaces via turbo. Unit tests only; the integration
    suite needs Docker and is not part of the gate.)
@@ -237,10 +240,24 @@ unless every image built. Images live in the org's GitHub Container Registry as
    means a push failure mid-way can never leave `latest` pointing at a mixed set,
    and a tag exists only for a version whose every image is in the registry.
 
-No registry secrets: the publish job logs in to `ghcr.io` with its own
-`GITHUB_TOKEN` and needs `packages: write` for the push plus `contents: write`
-for the tag. A package's first push makes it private to the org; flip it to
-public in the package's settings once so operators can pull without a token.
+And, when the SDK's version changed:
+
+5. **publish-sdk** — builds `packages/transport-sdk` (ESM + `.d.ts`, with the
+   private workspace packages bundled in, so nothing published resolves to a
+   package that exists only in this repo), publishes it to the org's npm
+   registry on GitHub Packages, and tags `transport-sdk-v<version>`. Skips the
+   publish when that version is already there, so a re-run is a no-op.
+
+The SDK carries its own semver because a transport author pins the package,
+not a core release, and the two move at different speeds. The number the two
+sides must actually agree on is neither version: it is `CONTRACT_MAJOR` in the
+code, announced at registration and refused by name on a mismatch.
+
+No registry secrets: the publish jobs authenticate with the workflow's own
+`GITHUB_TOKEN` (`packages: write` for the push, `contents: write` for the tag).
+A package's first push makes it private to the org — flip both the container
+images and the npm package to public in their settings once, so operators and
+transport authors can pull without a token.
 
 Note that `verify` uses `npm install` rather than `npm ci` for the same lockfile
 reason as the Dockerfiles.

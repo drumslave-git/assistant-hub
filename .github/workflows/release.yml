@@ -1,21 +1,33 @@
 name: Release
 
-# Ships new images whenever the "version" field in the ROOT package.json changes
-# on main. Bump the version locally (e.g. `npm run release:patch`) and push to
-# main; this workflow verifies, tags the release, and pushes EVERY per-app image
-# (one per entry in the release job's matrix) to the org's GitHub Container
-# Registry (ghcr.io/<owner>/<image>) on that one version. Auth is the job's own
-# GITHUB_TOKEN — no registry secrets to keep.
+# Ships two kinds of artifact, each on its own version field, each gated the
+# same way: a "version" that changed on main is a release.
+#
+#  - The APPS' images, on the ROOT package.json version. Bump it locally
+#    (e.g. `npm run release:patch`) and push to main; this workflow verifies,
+#    pushes EVERY per-app image (one per entry in the build job's matrix) to the
+#    org's GitHub Container Registry (ghcr.io/<owner>/<image>) on that one
+#    version, and tags the commit `v<version>`.
+#  - The TRANSPORT SDK, on packages/transport-sdk/package.json's version —
+#    published to the org's npm registry on GitHub Packages and tagged
+#    `transport-sdk-v<version>`. It carries its own semver because a transport
+#    author pins the SDK, not a core release, and the two move at different
+#    speeds (the wire major they must agree on is `CONTRACT_MAJOR`, which lives
+#    in the code, not in either version field).
+#
+# Auth for both is the job's own GITHUB_TOKEN — no registry secrets to keep.
 # No version change -> nothing runs. Manual dispatch (Actions -> Release ->
-# Run workflow) forces a release of the CURRENT version - for re-runs and for
-# proving the pipeline on a fresh repo; tagging and image pushes are idempotent.
+# Run workflow) forces a release of the CURRENT versions - for re-runs and for
+# proving the pipeline on a fresh repo; tagging, image pushes and the npm
+# publish are all idempotent.
 on:
   push:
     branches: [main]
-    # Only wake the workflow when package.json is touched; the version job then
-    # confirms the "version" field actually changed before anything ships.
+    # Only wake the workflow when a version file is touched; the version job
+    # then confirms a "version" field actually changed before anything ships.
     paths:
       - "package.json"
+      - "packages/transport-sdk/package.json"
   workflow_dispatch:
 
 concurrency:
@@ -24,46 +36,59 @@ concurrency:
 
 jobs:
   version:
-    name: Detect version change
+    name: Detect version changes
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.check.outputs.changed }}
       version: ${{ steps.check.outputs.version }}
+      sdk_changed: ${{ steps.check.outputs.sdk_changed }}
+      sdk_version: ${{ steps.check.outputs.sdk_version }}
     steps:
       - uses: actions/checkout@v5
         with:
-          # Need the previous commit to diff the version field.
+          # Need the previous commit to diff the version fields.
           fetch-depth: 2
 
       - id: check
-        name: Compare package.json version against previous commit
+        name: Compare each version field against the previous commit
         run: |
-          current=$(node -p "require('./package.json').version")
-          echo "version=$current" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual dispatch -> releasing current version $current."
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if git cat-file -e HEAD~1:package.json 2>/dev/null; then
-            previous=$(git show HEAD~1:package.json \
-              | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
-          else
-            previous=""
-          fi
-          echo "previous='$previous' current='$current'"
-          if [ "$current" != "$previous" ]; then
-            echo "Version changed -> release will run."
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Version unchanged -> nothing to release."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          set -eu
+          # One rule, applied to each manifest that carries a shippable
+          # version: changed on this push (or a manual dispatch) means release.
+          check() {
+            name="$1" manifest="$2" out="$3"
+            current=$(node -p "require('./$manifest').version")
+            echo "${out}version=$current" >> "$GITHUB_OUTPUT"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "$name: manual dispatch -> releasing current version $current."
+              echo "${out}changed=true" >> "$GITHUB_OUTPUT"
+              return 0
+            fi
+            if git cat-file -e "HEAD~1:$manifest" 2>/dev/null; then
+              previous=$(git show "HEAD~1:$manifest" \
+                | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+            else
+              previous=""
+            fi
+            echo "$name: previous='$previous' current='$current'"
+            if [ "$current" != "$previous" ]; then
+              echo "$name: version changed -> release will run."
+              echo "${out}changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$name: version unchanged -> nothing to release."
+              echo "${out}changed=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          check "apps" "package.json" ""
+          check "transport-sdk" "packages/transport-sdk/package.json" "sdk_"
 
   verify:
     name: Lint, typecheck, test
     needs: version
-    if: needs.version.outputs.changed == 'true'
+    # Whatever is being released, it is verified first — and the whole
+    # monorepo is, because the SDK is assembled from the same packages the
+    # apps run on.
+    if: needs.version.outputs.changed == 'true' || needs.version.outputs.sdk_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -191,6 +216,72 @@ jobs:
       - name: Create and push release tag
         run: |
           tag="v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists on origin, skipping tag creation."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "Release $tag"
+            git push origin "$tag"
+          fi
+
+  # The transport SDK, on its own version and its own tag. Independent of the
+  # images: a transport author installs a package, and pinning it to whatever
+  # the core's apps were at would make every app release look like an SDK
+  # change. Gated exactly like them — its version field changed on main.
+  publish-sdk:
+    name: Publish the transport SDK
+    needs: [version, verify]
+    if: needs.version.outputs.sdk_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      # Required so the workflow can push the SDK's release tag back to the repo.
+      contents: write
+      # Required to publish to the org's npm registry on GitHub Packages.
+      packages: write
+    env:
+      VERSION: ${{ needs.version.outputs.sdk_version }}
+      PACKAGE: "@assistant-hub-swarm/transport-sdk"
+      WORKSPACE: packages/transport-sdk
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          # Writes the auth line for GitHub Packages into ~/.npmrc; the
+          # package's own publishConfig already points at that registry.
+          registry-url: https://npm.pkg.github.com
+          scope: "@assistant-hub-swarm"
+
+      # See the note in `verify` on npm install vs npm ci.
+      - run: npm install --no-audit --no-fund
+
+      # Built output (ESM + d.ts), with the four private workspace packages
+      # bundled in — see the SDK's tsup config for why nothing published may
+      # resolve to a package that exists only in this repo.
+      - name: Build
+        run: npm run build --workspace $PACKAGE
+
+      # Idempotent, so a re-run or a manual dispatch of an already-published
+      # version is a no-op rather than a red workflow.
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if npm view "$PACKAGE@$VERSION" version --registry https://npm.pkg.github.com >/dev/null 2>&1; then
+            echo "$PACKAGE@$VERSION is already published, skipping."
+            exit 0
+          fi
+          npm publish --workspace $PACKAGE
+
+      # Last, like the images' tag: it exists only for a version that is in
+      # the registry.
+      - name: Create and push the SDK's release tag
+        run: |
+          tag="transport-sdk-v${VERSION}"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
             echo "Tag $tag already exists on origin, skipping tag creation."
           else

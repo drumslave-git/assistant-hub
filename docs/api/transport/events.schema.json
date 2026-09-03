@@ -1,0 +1,4045 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/assistant-hub-swarm/ahw-core/blob/main/docs/api/transport/events.schema.json",
+  "title": "assistant-hub transport wire contract",
+  "description": "Every shape that crosses the boundary between an assistant-hub core and a transport, in both directions. GENERATED from the zod schemas of @assistant-hub-swarm/transport-sdk — do not edit by hand; run `npm run wire:generate -w @assistant-hub-swarm/transport-sdk`. The manual is at https://github.com/assistant-hub-swarm/ahw-core/blob/main/docs/development/adding-a-transport.md.",
+  "x-contract-major": 2,
+  "x-redis": {
+    "updatesQueue": "transport-updates",
+    "eventsChannel": "assistant-hub:events"
+  },
+  "$defs": {
+    "AssistantDeletedEvent": {
+      "title": "AssistantDeletedEvent",
+      "description": "An assistant is gone; stop anything running for it.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "assistant.deleted"
+        },
+        "assistantId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "assistantId"
+      ],
+      "additionalProperties": false
+    },
+    "ChatInfo": {
+      "title": "ChatInfo",
+      "description": "A conversation as the pipeline reads it, named by scoped ref.",
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "direct",
+            "group"
+          ]
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "titleProvisional": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ref",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "ConnectionIdentity": {
+      "title": "ConnectionIdentity",
+      "description": "Who a transport's connection is on its platform, as it reports back on every event.",
+      "type": "object",
+      "properties": {
+        "botUsername": {
+          "type": "string",
+          "minLength": 1
+        },
+        "botDisplayName": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "botUsername",
+        "botDisplayName"
+      ],
+      "additionalProperties": false
+    },
+    "ConversationContext": {
+      "title": "ConversationContext",
+      "description": "The history window and participants the core composed for a turn.",
+      "type": "object",
+      "properties": {
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceMessageId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "assistant"
+                ]
+              },
+              "assistantId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "senderRef": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "senderLabel": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "content": {
+                "type": "string"
+              },
+              "sentAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "replyToSourceMessageId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "botReaction": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "mediaNote": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "sourceMessageId",
+              "role",
+              "senderRef",
+              "senderLabel",
+              "content",
+              "sentAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "username": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "aliases": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "ref",
+              "label",
+              "aliases"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "history",
+        "participants"
+      ],
+      "additionalProperties": false
+    },
+    "DashboardRefreshEvent": {
+      "title": "DashboardRefreshEvent",
+      "description": "A transport telling the core's dashboard that a page's data changed, so no operator has to reload.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "dashboard.refresh"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "topics": {
+          "minItems": 1,
+          "maxItems": 16,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "topics"
+      ],
+      "additionalProperties": false
+    },
+    "InboundMessageEvent": {
+      "title": "InboundMessageEvent",
+      "description": "For reference: what the core's ingest turns one message into — one turn per assistant that can see the chat, with the conversation context composed.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "message.inbound"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "assistantId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "connection": {
+          "type": "object",
+          "properties": {
+            "botUsername": {
+              "type": "string",
+              "minLength": 1
+            },
+            "botDisplayName": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "botUsername",
+            "botDisplayName"
+          ],
+          "additionalProperties": false
+        },
+        "chat": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "direct",
+                "group"
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "language": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "titleProvisional": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ref",
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        "sender": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "isOwner": {
+              "type": "boolean"
+            },
+            "label": {
+              "type": "string",
+              "minLength": 1
+            },
+            "username": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "firstName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "aliases": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "language": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "ref",
+            "isOwner",
+            "label",
+            "aliases"
+          ],
+          "additionalProperties": false
+        },
+        "authoredByAssistantId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "addressing": {
+          "type": "object",
+          "properties": {
+            "addressed": {
+              "type": "boolean"
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "private",
+                    "mention",
+                    "reply",
+                    "command",
+                    "name"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "needsAnalyzer": {
+              "default": false,
+              "type": "boolean"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "addressed",
+            "needsAnalyzer"
+          ],
+          "additionalProperties": false
+        },
+        "message": {
+          "type": "object",
+          "properties": {
+            "sourceMessageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content": {
+              "type": "string"
+            },
+            "sentAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "threadId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "replyTo": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "sourceMessageId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stored": {
+                      "default": false,
+                      "type": "boolean"
+                    },
+                    "hasMedia": {
+                      "default": false,
+                      "type": "boolean"
+                    },
+                    "senderLabel": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "fromAssistant": {
+                      "default": false,
+                      "type": "boolean"
+                    },
+                    "text": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "quote": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sourceMessageId",
+                    "stored",
+                    "hasMedia",
+                    "senderLabel",
+                    "fromAssistant",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "media": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "described",
+                      "unavailable"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind",
+                  "description",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "sourceMessageId",
+            "content",
+            "sentAt",
+            "media"
+          ],
+          "additionalProperties": false
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "history": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sourceMessageId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "assistant"
+                    ]
+                  },
+                  "assistantId": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "senderRef": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "senderLabel": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "sentAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "replyToSourceMessageId": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "botReaction": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "mediaNote": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "sourceMessageId",
+                  "role",
+                  "senderRef",
+                  "senderLabel",
+                  "content",
+                  "sentAt"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "participants": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "ref": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "username": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "aliases": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "ref",
+                  "label",
+                  "aliases"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "history",
+            "participants"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "assistantId",
+        "chat",
+        "sender",
+        "addressing",
+        "message",
+        "context"
+      ],
+      "additionalProperties": false
+    },
+    "InternalDeleteMessageResponse": {
+      "title": "InternalDeleteMessageResponse",
+      "description": "`deleted: false` means the platform refused — cosmetic for every caller.",
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "additionalProperties": false
+    },
+    "InternalEditMenuRequest": {
+      "title": "InternalEditMenuRequest",
+      "description": "PATCH /internal/chats/{chatId}/menu/{messageId} — `keyboard: null` removes the buttons.",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "keyboard": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "callbackData": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "callbackData"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "text",
+        "keyboard"
+      ]
+    },
+    "InternalSendFileRequest": {
+      "title": "InternalSendFileRequest",
+      "description": "POST /internal/chats/{chatId}/files",
+      "type": "object",
+      "properties": {
+        "dataBase64": {
+          "type": "string",
+          "minLength": 1
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mime": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "caption": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "dataBase64",
+        "filename"
+      ]
+    },
+    "InternalSendMenuRequest": {
+      "title": "InternalSendMenuRequest",
+      "description": "POST /internal/chats/{chatId}/menu — a plain button grid the transport renders however its platform allows.",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "keyboard": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "callbackData": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "text",
+                "callbackData"
+              ]
+            }
+          }
+        },
+        "replyToSourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "text",
+        "keyboard",
+        "replyToSourceMessageId"
+      ]
+    },
+    "InternalSendMessageRequest": {
+      "title": "InternalSendMessageRequest",
+      "description": "POST /internal/chats/{chatId}/messages",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replyToSourceMessageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "silent": {
+          "default": false,
+          "type": "boolean"
+        },
+        "linkableSourceMessageIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "InternalSendPhotosRequest": {
+      "title": "InternalSendPhotosRequest",
+      "description": "POST /internal/chats/{chatId}/photos",
+      "type": "object",
+      "properties": {
+        "images": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "images"
+      ]
+    },
+    "InternalSendVoiceRequest": {
+      "title": "InternalSendVoiceRequest",
+      "description": "POST /internal/chats/{chatId}/voice",
+      "type": "object",
+      "properties": {
+        "audioBase64": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replyToSourceMessageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "audioBase64",
+        "text"
+      ]
+    },
+    "InternalSentFileResponse": {
+      "title": "InternalSentFileResponse",
+      "description": "The delivered file message's own id.",
+      "type": "object",
+      "properties": {
+        "sourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sourceMessageId"
+      ],
+      "additionalProperties": false
+    },
+    "InternalSentMenuResponse": {
+      "title": "InternalSentMenuResponse",
+      "description": "The posted menu's message id.",
+      "type": "object",
+      "properties": {
+        "sourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sourceMessageId"
+      ],
+      "additionalProperties": false
+    },
+    "InternalSentMessageResponse": {
+      "title": "InternalSentMessageResponse",
+      "description": "The delivered message's own id, verbatim.",
+      "type": "object",
+      "properties": {
+        "sourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sourceMessageId"
+      ],
+      "additionalProperties": false
+    },
+    "InternalSentPhotosResponse": {
+      "title": "InternalSentPhotosResponse",
+      "description": "`stored: false` when the photo was sent but its media row could not be kept.",
+      "type": "object",
+      "properties": {
+        "delivered": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceMessageId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "stored": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "sourceMessageId",
+              "stored"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "delivered"
+      ],
+      "additionalProperties": false
+    },
+    "InternalSentVoiceResponse": {
+      "title": "InternalSentVoiceResponse",
+      "description": "`asVoice: false` when the platform refused the voice bubble and the text was sent instead.",
+      "type": "object",
+      "properties": {
+        "sourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "asVoice": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sourceMessageId",
+        "asVoice"
+      ],
+      "additionalProperties": false
+    },
+    "InternalSetTitleRequest": {
+      "title": "InternalSetTitleRequest",
+      "description": "PUT /internal/chats/{chatId}/title — only for platforms whose conversations arrive unnamed.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      },
+      "required": [
+        "title"
+      ]
+    },
+    "InternalSetTitleResponse": {
+      "title": "InternalSetTitleResponse",
+      "description": "The title the conversation now carries.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "MessageDeliveredEvent": {
+      "title": "MessageDeliveredEvent",
+      "description": "The transport performed a send. Reported for EVERY send, whoever asked for it — this is how the core learns what is in the chat.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "message.delivered"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "chat": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "direct",
+                "group"
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        "assistantId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dedupeKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "type": "string"
+        },
+        "replyToSourceMessageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sentAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "silent": {
+          "default": false,
+          "type": "boolean"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "fileId": {
+                  "type": "string"
+                },
+                "fileUniqueId": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "base64": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "fileId",
+                "fileUniqueId",
+                "base64"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "running": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "assistantId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "botId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "identity": {
+                "type": "object",
+                "properties": {
+                  "botUsername": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "botDisplayName": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "botUsername",
+                  "botDisplayName"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "assistantId",
+              "botId",
+              "identity"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "chat",
+        "assistantId",
+        "sourceMessageId",
+        "dedupeKey",
+        "content",
+        "sentAt",
+        "silent",
+        "running"
+      ],
+      "additionalProperties": false
+    },
+    "ReplyDeliveryEvent": {
+      "title": "ReplyDeliveryEvent",
+      "description": "Published on `assistant-hub:events`: one finished answer to deliver. The whole answer — the transport cuts it to its own limits.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "reply.delivery"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "assistantId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chatRef": {
+          "type": "string"
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replyToSourceMessageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "silent": {
+          "default": false,
+          "type": "boolean"
+        },
+        "linkableSourceMessageIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "assistantId",
+        "chatRef",
+        "text",
+        "silent"
+      ],
+      "additionalProperties": false
+    },
+    "ScopedRef": {
+      "title": "ScopedRef",
+      "description": "`source:kind:id` — how one app points at another's entity (`tg:user:12345`). The id is the owning app's own key, verbatim.",
+      "type": "string"
+    },
+    "SourceId": {
+      "title": "SourceId",
+      "description": "A transport's own id: a short lowercase slug it picks and announces. Becomes the prefix of every scoped ref and the namespace of its MCP tools.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "ToolDelivery": {
+      "title": "ToolDelivery",
+      "description": "What a delivery tool reports in `structuredContent` under `delivery`. The core learns a send happened from this shape, never from a tool's name.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "sourceMessageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "text"
+      ]
+    },
+    "TransportBotReactionEvent": {
+      "title": "TransportBotReactionEvent",
+      "description": "The assistant's own reaction badge, as the platform now shows it.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "transport.bot-reaction"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "chat": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "direct",
+                "group"
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        "assistantId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "emoji": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "chat",
+        "assistantId",
+        "sourceMessageId",
+        "emoji"
+      ],
+      "additionalProperties": false
+    },
+    "TransportCallbackRequest": {
+      "title": "TransportCallbackRequest",
+      "description": "POST /api/internal/transports/callback — a feedback-menu button was pressed.",
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "assistantId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chat": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "direct",
+                "group"
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ]
+        },
+        "user": {
+          "type": "object",
+          "properties": {
+            "userId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "username": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "firstName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "userId",
+            "username",
+            "firstName",
+            "lastName"
+          ]
+        },
+        "menuSourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "source",
+        "assistantId",
+        "chat",
+        "user",
+        "menuSourceMessageId",
+        "data"
+      ]
+    },
+    "TransportCallbackResponse": {
+      "title": "TransportCallbackResponse",
+      "description": "The toast to answer the platform's callback query with, or null.",
+      "type": "object",
+      "properties": {
+        "toast": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "toast"
+      ],
+      "additionalProperties": false
+    },
+    "TransportConfigChangedEvent": {
+      "title": "TransportConfigChangedEvent",
+      "description": "The operator changed something: refetch the desired state and reconcile.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "transport.config.changed"
+        },
+        "transport": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "transport"
+      ],
+      "additionalProperties": false
+    },
+    "TransportDesiredState": {
+      "title": "TransportDesiredState",
+      "description": "What the core wants running: one entry per assistant connection, with the operator's config blobs. The answer to registration and to every refetch.",
+      "type": "object",
+      "properties": {
+        "transport": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "config": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "required": [
+            "enabled",
+            "config"
+          ],
+          "additionalProperties": false
+        },
+        "connections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "assistantId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "config": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "assistantId",
+              "config",
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "transport",
+        "connections"
+      ],
+      "additionalProperties": false
+    },
+    "TransportEditEvent": {
+      "title": "TransportEditEvent",
+      "description": "A message's text changed on the platform.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "transport.edited"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "chat": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "direct",
+                "group"
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        "assistantId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1
+        },
+        "editedAt": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "chat",
+        "assistantId",
+        "sourceMessageId",
+        "content",
+        "editedAt"
+      ],
+      "additionalProperties": false
+    },
+    "TransportMessageEvent": {
+      "title": "TransportMessageEvent",
+      "description": "A new inbound message — every one the transport sees, addressed or not, with media bytes attached.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "transport.message"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "receivedBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chat": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "direct",
+                "group"
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        "sender": {
+          "type": "object",
+          "properties": {
+            "userId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "username": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "firstName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "userId",
+            "username",
+            "firstName",
+            "lastName"
+          ],
+          "additionalProperties": false
+        },
+        "message": {
+          "type": "object",
+          "properties": {
+            "sourceMessageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content": {
+              "type": "string"
+            },
+            "sentAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "threadId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "replyTo": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "sourceMessageId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "hasMedia": {
+                      "default": false,
+                      "type": "boolean"
+                    },
+                    "text": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "quote": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "author": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "userId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "username": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "firstName": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "lastName": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "userId",
+                            "username",
+                            "firstName",
+                            "lastName"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "authorAssistantId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sourceMessageId",
+                    "hasMedia",
+                    "text",
+                    "author",
+                    "authorAssistantId"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "sourceMessageId",
+            "content",
+            "sentAt"
+          ],
+          "additionalProperties": false
+        },
+        "media": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "fileId": {
+                  "type": "string"
+                },
+                "fileUniqueId": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "mimeType": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "visionHint": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "frames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "unavailable": {
+                  "default": false,
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "kind",
+                "fileId",
+                "fileUniqueId",
+                "mimeType",
+                "visionHint",
+                "frames",
+                "unavailable"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receivers": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "assistantId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "identity": {
+                "type": "object",
+                "properties": {
+                  "botUsername": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "botDisplayName": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "botUsername",
+                  "botDisplayName"
+                ],
+                "additionalProperties": false
+              },
+              "addressing": {
+                "type": "object",
+                "properties": {
+                  "addressed": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "private",
+                          "mention",
+                          "reply",
+                          "command",
+                          "name"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "needsAnalyzer": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "addressed",
+                  "needsAnalyzer"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "assistantId",
+              "identity",
+              "addressing"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "dedupeKey": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "receivedBy",
+        "chat",
+        "sender",
+        "message",
+        "receivers",
+        "dedupeKey"
+      ],
+      "additionalProperties": false
+    },
+    "TransportMessageLookupResponse": {
+      "title": "TransportMessageLookupResponse",
+      "description": "GET /api/internal/transports/messages — does the target message exist in the core's mirror, and is it the assistant's own?",
+      "type": "object",
+      "properties": {
+        "found": {
+          "type": "boolean"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "user",
+                "assistant"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assistantId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "found",
+        "role",
+        "assistantId"
+      ],
+      "additionalProperties": false
+    },
+    "TransportPresenceEvent": {
+      "title": "TransportPresenceEvent",
+      "description": "Which of the transport's connections can see a chat — the core resolves a message's audience from this, never from the transport.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "transport.presence"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "chatId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assistantId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "chatId",
+        "assistantId"
+      ],
+      "additionalProperties": false
+    },
+    "TransportReactionEvent": {
+      "title": "TransportReactionEvent",
+      "description": "A person reacted to one of the assistant's messages — what opens the feedback flow.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "transport.reaction"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "chat": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "direct",
+                "group"
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        "assistantId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reaction": {
+          "type": "string",
+          "enum": [
+            "up",
+            "down"
+          ]
+        },
+        "user": {
+          "type": "object",
+          "properties": {
+            "userId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "username": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "firstName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "userId",
+            "username",
+            "firstName",
+            "lastName"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "chat",
+        "assistantId",
+        "sourceMessageId",
+        "reaction",
+        "user"
+      ],
+      "additionalProperties": false
+    },
+    "TransportRegistrationRequest": {
+      "title": "TransportRegistrationRequest",
+      "description": "POST /api/internal/transports/register — what a transport announces at boot, including the contract major it was built against.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "contractMajor": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mcpPath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "connectionConfigSchema": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "secret",
+                  "boolean"
+                ]
+              },
+              "help": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "kind"
+            ]
+          }
+        },
+        "transportConfigSchema": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "secret",
+                  "boolean"
+                ]
+              },
+              "help": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "kind"
+            ]
+          }
+        }
+      },
+      "required": [
+        "id",
+        "contractMajor",
+        "name",
+        "baseUrl",
+        "mcpPath",
+        "connectionConfigSchema",
+        "transportConfigSchema"
+      ]
+    },
+    "TransportUpdateEvent": {
+      "title": "TransportUpdateEvent",
+      "description": "The queue's payload union: one job per update on `transport-updates`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "transport.message"
+            },
+            "source": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,31}$"
+            },
+            "receivedBy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "chat": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "direct",
+                    "group"
+                  ]
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            "sender": {
+              "type": "object",
+              "properties": {
+                "userId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "username": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "firstName": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lastName": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "userId",
+                "username",
+                "firstName",
+                "lastName"
+              ],
+              "additionalProperties": false
+            },
+            "message": {
+              "type": "object",
+              "properties": {
+                "sourceMessageId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "content": {
+                  "type": "string"
+                },
+                "sentAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "threadId": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "replyTo": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "sourceMessageId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "hasMedia": {
+                          "default": false,
+                          "type": "boolean"
+                        },
+                        "text": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "quote": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "author": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "userId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "username": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "firstName": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "lastName": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "userId",
+                                "username",
+                                "firstName",
+                                "lastName"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "authorAssistantId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "sourceMessageId",
+                        "hasMedia",
+                        "text",
+                        "author",
+                        "authorAssistantId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "sourceMessageId",
+                "content",
+                "sentAt"
+              ],
+              "additionalProperties": false
+            },
+            "media": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "fileId": {
+                      "type": "string"
+                    },
+                    "fileUniqueId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "mimeType": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "visionHint": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "frames": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "unavailable": {
+                      "default": false,
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "fileId",
+                    "fileUniqueId",
+                    "mimeType",
+                    "visionHint",
+                    "frames",
+                    "unavailable"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "receivers": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "assistantId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "identity": {
+                    "type": "object",
+                    "properties": {
+                      "botUsername": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "botDisplayName": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "botUsername",
+                      "botDisplayName"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "addressing": {
+                    "type": "object",
+                    "properties": {
+                      "addressed": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "private",
+                              "mention",
+                              "reply",
+                              "command",
+                              "name"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "needsAnalyzer": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "addressed",
+                      "needsAnalyzer"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "assistantId",
+                  "identity",
+                  "addressing"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "dedupeKey": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "v",
+            "eventId",
+            "occurredAt",
+            "correlationId",
+            "type",
+            "source",
+            "receivedBy",
+            "chat",
+            "sender",
+            "message",
+            "receivers",
+            "dedupeKey"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "transport.edited"
+            },
+            "source": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,31}$"
+            },
+            "chat": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "direct",
+                    "group"
+                  ]
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            "assistantId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceMessageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content": {
+              "type": "string",
+              "minLength": 1
+            },
+            "editedAt": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "v",
+            "eventId",
+            "occurredAt",
+            "correlationId",
+            "type",
+            "source",
+            "chat",
+            "assistantId",
+            "sourceMessageId",
+            "content",
+            "editedAt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "transport.reaction"
+            },
+            "source": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,31}$"
+            },
+            "chat": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "direct",
+                    "group"
+                  ]
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            "assistantId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceMessageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reaction": {
+              "type": "string",
+              "enum": [
+                "up",
+                "down"
+              ]
+            },
+            "user": {
+              "type": "object",
+              "properties": {
+                "userId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "username": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "firstName": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lastName": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "userId",
+                "username",
+                "firstName",
+                "lastName"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "v",
+            "eventId",
+            "occurredAt",
+            "correlationId",
+            "type",
+            "source",
+            "chat",
+            "assistantId",
+            "sourceMessageId",
+            "reaction",
+            "user"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "transport.bot-reaction"
+            },
+            "source": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,31}$"
+            },
+            "chat": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "direct",
+                    "group"
+                  ]
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            "assistantId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sourceMessageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "emoji": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "v",
+            "eventId",
+            "occurredAt",
+            "correlationId",
+            "type",
+            "source",
+            "chat",
+            "assistantId",
+            "sourceMessageId",
+            "emoji"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "message.delivered"
+            },
+            "source": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,31}$"
+            },
+            "chat": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "direct",
+                    "group"
+                  ]
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            "assistantId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sourceMessageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dedupeKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content": {
+              "type": "string"
+            },
+            "replyToSourceMessageId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sentAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "threadId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "silent": {
+              "default": false,
+              "type": "boolean"
+            },
+            "image": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "fileId": {
+                      "type": "string"
+                    },
+                    "fileUniqueId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "base64": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "fileId",
+                    "fileUniqueId",
+                    "base64"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "running": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "assistantId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "botId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "identity": {
+                    "type": "object",
+                    "properties": {
+                      "botUsername": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "botDisplayName": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "botUsername",
+                      "botDisplayName"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "assistantId",
+                  "botId",
+                  "identity"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "v",
+            "eventId",
+            "occurredAt",
+            "correlationId",
+            "type",
+            "source",
+            "chat",
+            "assistantId",
+            "sourceMessageId",
+            "dedupeKey",
+            "content",
+            "sentAt",
+            "silent",
+            "running"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "transport.presence"
+            },
+            "source": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,31}$"
+            },
+            "chatId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assistantId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "v",
+            "eventId",
+            "occurredAt",
+            "correlationId",
+            "type",
+            "source",
+            "chatId",
+            "assistantId"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "TurnLifecycleEvent": {
+      "title": "TurnLifecycleEvent",
+      "description": "A turn was accepted, is progressing, or settled — render it as the platform's own activity indicator.",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "turn.lifecycle"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "assistantId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chatRef": {
+          "type": "string"
+        },
+        "sourceMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "progress",
+            "settled"
+          ]
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "v",
+        "eventId",
+        "occurredAt",
+        "correlationId",
+        "type",
+        "source",
+        "chatRef",
+        "sourceMessageId",
+        "phase"
+      ],
+      "additionalProperties": false
+    },
+    "TurnToolMeta": {
+      "title": "TurnToolMeta",
+      "description": "The turn binding the core attaches to every tool call as request `_meta` under `assistant-hub/turn`. Refuse a call that carries none, or one naming another source.",
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "chatId": {
+          "type": "string"
+        },
+        "assistantId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replyToSourceMessageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "correlationId": {
+          "type": "string"
+        },
+        "userId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "senderIsOwner": {
+          "type": "boolean"
+        },
+        "deliveryKind": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "reply",
+                "send"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "chatId"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

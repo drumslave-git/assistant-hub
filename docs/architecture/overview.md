@@ -41,10 +41,17 @@ Paths in this document are relative to `apps/core/` unless they start with
 | `packages/media` | Image normalization to a bounded JPEG (shared by core and transports) | — |
 | `packages/db` | Pool helpers, the production migration runner, Testcontainers helpers | — |
 | `packages/ui` | Shared presentational components and the live-event hook | — |
+| `packages/transport-sdk` | The **published** package a transport is built on: the four packages above it needs, bundled into built output (ESM + `.d.ts`) so a transport in another repository resolves nothing private. Also generates the language-neutral wire contract under [`docs/api/transport/`](../api/transport/) | — |
 
 Apps never import each other's code — only packages. Cross-app pointers are
 scoped refs (`tg:user:123`, `chat:thread:<id>`), never foreign keys into another
 app's data.
+
+The four packages a transport needs are private and unpublished; what a
+transport author installs is `packages/transport-sdk`, which re-exports the
+wire half of them and is bundled at build time. That is why nothing in this
+table is published on its own: a transport pins one package and one wire
+major, not six versions of this repository's internals.
 
 ## Layers inside the core
 

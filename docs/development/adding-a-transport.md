@@ -1,13 +1,21 @@
 # Adding a transport
 
 How to connect a new messaging platform (Signal, Matrix, Discord, Slack, …) to
-a running assistant-hub core, using the Telegram transport in `apps/tg` as the
-worked example. Everything a transport must do is a contract in
-`packages/contracts`; this document walks the contract in the order a new
-transport meets it, and names the `apps/tg` file that implements each duty so
-you can read a working version of every step.
+a running assistant-hub core.
 
-Read [Architecture overview](../architecture/overview.md) first for where a
+**You do not need this repository.** A transport is developed in its own
+repository, in any language, and ships as its own Docker image; the core's
+operator adds one service to their compose file and you appear on their
+dashboard. Everything a transport must do is published:
+
+| What you need | Where it is |
+| --- | --- |
+| The contract, as code | [`@assistant-hub-swarm/transport-sdk`](../../packages/transport-sdk/README.md) on GitHub Packages — zod schemas, the Redis helpers, the token guard, an MCP server over Hono, the trace client, image normalization |
+| The contract, language-neutral | [`docs/api/transport/events.schema.json`](../api/transport/events.schema.json) (JSON Schema for every event) and [`docs/api/transport/openapi.yaml`](../api/transport/openapi.yaml) (the HTTP in both directions) — generated from the same schemas and checked against them in CI |
+| A working version of every step | The Telegram transport, referenced per step below. It still lives in this repository as `apps/tg` and moves to `assistant-hub-swarm/ahw-transport-telegram`; the duties, not the paths, are the thing to read |
+
+This document walks the contract in the order a new transport meets it. Read
+[Architecture overview](../architecture/overview.md) first for where a
 transport sits, and [The message pipeline](../architecture/telegram-pipeline.md)
 for what the core does with what you send it.
 
@@ -67,32 +75,47 @@ Two things are checked when you register:
 | Check | Rule | On failure |
 | --- | --- | --- |
 | **Source id** | `^[a-z][a-z0-9-]{0,31}$` — short, lowercase, stable. It becomes the prefix of every scoped ref (`signal:user:123`), the slug of your MCP tools (`signal__send_message`), the `source` on every event and the `transports.id` row. It cannot change later without rewriting stored refs | 400 `a transport registration is required` |
-| **Contract major** | `contractMajor` must equal the core's `CONTRACT_MAJOR` (exported by the contracts package; `1` today). It is bumped when an event, an internal route or the registration shape changes incompatibly | 409 naming both majors. The row is still upserted so the assistant editor shows the refusal next to your name; you get no desired state and your events are dropped until either side updates |
+| **Contract major** | `contractMajor` must equal the core's `CONTRACT_MAJOR` (exported by the SDK; `2` today). It is bumped when an event, an internal route or the registration shape changes incompatibly | 409 naming both majors. The row is still upserted so the assistant editor shows the refusal next to your name; you get no desired state and your events are dropped until either side updates |
+
+The two versions are different numbers and mean different things: the SDK's
+own semver covers its TypeScript API, and `CONTRACT_MAJOR` covers the wire.
+When a core refuses your major, bump the SDK and rebuild.
 
 Every dashboard surface is source-generic — see
 [What the dashboard shows for your transport](#what-the-dashboard-shows-for-your-transport)
 at the end for the exact list, and for the one convention it relies on.
 
-## Step 1 — Scaffold the app
+## Step 1 — Scaffold the service
 
-Create `apps/<source>/` as an npm workspace. The Telegram app's manifest is
-the template ([apps/tg/package.json](../../apps/tg/package.json)):
+Start an ordinary Node project in your own repository. The `@assistant-hub-swarm`
+scope lives on GitHub Packages, so point npm at it first:
+
+```
+# .npmrc
+@assistant-hub-swarm:registry=https://npm.pkg.github.com
+```
+
+```bash
+npm install @assistant-hub-swarm/transport-sdk \
+            hono @hono/node-server @modelcontextprotocol/sdk zod
+```
 
 | Dependency | Gives you |
 | --- | --- |
-| `@assistant-hub-swarm/contracts` | Every zod schema and type named below, `CONTRACT_MAJOR`, the queue/channel constants, `messageDedupeKey`, `readTurnMeta`, `toolDeliveryResult` |
-| `@assistant-hub-swarm/bus` | `openQueue`, `openPublisher`, `openSubscriber` (BullMQ + ioredis, `attempts: 1`) |
-| `@assistant-hub-swarm/service` | `requireEnv`/`optionalEnv`, `internalTokenGuard`, `INTERNAL_TOKEN_HEADER`, `serveMcp`, `busTraceClient`, `dashboardRefresh` |
-| `@assistant-hub-swarm/media` | `normalizeImageForChat` — bounded JPEG the vision endpoints accept |
+| `@assistant-hub-swarm/transport-sdk` | Every schema and helper named below: `CONTRACT_MAJOR`, the queue/channel constants, `turnCorrelationId`, `messageDedupeKey`, `readTurnMeta`, `toolDeliveryResult`, `openQueue`/`openPublisher`/`openSubscriber`, `requireEnv`, `internalTokenGuard`, `serveMcp`, `busTraceClient`, `dashboardRefresh`, `normalizeImageForChat` |
 | `hono` + `@hono/node-server` | The HTTP surface. Any framework works, but `serveMcp` is written for Hono's node adapter |
 | `@modelcontextprotocol/sdk` | `McpServer` for the platform tools |
-| Your platform SDK | grammy for Telegram |
+| `zod` | The schemas' runtime, and your MCP tools' input shapes |
+| Your platform SDK | grammy, for Telegram |
 
-Scripts: `dev` (`tsx watch src/index.ts`), `start` (`tsx src/index.ts`),
-`typecheck`, `test`. The shared packages export TypeScript sources directly,
-so the app runs from source with `tsx` and needs no build step (that is why
-`apps/tg/Dockerfile` has none). Root `npm run dev|lint|typecheck|test` fan out
-through turbo to every workspace that defines the script.
+Those last four are the SDK's **peer** dependencies: you construct Hono apps,
+`McpServer`s and zod schemas and hand them across, so one copy of each must be
+shared. Everything else the SDK needs (BullMQ, ioredis, sharp) it brings.
+
+Not using Node? Nothing above is required. Read the events from
+[`events.schema.json`](../api/transport/events.schema.json) and the HTTP from
+[`openapi.yaml`](../api/transport/openapi.yaml), and speak Redis and HTTP
+directly — the SDK is a convenience, not the contract.
 
 Environment (bootstrap only — runtime config comes from the core):
 
@@ -104,7 +127,7 @@ Environment (bootstrap only — runtime config comes from the core):
 | `CORE_API_URL` | no | The core's base URL (default `http://localhost:3200`) |
 | `SELF_URL` | no | The base URL you **announce** — what the core will call. Default `http://localhost:<PORT>`; under compose `http://<service>:<PORT>` |
 
-Boot order matters ([apps/tg/src/index.ts](../../apps/tg/src/index.ts)):
+Boot order matters (worked example: [apps/tg/src/index.ts](../../apps/tg/src/index.ts)):
 
 1. Open the update publisher (queue) and the platform manager.
 2. Start the HTTP server **first** so `/health` answers from the first
@@ -130,7 +153,7 @@ Reference: [apps/tg/src/desired-state.ts](../../apps/tg/src/desired-state.ts),
 {
   "id": "tg",                       // your source id — any slug of the right shape
   "name": "Telegram",               // what the dashboard calls you
-  "contractMajor": 1,               // CONTRACT_MAJOR of the contracts package you built against
+  "contractMajor": 2,               // CONTRACT_MAJOR of the contracts package you built against
   "baseUrl": "http://tg:3210",      // SELF_URL — the core calls you here
   "mcpPath": "/mcp",                // or null if you host no tools
   "connectionConfigSchema": [       // one section per assistant, in the editor
@@ -203,8 +226,9 @@ Reference: [apps/tg/src/inbound.ts](../../apps/tg/src/inbound.ts),
 
 Everything leaves as one job per event on the BullMQ queue
 `TRANSPORT_UPDATES_QUEUE` (`transport-updates`), payload validated by
-`transportUpdateEventSchema`. The core's ingest (`apps/core/server/ingest/consumer.ts`)
-consumes it per-chat sequentially, cross-chat concurrently.
+`transportUpdateEventSchema`. The core's ingest consumes it per-chat
+sequentially, cross-chat concurrently — so two messages in one conversation
+are never processed out of order, however busy the rest is.
 
 Every event shares the envelope:
 
@@ -213,7 +237,7 @@ Every event shares the envelope:
 | `v` | `1` |
 | `eventId` | a fresh UUID |
 | `occurredAt` | ISO instant |
-| `correlationId` | `<chatId>:<messageId>` for message-shaped events; it ties your event to the turn's traces |
+| `correlationId` | `<chatRef>:<sourceMessageId>` for message-shaped events (`turnCorrelationId`, which the core extends with the receiving assistant); it ties your event to the turn's traces |
 
 ### `transport.message` — a new inbound message
 
@@ -421,11 +445,13 @@ never leaves a stale handle behind. Every send here reports
 `message.delivered` too — `content` is the spoken text for voice and the
 caption for a file.
 
-The schemas for every body live in `packages/contracts/src/internal-api.ts`;
-parse them with `safeParse` and answer 400 with `{ error: { message } }` on a
-bad body, 502 with the platform's own words on a refused send. The core keeps
-your verdict (a 409 reaches the dashboard as a conflict) and turns anything
-else into `service_unavailable`.
+Every body's schema is exported from the SDK as `internal*RequestSchema` /
+`internal*ResponseSchema`, and described in
+[`openapi.yaml`](../api/transport/openapi.yaml). Parse with `safeParse` and
+answer 400 with `{ error: { message } }` on a bad body, 502 with the
+platform's own words on a refused send. The core keeps your verdict (a 409
+reaches the dashboard as a conflict) and turns anything else into
+`service_unavailable`.
 
 A platform that lacks an action does **not** implement the endpoint with an
 "unsupported" answer. A menu-less platform never receives menu calls because
@@ -435,16 +461,14 @@ no reaction tool. The contract carries no capability flags.
 ## Step 6 — The MCP server
 
 Reference: [apps/tg/src/mcp.ts](../../apps/tg/src/mcp.ts),
-[apps/tg/src/reactions.ts](../../apps/tg/src/reactions.ts),
-`packages/service/src/mcp.ts`, `packages/contracts/src/tool-meta.ts`.
+[apps/tg/src/reactions.ts](../../apps/tg/src/reactions.ts).
 
-Serve an `McpServer` at the `mcpPath` you announced, with `serveMcp` from
-`@assistant-hub-swarm/service`: one server instance per request, no session ids —
-every call carries its whole context, so nothing is worth keeping alive
-between calls and nothing needs reconciling after a restart.
+Serve an `McpServer` at the `mcpPath` you announced, with `serveMcp` from the
+SDK: one server instance per request, no session ids — every call carries its
+whole context, so nothing is worth keeping alive between calls and nothing
+needs reconciling after a restart.
 
-The core provisions a **managed tool connection** for you
-(`apps/core/features/tool-connections/server/managed.ts`): slug = your source
+The core provisions a **managed tool connection** for you: slug = your source
 id, endpoint = `baseUrl + mcpPath`, auth header = the shared token, app scope
 = your source, every assistant. Its snapshot follows the code: the reconcile
 runs at core boot and again on every registration, discovers your tools and
@@ -465,7 +489,7 @@ and **refuse** when it is absent or names another source:
 | --- | --- |
 | `source`, `chatId`, `assistantId` | where and as whom the tool acts |
 | `threadId` | sub-thread, when the chat has them |
-| `replyToMessageId` | the message this turn is answering |
+| `replyToSourceMessageId` | the message this turn is answering |
 | `correlationId` | the turn's trace correlation, so your work joins it |
 | `userId`, `senderIsOwner` | the speaker and their owner rights |
 | `deliveryKind` | `reply` (a task triggered by a message answers it), `send` (a timed fire speaks unprompted), or null (an ordinary reply turn delivers its own text and is offered neither) |
@@ -476,12 +500,12 @@ send into the wrong turn. Telegram's three tools:
 
 | Tool | Does | Refuses when |
 | --- | --- | --- |
-| `reply_to_message` | sends `text` attached to `replyToMessageId` | `deliveryKind !== "reply"` |
+| `reply_to_message` | sends `text` attached to `replyToSourceMessageId` | `deliveryKind !== "reply"` |
 | `send_message` | sends `text` standalone | `deliveryKind !== "send"` |
 | `set_message_reaction` | sets or clears the bot's reaction badge on `message_id` | the id is not in the mirror, the message is the bot's own, or the platform refuses |
 
 Every delivery tool reports its outcome in `structuredContent` with
-`toolDeliveryResult({ ok, messageId, text })` under the key `delivery` — the
+`toolDeliveryResult({ ok, sourceMessageId, text })` under the key `delivery` — the
 core learns that a send happened from the **result shape**, never from the
 tool's name, so a task can stamp its wording and a fire can count what
 actually reached the chat. A refused send is reported as a delivery that did
@@ -512,18 +536,30 @@ Most traffic is asynchronous (queue and bus). Two things need an answer:
 ## Step 8 — Traces and live refresh
 
 Tracing is unified and core-owned; a transport never writes trace rows.
-`busTraceClient(<id>, publisher)` from `@assistant-hub-swarm/service` gives you a
-recorder: `startTrace({ feature, action, assistantId, trigger: { kind, actor,
-correlationId }, inputSummary })`, then `event(...)`, then one of
-`succeed`/`skip`/`fail`. The whole trace is published on settle as one
-`trace.recorded` event, and the core persists it into the single trace store
-the Debug explorer reads. A recorder you never settle publishes nothing —
-that is how plain mirrored chatter leaves no trace.
+`busTraceClient(<id>, publisher)` gives you a recorder: `startTrace({ feature,
+action, assistantId, trigger: { kind, actor, correlationId }, inputSummary })`,
+then `event(...)`, then one of `succeed`/`skip`/`fail`. The whole trace is
+published on settle as one `trace.recorded` event, and the core persists it
+into the single trace store the Debug explorer reads. A recorder you never
+settle publishes nothing — that is how plain mirrored chatter leaves no trace.
 
-Use registered feature ids (`apps/core/lib/features.ts`) so the Debug filter
-groups you; an unknown id lands under "Other". Event `message` is a clean
-human title; `type` and `level` come from the shared enums. Bodies are
-complete and raw — the only exception is binary blobs.
+Two conventions make your traces line up with the core's rather than sitting
+apart from them:
+
+- **`feature`** is one of the core's registered feature ids so the Debug
+  filter groups you. `bot-messaging` is the one a delivery belongs to; an id
+  the core does not know lands under "Other", which is where an operator will
+  not look for it.
+- **`trigger`** is `{ kind: "transport", actor: <a scoped ref>, correlationId:
+  <the turn's> }`. The actor is a ref (`signal:user:123`, or the chat's when
+  there is no sender) because the Debug facet and the analytics user filter
+  match it exactly, and two platforms can hand out the same number. Take
+  `correlationId` from the event you are acting on — never invent one — and
+  your trace lands next to the core's for the same turn.
+
+Event `message` is a clean human title; `type` and `level` come from the
+shared enums. Bodies are complete and raw — the only exception is binary
+blobs.
 
 Live dashboard updates: publish `dashboardRefresh(<id>, [topics])` on the bus
 whenever you change what a page shows. The core bridges it onto its SSE
@@ -531,26 +567,38 @@ layer; unknown topic names ping nothing. The transport's own topic is
 `status`; the ingest publishes `history`, `users`, `groups` for the rows it
 writes, so you do not.
 
-## Step 9 — Deploy
+## Step 9 — Ship an image
 
-**Image.** Copy `apps/tg/Dockerfile`: build context is the repo root, copy
-the root manifests plus the `package.json` of every workspace package you
-depend on, `npm install` (not `npm ci` — the lockfile is generated on Windows
-and omits Linux-only optional native deps), copy the package sources and your
-app, install the system packages your platform needs (tg: `ffmpeg` for frame
-sampling; `sharp` ships its own libvips), run as a non-root user, `CMD npx
-tsx src/index.ts`. No migrations: there is no database.
+A transport is delivered as a container image. Nothing about it is special:
+one process, one HTTP port, no database, no migrations, no volumes.
 
-**Compose.** Add a service next to `tg` in `docker-compose.yml`:
+**Dockerfile.** Install dependencies, copy your source, install whatever
+system packages your platform needs (Telegram's needs `ffmpeg` for video frame
+sampling; `sharp`, which the SDK brings for image normalization, ships its own
+libvips), run as a non-root user, and start your entrypoint. Build the
+`.npmrc` line for the `@assistant-hub-swarm` scope into the install step, or
+mount it as a build secret — the package is public, so no token is needed to
+pull it.
+
+**Publish it** wherever the operator can pull from — a container registry of
+your own, or your repository's (`ghcr.io/<you>/<repo>`). Tag a real version
+rather than only `latest`, so an operator can pin one. The Telegram and
+Discord transports are released by their own repositories' workflows, on the
+same shape as this repo's [release workflow](../../.github/workflows/release.yml):
+a version field that changed on `main` is a release.
+
+**What the operator adds.** One service in their `docker-compose.yml`, and
+nothing else:
 
 ```yaml
   signal:
-    build: { context: ., dockerfile: apps/signal/Dockerfile }
+    image: ghcr.io/you/ahw-transport-signal:1.0.0
     depends_on:
       redis: { condition: service_healthy }
     environment:
       NODE_ENV: production
       PORT: 3220
+      # The core will call you here — it is what you announce as baseUrl.
       SELF_URL: http://signal:3220
       REDIS_URL: redis://redis:6379
       CORE_API_URL: http://app:3200
@@ -565,48 +613,56 @@ tsx src/index.ts`. No migrations: there is no database.
     restart: unless-stopped
 ```
 
-and list it under the core's `depends_on` with `condition: service_started`
-(the core boots degraded without its transports; started is enough). Do not
-publish the port: the internal API is for the core only.
+Two things not to ask of them: **do not publish your port** (the internal API
+is the core's alone), and **do not add yourself to the core's `depends_on`**.
+You register yourself, and the core boots without any transport and picks you
+up whenever you arrive — a dependency edge would only make their startup
+order your problem.
 
-**Releases.** `.github/workflows/release.yml` builds one image per matrix
-entry and publishes all or none; add `{ image: ahw-<id>,
-dockerfile: apps/<id>/Dockerfile }` to the build job's matrix.
-
-**Local development.** Copy `apps/tg/.env.example` to `apps/<id>/.env`
-(`REDIS_URL`, `INTERNAL_API_TOKEN`, `PORT`, optionally `CORE_API_URL` and
-`SELF_URL`) and run the root `npm run dev` — turbo starts the core and every
-app with a `dev` script. Boot-time modules (registration, the manager) need a
-restart to pick up code changes even under `tsx watch`, so restart before
-judging a live check.
+**Local development.** Run a core with its Redis and Postgres (this repo's
+compose does), point `REDIS_URL`, `CORE_API_URL` and `INTERNAL_API_TOKEN` at
+it, and start your service on the host. Registration, the reconcile and the
+bus subscriptions all run at boot, so restart your service after a code change
+before judging a live check — a file watcher will not re-run them.
 
 ## Step 10 — Verify
 
-1. Core log: `transport '<id>' registered from http://…`; your log:
-   `registered with the core — N connection(s) desired`.
+Against a running core, in this order — each step proves the one before it
+reached the right place:
+
+1. Core log: `transport '<id>' registered from http://…`; yours: registered,
+   with the number of connections desired.
 2. Assistants page → edit an assistant: a "<Name> connection" section renders
-   your fields. Connect; the section shows **Running** with the platform
-   identity, fed by your `/health`.
+   your announced fields. Connect; the section shows **Running** with the
+   platform identity, fed by your `/health`.
 3. Tools page: a managed connection `<id>` listing your tools, discovered at
-   registration.
+   registration without anyone pressing Apply.
 4. Send a direct message to the bot. Debug → filter Bot messaging: an
    `inbound` trace (the ingest), a `reply` trace (the turn), and your
    `deliver` trace, all on one correlation id.
-5. History page shows the mirrored exchange (see the caveat below).
-6. Stop the connection in the editor: your poller stops within one reconcile;
-   start it again; change the secret: the poller restarts with the new one.
+5. History page shows the mirrored exchange, and the transcript's `#<id>`
+   citations resolve.
+6. Stop the connection in the editor: yours stops within one reconcile; start
+   it again; change the secret: it restarts with the new one.
 7. Kill your service: the editor shows **Not tracked** ("is the transport
    service running?"); start it: registration retries until the core answers.
 
-The core's ingest has an integration suite over the whole event contract
-(`apps/core/server/ingest/ingest.integration.test.ts`, Testcontainers): feed
-it your events to prove the shapes before a live run. The Telegram app's own
-tests show the transport-side seams worth pinning:
-`apps/tg/src/inbound.test.ts` (one event per update, dedupe and DM streams,
-reply-author recognition, what is dropped) and `apps/tg/src/addressing.test.ts`
-(every structural verdict, with its reason).
+Before any of that, prove your shapes offline: every event and body is in
+[`events.schema.json`](../api/transport/events.schema.json), so a schema
+validator over your own fixtures catches a malformed event in a unit test
+rather than in a queue that drops the job. The seams worth pinning are the
+ones the Telegram transport pins: one event per platform update (with dedupe
+and per-assistant streams), the structural addressing verdicts and their
+reasons, and the split-and-send path
+([apps/tg/src/inbound.test.ts](../../apps/tg/src/inbound.test.ts),
+[addressing.test.ts](../../apps/tg/src/addressing.test.ts),
+[send.test.ts](../../apps/tg/src/send.test.ts)).
 
-## Reference: what lives where in `apps/tg`
+## Reference: the worked example, duty by duty
+
+The Telegram transport, as the files that carry each duty. It lives in this
+repository today and moves to its own; read it for the shape of each step, not
+for the paths.
 
 | Duty | File |
 | --- | --- |
@@ -651,7 +707,8 @@ Two conventions your transport must follow for those surfaces to work:
 - **Message ids are text.** The core never converts them to numbers (a
   64-bit snowflake would not survive it), and it anchors transcripts and
   citations by them (`#<id>`). Turn correlation ids are
-  `<chatId>:<sourceMessageId>` in your local ids.
+  `<chatRef>:<sourceMessageId>` — the chat's ref, so your turns can never be
+  confused with another platform's chat that happens to share an id.
 
 If you find a surface that shows Telegram and not you, that is a core bug —
 file it against the "Transport SDK" entry in `docs/TODO.md`.

@@ -19,15 +19,18 @@ whole brain/pipeline, ONE Postgres database whose schema and migration
 chain live in `apps/core/store/`) and **apps/tg** (a stateless Telegram
 transport — it self-registers with the core at boot, forwards every update
 as transport events over the Redis queue, performs sends, and hosts the
-platform's MCP tools). Shared zod contracts live in `packages/contracts`;
-a new transport (Signal, …) is meant to connect without core changes:
+platform's MCP tools). Shared zod contracts live in `packages/contracts`
+and reach transport authors as the published
+`packages/transport-sdk` (built output, with the private packages bundled
+in) plus a generated language-neutral copy under `docs/api/transport/`;
+a new transport (Signal, …) connects without core changes:
 registration announces its config-field schemas, the dashboard renders
 them, and platform actions are the transport's own MCP tools. Accounts
 (admin/user roles) own assistants; owner rights, memory and identity
 resolve through the person-link graph. `docs/PLAN.md` holds the full
 design; `docs/architecture/overview.md` the operator-facing map;
 `docs/development/adding-a-transport.md` the transport contract as a
-step-by-step manual with `apps/tg` as the worked example.
+step-by-step manual for an author with no access to this repository.
 
 ## Required Reading
 

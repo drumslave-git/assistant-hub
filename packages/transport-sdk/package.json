@@ -1,0 +1,72 @@
+{
+  "name": "@assistant-hub-swarm/transport-sdk",
+  "version": "1.0.0",
+  "description": "Everything a transport needs to connect a messaging platform to an assistant-hub core: the wire contracts, the Redis queue and bus helpers, the internal-token guard, an MCP server over Hono, the trace client and image normalization.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "keywords": [
+    "assistant-hub",
+    "transport",
+    "mcp",
+    "chatbot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/assistant-hub-swarm/ahw-core.git",
+    "directory": "packages/transport-sdk"
+  },
+  "homepage": "https://github.com/assistant-hub-swarm/ahw-core/blob/main/docs/development/adding-a-transport.md",
+  "bugs": "https://github.com/assistant-hub-swarm/ahw-core/issues",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "wire:generate": "tsx scripts/generate-wire-contract.ts"
+  },
+  "dependencies": {
+    "bullmq": "^5.66.5",
+    "ioredis": "^5.9.3",
+    "sharp": "^0.34.5"
+  },
+  "peerDependencies": {
+    "@hono/node-server": "^1.14.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "hono": "^4.7.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@assistant-hub-swarm/bus": "*",
+    "@assistant-hub-swarm/contracts": "*",
+    "@assistant-hub-swarm/media": "*",
+    "@assistant-hub-swarm/service": "*",
+    "@hono/node-server": "^1.14.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^20",
+    "hono": "^4.7.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5",
+    "vitest": "^4.1.10",
+    "yaml": "^2.8.1",
+    "zod": "^4.4.3"
+  }
+}

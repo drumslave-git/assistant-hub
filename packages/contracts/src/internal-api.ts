@@ -1,92 +1,18 @@
 import { z } from "zod";
 
 /**
- * The source apps' INTERNAL HTTP API — what the core's features call to read
- * and write conversation-derived content the apps own (user decision,
- * 2026-08-22: core provides tools and features, apps provide storage).
+ * A transport's INTERNAL HTTP API — the calls the core makes on a transport
+ * that need something back (a delivered message's id, the platform's own
+ * refusal) or that carry bytes, which the fire-and-forget bus events cannot.
  * Authenticated by the shared `x-internal-token` header; reached only from
- * the core's server code, never a browser.
+ * the core's server code, never a browser. Both sides parse these schemas,
+ * which is what keeps them in lockstep without importing each other's code.
  *
- * First surface (Phase 2 slice B): media. The core's vision/voice features
- * read a pending row's bytes, run the describe/transcribe model, and write
- * the description back — the app then drops the bytes (describe-then-drop
- * lifecycle). Both sides parse these schemas, which is what keeps them in
- * lockstep without importing each other's code.
+ * It is a **sends-only** surface. It once carried reads too — media rows and
+ * feedback rows, when each transport owned its own store — and those went
+ * with the Phase 7 de-storing: the core owns the conversation store, so
+ * there is nothing left to ask a transport for.
  */
-
-/**
- * One media row as served over the internal API. `frames` carries the
- * pending payload as base64 — the ordered frame sequence for a video/GIF,
- * a single frame for a still image, the raw audio blob for a voice message —
- * and is empty once described/unavailable (the bytes are gone).
- */
-export const internalMediaSchema = z.object({
-  id: z.string().min(1),
-  /** Source-local chat id + message id the row is attached to. */
-  chatId: z.string().min(1),
-  sourceMessageId: z.string().min(1),
-  kind: z.string().min(1),
-  status: z.enum(["pending", "described", "unavailable"]),
-  description: z.string().nullable(),
-  /** Describe hint stored at ingestion (sticker emoji, frame-sequence note). */
-  visionHint: z.string().nullable(),
-  mimeType: z.string().nullable(),
-  frames: z.array(z.string()).default([]),
-  createdAt: z.string().min(1),
-  describedAt: z.string().nullable(),
-});
-
-export type InternalMedia = z.infer<typeof internalMediaSchema>;
-
-/** GET /internal/chats/:chatId/messages/:messageId/media */
-export const internalMediaResponseSchema = z.object({
-  media: internalMediaSchema.nullable(),
-});
-
-/**
- * GET /internal/media/pending?limit=N — the backfill's work list: pending
- * rows the source is willing to hand over (live-processing holds respected,
- * oldest first), plus the whole backlog size. Byte-free — the describe pass
- * fetches each row's frames when it gets to it.
- */
-export const internalPendingMediaResponseSchema = z.object({
-  media: z.array(
-    z.object({
-      id: z.string().min(1),
-      chatId: z.string().min(1),
-      sourceMessageId: z.string().min(1),
-    }),
-  ),
-  total: z.number().int().nonnegative(),
-});
-
-export type InternalPendingMediaResponse = z.infer<typeof internalPendingMediaResponseSchema>;
-
-/**
- * GET /internal/media/recent?limit=N — the newest media rows (the dashboard
- * gallery). Frames ride along for pending rows only; a described row's
- * bytes are gone by design.
- */
-export const internalRecentMediaResponseSchema = z.object({
-  media: z.array(internalMediaSchema),
-});
-
-/** PUT /internal/media/:id/description — store the produced text, drop bytes. */
-export const internalMediaDescribeRequestSchema = z.object({
-  description: z.string().min(1),
-});
-
-/**
- * PUT response. `updated: false` means the row was no longer pending (a
- * concurrent pass won) — `media` then carries the stored winner, mirroring
- * the in-process `markDescribed` contract.
- */
-export const internalMediaDescribeResponseSchema = z.object({
-  updated: z.boolean(),
-  media: internalMediaSchema.nullable(),
-});
-
-export type InternalMediaDescribeResponse = z.infer<typeof internalMediaDescribeResponseSchema>;
 
 /**
  * Outbound sends over the internal API (Phase 2 slice D) — the calls that
@@ -193,63 +119,6 @@ export const internalDeleteMessageResponseSchema = z.object({
 });
 
 export type InternalDeleteMessageResponse = z.infer<typeof internalDeleteMessageResponseSchema>;
-
-/**
- * One feedback row as served over the internal API (the raw material lives
- * in the source's store; the core's learning jobs read and stamp it here).
- * Field names mirror the store row: `feedback` is the user's answer text.
- */
-export const internalFeedbackSchema = z.object({
-  id: z.string().min(1),
-  chatId: z.string().min(1),
-  /** Source-local id of the reacted assistant reply. */
-  sourceMessageId: z.string().min(1),
-  userId: z.string().min(1),
-  reaction: z.enum(["up", "down"]),
-  feedback: z.string().nullable(),
-  status: z.enum(["pending", "awaiting_text", "completed"]),
-  topic: z.enum(["quality", "addressing"]),
-  /** Clean model name of the reacted reply; stamped by the core (write-back). */
-  model: z.string().nullable(),
-  reflection: z.string().nullable(),
-  reflectionModel: z.string().nullable(),
-  prefsVersion: z.number().int().nullable(),
-  correctionsVersion: z.number().int().nullable(),
-  createdAt: z.string().min(1),
-  updatedAt: z.string().min(1),
-});
-
-export type InternalFeedback = z.infer<typeof internalFeedbackSchema>;
-
-/**
- * GET /internal/feedbacks — all rows newest first (the dashboard listing);
- * `?needs=prefs` / `?needs=corrections` narrows to the completed `quality`
- * rows the matching fold has not incorporated yet, oldest first (the daily
- * job's backlogs; `addressing` rows are deliberately invisible to both).
- */
-export const internalFeedbacksResponseSchema = z.object({
-  feedbacks: z.array(internalFeedbackSchema),
-});
-
-/** GET /internal/feedbacks/:id and the PATCH response. */
-export const internalFeedbackResponseSchema = z.object({
-  feedback: internalFeedbackSchema.nullable(),
-});
-
-/**
- * PATCH /internal/feedbacks/:id — the core's write-backs onto a feedback
- * row: the reacted reply's model (resolved from the reply trace, which only
- * the core can read), the reflection, and the fold-version stamps.
- */
-export const internalFeedbackPatchRequestSchema = z
-  .object({
-    model: z.string().min(1).optional(),
-    reflection: z.string().min(1).optional(),
-    reflectionModel: z.string().min(1).optional(),
-    prefsVersion: z.number().int().positive().optional(),
-    correctionsVersion: z.number().int().positive().optional(),
-  })
-  .refine((patch) => Object.keys(patch).length > 0, { message: "empty patch" });
 
 /**
  * PUT /internal/chats/:chatId/title — name a conversation whose source asked
