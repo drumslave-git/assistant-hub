@@ -8,9 +8,16 @@ one shared brain, with a web chat and a control/observability dashboard.
 
 It is the completed v2 redesign of a Next.js rewrite of the
 [drumslave-git/ollama-tg-bot](https://github.com/drumslave-git/ollama-tg-bot)
-MVP. The old MVP (available at `../ollama-tg-bot` in this workspace) is
-historical reference only. Do not hardcode absolute filesystem paths in
-docs, code, scripts, or tests.
+MVP. The old MVP (a sibling checkout of `ollama-tg-bot` in the same
+workspace) is historical reference only. Do not hardcode absolute
+filesystem paths in docs, code, scripts, or tests.
+
+This repository is normally checked out inside an **org workdir** next to
+its transports (`ahw-core/`, `ahw-transport-telegram/`, …), whose root
+`CLAUDE.md` maps the layout. Nothing here may depend on that: a transport
+consumes the published `@assistant-hub-swarm/transport-sdk`, never a
+relative path, because that is the position every third-party transport is
+in.
 
 ## Architecture in one paragraph
 
