@@ -409,12 +409,18 @@ Any core edit for a new source id is a bug.
      token" was wrong in that repo's Dockerfile, `.npmrc` and README, and in
      this repo's manual and SDK README. The image build now takes the token as
      a BuildKit secret and the workflow passes its own `GITHUB_TOKEN`.
-   - **Still on the user:** publish the SDK — bump the root or SDK version and
-     push to `main` so `release.yml` runs — then flip the npm package public.
-     Until then the transport's own CI cannot install, so its release will keep
-     failing at `npm install` with a 404. After that: `npm install` in the
-     transport repo and commit a real lockfile, restoring `cache: npm` in the
-     same commit (its `.gitignore` says so).
+   - **SDK published and made public by the user, 2026-09-03.** The transport's
+     `verify` job now has an explicit `permissions: { contents: read, packages:
+     read }` — it installs the SDK with the workflow's own token, which works
+     only while a repository's default workflow permissions are the permissive
+     ones, and a restricted repository would have 401'd on a public package.
+   - **Still on the user** (needs a token this session must not handle): run
+     `npm install` in the transport repo with a `read:packages` token in
+     `~/.npmrc`, commit the resulting `package-lock.json`, and restore
+     `cache: npm` in `setup-node` in the same commit. CI does **not** need this
+     — `npm install` resolves from the registry without a lockfile — so the
+     transport's release can be proved first by bumping its version and
+     pushing.
 5. **Discord transport** in `assistant-hub-swarm/ahw-transport-discord`
    (second proof).
 
@@ -433,8 +439,11 @@ when phase 5 starts; after the first publish, flip each GitHub package (npm and
 container) to public. Note what "public" buys on each registry: a public
 **container** image pulls anonymously, but the npm registry asks for a token on
 every request even for a public package — so a transport author always needs
-one with `read:packages`, and the docs say so (corrected 2026-09-03, after the
-first CI run; the earlier claim that the SDK needed no token was wrong).
+one with `read:packages`, and the docs say so. **Confirmed empirically**
+(2026-09-03, with the SDK published and public): an unauthenticated GET of
+`https://npm.pkg.github.com/@assistant-hub-swarm%2ftransport-sdk` answers
+`401 {"error":"authentication token not provided"}`. The earlier claim that
+the SDK needed no token was wrong; do not reinstate it.
 
 **Supersedes** the "Telegram-only surfaces in the core" entry under Other
 open items (its list is phase 1's checklist; prune it when phase 1 lands).
