@@ -421,8 +421,46 @@ Any core edit for a new source id is a bug.
      — `npm install` resolves from the registry without a lockfile — so the
      transport's release can be proved first by bumping its version and
      pushing.
-5. **Discord transport** in `assistant-hub-swarm/ahw-transport-discord`
-   (second proof).
+5. **Discord transport** (`in-progress`, 2026-09-04 — **staged and verified
+   locally, unpushed**; the repository is the user's to create).
+   - **Staged at `E:/projects/ahw-transport-discord`** (in the org workdir;
+     `git init`, one commit, no remote). 28 files, on discord.js 14 and the
+     published SDK's API — written against `docs/development/adding-a-transport.md`
+     and the SDK alone.
+   - **The core needed no change to accept it.** No branch, no capability
+     flag, no list with `discord` added: that is the claim the contract has
+     been making, and this is the first time something other than the
+     transport it was designed around has made it.
+   - **Same shape as the Telegram one**, because the contract is: `core/`,
+     `inbound/`, `outbound/`, `http/`, and `discord/` as the only code that
+     knows the platform. What genuinely differs is confined to that folder and
+     listed in its README: snowflake ids no code may parse (`Number()` eats
+     them — the reason the wire is strings), a 2000-character cap that makes
+     splitting ordinary rather than rare, structured `<@id>` mentions instead
+     of a name to match (a role or `@everyone` ping is deliberately not
+     addressing), buttons instead of an inline keyboard, an interaction that
+     must be answered within three seconds, and no voice bubble — so a voice
+     reply is sent as audio and honestly reported `asVoice: false`.
+   - **Two routes are absent rather than stubbed.** A Discord channel always
+     has its own name, so `PUT /internal/chats/:id/title` is not served; an
+     action a platform lacks is a route that does not exist, never one that
+     answers "unsupported". The contract's no-capability-flags rule held.
+   - **The schemas caught two mistakes the types alone would not have**: an
+     edit event needs the chat and the receiving assistant, and a reaction
+     event carries `up`/`down` rather than an emoji — the platform's emoji
+     vocabulary is the transport's to interpret, so `thumbVerdict` maps it.
+   - **Proof**: `npm run typecheck` and `npm run test` (**27 tests / 3 files**:
+     every addressing verdict with its reason, the split at Discord's cap
+     including that it is 2000 and not Telegram's 4096, and that a snowflake
+     survives as a string), against the SDK installed from a locally packed
+     2.0.0 tarball. Not run: anything against live Discord, and the image
+     build.
+   - **On the user:** create `assistant-hub-swarm/ahw-transport-discord`, push
+     the staged repo, then `npm install` there with a `read:packages` token and
+     commit the lockfile (its `.gitignore` says so). A live check needs a bot
+     from the Discord Developer Portal with the **MESSAGE CONTENT** intent
+     enabled — without it the bot connects, looks healthy, and sees every
+     message as empty.
 
 **Landed with the org move (`done`, 2026-09-02):** local `origin` repointed;
 the guide, the tracker and the link-fetch user-agent name the new repository;
