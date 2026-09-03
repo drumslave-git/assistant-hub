@@ -1,31 +1,90 @@
 # Deployment
 
 The platform is designed to be **self-hosted with Docker Compose** on a home server,
-NAS or VPS: two application images (the core and the Telegram transport), a Redis
-instance that carries the queues between them, and a Postgres instance. Everything
-else in the architecture follows from that: in-process schedulers, in-process
-singletons pinned to `globalThis`, and advisory locks for the brief moments two core
-processes overlap.
+NAS or VPS: the core's image, one image per transport it runs, a Redis instance that
+carries the queues between them, and a Postgres instance. Everything else in the
+architecture follows from that: in-process schedulers, in-process singletons pinned to
+`globalThis`, and advisory locks for the brief moments two core processes overlap.
+
+Transports are **additive**: each is a separate image that registers itself, so
+running one more is one more service and no change to the rest.
 
 ## Docker Compose
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-Four services:
+Four services, and the two application ones run **released images** — nothing is
+built on the host:
 
 | Service | Image | Notes |
 | --- | --- | --- |
-| `app` | `ahw-core`, built from `apps/core/Dockerfile` (repo-root context) | The dashboard, the web chat and the whole pipeline. Publishes `${PORT:-3200}:3200` |
-| `tg` | `ahw-tg`, built from `apps/tg/Dockerfile` (repo-root context) | The Telegram transport: stateless pollers that register with the core, forward every update as transport events, perform the sends, and host the platform's MCP tools. **No published port** — its internal API is for the core only |
+| `app` | `ghcr.io/assistant-hub-swarm/ahw-core:${AHW_VERSION}` | The dashboard, the web chat and the whole pipeline. Publishes `${PORT:-3200}:3200` |
+| `tg` | `ghcr.io/assistant-hub-swarm/ahw-tg:${AHW_VERSION}` | The Telegram transport: stateless pollers that register with the core, forward every update as transport events, perform the sends, and host the platform's MCP tools. **No published port** — its internal API is for the core only |
 | `redis` | `redis:7-alpine`, started with `--appendonly yes` | The cross-app bus and the two queues (`transport-updates`, `inbound-messages`). Publishes `${REDIS_PORT:-6379}:6379` |
 | `db` | `pgvector/pgvector:pg17` | The one database. Publishes `${POSTGRES_PORT:-5432}:5432` |
 
+`AHW_VERSION` defaults to the version this checkout releases, so a clone runs a
+known-good set rather than a moving `latest`. Set it in `.env` to run another
+one; `npm run release:*` rewrites the default when the version is bumped, and
+the release workflow refuses to ship if the two ever drift.
+
+To build the working tree instead of pulling, add the dev override — it adds a
+`build:` to the two application services and changes nothing else:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
 `app` waits for `db` (healthcheck `pg_isready`) and `redis` (`redis-cli ping`) to be
-**healthy**, and for `tg` merely to be **started** — the core boots, degraded, without
-its transports, and the transport registers itself whenever it comes up. `tg` waits
-for `redis` to be healthy. All four restart `unless-stopped`.
+**healthy**. It waits for **no transport at all**: the core boots without any, and a
+transport registers itself whenever it comes up — which is what lets an operator add
+one without touching the core's service. `tg` waits for `redis` to be healthy. All
+four restart `unless-stopped`.
+
+### Adding a transport
+
+A transport (Discord, Signal, Matrix, …) is its own repository and its own image.
+Running one is **one service**, and no change to anything else in the file:
+
+```yaml
+  discord:
+    image: ghcr.io/someone/ahw-transport-discord:1.0.0
+    depends_on:
+      redis: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      PORT: 3220
+      # What the transport ANNOUNCES at registration — the core calls it here.
+      SELF_URL: http://discord:3220
+      REDIS_URL: redis://redis:6379
+      CORE_API_URL: http://app:3200
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-change-me}
+      TZ: ${TZ:-UTC}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3220/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+```
+
+Three things that are easy to get wrong:
+
+- **The same `INTERNAL_API_TOKEN` as the core.** It authenticates both
+  directions; a mismatch shows as a transport that never finishes registering.
+- **No published port.** Its internal API is the core's alone.
+- **Do not add it to `app`'s `depends_on`.** The core has no dependency on any
+  transport by design, and adding one only makes the stack's startup order your
+  problem.
+
+Then `docker compose up -d discord`. It registers itself, the dashboard grows a
+connection section built from the config fields it announced, and its platform
+actions appear as tools. Nothing in the core is edited — if something has to be,
+that is a core bug (see
+[Adding a transport](../development/adding-a-transport.md)).
 
 ### Volumes
 
@@ -181,13 +240,23 @@ base ──► deps (npm install of apps/tg + the packages it links) ──► r
 
 ## Upgrading
 
+Bump `AHW_VERSION` in `.env` (or pull a new checkout, whose pinned default moves
+with each release), then:
+
 ```bash
 docker compose pull && docker compose up -d
 ```
 
-Or, for locally-built images, `docker compose up -d --build`. The core's entrypoint
-applies any new migrations first; the transport re-registers with the core at boot
-and reconciles its pollers from the desired state the core answers with.
+Or, when running the dev override, rebuild:
+`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
+The core's entrypoint applies any new migrations first; each transport
+re-registers with the core at boot and reconciles from the desired state the
+core answers with.
+
+A transport upgrades on **its own** schedule — its image and version are its
+repository's, not this one's. The only thing the two sides must agree on is the
+wire's `CONTRACT_MAJOR`; when they do not, the core refuses that transport by
+name and says so on the dashboard rather than failing quietly.
 
 During the overlap window two core processes may briefly co-exist. That is handled:
 
@@ -229,7 +298,11 @@ unless every image built. Images live in the org's GitHub Container Registry as
    the diff and releases the current versions.
 2. **verify** — `npm install`, `npm run lint`, `npm run typecheck`, `npm run test`
    (fanned out across the workspaces via turbo. Unit tests only; the integration
-   suite needs Docker and is not part of the gate.)
+   suite needs Docker and is not part of the gate.) Then one release-shaped
+   check: `docker-compose.yml`'s image pins must name the version being
+   released, so a compose file that would start operators on an older build
+   cannot ship. `npm run release:*` keeps them in step; this catches a version
+   bumped any other way.
 3. **build** — a matrix with one entry per app image (`ahw-core` from
    `apps/core/Dockerfile`, `ahw-tg` from `apps/tg/Dockerfile`) builds
    each with GitHub Actions layer caching and hands it to the next job as an

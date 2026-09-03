@@ -327,10 +327,36 @@ Any core edit for a new source id is a bug.
      a `delivery` result — with no `@assistant-hub-swarm/*` anywhere in its
      `node_modules`. Not run: the release workflow itself (needs a version
      bump on main), and a live boot of core + tg.
-3. **Compose on images**: `image:` lines pinned to the released version,
-   `docker-compose.dev.yml` for source builds, `depends_on: tg` removed,
-   README + `docs/operations/deployment.md` updated with the "add a
-   transport" recipe.
+3. **Compose on images** (`done`, 2026-09-03). `docker-compose.yml` runs
+   released images — `ghcr.io/assistant-hub-swarm/ahw-{core,tg}:${AHW_VERSION:-<version>}`
+   — and builds nothing; `docker-compose.dev.yml` is the override that adds a
+   `build:` back to those two services and changes nothing else (so the two
+   files cannot drift on ports, volumes, environment or healthchecks). The
+   core's `depends_on` no longer names `tg`: it depends on no transport at
+   all, which is what makes "add a transport" one service and no core edit.
+   - **The pin cannot go stale.** A literal pin in the operator's own artifact
+     would silently start a clone on an old build, so `scripts/pin-compose-version.mjs`
+     rewrites the `${AHW_VERSION:-…}` defaults from the root `package.json`;
+     `npm run release:{patch,minor,major}` call it (`release:pin`), and the
+     release workflow's verify job runs it with `--check` and refuses to ship
+     on a mismatch. Only the default is touched — an operator's `AHW_VERSION`
+     still wins.
+   - Docs: `docs/operations/deployment.md` gained an **Adding a transport**
+     section (the one service, the three things easy to get wrong: the shared
+     token, no published port, no `depends_on` edge on the core) and its
+     upgrade section now says a transport upgrades on its own schedule with
+     `CONTRACT_MAJOR` as the only agreement. `README.md`,
+     `docs/getting-started.md`, `docs/configuration.md` (`AHW_VERSION`) and
+     the transport manual's Step 9 follow.
+   - Proof: `docker compose config` on the base file (images pinned, no
+     `build`, `depends_on` = db + redis only), on the base + dev override
+     (both services build, still tagged with the pinned name), and with
+     `AHW_VERSION=1.47.0` (both images move); `npm run lint`; the pin script
+     exercised end to end — a bumped version fails `--check`, `npm run
+     release:pin` rewrites both pins, `--check` then passes, restored. Not
+     run: an actual `docker compose up` against the registry (the images for
+     this version are not published yet — the release workflow has never run),
+     and the Docker daemon was down for anything needing it.
 4. **tg split**: `assistant-hub-swarm/ahw-transport-telegram` consuming
    `@assistant-hub-swarm/transport-sdk`, its own release workflow and image;
    `apps/tg` deleted here; the manual points at it as the worked example.

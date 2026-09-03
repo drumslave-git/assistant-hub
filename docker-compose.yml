@@ -1,8 +1,21 @@
+# The published stack. Every application service runs a RELEASED image, pinned
+# to one version — `docker compose up -d` pulls exactly what was tested and
+# tagged, with no toolchain on the host and no build to wait for.
+#
+#   docker compose up -d                                     # run the release
+#   AHW_VERSION=1.47.0 docker compose up -d                  # run another one
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#                                                            # build from source
+#
+# The version default is rewritten by `npm run release:*` from the root
+# package.json, and the release workflow refuses to ship if the two drift.
+#
+# Adding a transport is one service — see the recipe in
+# docs/operations/deployment.md. Nothing else in this file changes: a transport
+# registers itself with the core, and the core needs no dependency on it.
 services:
   app:
-    build:
-      context: .
-      dockerfile: apps/core/Dockerfile
+    image: ghcr.io/assistant-hub-swarm/ahw-core:${AHW_VERSION:-1.48.0}
     ports:
       - "${PORT:-3200}:3200"
     depends_on:
@@ -10,9 +23,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      # The core boots (degraded) without its source apps; started is enough.
-      tg:
-        condition: service_started
     environment:
       NODE_ENV: production
       PORT: 3200
@@ -48,10 +58,10 @@ services:
 
   tg:
     # The Telegram transport: stateless pollers that register with the core,
-    # forward every update as transport events, and perform the sends.
-    build:
-      context: .
-      dockerfile: apps/tg/Dockerfile
+    # forward every update as transport events, and perform the sends. One
+    # service among however many transports this deployment runs; the core
+    # learns about each one when it registers, never from this file.
+    image: ghcr.io/assistant-hub-swarm/ahw-tg:${AHW_VERSION:-1.48.0}
     depends_on:
       redis:
         condition: service_healthy

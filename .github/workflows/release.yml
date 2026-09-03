@@ -104,6 +104,11 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
+      # Compose is what an operator clones and runs, so its image pins must
+      # name the version being released. `npm run release:*` rewrites them;
+      # this refuses to ship if someone bumped the version another way.
+      - name: Compose pins the released version
+        run: node scripts/pin-compose-version.mjs --check
 
   # A release is all-or-nothing: every image is built first (nothing pushed),
   # and only when EVERY build succeeded does one job push them all and tag the

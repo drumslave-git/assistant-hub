@@ -86,14 +86,22 @@ instead, set `CHROMIUM_EXECUTABLE_PATH` (this is what the Docker image does).
 ## Docker Compose
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 That starts four services: `db` (the `pgvector/pgvector:pg17` image), `redis`,
-`app` (the core) and `tg` (the Telegram service). Compose has working defaults,
-so a `.env` at the repo root is optional — create one to set a real
-`INTERNAL_API_TOKEN` (the default is the placeholder `change-me`) or to change
-credentials, ports, or the host data directories.
+`app` (the core) and `tg` (the Telegram service). The two application services
+run **released images** pinned to one version, so this needs nothing on the
+host but Docker. Building this working tree instead is the dev override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+Compose has working defaults, so a `.env` at the repo root is optional — create
+one to set a real `INTERNAL_API_TOKEN` (the default is the placeholder
+`change-me`), to pin a different `AHW_VERSION`, or to change credentials, ports,
+or the host data directories.
 
 The core container runs pending migrations before it serves, so it never answers
 requests against an unmigrated database. The Telegram service has no database;

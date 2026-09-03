@@ -56,8 +56,9 @@ Read by `docker-compose.yml`, not by application code:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `AHW_VERSION` | The version this checkout releases | Which released image tag the `app` and `tg` services run (`ghcr.io/assistant-hub-swarm/ahw-*`). The default is rewritten by `npm run release:*`, so a clone runs a known-good set rather than a moving `latest` |
 | `PORT` | `3200` | Host port published for the core |
-| `INTERNAL_API_TOKEN` | `change-me` | Passed to both apps. **Set a real value** |
+| `INTERNAL_API_TOKEN` | `change-me` | Passed to every app. **Set a real value** — it is what a transport authenticates with too |
 | `POSTGRES_USER` | `bot` | Bundled Postgres user |
 | `POSTGRES_PASSWORD` | `bot` | Bundled Postgres password |
 | `POSTGRES_DB` | `bot` | Bundled Postgres database |
@@ -69,6 +70,9 @@ Under Compose, `DATABASE_URL` is built from the `POSTGRES_*` variables and point
 at the bundled `db` service, `REDIS_URL` points at the bundled `redis`, and the
 transport's `SELF_URL` / `CORE_API_URL` are the compose service names. Set
 `DATABASE_URL` explicitly to use an external database instead.
+
+`docker-compose.dev.yml` is the override that builds the two application images
+from the working tree instead of pulling them; it changes nothing else.
 
 ### Runtime variables set by the core image
 

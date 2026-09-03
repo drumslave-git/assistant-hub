@@ -1,0 +1,32 @@
+# Build the application images from this working tree instead of pulling the
+# released ones. An override, not a copy: everything else — ports, volumes,
+# environment, healthchecks, the database and Redis — comes from
+# `docker-compose.yml`, so the two can never drift apart on the parts that
+# matter to how the stack actually runs.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# Or, to stop typing both files every time:
+#
+#   export COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml   # or in .env
+#   docker compose up -d --build
+#
+# The build still tags what it produces as the pinned `image:` name from the
+# base file, so `docker image ls` shows one version and the running containers
+# are unambiguous — a locally built `ahw-core:1.48.0` simply shadows the
+# registry's until you pull again.
+#
+# This is for working ON the platform. Working on a TRANSPORT needs none of it:
+# a transport is its own repository and its own image, and it reaches a core
+# that is running however the operator likes (see
+# docs/development/adding-a-transport.md).
+services:
+  app:
+    build:
+      context: .
+      dockerfile: apps/core/Dockerfile
+
+  tg:
+    build:
+      context: .
+      dockerfile: apps/tg/Dockerfile

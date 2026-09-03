@@ -23,9 +23,10 @@
     "db:generate": "npm run db:generate --workspace @assistant-hub-swarm/core",
     "db:migrate": "npm run db:migrate --workspace @assistant-hub-swarm/core",
     "db:studio": "npm run db:studio --workspace @assistant-hub-swarm/core",
-    "release:patch": "npm version patch --no-git-tag-version",
-    "release:minor": "npm version minor --no-git-tag-version",
-    "release:major": "npm version major --no-git-tag-version"
+    "release:patch": "npm version patch --no-git-tag-version && npm run release:pin",
+    "release:minor": "npm version minor --no-git-tag-version && npm run release:pin",
+    "release:major": "npm version major --no-git-tag-version && npm run release:pin",
+    "release:pin": "node scripts/pin-compose-version.mjs"
   },
   "devDependencies": {
     "turbo": "^2.5.8"

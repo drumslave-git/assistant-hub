@@ -615,9 +615,11 @@ nothing else:
 
 Two things not to ask of them: **do not publish your port** (the internal API
 is the core's alone), and **do not add yourself to the core's `depends_on`**.
-You register yourself, and the core boots without any transport and picks you
-up whenever you arrive — a dependency edge would only make their startup
-order your problem.
+The core's service depends on no transport at all — it boots without any and
+picks each one up when it registers — so a dependency edge would only make
+their startup order your problem. The operator-side version of this recipe,
+with the mistakes worth avoiding, is
+[Adding a transport](../operations/deployment.md#adding-a-transport).
 
 **Local development.** Run a core with its Redis and Postgres (this repo's
 compose does), point `REDIS_URL`, `CORE_API_URL` and `INTERNAL_API_TOKEN` at

@@ -42,8 +42,18 @@ npm run dev                            # core on http://localhost:3200, Telegram
 ## Run with Docker
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 # dashboard: http://localhost:3200  ·  health: http://localhost:3200/api/health
+```
+
+That runs **released images** from the org's registry
+(`ghcr.io/assistant-hub-swarm/ahw-core` and `ahw-tg`), pinned to one version —
+no toolchain on the host and no build to wait for. `AHW_VERSION=1.47.0 docker
+compose up -d` runs a different one. To build this working tree instead, add
+the dev override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 `docker compose` starts Postgres (pgvector image), Redis, the core (`app`) and
@@ -52,10 +62,13 @@ the Telegram transport (`tg`). The core container applies pending migrations
 so it never runs against an unmigrated database. `DATABASE_URL` is built from
 the `POSTGRES_*` vars and points at the bundled `db` service; override it to use
 an external database. Set a real `INTERNAL_API_TOKEN` in a root `.env` — it is
-the shared secret the two apps present to each other, and the default
-`change-me` is a placeholder. Postgres persists into `./data/pg`, Redis into
-`./data/redis`. Stop with `docker compose down`; to reset, delete those
-directories.
+the shared secret the apps present to each other, and the default `change-me`
+is a placeholder. Postgres persists into `./data/pg`, Redis into `./data/redis`.
+Stop with `docker compose down`; to reset, delete those directories.
+
+Adding another transport (Discord, Signal, …) is **one more service** and no
+change to the core — see the recipe in
+[Deployment](docs/operations/deployment.md#adding-a-transport).
 
 ## Scripts
 
