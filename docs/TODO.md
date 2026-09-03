@@ -427,8 +427,9 @@ Any core edit for a new source id is a bug.
      — `npm install` resolves from the registry without a lockfile — so the
      transport's release can be proved first by bumping its version and
      pushing.
-5. **Discord transport** (`done` locally, 2026-09-04 — **staged and verified,
-   unpushed**; the repository is the user's to create).
+5. **Discord transport** (`done`, 2026-09-04 — the user created and pushed
+   [assistant-hub-swarm/ahw-transport-discord](https://github.com/assistant-hub-swarm/ahw-transport-discord);
+   the runtime port of phase 6 sits unpushed on top of it).
    - **Staged as `ahw-transport-discord`** beside this one in the org workdir
      (`git init`, no remote). On discord.js 14 and the SDK's API — written
      against `docs/development/adding-a-transport.md` and the SDK alone, with
@@ -461,8 +462,8 @@ Any core edit for a new source id is a bug.
      survives as a string), against the SDK installed from a locally packed
      2.0.0 tarball. Not run: anything against live Discord, and the image
      build.
-   - **On the user:** create `assistant-hub-swarm/ahw-transport-discord`, push
-     the staged repo, then `npm install` there with a `read:packages` token and
+   - **Created and pushed by the user, 2026-09-04** (`90cf133` is on `origin`).
+     Still on the user: `npm install` there with a `read:packages` token and
      commit the lockfile (its `.gitignore` says so). A live check needs a bot
      from the Discord Developer Portal with the **MESSAGE CONTENT** intent
      enabled — without it the bot connects, looks healthy, and sees every
