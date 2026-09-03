@@ -1,6 +1,6 @@
 # Agent Guide
 
-This repository is **assistant-hub** (GitHub:
+This repository is **ahw-core**, the core of **assistant-hub-swarm** (GitHub:
 [assistant-hub-swarm/ahw-core](https://github.com/assistant-hub-swarm/ahw-core)):
 a multi-user assistant platform — accounts run
 their own AI assistants (personas, Telegram bots, standing tasks, tools) on

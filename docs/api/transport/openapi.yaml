@@ -1,9 +1,9 @@
 openapi: 3.1.0
 info:
-  title: assistant-hub transport HTTP contract
-  version: contract-major-2
+  title: assistant-hub-swarm transport HTTP contract
+  version: contract-major-3
   description: |-
-    The HTTP that crosses the boundary between an assistant-hub core and a transport,
+    The HTTP that crosses the boundary between an assistant-hub-swarm core and a transport,
     in both directions. Two servers are described:
 
     - **A transport's own surface** (`/health`, `/internal/*`, `/mcp`) — what the core
@@ -1668,7 +1668,7 @@ components:
       additionalProperties: false
     ReplyDeliveryEvent:
       title: ReplyDeliveryEvent
-      description: "Published on `assistant-hub:events`: one finished answer to deliver. The whole answer — the transport cuts it to its own limits."
+      description: "Published on `assistant-hub-swarm:events`: one finished answer to deliver. The whole answer — the transport cuts it to its own limits."
       type: object
       properties:
         v:
@@ -3252,7 +3252,7 @@ components:
       additionalProperties: false
     TurnToolMeta:
       title: TurnToolMeta
-      description: The turn binding the core attaches to every tool call as request `_meta` under `assistant-hub/turn`. Refuse a call that carries none, or one naming another source.
+      description: The turn binding the core attaches to every tool call as request `_meta` under `assistant-hub-swarm/turn`. Refuse a call that carries none, or one naming another source.
       type: object
       properties:
         source:

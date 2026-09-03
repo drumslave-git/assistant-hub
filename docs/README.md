@@ -1,6 +1,6 @@
 # Documentation
 
-Full documentation for **assistant-hub** — a multi-user assistant platform:
+Full documentation for **assistant-hub-swarm** — a multi-user assistant platform:
 accounts run their own AI assistants (personas, Telegram bots, standing tasks,
 tools) on one shared brain (an OpenAI-compatible chat completions API, or a
 native Anthropic, Google or Z.ai backend), with a web chat and a

@@ -1,6 +1,6 @@
 /**
  * `@assistant-hub-swarm/transport-sdk` — everything a **transport** needs to
- * connect a messaging platform to an assistant-hub core, and nothing else.
+ * connect a messaging platform to an assistant-hub-swarm core, and nothing else.
  *
  * A transport is a stateless service that owns exactly one platform: it
  * registers with a running core, forwards every update it sees as normalized

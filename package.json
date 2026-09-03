@@ -1,5 +1,5 @@
 {
-  "name": "assistant-hub",
+  "name": "assistant-hub-swarm",
   "version": "1.48.1",
   "private": true,
   "engines": {

@@ -28,7 +28,7 @@ import { runMessageIndexing } from "./index-messages";
 const DEBOUNCE_MS = 90_000;
 
 const FEATURE = FEATURES["history-index"];
-const STORE_KEY = Symbol.for("assistant-hub.history.index-scheduler");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.history.index-scheduler");
 
 function scheduler(): IdleScheduler {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: IdleScheduler };

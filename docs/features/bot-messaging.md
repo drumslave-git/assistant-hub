@@ -73,7 +73,7 @@ A message crosses two queues before a model sees it:
    name half of addressing, eager voice transcription, the collaborators, then
    `handleIncomingMessage`. Deliveries leave as `reply.delivery` events and
    the turn's `accepted` / `progress` / `settled` lifecycle as
-   `turn.lifecycle` events on the Redis channel `assistant-hub:events`; the
+   `turn.lifecycle` events on the Redis channel `assistant-hub-swarm:events`; the
    owning source performs the send (or, for the web chat, stores the line
    in-process) and renders the lifecycle as typing.
 

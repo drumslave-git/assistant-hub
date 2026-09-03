@@ -124,7 +124,7 @@ A minimal, honest setup:
 ```bash
 # nightly, before the daily jobs run time
 docker compose exec -T db pg_dump -U bot -d bot -Fc > "/backups/db-$(date +%F).dump"
-tar czf "/backups/traces-$(date +%F).tar.gz" -C /srv/assistant-hub/data traces
+tar czf "/backups/traces-$(date +%F).tar.gz" -C /srv/assistant-hub-swarm/data traces
 ```
 
 - Run it **before** `dailyJobsRunTime` (default `04:00`), so a backup never coincides

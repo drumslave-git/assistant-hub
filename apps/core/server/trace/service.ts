@@ -70,7 +70,7 @@ export async function getTraceDetail(id: string): Promise<Trace> {
 }
 
 const bundle = (traces: Trace[]): TraceBundle => ({
-  schema: "assistant-hub/trace-bundle@1",
+  schema: "assistant-hub-swarm/trace-bundle@1",
   exportedAt: new Date().toISOString(),
   traces,
 });

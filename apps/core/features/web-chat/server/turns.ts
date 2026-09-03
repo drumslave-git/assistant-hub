@@ -73,7 +73,7 @@ export class ThreadTurns {
   }
 }
 
-const STORE_KEY = Symbol.for("assistant-hub.web-chat.thread-turns");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.web-chat.thread-turns");
 
 /**
  * The one running-turn state for this process, pinned to `globalThis` like

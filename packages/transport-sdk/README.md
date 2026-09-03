@@ -1,7 +1,7 @@
 # `@assistant-hub-swarm/transport-sdk`
 
 Everything a **transport** needs to connect a messaging platform (Discord,
-Signal, Matrix, Slack, …) to a running [assistant-hub][core] core: the wire
+Signal, Matrix, Slack, …) to a running [assistant-hub-swarm][core] core: the wire
 contracts, the Redis queue and bus helpers, the internal-token guard, an MCP
 server over Hono, the trace client and image normalization.
 

@@ -65,7 +65,7 @@ export class BotMcpRegistry {
   private openAiTools: Promise<ChatCompletionFunctionTool[]> | null = null;
 
   constructor() {
-    this.server = new McpServer({ name: "assistant-hub", version: "1.0.0" });
+    this.server = new McpServer({ name: "assistant-hub-swarm", version: "1.0.0" });
   }
 
   /** Register one feature's tools. Call before {@link finishRegistration}. */
@@ -99,7 +99,7 @@ export class BotMcpRegistry {
     if (!this.connectPromise) {
       this.connectPromise = (async () => {
         const [serverTransport, clientTransport] = InProcessTransport.createLinkedPair();
-        const client = new Client({ name: "assistant-hub-host", version: "1.0.0" });
+        const client = new Client({ name: "assistant-hub-swarm-host", version: "1.0.0" });
         await this.server.connect(serverTransport);
         await client.connect(clientTransport);
         this.client = client;

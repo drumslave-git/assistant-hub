@@ -1,12 +1,13 @@
-# assistant-hub
+# ahw-core
 
-A multi-user assistant platform: accounts run their own AI assistants —
-personas, Telegram bots, standing tasks, tools — on one shared brain (an
-OpenAI-compatible chat completions API, or a native Anthropic, Google or Z.ai
-backend), with a web chat and a control/observability dashboard. This
-repository is the **core**: dashboard, web chat, the whole pipeline, one
-Postgres database. Messaging platforms connect as **transports** — separate
-services in their own repositories that register themselves; Telegram's is
+The core of **assistant-hub-swarm**, a multi-user assistant platform: accounts
+run their own AI assistants — personas, Telegram bots, standing tasks, tools —
+on one shared brain (an OpenAI-compatible chat completions API, or a native
+Anthropic, Google or Z.ai backend), with a web chat and a control/observability
+dashboard. This repository is the core: the dashboard, the web chat, the whole
+pipeline and one Postgres database. Messaging platforms connect as
+**transports** — separate services in their own repositories that register
+themselves; Telegram's is
 [ahw-transport-telegram](https://github.com/assistant-hub-swarm/ahw-transport-telegram). Grown out of the
 [ollama-tg-bot](https://github.com/drumslave-git/ollama-tg-bot) MVP through a
 full Next.js rewrite and the v2 redesign (see [docs/PLAN.md](docs/PLAN.md)).

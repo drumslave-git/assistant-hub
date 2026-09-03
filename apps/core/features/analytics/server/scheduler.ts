@@ -37,7 +37,7 @@ export interface RegenerateRequest {
  * The pending regenerate lives on its own `globalThis` slot (like the scheduler
  * store itself) so a dev hot-reload cannot drop a queued request.
  */
-const REGENERATE_KEY = Symbol.for("assistant-hub.analytics.regenerate");
+const REGENERATE_KEY = Symbol.for("assistant-hub-swarm.analytics.regenerate");
 
 function regenerateSlot(): { pending: RegenerateRequest | null } {
   const g = globalThis as typeof globalThis & {

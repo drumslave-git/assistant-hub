@@ -13,7 +13,7 @@ import { requireEnv } from "@/server/env";
  * only its existence.
  */
 
-const POOL_KEY = Symbol.for("assistant-hub.core.store.pool");
+const POOL_KEY = Symbol.for("assistant-hub-swarm.core.store.pool");
 
 function storePool(): Pool {
   return getProcessPool(POOL_KEY, () => requireEnv("DATABASE_URL"));

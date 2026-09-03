@@ -67,7 +67,7 @@ const VERSION_TIMEOUT_MS = 20_000;
  * GitHub rejects an API request with no user agent, and an unauthenticated caller
  * is rate-limited per IP (60/hour) — far above one check a day.
  */
-const REQUEST_HEADERS = { "user-agent": "assistant-hub (yt-dlp updater)" };
+const REQUEST_HEADERS = { "user-agent": "assistant-hub-swarm (yt-dlp updater)" };
 
 /** Absolute path of the managed copy. */
 export function managedYtDlpPath(): string {

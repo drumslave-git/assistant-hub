@@ -29,7 +29,7 @@ export interface RemoteEndpoint {
 export const REMOTE_TIMEOUT_MS = 20_000;
 
 /** The client identity remote servers see. */
-const CLIENT_INFO = { name: "assistant-hub", version: "1.0.0" };
+const CLIENT_INFO = { name: "assistant-hub-swarm", version: "1.0.0" };
 
 function endpointUrl(endpoint: RemoteEndpoint): URL {
   try {

@@ -43,7 +43,7 @@ interface BrowserStore {
   launching: Promise<Browser> | null;
 }
 
-const STORE_KEY = Symbol.for("assistant-hub.link-fetch.chromium");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.link-fetch.chromium");
 
 function store(): BrowserStore {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: BrowserStore };

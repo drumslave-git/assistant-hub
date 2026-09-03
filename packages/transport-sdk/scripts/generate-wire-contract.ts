@@ -207,7 +207,7 @@ const SHAPES: Record<string, Named> = {
   TurnToolMeta: {
     schema: turnToolMetaSchema,
     io: "output",
-    note: "The turn binding the core attaches to every tool call as request `_meta` under `assistant-hub/turn`. Refuse a call that carries none, or one naming another source.",
+    note: "The turn binding the core attaches to every tool call as request `_meta` under `assistant-hub-swarm/turn`. Refuse a call that carries none, or one naming another source.",
   },
   ToolDelivery: {
     schema: toolDeliverySchema,
@@ -326,9 +326,9 @@ function eventsDocument(): Record<string, unknown> {
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: `${REPO}/blob/main/docs/api/transport/events.schema.json`,
-    title: "assistant-hub transport wire contract",
+    title: "assistant-hub-swarm transport wire contract",
     description:
-      "Every shape that crosses the boundary between an assistant-hub core and a " +
+      "Every shape that crosses the boundary between an assistant-hub-swarm core and a " +
       "transport, in both directions. GENERATED from the zod schemas of " +
       "@assistant-hub-swarm/transport-sdk — do not edit by hand; run " +
       "`npm run wire:generate -w @assistant-hub-swarm/transport-sdk`. " +
@@ -452,10 +452,10 @@ function openapiDocument(): Record<string, unknown> {
   return {
     openapi: "3.1.0",
     info: {
-      title: "assistant-hub transport HTTP contract",
+      title: "assistant-hub-swarm transport HTTP contract",
       version: `contract-major-${CONTRACT_MAJOR}`,
       description: [
-        "The HTTP that crosses the boundary between an assistant-hub core and a transport,",
+        "The HTTP that crosses the boundary between an assistant-hub-swarm core and a transport,",
         "in both directions. Two servers are described:",
         "",
         "- **A transport's own surface** (`/health`, `/internal/*`, `/mcp`) — what the core",

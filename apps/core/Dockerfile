@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Multi-stage build for the self-hosted core app (assistant-hub-core).
+# Multi-stage build for the self-hosted core app (assistant-hub-swarm-core).
 # Build context is the REPO ROOT (workspace install needs every manifest):
 #   docker build -f apps/core/Dockerfile .
 # Native deps (lightningcss, tailwind oxide) are installed inside the image so

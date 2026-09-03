@@ -962,7 +962,7 @@ the two jobs fail, re-run and backfill independently.
   (`server/trace/store.ts`). See [Observability](observability.md).
 - **Queues and cross-app events.** Redis holds the BullMQ queues
   (`transport-updates`, `inbound-messages`) and the pub/sub channel
-  `assistant-hub:events`. It is required, but holds no durable domain data
+  `assistant-hub-swarm:events`. It is required, but holds no durable domain data
   beyond queued jobs; Compose runs it with AOF persistence under
   `./data/redis`.
 - **Browser-agent downloads** (`data/downloads`) and the self-updating tool

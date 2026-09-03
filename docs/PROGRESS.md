@@ -73,8 +73,8 @@ dimensions, and the source apps host their own outbound tools on their
 own MCP servers.
 
 Verified live where a live check was possible: both running source apps
-answer `/mcp` (401 without the shared secret, `assistant-hub-tg` /
-`assistant-hub-chat` on a tokened `initialize`), and the whole
+answer `/mcp` (401 without the shared secret, `assistant-hub-swarm-tg` /
+`assistant-hub-swarm-chat` on a tokened `initialize`), and the whole
 connection lifecycle — create, discover, apply, delete — was driven
 through the running dashboard against a throwaway MCP server, with all
 four actions landing as `tool-connections` traces.
@@ -206,8 +206,8 @@ ended `VERIFICATION PASSED` (the tg import now person-links the v1
 owner's telegram identity to the first admin instead of writing the
 retired owner blob). The runbook is
 docs/operations/cutover-runbook.md; the project carries the
-assistant-hub name (shell, login/setup, README, root package; the
-release pipeline already shipped assistant-hub-core/tg images; the
+assistant-hub-swarm name (shell, login/setup, README, root package; the
+release pipeline already shipped assistant-hub-swarm-core/tg images; the
 GitHub repo rename is the operator's settings action); AGENTS.md is
 rewritten to describe v2. Proof: typecheck 8/8, lint clean, unit
 1175+36+15+3, integration 419 across all suites (fifteen suites
@@ -410,7 +410,7 @@ history, not the current target.
 ## Phase 10 — Cutover (acceptance criteria)
 
 Scope from PLAN.md: rehearsed migration into the final shape (ONE core
-database), runbook, rename to assistant-hub, release pipeline, docs
+database), runbook, rename to assistant-hub-swarm, release pipeline, docs
 rewrite. The audit at open found the real work: eleven features still
 read the v1 database — the "final shape" is every one of them on the
 core store, and only then does `STORE_DATABASE_URL` collapse into
@@ -422,7 +422,7 @@ stats start fresh (their tables join the store schema now, their v1
 rows are not migrated); the dev instance cuts over by re-pointing
 `DATABASE_URL` at the current store database (already fed by per-slice
 dev ports); the GitHub repository rename is the operator's action —
-the code, images, and docs take the assistant-hub name here.
+the code, images, and docs take the assistant-hub-swarm name here.
 
 - [x] **A — same-shape flips.** Settings and backends move to the
       store's identical tables (repositories/service on StoreDb, their
@@ -450,7 +450,7 @@ the code, images, and docs take the assistant-hub name here.
       the v1 test bootstrap dies with it; the import scripts target
       the one database; the health probe probes it.
 - [x] **F — rename, docs, rehearsal.** The project takes the
-      assistant-hub name (packages already carry it; the app shell,
+      assistant-hub-swarm name (packages already carry it; the app shell,
       compose images, README and docs follow); AGENTS.md is rewritten
       to describe v2; the cutover runbook (backup → migrate → verify
       → start → smoke → rollback) is written; the rehearsal runs both
@@ -750,14 +750,14 @@ them all from one root version bump.
       `NAV_GROUPS` composes from the static registry in
       `apps/core/components/layout/extensions.ts` (empty today) — rendered
       nav identical.
-- [x] Docker: `apps/core/Dockerfile` builds `assistant-hub-core` from the
+- [x] Docker: `apps/core/Dockerfile` builds `assistant-hub-swarm-core` from the
       repo-root context (workspace-aware install, Next standalone monorepo
       output with `outputFileTracingRoot`, migrate runner from
       `packages/db/migrate`, runtime data at `/app/apps/core/data/*`); root
       `docker-compose.yml` and `docker-compose.test.yml` updated.
 - [x] Release pipeline: `.github/workflows/release.yml` verifies via turbo
       and, on a root version change on main, tags once and builds/pushes
-      every per-app image (matrix; currently `assistant-hub-core`) on that
+      every per-app image (matrix; currently `assistant-hub-swarm-core`) on that
       one version. (Cannot fire from the branch — by design, no version
       bumps until cutover; verified by review only.)
 - [x] Proof (2026-08-21, all from the root): `turbo run typecheck` 4/4
@@ -989,7 +989,7 @@ Slice notes:
   resolver: enabled + app scope + assistant selection, no per-source
   branch anywhere. Connection tools are offered as `<slug>__<tool>`;
   built-ins keep bare names. The turn binding travels as MCP `_meta`
-  (`packages/contracts/src/tool-meta.ts`, namespaced `assistant-hub/turn`)
+  (`packages/contracts/src/tool-meta.ts`, namespaced `assistant-hub-swarm/turn`)
   — a hosted tool receives the chat, never a model-chosen argument for
   it. `getToolset` composes both halves and dispatches by owner; the
   reply path states its scope explicitly, the fire path resolves per
@@ -1030,7 +1030,7 @@ Slice notes:
   core unit 1172 + integration 362 green, typecheck across 11 workspaces,
   lint clean. **Live on the operator's running services**: an untokened
   POST to `/mcp` is 401 on both apps, and a tokened `initialize`
-  answers `assistant-hub-tg` / `assistant-hub-chat`.
+  answers `assistant-hub-swarm-tg` / `assistant-hub-swarm-chat`.
 - **E (`f0f6b9c`)** — `/tools` is two tabs: the catalog (feature tools
   and connection tools under their prefixes, each group stating where it
   is offered) and Connections (CRUD, Discover, Apply with the drift
@@ -1946,7 +1946,7 @@ and stamps `senderIsOwner` on inbound events.
       single store); correlation ids tie a turn's cross-app flow into
       one trace (tg inbound / feedback collection / delivery all stamp
       `<chatId>:<messageId>`).
-- [x] Docker (`917131b`): `assistant-hub-tg` image (tsx-run Node service,
+- [x] Docker (`917131b`): `assistant-hub-swarm-tg` image (tsx-run Node service,
       ffmpeg, isolated drizzle migration runner on the tg chain) +
       compose service (own database via the initdb hook — first init
       only; existing deployments create it by hand) + release-matrix
@@ -1985,7 +1985,7 @@ and stamps `senderIsOwner` on inbound events.
   person-links the v1 owner's telegram identity to the first admin
   instead, which is what preserves owner rights and memory continuity
   across the cutover. Runbook written, AGENTS.md rewritten for v2, the
-  assistant-hub name applied in code and docs. Ten phases, ~2 weeks of
+  assistant-hub-swarm name applied in code and docs. Ten phases, ~2 weeks of
   sessions, and the one sentence that was the point all along: a new
   transport can now connect to the core without any changes of core.
 - **2026-08-31 (Phase 9 closes: user ownership)** — Six slices in the
@@ -2393,7 +2393,7 @@ and stamps `senderIsOwner` on inbound events.
   the whole content plane (history/summaries/search/memory-extraction)
   onto tg's internal API, the SSE bridge, the task-authority rework
   (owner stamps replace id comparison; core migration 0059), and the
-  `assistant-hub-tg` Docker image + compose + release matrix. Proof:
+  `assistant-hub-swarm-tg` Docker image + compose + release matrix. Proof:
   root turbo lint/typecheck/test/build green; core unit 1116 passed,
   core integration 326 passed / 30 skipped; tg integration 43 passed;
   migration 0059 applied to the core dev DB; `docker compose config`
@@ -2425,13 +2425,13 @@ and stamps `senderIsOwner` on inbound events.
   PLAN.md and PROGRESS.md created; TODO.md entry reduced to a pointer.
   Open: repo name, bot-to-bot loop guard, queue retry semantics, image
   shape.
-- **2026-08-21 (later)** — Name decided: **assistant-hub**. Bot-to-bot loop
+- **2026-08-21 (later)** — Name decided: **assistant-hub-swarm**. Bot-to-bot loop
   guard approved: cap on consecutive assistant-authored turns per chat,
   operator-configurable. Remaining open items: queue retry semantics
   (Phase 2), image shape (Phase 0).
 - **2026-08-21 (later still)** — Final two decisions: turn failure handling
-  and deployment as two Docker images (`assistant-hub-web`,
-  `assistant-hub-worker`) published together from one version bump. Turn
+  and deployment as two Docker images (`assistant-hub-swarm-web`,
+  `assistant-hub-swarm-worker`) published together from one version bump. Turn
   handling was first agreed as ACID-like compensation, then revised by the
   user the same day to the simpler rule: retry only if the turn performed
   no actions yet; otherwise fail, report, stop — no revert machinery.
@@ -2531,7 +2531,7 @@ and stamps `senderIsOwner` on inbound events.
   carved out (pool singleton + migration runner; documented empty
   contracts; extension-point types + `composeNavGroups` with an empty
   registry composed into the shell nav), per-app Docker image
-  (`assistant-hub-core`, monorepo standalone) and the release workflow
+  (`assistant-hub-swarm-core`, monorepo standalone) and the release workflow
   reshaped to a tag-once + per-image matrix on the root version. Full
   proof under the Phase 0 acceptance criteria above. Naming decision made
   in-session: workspace packages use the `@assistant-hub-swarm/*` scope ahead of

@@ -333,7 +333,7 @@ interface StatusCacheEntry {
 }
 
 /** `globalThis` slot, like every cross-bundle singleton here. */
-const STATUS_CACHE_KEY = Symbol.for("assistant-hub.status.cache");
+const STATUS_CACHE_KEY = Symbol.for("assistant-hub-swarm.status.cache");
 
 function statusCache(): { entry: StatusCacheEntry | null } {
   const g = globalThis as typeof globalThis & {

@@ -57,7 +57,7 @@ as a warning badge and makes Apply the primary action while it exists.
 ## Calling a remote tool
 
 A call carries the turn's binding as MCP request `_meta` under
-`assistant-hub/turn` — source, chat, assistant, thread, correlation id, the
+`assistant-hub-swarm/turn` — source, chat, assistant, thread, correlation id, the
 speaker and their owner rights, `deliveryKind` and the message being answered —
 never as arguments, so a hosted tool can choose *what* to do and never *where*.
 A hosted tool that delivered a message says so in its `structuredContent`

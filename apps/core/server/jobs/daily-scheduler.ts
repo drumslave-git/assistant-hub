@@ -80,7 +80,7 @@ interface DailyStore {
 }
 
 export function createDailyScheduler(config: DailySchedulerConfig): DailyScheduler {
-  const storeKey = Symbol.for(`assistant-hub.daily-scheduler.${config.name}`);
+  const storeKey = Symbol.for(`assistant-hub-swarm.daily-scheduler.${config.name}`);
 
   /** One poll tick: run when forced, or when the daily wall-clock time is due. */
   async function runTick(s: DailyStore, ctx?: IntervalRunContext): Promise<{ summary: string }> {

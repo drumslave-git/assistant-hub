@@ -16,7 +16,7 @@ holds no list of them. A new platform is another container; see
 ```
    Telegram ◄──long polling──► transport  (stateless, its own repo, :3210)
                                   │  queue `transport-updates`          ▲ `reply.delivery`, `turn.lifecycle`
-                                  ▼  (every message, edit, reaction,    │ (Redis pub/sub `assistant-hub:events`)
+                                  ▼  (every message, edit, reaction,    │ (Redis pub/sub `assistant-hub-swarm:events`)
                                      delivery — media bytes attached)   │
    dashboard ──HTTP──► apps/core (Next.js, :3200)                       │
    (browser) ◄──SSE──   server/ingest ─► queue `inbound-messages` ─► server/turn ─► features/bot-messaging ──┘
@@ -192,7 +192,7 @@ message, builds the same turn event, and consumes its own `reply.delivery` /
 
 Several things must exist exactly once per process and must survive Next's bundle
 re-evaluation and dev hot-reload. Each is held on a `globalThis` slot keyed by a
-`Symbol.for("assistant-hub.…")`, because a module-local would be re-created per
+`Symbol.for("assistant-hub-swarm.…")`, because a module-local would be re-created per
 bundle copy:
 
 | Singleton | Module | Why it must be single |

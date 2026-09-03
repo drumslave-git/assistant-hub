@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "assistant-hub",
+  title: "assistant-hub-swarm",
   description: "Telegram LLM bot control dashboard",
 };
 

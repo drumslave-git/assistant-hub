@@ -24,7 +24,7 @@ interface AckEntry {
   settledAt: number | null;
 }
 
-const STORE_KEY = Symbol.for("assistant-hub.browser-agent.ack");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.browser-agent.ack");
 
 /** Settled markers whose ack never arrived are dropped after this long. */
 const STALE_MARKER_MS = 60 * 60 * 1000;

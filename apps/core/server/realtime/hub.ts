@@ -24,7 +24,7 @@ interface EventHub {
   publish(event: RealtimeEvent): void;
 }
 
-const STORE_KEY = Symbol.for("assistant-hub.realtime.hub");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.realtime.hub");
 
 function hub(): EventHub {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: EventHub };

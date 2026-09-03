@@ -18,7 +18,7 @@ export default async function SetupPage() {
     <main className="flex min-h-screen items-center justify-center p-6">
       <div className="w-full max-w-sm space-y-6">
         <div className="space-y-1 text-center">
-          <h1 className="text-xl font-semibold">Welcome to assistant-hub</h1>
+          <h1 className="text-xl font-semibold">Welcome to assistant-hub-swarm</h1>
           <p className="text-sm text-muted">
             Create the first admin account that will own this dashboard. Password at least{" "}
             {MIN_PASSWORD_LENGTH} characters.

@@ -515,7 +515,7 @@ links transitively (the turn that created a task, its tool calls, every fire,
 what each fire sent). A trace carries `assistantId` when the action was one
 assistant's; a user-role account sees only its own assistants' traces, and a
 trace without an `assistantId` is admin-only (`not_found` otherwise). Bundles
-carry `{ schema: "assistant-hub/trace-bundle@1", exportedAt, traces }` and
+carry `{ schema: "assistant-hub-swarm/trace-bundle@1", exportedAt, traces }` and
 include full event payloads — which is to say complete conversation content.
 Handle accordingly.
 

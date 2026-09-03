@@ -1,7 +1,7 @@
 # Adding a transport
 
 How to connect a new messaging platform (Signal, Matrix, Discord, Slack, …) to
-a running assistant-hub core.
+a running assistant-hub-swarm core.
 
 **You do not need this repository.** A transport is developed in its own
 repository, in any language, and ships as its own Docker image; the core's
@@ -40,7 +40,7 @@ name check and the LLM analyzer are the core's.
 ## The shape at a glance
 
 ```
- platform API ◄──► your transport service      ◄── Redis pub/sub `assistant-hub:events`
+ platform API ◄──► your transport service      ◄── Redis pub/sub `assistant-hub-swarm:events`
                     ├─ pollers / webhook           reply.delivery, turn.lifecycle,
                     ├─ HTTP :PORT                  transport.config.changed, assistant.deleted
                     │   /health                 ──► Redis queue `transport-updates`
@@ -376,7 +376,7 @@ failed send.
 
 Reference: [src/delivery.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/delivery.ts).
 
-Subscribe to `BUS_EVENTS_CHANNEL` (`assistant-hub:events`), parse by `type`,
+Subscribe to `BUS_EVENTS_CHANNEL` (`assistant-hub-swarm:events`), parse by `type`,
 and ignore anything whose `source` is not yours. Failures are logged, never
 thrown into the subscriber: one bad delivery must not kill the consumer for
 every chat.
@@ -494,7 +494,7 @@ the Tools page; identity and endpoint are refused as edits.
 A hosted tool has no ambient turn, and the model must not be handed one as an
 argument — otherwise it could aim an action at a chat nobody invited it into.
 The core attaches the binding to every call as request `_meta` under the key
-`assistant-hub/turn` (`TURN_META_KEY`); read it with `readTurnMeta(extra._meta)`
+`assistant-hub-swarm/turn` (`TURN_META_KEY`); read it with `readTurnMeta(extra._meta)`
 and **refuse** when it is absent or names another source:
 
 | Field | Meaning |

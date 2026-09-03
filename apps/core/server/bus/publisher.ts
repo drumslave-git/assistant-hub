@@ -13,7 +13,7 @@ import { getEnv } from "@/server/env";
  * surface the skipped publish audibly (trace event), never silently.
  */
 
-const KEY = Symbol.for("assistant-hub.core.bus.publisher");
+const KEY = Symbol.for("assistant-hub-swarm.core.bus.publisher");
 
 export function getBusPublisher(): BusPublisher | null {
   const env = getEnv();

@@ -1,10 +1,10 @@
 openapi: 3.1.0
 
 info:
-  title: assistant-hub dashboard API
+  title: assistant-hub-swarm dashboard API
   version: 1.48.0
   description: |
-    HTTP surface of the assistant-hub core: the dashboard, the web chat, and
+    HTTP surface of the assistant-hub-swarm core: the dashboard, the web chat, and
     the internal API the transport services (Telegram today) call back into.
 
     Conventions:
@@ -5318,7 +5318,7 @@ components:
       properties:
         schema:
           type: string
-          const: assistant-hub/trace-bundle@1
+          const: assistant-hub-swarm/trace-bundle@1
         exportedAt: { type: string, format: date-time }
         traces:
           type: array

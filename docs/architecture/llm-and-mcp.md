@@ -359,7 +359,7 @@ turn. Keying the storage by name instead of by module identity is what keeps
 the binding a fact about the process rather than about load order.
 
 A **remote** tool has no access to that storage, so the same binding travels
-with every call as request `_meta` under the key `assistant-hub/turn`
+with every call as request `_meta` under the key `assistant-hub-swarm/turn`
 (`packages/contracts/src/tool-meta.ts`): source, chat, assistant, thread, the
 message being answered, the speaker and their owner rights, and which delivery
 the turn may perform. It is attached out of band — invisible in the tool

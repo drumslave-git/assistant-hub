@@ -127,7 +127,7 @@ its own assistants explicitly. See [Tool connections](tool-connections.md).
 `DELETE /api/assistants/{id}` removes the row; its tasks, transport connections
 and tool selections cascade in the store. Whatever a source app keeps keyed on
 the id — the running poller — is dropped by the app reacting to the
-`assistant.deleted` bus event the service publishes on `assistant-hub:events`
+`assistant.deleted` bus event the service publishes on `assistant-hub-swarm:events`
 (the Telegram transport refetches its desired state and stops the connection).
 With no bus configured the trace carries a loud `warn` event saying the sources
 were not told, never a silent divergence. Web-chat threads bound to the

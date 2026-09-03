@@ -37,7 +37,7 @@ interface FloorState {
   timeZone: string;
 }
 
-const STORE_KEY = Symbol.for("assistant-hub.analytics.insight-scan-floor");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.analytics.insight-scan-floor");
 
 function slot(): { current: FloorState | null } {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: { current: FloorState | null } };

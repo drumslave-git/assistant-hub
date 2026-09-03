@@ -18,7 +18,7 @@ import { getEnv } from "@/server/env";
  * and each bundle would otherwise open its own connection per hot reload.
  */
 
-const STORE_KEY = Symbol.for("assistant-hub.core.inbound-queue");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.core.inbound-queue");
 
 /** The queue producer, or null when the bus is not configured (dev without Redis). */
 export function inboundQueue(): Queue<InboundMessageEvent> | null {

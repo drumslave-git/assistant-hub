@@ -18,7 +18,7 @@ import { requireEnv } from "@/server/env";
  * cutover collapses `DATABASE_URL` into `DATABASE_URL`.
  */
 
-const POOL_KEY = Symbol.for("assistant-hub.core.store.pool");
+const POOL_KEY = Symbol.for("assistant-hub-swarm.core.store.pool");
 
 /** The raw pool (SQL-level residents like the turn markers). */
 export function getStorePool(): Pool {
@@ -27,8 +27,8 @@ export function getStorePool(): Pool {
 
 export type StoreDb = ReturnType<typeof drizzle<typeof storeSchema>>;
 
-const DB_KEY = Symbol.for("assistant-hub.core.store.drizzle");
-const SCHEMA_KEY = Symbol.for("assistant-hub.core.store.drizzle.schema");
+const DB_KEY = Symbol.for("assistant-hub-swarm.core.store.drizzle");
+const SCHEMA_KEY = Symbol.for("assistant-hub-swarm.core.store.drizzle.schema");
 
 /**
  * Which tables the loaded schema defines. A drizzle handle binds its query

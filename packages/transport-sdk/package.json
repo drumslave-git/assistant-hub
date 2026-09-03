@@ -1,14 +1,14 @@
 {
   "name": "@assistant-hub-swarm/transport-sdk",
-  "version": "1.0.1",
-  "description": "Everything a transport needs to connect a messaging platform to an assistant-hub core: the wire contracts, the Redis queue and bus helpers, the internal-token guard, an MCP server over Hono, the trace client and image normalization.",
+  "version": "2.0.0",
+  "description": "Everything a transport needs to connect a messaging platform to an assistant-hub-swarm core: the wire contracts, the Redis queue and bus helpers, the internal-token guard, an MCP server over Hono, the trace client and image normalization.",
   "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
   },
   "keywords": [
-    "assistant-hub",
+    "assistant-hub-swarm",
     "transport",
     "mcp",
     "chatbot"

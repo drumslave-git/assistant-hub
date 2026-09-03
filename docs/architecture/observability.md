@@ -325,7 +325,7 @@ Each feature page links into `/debug?feature=<id>` via `featureDebugHref()`.
 ### Bundles
 
 Two download routes produce the same format
-(`traceBundleSchema`, `schema: "assistant-hub/trace-bundle@1"`):
+(`traceBundleSchema`, `schema: "assistant-hub-swarm/trace-bundle@1"`):
 
 | Route | Contents |
 | --- | --- |

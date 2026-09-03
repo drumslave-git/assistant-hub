@@ -417,4 +417,4 @@ export const INBOUND_MESSAGES_QUEUE = "inbound-messages";
  * lifecycle, status/progress the core bridges to SSE). One channel; the
  * `type` field discriminates — consumers filter, Redis fans out.
  */
-export const BUS_EVENTS_CHANNEL = "assistant-hub:events";
+export const BUS_EVENTS_CHANNEL = "assistant-hub-swarm:events";

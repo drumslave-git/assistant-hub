@@ -30,7 +30,7 @@ interface BlockerStore {
   loading: Promise<AdBlocker | null> | null;
 }
 
-const STORE_KEY = Symbol.for("assistant-hub.link-fetch.adblocker");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.link-fetch.adblocker");
 
 function store(): BlockerStore {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: BlockerStore };

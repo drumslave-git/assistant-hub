@@ -10,5 +10,12 @@
  * a tool call carries (`threadId`, `replyToSourceMessageId`) and the delivery
  * a tool reports back (`sourceMessageId`) were numbers, which a 64-bit
  * snowflake does not survive.
+ *
+ * 3 (2026-09-04): the platform is named `assistant-hub-swarm`, and the name is
+ * part of the wire — the bus channel (`assistant-hub-swarm:events`) and the
+ * `_meta` key a tool call carries (`assistant-hub-swarm/turn`). A transport on
+ * major 2 publishes to a channel nobody reads and reads a `_meta` key nobody
+ * sends, which is silent rather than loud; the handshake is what turns it into
+ * a refusal by name.
  */
-export const CONTRACT_MAJOR = 2;
+export const CONTRACT_MAJOR = 3;

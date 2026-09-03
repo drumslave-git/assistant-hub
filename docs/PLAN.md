@@ -1,4 +1,4 @@
-# assistant-hub — v2 Redesign Plan
+# assistant-hub-swarm — v2 Redesign Plan
 
 The source of truth for the v2 target architecture. Progress and phase
 status live in [PROGRESS.md](PROGRESS.md); the pointer entry is in
@@ -15,7 +15,7 @@ target below is what phases 6–10 build.
 ## Vision
 
 The Telegram bot becomes one connectable transport on top of a general
-assistant platform named **assistant-hub**. The generic foundation —
+assistant platform named **assistant-hub-swarm**. The generic foundation —
 pipeline, memory, tools, traces, dashboard, web chat — is the product;
 Telegram and any future transport (Signal, mobile apps) are interchangeable
 stateless transport apps that plug into it **without any core changes**.
@@ -382,7 +382,7 @@ criteria in PROGRESS.md when it starts.
   public-address guard; visibility scoping (own assistants' chats,
   threads, tasks, traces); offboarding (deactivate / cascade delete).
 - **Phase 10 — Cutover.** Rehearsed migration into the final shape,
-  runbook execution, rename to assistant-hub, release pipeline, docs
+  runbook execution, rename to assistant-hub-swarm, release pipeline, docs
   rewrite (AGENTS.md describes v1 and must be updated).
 
 Out of scope for v2 (planned, not built): stdio MCP execution, token

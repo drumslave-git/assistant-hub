@@ -15,7 +15,7 @@ import { sourceIdSchema } from "./source-events";
  * Namespaced under one key: `_meta` is a shared bag, and MCP reserves the
  * `modelcontextprotocol.io/` prefix for its own use.
  */
-export const TURN_META_KEY = "assistant-hub/turn";
+export const TURN_META_KEY = "assistant-hub-swarm/turn";
 
 export const turnToolMetaSchema = z.object({
   /** The source app the turn belongs to; the app hosting the tool. */

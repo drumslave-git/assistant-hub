@@ -11,7 +11,7 @@ import type { BrowserRunLiveState } from "../types";
  * re-evaluation / HMR, like the other in-process singletons.
  */
 
-const STORE_KEY = Symbol.for("assistant-hub.browser-agent.live-state");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.browser-agent.live-state");
 
 function store(): Map<string, BrowserRunLiveState> {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: Map<string, BrowserRunLiveState> };

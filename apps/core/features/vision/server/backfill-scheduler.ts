@@ -25,7 +25,7 @@ import { resolveDescribeDeps } from "./service";
 const DEBOUNCE_MS = 45_000;
 
 const FEATURE = FEATURES["vision-backfill"];
-const STORE_KEY = Symbol.for("assistant-hub.vision.backfill-scheduler");
+const STORE_KEY = Symbol.for("assistant-hub-swarm.vision.backfill-scheduler");
 
 function scheduler(): IdleScheduler {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: IdleScheduler };
