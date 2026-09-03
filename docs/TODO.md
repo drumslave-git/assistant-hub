@@ -34,6 +34,10 @@ current tree before acting on them.
 
 ## Transport SDK: a new transport with zero core edits (`in-progress`, opened 2026-09-02)
 
+**Where it stands (2026-09-04):** all six phases have landed locally and every
+check passes. What is left is not code — it is the publishes and pushes only
+the user can make (see "Still on the user" at the end of each phase).
+
 **Problem (user, 2026-09-02).** `docs/PLAN.md` and the overview promise that a
 transport connects "without any core change", while
 `docs/development/adding-a-transport.md` opens with a table of five core files
@@ -113,7 +117,8 @@ Any core edit for a new source id is a bug.
 
 **Order of work (user): core first, then SDK, then compose, then the tg split.**
 
-1. **Core accepts any transport** (`in-progress`).
+1. **Core accepts any transport** (`done`, 2026-09-03 — every sub-item below
+   landed).
    - **Registration is open (`done`, 2026-09-02).** `SourceId` is a slug
      (`SOURCE_ID_PATTERN`, `isSourceId`, `WEB_CHAT_SOURCE`; `SOURCE_IDS` is
      gone), `sourceIdSchema` checks shape only, scoped refs parse any slug
@@ -360,9 +365,9 @@ Any core edit for a new source id is a bug.
      and the Docker daemon was down for anything needing it.
 4. **tg split** (`done` in this repository, 2026-09-03 — the new repository is
    **staged locally and unpushed**; see "on the user" below).
-   - **The new repository is staged at `E:/projects/ahw-transport-telegram`**
-     (a sibling of this one; `git init`, three commits, **no remote — nothing
-     was pushed**). 39 files: `src/**` moved verbatim, a standalone
+   - **The new repository was staged as `ahw-transport-telegram`** beside this
+     one in the org workdir (`git init`, three commits, **no remote — nothing
+     was pushed** at the time). 39 files: `src/**` moved verbatim, a standalone
      `package.json`/`tsconfig.json`, a standalone `Dockerfile` (no workspace
      context, `.npmrc` for the SDK's scope, its own `HEALTHCHECK`), its own
      `release.yml` (a changed `version` on main builds, pushes
@@ -422,12 +427,12 @@ Any core edit for a new source id is a bug.
      — `npm install` resolves from the registry without a lockfile — so the
      transport's release can be proved first by bumping its version and
      pushing.
-5. **Discord transport** (`in-progress`, 2026-09-04 — **staged and verified
-   locally, unpushed**; the repository is the user's to create).
-   - **Staged at `E:/projects/ahw-transport-discord`** (in the org workdir;
-     `git init`, one commit, no remote). 28 files, on discord.js 14 and the
-     published SDK's API — written against `docs/development/adding-a-transport.md`
-     and the SDK alone.
+5. **Discord transport** (`done` locally, 2026-09-04 — **staged and verified,
+   unpushed**; the repository is the user's to create).
+   - **Staged as `ahw-transport-discord`** beside this one in the org workdir
+     (`git init`, no remote). On discord.js 14 and the SDK's API — written
+     against `docs/development/adding-a-transport.md` and the SDK alone, with
+     no access to this repository assumed.
    - **The core needed no change to accept it.** No branch, no capability
      flag, no list with `discord` added: that is the claim the contract has
      been making, and this is the first time something other than the
