@@ -91,7 +91,8 @@ Any core edit for a new source id is a bug.
   not exist); images live in the org's **GitHub Container Registry** as
   `ghcr.io/assistant-hub-swarm/ahw-core` and `ghcr.io/assistant-hub-swarm/ahw-tg`
   (the release job authenticates with its own `GITHUB_TOKEN`; no Docker Hub
-  secrets); the transport repositories will be **`ahw-transport-telegram`**
+  secrets) — the `ahw-tg` half was superseded by phase 4, which moved the
+  Telegram image to `ahw-transport-telegram` and its own repository; the transport repositories will be **`ahw-transport-telegram`**
   and **`ahw-transport-discord`** (an image published from one of them is
   named after its repository).
 - The wire contract also ships language-neutral: **JSON Schema** generated
