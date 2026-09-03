@@ -75,6 +75,7 @@ async function buildTurnEvent(
 ): Promise<InboundMessageEvent> {
   const source = event.source;
   const chatId = event.chat.id;
+  const chatRef = scopedRef(source, "chat", chatId);
   const direct = event.chat.kind === "direct";
   const scope = { source, chatId, assistantId: receiver.assistantId, direct };
   const senderRef = scopedRef(source, "user", event.sender.userId);
@@ -116,7 +117,7 @@ async function buildTurnEvent(
     // be handed the same message, and their markers and traces must not
     // collide.
     correlationId: turnCorrelationId(
-      chatId,
+      chatRef,
       event.message.sourceMessageId,
       receiver.assistantId,
     ),
@@ -220,6 +221,7 @@ async function resolveReceivers(event: TransportMessageEvent): Promise<Transport
 async function handleTransportMessage(event: TransportMessageEvent): Promise<void> {
   const source = event.source;
   const chatId = event.chat.id;
+  const chatRef = scopedRef(source, "chat", chatId);
   const direct = event.chat.kind === "direct";
 
   // Remember every human sender + mirror every human message (addressed or
@@ -310,7 +312,7 @@ async function handleTransportMessage(event: TransportMessageEvent): Promise<voi
     await port
       ?.sendMessage(chatId, {
         text: selfLinkReplyText(selfLink),
-        replyToMessageId: Number(event.message.sourceMessageId) || null,
+        replyToSourceMessageId: event.message.sourceMessageId,
         assistantId: event.receivedBy,
       })
       .catch((err) => {
@@ -346,9 +348,9 @@ async function handleTransportMessage(event: TransportMessageEvent): Promise<voi
         assistantId: event.receivedBy,
         trigger: {
           kind: "transport",
-          actor: event.sender.userId,
+          actor: scopedRef(source, "user", event.sender.userId),
           correlationId: turnCorrelationId(
-            chatId,
+            chatRef,
             event.message.sourceMessageId,
             event.receivedBy,
           ),
@@ -474,7 +476,11 @@ async function crossFeedDelivered(event: MessageDeliveredEvent): Promise<void> {
         v: 1,
         eventId: randomUUID(),
         occurredAt: new Date().toISOString(),
-        correlationId: turnCorrelationId(chatId, event.sourceMessageId, target.assistantId),
+        correlationId: turnCorrelationId(
+          scopedRef(event.source, "chat", chatId),
+          event.sourceMessageId,
+          target.assistantId,
+        ),
         type: "message.inbound",
         source: event.source,
         assistantId: target.assistantId,
@@ -616,8 +622,11 @@ async function handleReaction(event: TransportReactionEvent): Promise<void> {
       assistantId: event.assistantId,
       trigger: {
         kind: "transport",
-        actor: event.user.userId,
-        correlationId: `${event.chat.id}:${event.sourceMessageId}`,
+        actor: scopedRef(event.source, "user", event.user.userId),
+        correlationId: turnCorrelationId(
+          scopedRef(event.source, "chat", event.chat.id),
+          event.sourceMessageId,
+        ),
       },
       inputSummary: "reaction on a bot reply",
     },

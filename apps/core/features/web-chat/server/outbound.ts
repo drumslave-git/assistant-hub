@@ -17,13 +17,25 @@ import { pingThreads } from "./service";
  * `/internal/chats/*` send API, as direct store writes since the dissolve.
  * "Delivering" to a web thread is storing the line and pinging the dashboard,
  * because the thread is already on screen — there is no platform to hand it
- * to. The port shape is tg's, so every caller (voice replies, generated
- * images, browsing acknowledgements, conversation naming) stays one client.
+ * to. The port shape is every transport's, so every caller (voice replies,
+ * generated images, browsing acknowledgements, conversation naming) stays one
+ * client.
+ *
+ * The web chat's own message ids are its table's serial; they cross the port
+ * as strings like any other source's, and come back through `Number()` only
+ * here, where the row they name is this app's own.
  */
 
 async function requireThread(threadId: string): Promise<void> {
   const thread = await getThreadById(threadId);
   if (!thread) throw ApiError.notFound(`thread ${threadId} not found`);
+}
+
+/** This app's own row id behind a source message id (see the module note). */
+function messageRowId(sourceMessageId: string | null | undefined): number | null {
+  if (sourceMessageId == null) return null;
+  const id = Number(sourceMessageId);
+  return Number.isFinite(id) ? id : null;
 }
 
 export function webChatOutbound(): SourceOutboundPort {
@@ -34,10 +46,10 @@ export function webChatOutbound(): SourceOutboundPort {
         threadId,
         role: "assistant",
         content: opts.text,
-        replyToMessageId: opts.replyToMessageId ?? null,
+        replyToMessageId: messageRowId(opts.replyToSourceMessageId),
       });
       pingThreads();
-      return { messageId: stored.id };
+      return { sourceMessageId: String(stored.id) };
     },
 
     /**
@@ -54,7 +66,7 @@ export function webChatOutbound(): SourceOutboundPort {
         threadId,
         role: "assistant",
         content: opts.text,
-        replyToMessageId: opts.replyToMessageId ?? null,
+        replyToMessageId: messageRowId(opts.replyToSourceMessageId),
       });
       // The audio needs no describing — its words are the message's own text.
       await describeOnInsert({
@@ -65,7 +77,7 @@ export function webChatOutbound(): SourceOutboundPort {
         description: opts.text,
       }).catch(() => null);
       pingThreads();
-      return { messageId: stored.id, asVoice: true };
+      return { sourceMessageId: String(stored.id), asVoice: true };
     },
 
     /**
@@ -75,7 +87,7 @@ export function webChatOutbound(): SourceOutboundPort {
      */
     async sendPhotos(threadId, opts) {
       await requireThread(threadId);
-      const delivered: Array<{ messageId: number; stored: boolean }> = [];
+      const delivered: Array<{ sourceMessageId: string; stored: boolean }> = [];
       for (const image of opts.images) {
         const message = await appendMessage({ threadId, role: "assistant", content: "" });
         const media = await insertMedia({
@@ -84,7 +96,7 @@ export function webChatOutbound(): SourceOutboundPort {
           mimeType: "image/png",
           frames: [image],
         }).catch(() => null);
-        delivered.push({ messageId: message.id, stored: media !== null });
+        delivered.push({ sourceMessageId: String(message.id), stored: media !== null });
       }
       pingThreads();
       return { delivered };
@@ -112,11 +124,11 @@ export function webChatOutbound(): SourceOutboundPort {
         description: opts.filename,
       }).catch(() => null);
       pingThreads();
-      return { messageId: message.id };
+      return { sourceMessageId: String(message.id) };
     },
 
-    async deleteMessage(threadId, messageId) {
-      const deleted = await markMessageDeleted(threadId, messageId);
+    async deleteMessage(threadId, sourceMessageId) {
+      const deleted = await markMessageDeleted(threadId, Number(sourceMessageId));
       if (deleted) pingThreads();
       return { deleted };
     },

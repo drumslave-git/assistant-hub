@@ -13,6 +13,7 @@ export {
   listTraces,
   listFeatures,
   getEventsForTraces,
+  getLatestTraceIdForMessage,
   getLatestTraceIdsByCorrelation,
   scanTraces,
   type ScanTracesInput,

@@ -21,6 +21,8 @@ import * as storeSchema from "../../../store/schema";
 import { createAssistant } from "@/features/assistants/server/service";
 import { findLinksForRefs, listMembersOfLinks } from "@/features/person-links/server/repository";
 import { silencedAssistantIds } from "@/server/ownership";
+import { CONTRACT_MAJOR } from "@assistant-hub-swarm/contracts";
+
 import { desiredTransportState } from "@/server/transports/service";
 
 import { LINK_CODE_TTL_MS, mintLinkCode, redeemLinkCode } from "./self-link";
@@ -313,7 +315,9 @@ describe("offboarding (Phase 9)", () => {
       db,
     );
     await pool.query(
-      `INSERT INTO transports (id, name, base_url, enabled) VALUES ('tg', 'Telegram', 'http://x', true)`,
+      `INSERT INTO transports (id, name, base_url, enabled, contract_major)
+       VALUES ('tg', 'Telegram', 'http://x', true, $1)`,
+      [CONTRACT_MAJOR],
     );
     await pool.query(
       `INSERT INTO assistant_transports (id, assistant_id, transport, config, enabled)

@@ -82,7 +82,8 @@ export interface Task {
   /** The transport the chat lives on — the namespace of every id on this row — or null for a global task. */
   chatSource: SourceId | null;
   /** Forum-topic thread to deliver into, or null (the chat root). */
-  threadId: number | null;
+  /** Source-local forum-topic thread, or null (chat root) — the platform's own id. */
+  threadId: string | null;
   /** Source-local user id of whoever created it, or null (dashboard). */
   createdByUserId: string | null;
   /** Where the task was authored — provenance, and half the authority rule. */

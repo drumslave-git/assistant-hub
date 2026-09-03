@@ -7,6 +7,21 @@
  */
 
 /**
+ * The number behind a platform id the core sent as a string.
+ *
+ * Every id on the wire is text (the core keeps them verbatim, because not
+ * every platform's are numbers) while Telegram's API wants numbers — so the
+ * conversion happens once, here, at the boundary that owns it. A value that
+ * is not a number at all resolves to null rather than `NaN`, which Telegram
+ * would reject with a message about a parameter nobody sent.
+ */
+export function telegramId(value: string | number | null | undefined): number | null {
+  if (value == null) return null;
+  const id = Number(value);
+  return Number.isFinite(id) ? id : null;
+}
+
+/**
  * How a reply cites a message it is talking about: `#13488`, or the numero
  * sign (`№`, written as an escape to keep this source ASCII) that a model
  * reaches for in some languages. Anchored to a boundary so a URL fragment

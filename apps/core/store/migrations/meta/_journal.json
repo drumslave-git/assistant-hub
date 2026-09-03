@@ -113,6 +113,13 @@
       "when": 1788381180297,
       "tag": "0015_chat_refs_in_insights",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1788439883344,
+      "tag": "0016_thread_ids_as_text",
+      "breakpoints": true
     }
   ]
 }

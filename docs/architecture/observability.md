@@ -19,7 +19,7 @@ its own trace shape; add an event type here instead.
 | `feature` | Must be a registered id from `lib/features.ts` |
 | `action` | e.g. `reply`, `summarize`, `test-connection`, or the tool name |
 | `status` | `pending` \| `running` \| `success` \| `error` \| `skipped` |
-| `trigger` | `{ kind, actor?, correlationId? }` — `kind` is `telegram` \| `chat` \| `dashboard` \| `cron` \| `system` \| `api` \| `test` |
+| `trigger` | `{ kind, actor?, correlationId? }` — `kind` is `transport` \| `chat` \| `dashboard` \| `cron` \| `system` \| `api` \| `test` (`telegram` is what rows recorded before 2026-09-02 carry). `actor` is a **scoped ref** for anything a person or a chat did (`tg:user:100`), so the Debug facet and the analytics user filter mean one identity and not one number two platforms both hand out |
 | `startedAt`, `finishedAt` | |
 | `inputSummary`, `outputSummary` | Short human summaries |
 | `error` | `{ code?, message }` when `status = 'error'` |
@@ -120,8 +120,8 @@ belongs to, filterable at `/debug?correlationId=…`:
 
 | Flow | Correlation |
 | --- | --- |
-| A reply turn | `<chatId>:<messageId>` — stamped on the reply trace and on every `mcp-tools-*` trace its tool calls open (via the tool context) |
-| A task fire | The task id at open, settled to `<chatId>:<sentMessageId>` once delivered |
+| A reply turn | `<chatRef>:<sourceMessageId>:<assistantId>` (`turnCorrelationId`) — stamped on the reply trace and on every `mcp-tools-*` trace its tool calls open (via the tool context). The chat is named by ref, so the analytics chat filter, which matches this prefix, cannot count another transport's traffic |
+| A task fire | The task id at open, settled to the delivered message's own correlation (`<chatRef>:<sourceMessageId>`, no assistant) once delivered |
 | A nightly sweep (memory, summaries) | One `newRunCorrelationId(job)` per run (`memory:20260815-040100`), shared by every chat-day trace it opens |
 | A browsing run | The run id |
 | Anything standalone | Its own trace id (`startTrace` fills it in), so the filter is never empty |

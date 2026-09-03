@@ -35,13 +35,19 @@ import {
  * tool that app's own MCP server simply does not offer (Phase 5).
  */
 
+/**
+ * Every id crossing this port is the OWNING platform's own, verbatim, as a
+ * string — never parsed into a number. A Discord snowflake does not survive
+ * `Number()`, and a web thread's uuid never did; the store keeps message ids
+ * as text end to end, so the port that hands them back must too.
+ */
 export interface SourceOutboundPort {
   sendMessage(
     chatId: string,
     opts: {
       text: string;
-      replyToMessageId?: number | null;
-      threadId?: number | null;
+      replyToSourceMessageId?: string | null;
+      threadId?: string | null;
       silent?: boolean;
       /**
        * The assistant whose bot sends (Phase 3: one connection per
@@ -52,22 +58,22 @@ export interface SourceOutboundPort {
       /** Core-resolved whitelist for `#<id>` citation links in `text`. */
       linkableSourceMessageIds?: readonly string[];
     },
-  ): Promise<{ messageId: number }>;
+  ): Promise<{ sourceMessageId: string }>;
   /** Voice bubble with the source's own text fallback; reports what was sent. */
   sendVoice(
     chatId: string,
     opts: {
       audioBase64: string;
       text: string;
-      replyToMessageId?: number | null;
-      threadId?: number | null;
+      replyToSourceMessageId?: string | null;
+      threadId?: string | null;
     },
-  ): Promise<{ messageId: number; asVoice: boolean }>;
+  ): Promise<{ sourceMessageId: string; asVoice: boolean }>;
   /** Generated images; the source mirrors + stores each as pending media. */
   sendPhotos(
     chatId: string,
-    opts: { images: string[]; threadId?: number | null },
-  ): Promise<{ delivered: { messageId: number; stored: boolean }[] }>;
+    opts: { images: string[]; threadId?: string | null },
+  ): Promise<{ delivered: { sourceMessageId: string; stored: boolean }[] }>;
   /**
    * A file (a browser-run download), sent as playable media where the
    * container allows; the caption is mirrored as the message's content.
@@ -79,11 +85,11 @@ export interface SourceOutboundPort {
       filename: string;
       mime?: string | null;
       caption?: string | null;
-      threadId?: number | null;
+      threadId?: string | null;
     },
-  ): Promise<{ messageId: number }>;
+  ): Promise<{ sourceMessageId: string }>;
   /** `deleted: false` means the platform refused — cosmetic for every caller. */
-  deleteMessage(chatId: string, messageId: number): Promise<{ deleted: boolean }>;
+  deleteMessage(chatId: string, sourceMessageId: string): Promise<{ deleted: boolean }>;
   /**
    * Name a conversation whose source asked to have it named
    * (`chatInfo.titleProvisional`). Absent on sources whose conversations have
@@ -120,12 +126,12 @@ export function sourceOutbound(source: SourceId): SourceOutboundPort | null {
       ).catch(() => []);
       return port.sendMessage(chatId, { ...opts, linkableSourceMessageIds: linkable });
     },
-    async deleteMessage(chatId, messageId) {
-      const result = await port.deleteMessage(chatId, messageId);
+    async deleteMessage(chatId, sourceMessageId) {
+      const result = await port.deleteMessage(chatId, sourceMessageId);
       if (result.deleted) {
         await markSourceMessageDeleted(
           { source, chatId, assistantId: null, direct: false },
-          String(messageId),
+          sourceMessageId,
         ).catch(() => undefined);
       }
       return result;
@@ -164,15 +170,14 @@ export function sourceApiOutbound(source: SourceId): SourceOutboundPort {
           method: "POST",
           body: JSON.stringify({
             text: opts.text,
-            replyToSourceMessageId:
-              opts.replyToMessageId != null ? String(opts.replyToMessageId) : null,
-            threadId: opts.threadId != null ? String(opts.threadId) : null,
+            replyToSourceMessageId: opts.replyToSourceMessageId ?? null,
+            threadId: opts.threadId ?? null,
             silent: opts.silent ?? false,
             linkableSourceMessageIds: opts.linkableSourceMessageIds ?? [],
           }),
         }),
       );
-      return { messageId: Number(body.sourceMessageId) };
+      return { sourceMessageId: body.sourceMessageId };
     },
     async sendVoice(chatId, opts) {
       const body = internalSentVoiceResponseSchema.parse(
@@ -181,13 +186,12 @@ export function sourceApiOutbound(source: SourceId): SourceOutboundPort {
           body: JSON.stringify({
             audioBase64: opts.audioBase64,
             text: opts.text,
-            replyToSourceMessageId:
-              opts.replyToMessageId != null ? String(opts.replyToMessageId) : null,
-            threadId: opts.threadId != null ? String(opts.threadId) : null,
+            replyToSourceMessageId: opts.replyToSourceMessageId ?? null,
+            threadId: opts.threadId ?? null,
           }),
         }),
       );
-      return { messageId: Number(body.sourceMessageId), asVoice: body.asVoice };
+      return { sourceMessageId: body.sourceMessageId, asVoice: body.asVoice };
     },
     async sendPhotos(chatId, opts) {
       const body = internalSentPhotosResponseSchema.parse(
@@ -195,16 +199,11 @@ export function sourceApiOutbound(source: SourceId): SourceOutboundPort {
           method: "POST",
           body: JSON.stringify({
             images: opts.images,
-            threadId: opts.threadId != null ? String(opts.threadId) : null,
+            threadId: opts.threadId ?? null,
           }),
         }),
       );
-      return {
-        delivered: body.delivered.map((item) => ({
-          messageId: Number(item.sourceMessageId),
-          stored: item.stored,
-        })),
-      };
+      return { delivered: body.delivered };
     },
     async sendFile(chatId, opts) {
       const body = internalSentFileResponseSchema.parse(
@@ -216,15 +215,17 @@ export function sourceApiOutbound(source: SourceId): SourceOutboundPort {
             filename: opts.filename,
             mime: opts.mime ?? null,
             caption: opts.caption ?? null,
-            threadId: opts.threadId != null ? String(opts.threadId) : null,
+            threadId: opts.threadId ?? null,
           }),
         }),
       );
-      return { messageId: Number(body.sourceMessageId) };
+      return { sourceMessageId: body.sourceMessageId };
     },
-    async deleteMessage(chatId, messageId) {
+    async deleteMessage(chatId, sourceMessageId) {
       const body = internalDeleteMessageResponseSchema.parse(
-        await request(chatPath(chatId, `/messages/${messageId}`), { method: "DELETE" }),
+        await request(chatPath(chatId, `/messages/${encodeURIComponent(sourceMessageId)}`), {
+          method: "DELETE",
+        }),
       );
       return { deleted: body.deleted };
     },

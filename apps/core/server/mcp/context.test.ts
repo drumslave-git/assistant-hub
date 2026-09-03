@@ -53,15 +53,33 @@ describe("MCP tool context", () => {
 describe("toolContextTrigger", () => {
   it("stamps the turn's correlation so tool-driven traces join their turn's flow", () => {
     expect(
-      toolContextTrigger({ source: "tg", chatId: "100", userId: "77", correlationId: "100:41" }),
-    ).toEqual({ kind: "transport", actor: "77", correlationId: "100:41" });
+      toolContextTrigger({
+        source: "tg",
+        chatId: "100",
+        userId: "77",
+        correlationId: "tg:chat:100:41",
+      }),
+    ).toEqual({ kind: "transport", actor: "tg:user:77", correlationId: "tg:chat:100:41" });
   });
 
-  it("falls back to the chat id when the context carries no correlation", () => {
+  it("names the actor and the correlation by ref, so two transports never share one", () => {
+    expect(toolContextTrigger({ source: "tg", chatId: "100", userId: "77" })).toEqual({
+      kind: "transport",
+      actor: "tg:user:77",
+      correlationId: "tg:chat:100",
+    });
+    expect(toolContextTrigger({ source: "discord", chatId: "100", userId: "77" })).toEqual({
+      kind: "transport",
+      actor: "discord:user:77",
+      correlationId: "discord:chat:100",
+    });
+  });
+
+  it("falls back to the chat's ref when the context carries neither correlation nor sender", () => {
     expect(toolContextTrigger({ source: "tg", chatId: "100" })).toEqual({
       kind: "transport",
-      actor: "100",
-      correlationId: "100",
+      actor: "tg:chat:100",
+      correlationId: "tg:chat:100",
     });
   });
 });

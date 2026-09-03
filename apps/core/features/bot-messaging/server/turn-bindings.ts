@@ -78,8 +78,8 @@ export interface TurnBindingsInput {
   assistantId: string;
   /** Numeric sender id as a string, or null (no sender identity). */
   senderId: string | null;
-  /** Source-local sub-thread (forum topic), or null. */
-  threadId: number | null;
+  /** Source-local sub-thread (forum topic), or null — the platform's own id, verbatim. */
+  threadId: string | null;
   /** The turn's correlation id — every tool call's own trace carries it. */
   correlationId: string;
   /** The current turn's effective text (message text / caption / transcript). */
@@ -102,7 +102,7 @@ export interface TurnBindingsInput {
    * under it. Travels to the source app with the delivery call; the model
    * never names a target.
    */
-  replyToMessageId?: number | null;
+  replyToSourceMessageId?: string | null;
   /**
    * Actions-started hook, run before ANY tool executes (and awaited): the
    * queue consumer's retry gate — a turn that ran a tool must never re-run.
@@ -209,7 +209,7 @@ export function createTurnBindings(input: TurnBindingsInput): TurnBindings {
           // never from the goal text (the model has corrupted re-typed URLs).
           messageUrls: extractMessageUrls(messageText),
           threadId: threadId ?? undefined,
-          replyToMessageId: input.replyToMessageId ?? null,
+          replyToSourceMessageId: input.replyToSourceMessageId ?? null,
           collectImage: input.collectImage,
           // A task-opened turn sends nothing of its own: the source app's
           // `reply_to_message` tool is the only way it reaches the chat, and

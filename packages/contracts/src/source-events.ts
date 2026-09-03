@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { scopedRefSchema, sourceIdSchema } from "./scoped-ref";
+import { scopedRefSchema, sourceIdSchema, type ScopedRefString } from "./scoped-ref";
 
 export { sourceIdSchema };
 
@@ -367,16 +367,27 @@ export type TurnLifecycleEvent = z.infer<typeof turnLifecycleEventSchema>;
  * turn-action markers and traces would collide: one turn's settle would clear
  * the other's marker, and Debug would show two turns as one.
  *
- * (Source-local ids: a Telegram DM's chat id is the peer's user id and its
- * message ids are numbered per bot, so the chat/message pair alone is not even
- * unique across bots there.)
+ * The chat is named by its **scoped ref**, never by its source-local id: two
+ * transports can hand out the same numeric chat id, and an id built from the
+ * local half alone would file both chats' turns under one correlation (and
+ * make the analytics chat filter, which matches on this prefix, count the
+ * other platform's traffic). Source-local ids are not unique on their own
+ * either way — a Telegram DM's chat id is the peer's user id and its message
+ * ids are numbered per bot.
+ *
+ * Omit `assistantId` for work that belongs to the MESSAGE rather than to one
+ * assistant's turn (a vision describe, a feedback reflection): the shorter id
+ * still shares the turn's chat prefix, so Debug and the chat filter group them
+ * together.
  */
 export function turnCorrelationId(
-  chatId: string,
+  chatRef: ScopedRefString | string,
   sourceMessageId: string,
-  assistantId: string,
+  assistantId?: string | null,
 ): string {
-  return `${chatId}:${sourceMessageId}:${assistantId}`;
+  return assistantId
+    ? `${chatRef}:${sourceMessageId}:${assistantId}`
+    : `${chatRef}:${sourceMessageId}`;
 }
 
 /**

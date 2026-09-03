@@ -2,7 +2,7 @@ import "server-only";
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type { SourceId } from "@assistant-hub-swarm/contracts";
+import { WEB_CHAT_SOURCE, scopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
 
 import type { TraceTrigger } from "@/lib/trace";
 
@@ -32,8 +32,8 @@ export interface McpToolContext {
   /** The sender's numeric Telegram user id, when known (absent for tests). */
   userId?: string | null;
   /**
-   * The turn's trace correlation (`<chatId>:<messageId>` for a reply turn, the
-   * task id for a fire), stamped on every tool call's own trace so a whole
+   * The turn's trace correlation (see `turnCorrelationId` for a reply turn,
+   * the task id for a fire), stamped on every tool call's own trace so a whole
    * turn — reply trace plus each `mcp-tools-*` trace it caused — reads as one
    * process under the Debug correlation filter.
    */
@@ -67,7 +67,7 @@ export interface McpToolContext {
    */
   messageUrls?: string[];
   /** The forum-topic thread the turn is in, when any (so a task delivers there). */
-  threadId?: number | null;
+  threadId?: string | null;
   /**
    * Sink for binary artifacts a tool produced (currently: generated images, as
    * base64), collected here and delivered to the chat by the pipeline *after* the
@@ -98,7 +98,7 @@ export interface McpToolContext {
    * the source app with a delivery tool call, which is how a reply lands under
    * the right message without the model ever naming a target.
    */
-  replyToMessageId?: number | null;
+  replyToSourceMessageId?: string | null;
   /**
    * What the turn does about a message its source delivered — a task stamps
    * the wording it used, a fire counts what actually reached the chat.
@@ -112,7 +112,7 @@ export interface McpToolContext {
    */
   onDelivered?: (delivery: {
     ok: boolean;
-    messageId: number | null;
+    sourceMessageId: string | null;
     text: string;
   }) => Promise<void> | void;
   /**
@@ -187,13 +187,18 @@ export function tryGetToolContext(): McpToolContext | null {
  * feature's tool-driven trace carries the turn's correlation and groups with the
  * reply (or fire) that caused it. Handlers used to build this by hand and
  * stamped the bare chat id as correlation, which cut the trace out of its turn's
- * flow (operator report, 2026-08-18). The chat id remains only as the fallback
- * for contexts bound without a correlation (tests, legacy callers).
+ * flow (operator report, 2026-08-18). The chat's ref remains only as the
+ * fallback for contexts bound without a correlation (tests, legacy callers).
+ *
+ * Actor and correlation are refs, never source-local ids: Debug's actor facet
+ * and the analytics chat filter match them exactly, and two transports can
+ * hand out the same numeric id.
  */
 export function toolContextTrigger(ctx: McpToolContext): TraceTrigger {
+  const chatRef = scopedRef(ctx.source, "chat", ctx.chatId);
   return {
-    kind: ctx.source === "chat" ? "chat" : "transport",
-    actor: ctx.userId ?? ctx.chatId,
-    correlationId: ctx.correlationId ?? ctx.chatId,
+    kind: ctx.source === WEB_CHAT_SOURCE ? "chat" : "transport",
+    actor: ctx.userId ? scopedRef(ctx.source, "user", ctx.userId) : chatRef,
+    correlationId: ctx.correlationId ?? chatRef,
   };
 }

@@ -77,7 +77,7 @@ function turnMeta(scope: ToolScope): TurnToolMeta | null {
     // What this turn may deliver, and what it would be answering. Both are
     // facts about the turn: the model picks the words and nothing else.
     deliveryKind: ctx.deliveryKind ?? null,
-    replyToMessageId: ctx.replyToMessageId ?? null,
+    replyToSourceMessageId: ctx.replyToSourceMessageId ?? null,
   };
 }
 
@@ -148,7 +148,7 @@ export async function resolveConnectionToolset(
           if (delivered && onDelivered) {
             await onDelivered({
               ok: delivered.ok,
-              messageId: delivered.messageId ?? null,
+              sourceMessageId: delivered.sourceMessageId ?? null,
               text: delivered.text,
             });
           }

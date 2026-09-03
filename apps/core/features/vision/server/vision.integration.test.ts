@@ -178,9 +178,9 @@ describe("describeAndStore", () => {
   it("describes pending media, drops the bytes, and records a success trace", async () => {
     await seedPending({ sourceMessageId: 30 });
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "30" },
+      { source: "tg", chatId: "5", sourceMessageId: "30" },
       { complete: async () => fakeComplete("a red car on a street") },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
     expect(result?.status).toBe("described");
     expect(result?.description).toBe("a red car on a street");
@@ -210,14 +210,14 @@ describe("describeAndStore", () => {
 
     let seen: unknown = null;
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "40" },
+      { source: "tg", chatId: "5", sourceMessageId: "40" },
       {
         complete: async (messages) => {
           seen = messages;
           return fakeComplete("a man lighting his beard on fire across the clip");
         },
       },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
 
     // The describe request carried all three frames as separate, ordered images.
@@ -236,9 +236,9 @@ describe("describeAndStore", () => {
 
   it("skips (no throw) when there is no pending media", async () => {
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "999" },
+      { source: "tg", chatId: "5", sourceMessageId: "999" },
       { complete: async () => fakeComplete("unused") },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
     expect(result).toBeNull();
     const traces = await listTraces({ feature: "vision" });
@@ -248,13 +248,13 @@ describe("describeAndStore", () => {
   it("leaves the row pending and fails the trace when the model errors", async () => {
     await seedPending({ sourceMessageId: 31 });
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "31" },
+      { source: "tg", chatId: "5", sourceMessageId: "31" },
       {
         complete: async () => {
           throw new Error("provider down");
         },
       },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
     expect(result).toBeNull();
     const annotations = await getMediaAnnotationsForMessages("tg", "5", ["31"], ctx.db);

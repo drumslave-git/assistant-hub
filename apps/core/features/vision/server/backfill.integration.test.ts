@@ -54,6 +54,7 @@ async function seedPending(
 /** The source seam over this test's database — what the tg API provides live. */
 function source(): VisionBackfillSource {
   return {
+    source: "tg",
     store: dbMediaStore(ctx.db, "tg"),
     listPending: (limit) => listPendingMedia(ctx.db, "tg", limit),
     countPending: () => countPendingMedia(ctx.db, "tg"),

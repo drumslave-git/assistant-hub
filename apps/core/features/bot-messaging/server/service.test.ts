@@ -53,9 +53,10 @@ async function recordExchange(
 function incoming(partial: Partial<IncomingMessage>): IncomingMessage {
   return {
     message: makeMessage({ message_id: 7, chat: { id: 5, type: "private" } }),
+    source: "tg",
     chatId: "5",
     chatType: "private",
-    messageId: 7,
+    sourceMessageId: "7",
     fromId: "100",
     fromIsBot: false,
     text: "hello",
@@ -80,7 +81,7 @@ function deps(over: Partial<BotMessagingDeps> = {}): BotMessagingDeps {
       await recordExchange(trace, messages, result);
       return result;
     }),
-    sendReply: vi.fn().mockResolvedValue({ messageId: 99 }),
+    sendReply: vi.fn().mockResolvedValue({ sourceMessageId: "99" }),
     loadHistory: vi.fn().mockResolvedValue({ messages: [], count: 0 }),
     recordReply: vi.fn().mockResolvedValue(undefined),
     startTyping: vi.fn().mockReturnValue(stopTyping),
@@ -238,8 +239,8 @@ describe("handleIncomingMessage", () => {
     // The delivered reply is mirrored into history, threaded to the triggering msg.
     expect(d.recordReply).toHaveBeenCalledWith({
       content: "hi back",
-      sourceMessageId: 99,
-      replyToMessageId: 7,
+      sourceMessageId: "99",
+      replyToSourceMessageId: "7",
     });
     // Typing shown while generating, then stopped once the turn settles.
     expect(d.startTyping).toHaveBeenCalledOnce();
@@ -1150,7 +1151,7 @@ describe("voice turns", () => {
   });
 
   it("delivers the reply through sendVoiceReply and records a voice send", async () => {
-    const sendVoiceReply = vi.fn().mockResolvedValue({ messageId: 42, asVoice: true });
+    const sendVoiceReply = vi.fn().mockResolvedValue({ sourceMessageId: "42", asVoice: true });
     const d = deps({ sendVoiceReply });
     const out = await handleIncomingMessage(
       incoming({ text: "what's the weather?", isVoice: true, hasVision: true }),
@@ -1163,17 +1164,17 @@ describe("voice turns", () => {
       .map((c) => c[0])
       .find((e) => e.type === "output");
     expect(output.message).toBe("send voice message");
-    expect(output.data).toMatchObject({ content: "hi back", messageId: 42, asVoice: true });
+    expect(output.data).toMatchObject({ content: "hi back", sourceMessageId: "42", asVoice: true });
     // The text form is still what history mirrors.
     expect(d.recordReply).toHaveBeenCalledWith({
       content: "hi back",
-      sourceMessageId: 42,
-      replyToMessageId: 7,
+      sourceMessageId: "42",
+      replyToSourceMessageId: "7",
     });
   });
 
   it("records a plain text send when the voice path fell back internally", async () => {
-    const sendVoiceReply = vi.fn().mockResolvedValue({ messageId: 43, asVoice: false });
+    const sendVoiceReply = vi.fn().mockResolvedValue({ sourceMessageId: "43", asVoice: false });
     const d = deps({ sendVoiceReply });
     await handleIncomingMessage(incoming({ text: "hi", isVoice: true }), d);
     const output = recorder.event.mock.calls

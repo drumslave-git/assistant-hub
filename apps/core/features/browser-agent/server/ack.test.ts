@@ -8,10 +8,10 @@ afterEach(() => {
 
 describe("browser-agent run acks", () => {
   it("hands a registered ack to the runner exactly once", () => {
-    expect(registerRunAck("run-1", "tg:chat:42", 100)).toBe("stored");
-    expect(registerRunAck("run-1", "tg:chat:42", 101)).toBe("stored");
+    expect(registerRunAck("run-1", "tg:chat:42", "100")).toBe("stored");
+    expect(registerRunAck("run-1", "tg:chat:42", "101")).toBe("stored");
 
-    expect(takeRunAck("run-1")).toEqual({ chatRef: "tg:chat:42", messageIds: [100, 101] });
+    expect(takeRunAck("run-1")).toEqual({ chatRef: "tg:chat:42", sourceMessageIds: ["100", "101"] });
     // Taken means gone — a second settle sweep must not delete anything again.
     expect(takeRunAck("run-1")).toBeNull();
   });
@@ -21,15 +21,15 @@ describe("browser-agent run acks", () => {
     expect(takeRunAck("run-2")).toBeNull();
 
     // Every late chunk learns the same thing — the caller deletes immediately.
-    expect(registerRunAck("run-2", "tg:chat:42", 200)).toBe("settled");
-    expect(registerRunAck("run-2", "tg:chat:42", 201)).toBe("settled");
+    expect(registerRunAck("run-2", "tg:chat:42", "200")).toBe("settled");
+    expect(registerRunAck("run-2", "tg:chat:42", "201")).toBe("settled");
   });
 
   it("keeps runs independent", () => {
-    registerRunAck("run-a", "tg:chat:1", 1);
-    registerRunAck("run-b", "tg:chat:2", 2);
+    registerRunAck("run-a", "tg:chat:1", "1");
+    registerRunAck("run-b", "tg:chat:2", "2");
 
-    expect(takeRunAck("run-a")).toEqual({ chatRef: "tg:chat:1", messageIds: [1] });
-    expect(takeRunAck("run-b")).toEqual({ chatRef: "tg:chat:2", messageIds: [2] });
+    expect(takeRunAck("run-a")).toEqual({ chatRef: "tg:chat:1", sourceMessageIds: ["1"] });
+    expect(takeRunAck("run-b")).toEqual({ chatRef: "tg:chat:2", sourceMessageIds: ["2"] });
   });
 });

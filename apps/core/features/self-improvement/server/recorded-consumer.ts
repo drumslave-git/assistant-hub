@@ -60,7 +60,7 @@ export async function handleFeedbackRecorded(
     action: "recorded",
     trigger: {
       kind: "transport",
-      actor: parseScopedRef(event.feedback.userRef).id,
+      actor: event.feedback.userRef,
       correlationId: event.correlationId,
     },
     inputSummary: `${event.feedback.reaction === "up" ? "👍" : "👎"} ${event.feedback.text}`,

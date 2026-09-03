@@ -15,6 +15,7 @@ import type { BotManager } from "./bot-manager";
 import { createTgMcpServer } from "./mcp";
 import type { TgOutbound } from "./outbound";
 import { publishDelivered, sendChatMessage } from "./send";
+import { telegramId } from "./telegram";
 import type { UpdatePublisher } from "./updates";
 
 /**
@@ -79,13 +80,12 @@ export function createApi(input: {
         chatId,
         assistantId: assistantIdOf(c),
         text: body.text,
-        replyToMessageId:
-          body.replyToSourceMessageId != null ? Number(body.replyToSourceMessageId) : null,
-        threadId: body.threadId != null ? Number(body.threadId) : null,
+        replyToMessageId: telegramId(body.replyToSourceMessageId),
+        threadId: telegramId(body.threadId),
         silent: body.silent,
         linkableMessageIds: (body.linkableSourceMessageIds ?? [])
-          .map((id) => Number(id))
-          .filter((id) => Number.isFinite(id)),
+          .map((id) => telegramId(id))
+          .filter((id): id is number => id != null),
       });
     } catch (err) {
       return c.json({ error: { message: errorText(err) } }, 502);
@@ -100,9 +100,8 @@ export function createApi(input: {
     }
     const chatId = c.req.param("chatId");
     const body = parsed.data;
-    const replyToMessageId =
-      body.replyToSourceMessageId != null ? Number(body.replyToSourceMessageId) : null;
-    const threadId = body.threadId != null ? Number(body.threadId) : null;
+    const replyToMessageId = telegramId(body.replyToSourceMessageId);
+    const threadId = telegramId(body.threadId);
     const sender = senderOf(c);
     let sent: { messageId: number };
     let asVoice = true;
@@ -150,7 +149,7 @@ export function createApi(input: {
       return c.json({ error: { message: "images are required" } }, 400);
     }
     const chatId = c.req.param("chatId");
-    const threadId = parsed.data.threadId != null ? Number(parsed.data.threadId) : null;
+    const threadId = telegramId(parsed.data.threadId);
     const sender = senderOf(c);
     // Best-effort per image: a report failure must not turn a picture the
     // user can see into a failed call, and a send failure skips that image.
@@ -203,7 +202,7 @@ export function createApi(input: {
         chatId,
         { base64: body.dataBase64, filename: body.filename, mime: body.mime ?? null },
         {
-          threadId: body.threadId != null ? Number(body.threadId) : null,
+          threadId: telegramId(body.threadId),
           caption: body.caption ?? null,
         },
       );
@@ -219,7 +218,7 @@ export function createApi(input: {
         messageId: sent.messageId,
         content: body.caption ?? "",
         replyToMessageId: null,
-        threadId: body.threadId != null ? Number(body.threadId) : null,
+        threadId: telegramId(body.threadId),
       },
     ).catch(() => undefined);
     return c.json({ sourceMessageId: String(sent.messageId) });
@@ -227,8 +226,8 @@ export function createApi(input: {
 
   internal.delete("/chats/:chatId/messages/:messageId", async (c) => {
     const chatId = c.req.param("chatId");
-    const messageId = Number(c.req.param("messageId"));
-    if (!Number.isFinite(messageId)) {
+    const messageId = telegramId(c.req.param("messageId"));
+    if (messageId == null) {
       return c.json({ error: { message: "messageId must be a number" } }, 400);
     }
     // A refused delete (older than 48h, no running connection) is cosmetic
@@ -253,11 +252,15 @@ export function createApi(input: {
     if (!parsed.success) {
       return c.json({ error: { message: "text, keyboard and replyToSourceMessageId are required" } }, 400);
     }
+    const replyToMessageId = telegramId(parsed.data.replyToSourceMessageId);
+    if (replyToMessageId == null) {
+      return c.json({ error: { message: "replyToSourceMessageId must be a number" } }, 400);
+    }
     try {
       const sent = await senderOf(c).sendMenu(c.req.param("chatId"), {
         text: parsed.data.text,
         keyboard: parsed.data.keyboard,
-        replyToMessageId: Number(parsed.data.replyToSourceMessageId),
+        replyToMessageId,
       });
       return c.json({ sourceMessageId: String(sent.messageId) });
     } catch (err) {
@@ -268,8 +271,8 @@ export function createApi(input: {
   internal.patch("/chats/:chatId/menu/:messageId", async (c) => {
     const parsed = internalEditMenuRequestSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: { message: "text is required" } }, 400);
-    const messageId = Number(c.req.param("messageId"));
-    if (!Number.isFinite(messageId)) {
+    const messageId = telegramId(c.req.param("messageId"));
+    if (messageId == null) {
       return c.json({ error: { message: "messageId must be a number" } }, 400);
     }
     try {
@@ -284,8 +287,8 @@ export function createApi(input: {
   });
 
   internal.delete("/chats/:chatId/menu/:messageId", async (c) => {
-    const messageId = Number(c.req.param("messageId"));
-    if (!Number.isFinite(messageId)) {
+    const messageId = telegramId(c.req.param("messageId"));
+    if (messageId == null) {
       return c.json({ error: { message: "messageId must be a number" } }, 400);
     }
     try {

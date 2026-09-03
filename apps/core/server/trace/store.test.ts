@@ -10,6 +10,7 @@ import {
   __resetTraceStoreForTests,
   flushTracesNow,
   getEventsForTraces,
+  getLatestTraceIdForMessage,
   getLatestTraceIdsByCorrelation,
   getTrace,
   getTraceStorageHealth,
@@ -584,6 +585,42 @@ describe("getLatestTraceIdsByCorrelation", () => {
     expect(unscoped.get("c:1")).toBe(feedback.id);
 
     expect((await getLatestTraceIdsByCorrelation(["missing"])).size).toBe(0);
+  });
+});
+
+describe("getLatestTraceIdForMessage", () => {
+  it("finds a turn on the message even though the assistant is part of its id", async () => {
+    const message = "tg:chat:-1001:42";
+    const turn = await startTrace({
+      ...baseInput,
+      feature: "bot-messaging",
+      trigger: { kind: "transport", correlationId: `${message}:assistant-1` },
+    });
+    await turn.succeed();
+    // A fire settles on the message's own correlation; both shapes name the
+    // same message, and the newest wins.
+    const fire = await startTrace({
+      ...baseInput,
+      feature: "tasks",
+      trigger: { kind: "cron", correlationId: message },
+    });
+    await fire.succeed();
+
+    expect(await getLatestTraceIdForMessage(message)).toBe(fire.id);
+    expect(await getLatestTraceIdForMessage(message, { features: ["bot-messaging"] })).toBe(
+      turn.id,
+    );
+  });
+
+  it("does not read another chat whose ref merely starts the same", async () => {
+    const other = await startTrace({
+      ...baseInput,
+      feature: "bot-messaging",
+      trigger: { kind: "transport", correlationId: "tg:chat:-10011:42:assistant-1" },
+    });
+    await other.succeed();
+
+    expect(await getLatestTraceIdForMessage("tg:chat:-1001:42")).toBeNull();
   });
 });
 

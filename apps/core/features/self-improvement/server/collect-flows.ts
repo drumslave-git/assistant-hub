@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import {
   feedbackRecordedEventSchema,
   scopedRef,
+  turnCorrelationId,
   type FeedbackRecordedEvent,
   type SourceId,
   type TransportReactionEvent,
@@ -88,18 +89,19 @@ export interface CollectDeps {
 
 /** The completed row, shaped as the bus event the learning jobs consume. */
 function recordedEvent(feedback: SourceFeedbackRecord): FeedbackRecordedEvent {
+  const chatRef = scopedRef(feedback.source, "chat", feedback.chatId);
   return feedbackRecordedEventSchema.parse({
     v: 1,
     eventId: randomUUID(),
     occurredAt: new Date().toISOString(),
-    // The turn correlation of the REACTED reply, so the feedback groups with
-    // the trace of the reply it judges.
-    correlationId: `${feedback.chatId}:${feedback.sourceMessageId}`,
+    // The correlation of the REACTED reply's message, so the feedback groups
+    // with the trace of the reply it judges.
+    correlationId: turnCorrelationId(chatRef, feedback.sourceMessageId),
     type: "feedback.recorded",
     source: feedback.source,
     feedback: {
       id: feedback.id,
-      chatRef: scopedRef(feedback.source, "chat", feedback.chatId),
+      chatRef,
       sourceMessageId: feedback.sourceMessageId,
       userRef: scopedRef(feedback.source, "user", feedback.userId),
       reaction: feedback.reaction,

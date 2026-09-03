@@ -1,5 +1,7 @@
 import "server-only";
 
+import { scopedRef, turnCorrelationId } from "@assistant-hub-swarm/contracts";
+
 import { getSingleAssistantPersona } from "@/features/assistants/server/service";
 import { getBackgroundRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
@@ -97,7 +99,10 @@ export async function reflectOnFeedback(
       trigger: {
         kind: "system",
         actor: "self-improvement",
-        correlationId: `${feedback.chatId}:${feedback.sourceMessageId}`,
+        correlationId: turnCorrelationId(
+          scopedRef(feedback.source, "chat", feedback.chatId),
+          feedback.sourceMessageId,
+        ),
       },
       inputSummary: `${feedback.reaction === "up" ? "👍" : "👎"} ${feedback.feedback}`,
     }

@@ -1,7 +1,5 @@
 import "server-only";
 
-import { parseScopedRef } from "@assistant-hub-swarm/contracts";
-
 import { normalizeModelName, UNKNOWN_MODEL } from "@/features/self-improvement/model-name";
 import type { Trace } from "@/lib/trace";
 import { scanTraces } from "@/server/trace";
@@ -41,9 +39,9 @@ export interface UsageRow {
   model: string;
   callKind: LlmCallKindId;
   feature: string;
-  /** Telegram user id that triggered the work, when there was one. */
+  /** Scoped ref of whoever triggered the work, when there was one. */
   actor: string | null;
-  /** `<chatId>:<messageId>` for message-driven work. */
+  /** The turn's correlation — see `turnCorrelationId` — for message-driven work. */
   correlationId: string | null;
   promptTokens: number;
   completionTokens: number;
@@ -85,16 +83,13 @@ export function attributedModel(raw: string | null | undefined): string {
 
 /**
  * Whether a trace belongs to the requested chat/user scope. A turn's trace is
- * correlated as `<chatId>:<messageId>` and its actor is the sender's id — both
- * in the transport's own ids — so the scope's refs are compared by their
- * local half.
+ * correlated on its chat's ref (`turnCorrelationId`) and its actor is the
+ * sender's ref, so both are compared whole — comparing the local halves would
+ * count another transport's traffic under a chat that merely shares its id.
  */
 function inScope(trace: Trace, scope: TraceScope): boolean {
-  if (scope.chatRef) {
-    const chatId = parseScopedRef(scope.chatRef).id;
-    if (!trace.trigger.correlationId?.startsWith(`${chatId}:`)) return false;
-  }
-  if (scope.userRef && trace.trigger.actor !== parseScopedRef(scope.userRef).id) return false;
+  if (scope.chatRef && !trace.trigger.correlationId?.startsWith(`${scope.chatRef}:`)) return false;
+  if (scope.userRef && trace.trigger.actor !== scope.userRef) return false;
   return true;
 }
 

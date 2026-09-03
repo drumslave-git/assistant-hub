@@ -251,7 +251,8 @@ export async function postChatMessage(
     db,
   );
 
-  const correlationId = turnCorrelationId(thread.id, String(message.id), thread.assistantId);
+  const chat = buildChatInfo(thread);
+  const correlationId = turnCorrelationId(chat.ref, String(message.id), thread.assistantId);
   const event = inboundMessageEventSchema.parse({
     v: 1,
     eventId: randomUUID(),
@@ -260,7 +261,7 @@ export async function postChatMessage(
     type: "message.inbound",
     source: "chat",
     assistantId: thread.assistantId,
-    chat: buildChatInfo(thread),
+    chat,
     sender: buildSenderInfo(
       user,
       // The same owner-rights judgement every source gets (Phase 8).

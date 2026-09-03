@@ -265,7 +265,7 @@ async function buildEventDeps(
 ): Promise<BotMessagingDeps> {
   const chatId = parseScopedRef(event.chat.ref).id;
   const senderId = parseScopedRef(event.sender.ref).id;
-  const threadId = event.message.threadId != null ? Number(event.message.threadId) : null;
+  const threadId = event.message.threadId ?? null;
   const isGroup = event.chat.kind === "group";
   const botLabel = botTranscriptLabel();
 
@@ -332,11 +332,11 @@ async function buildEventDeps(
    * the reply, the ack is stale on arrival: delete it now, best-effort —
    * the source soft-deletes its mirror row with the message.
    */
-  const registerBrowserRunAck = async (messageId: number) => {
+  const registerBrowserRunAck = async (sourceMessageId: string) => {
     const runId = turn.enqueuedBrowserRuns[turn.enqueuedBrowserRuns.length - 1];
     if (!runId) return;
-    if (registerRunAck(runId, event.chat.ref, messageId) !== "settled") return;
-    await turn.outbound?.deleteMessage(chatId, messageId).catch(() => undefined);
+    if (registerRunAck(runId, event.chat.ref, sourceMessageId) !== "settled") return;
+    await turn.outbound?.deleteMessage(chatId, sourceMessageId).catch(() => undefined);
   };
 
   /**
@@ -346,22 +346,22 @@ async function buildEventDeps(
    * transient acknowledgement registered for deletion — so it sends through
    * the source's API instead, silent, when the API is configured.
    */
-  const sendTextReply = async (text: string): Promise<{ messageId: number | null }> => {
+  const sendTextReply = async (text: string): Promise<{ sourceMessageId: string | null }> => {
     // The send is an action the moment it leaves this process — mark first.
     await markActed();
     const silent = turn.enqueuedBrowserRuns.length > 0;
     if (silent && turn.outbound) {
       const sent = await turn.outbound.sendMessage(chatId, {
         text,
-        replyToMessageId: Number(event.message.sourceMessageId),
+        replyToSourceMessageId: event.message.sourceMessageId,
         threadId,
         silent: true,
       });
-      await registerBrowserRunAck(sent.messageId);
-      return { messageId: sent.messageId };
+      await registerBrowserRunAck(sent.sourceMessageId);
+      return { sourceMessageId: sent.sourceMessageId };
     }
     await ctx.publish(await deliveryEvent(text, silent));
-    return { messageId: null };
+    return { sourceMessageId: null };
   };
 
   const bindings = createTurnBindings({
@@ -380,7 +380,7 @@ async function buildEventDeps(
     // A task-opened turn answers the message that opened it; the source app's
     // delivery tool attaches it there (Phase 5), so the core only says which
     // message that is.
-    replyToMessageId: Number(event.message.sourceMessageId),
+    replyToSourceMessageId: event.message.sourceMessageId,
     onBeforeToolCall: async (toolName) => {
       await markActed();
       // Progress, for whoever renders it: the tg app keeps typing, a web
@@ -445,7 +445,7 @@ async function buildEventDeps(
               const deps = await describeDeps();
               if (deps) {
                 const described = await describeAndStore(
-                  { chatId, sourceMessageId: va.recognizeMessageId },
+                  { source: event.source, chatId, sourceMessageId: va.recognizeMessageId },
                   deps,
                   { store: turn.store, trace: replyTrace },
                 ).catch(() => null);
@@ -488,7 +488,7 @@ async function buildEventDeps(
               const deps = await describeDeps();
               if (deps) {
                 const described = await describeAndStore(
-                  { chatId, sourceMessageId: va.replyTargetMessageId },
+                  { source: event.source, chatId, sourceMessageId: va.replyTargetMessageId },
                   deps,
                   { store: turn.store, trace: replyTrace },
                 ).catch(() => null);
@@ -564,10 +564,10 @@ async function buildEventDeps(
                 const sent = await turn.outbound!.sendVoice(chatId, {
                   audioBase64: audio.base64,
                   text,
-                  replyToMessageId: Number(event.message.sourceMessageId),
+                  replyToSourceMessageId: event.message.sourceMessageId,
                   threadId,
                 });
-                return { messageId: sent.messageId, asVoice: sent.asVoice };
+                return { sourceMessageId: sent.sourceMessageId, asVoice: sent.asVoice };
               } catch {
                 // fall through to the text delivery below
               }
@@ -633,7 +633,7 @@ export async function processInboundEvent(
     if (verdict.silenced) {
       const trace = await startReplyTrace({
         chatId,
-        messageId: Number(event.message.sourceMessageId),
+        sourceMessageId: event.message.sourceMessageId,
         correlationId: event.correlationId,
         source: event.source,
         fromId: parseScopedRef(event.sender.ref).id,
@@ -699,7 +699,7 @@ export async function processInboundEvent(
     replyTrace = await startReplyTrace({
       source: event.source,
       chatId,
-      messageId: Number(event.message.sourceMessageId),
+      sourceMessageId: event.message.sourceMessageId,
       correlationId: event.correlationId,
       fromId: parseScopedRef(event.sender.ref).id,
       assistantId: event.assistantId,
@@ -716,7 +716,7 @@ export async function processInboundEvent(
       const deps = ctx.overrides?.describeDeps ?? (await resolveDescribeDeps().catch(() => null));
       if (deps) {
         const described = await describeAndStore(
-          { chatId, sourceMessageId: event.message.sourceMessageId },
+          { source: event.source, chatId, sourceMessageId: event.message.sourceMessageId },
           deps,
           { store, trace: replyTrace },
         ).catch(() => null);
@@ -763,7 +763,7 @@ export async function processInboundEvent(
       source: event.source,
       chatId,
       chatType: event.chat.kind === "group" ? "supergroup" : "private",
-      messageId: Number(event.message.sourceMessageId),
+      sourceMessageId: event.message.sourceMessageId,
       // One message can open a turn per assistant present, so the source's
       // correlation is authoritative — deriving it here would merge them.
       correlationId: event.correlationId,
@@ -788,7 +788,7 @@ export async function processInboundEvent(
     await outbound
       .sendPhotos(chatId, {
         images: turn.generatedImages,
-        threadId: event.message.threadId != null ? Number(event.message.threadId) : null,
+        threadId: event.message.threadId ?? null,
       })
       .catch((err) =>
         console.error(

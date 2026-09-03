@@ -15,6 +15,7 @@ import { busTraceClient } from "@assistant-hub-swarm/service";
 import type { AssistantConnection } from "./connections";
 import type { TgOutbound } from "./outbound";
 import { sendChatMessage } from "./send";
+import { telegramId } from "./telegram";
 import type { UpdatePublisher } from "./updates";
 
 /**
@@ -113,17 +114,16 @@ export async function startDeliveryConsumer(input: {
         feature: "bot-messaging",
         action: "deliver",
         assistantId: event.assistantId,
-        trigger: { kind: "transport", actor: chatId, correlationId: event.correlationId },
+        trigger: { kind: "transport", actor: event.chatRef, correlationId: event.correlationId },
         inputSummary: event.text,
       });
       try {
-        const replyToMessageId =
-          event.replyToSourceMessageId != null ? Number(event.replyToSourceMessageId) : null;
+        const replyToMessageId = telegramId(event.replyToSourceMessageId);
         // The `#id` whitelist arrives on the event — the core checked its
         // mirror; this side only renders links.
         const linkableMessageIds = (event.linkableSourceMessageIds ?? [])
-          .map((id) => Number(id))
-          .filter((id) => Number.isFinite(id));
+          .map((id) => telegramId(id))
+          .filter((id): id is number => id != null);
         // The whole answer arrives; the split under Telegram's cap, each
         // send and the delivered report per part (the core's ingest mirrors
         // and cross-feeds off those) all happen in the one send function.
@@ -150,7 +150,7 @@ export async function startDeliveryConsumer(input: {
             assistantId: event.assistantId,
             text: event.text,
             replyToMessageId,
-            threadId: event.threadId != null ? Number(event.threadId) : null,
+            threadId: telegramId(event.threadId),
             silent: event.silent,
             linkableMessageIds,
           },
@@ -190,12 +190,7 @@ export async function startDeliveryConsumer(input: {
       if (event.phase === "settled") {
         typing.stop(key);
       } else {
-        typing.start(
-          key,
-          chatId,
-          event.threadId != null ? Number(event.threadId) : null,
-          event.assistantId ?? null,
-        );
+        typing.start(key, chatId, telegramId(event.threadId), event.assistantId ?? null);
       }
     }
   };

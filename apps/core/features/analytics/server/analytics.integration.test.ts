@@ -203,14 +203,14 @@ describe("traffic totals", () => {
       model: "m",
       latencyMs: 10,
       tokens: { p: 40, c: 10 },
-      correlationId: "c1:1",
+      correlationId: `${C1}:1`,
     });
     await seedLlmCall({
       at,
       model: "m",
       latencyMs: 10,
       tokens: { p: 99, c: 99 },
-      correlationId: "c2:1",
+      correlationId: `${C2}:1`,
     });
 
     const m = await getMetricTotals({ unit: "day", anchor: "2026-07-15", chatRef: C1 });

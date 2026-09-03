@@ -447,8 +447,11 @@ export const tasks = pgTable(
       .references(() => assistants.id, { onDelete: "cascade" }),
     /** Scoped chat ref, or null for a global `message`/`on-reply` task. */
     chatRef: text("chat_ref"),
-    /** Source-local forum-topic thread to deliver into, or null (chat root). */
-    threadId: bigint("thread_id", { mode: "number" }),
+    /**
+     * Source-local forum-topic thread to deliver into, or null (chat root).
+     * TEXT like every other platform id: it is the source's own, verbatim.
+     */
+    threadId: text("thread_id"),
     /** Scoped ref of whoever created it, or null (dashboard). */
     createdByUserRef: text("created_by_user_ref"),
     /** `chat` | `dashboard` — where the task was authored (provenance). */
@@ -1385,8 +1388,8 @@ export const browserAgentRuns = pgTable(
     id: text("id").primaryKey(),
     /** Scoped ref of the chat the run reports back to, or null for a dashboard-started run. */
     chatRef: text("chat_ref"),
-    /** Forum-topic thread to deliver into, or null (chat root). */
-    threadId: bigint("thread_id", { mode: "number" }),
+    /** Forum-topic thread to deliver into, or null (chat root) — the source's own id, verbatim. */
+    threadId: text("thread_id"),
     /** Scoped ref of whoever asked for the run, or null (dashboard). */
     createdByUserRef: text("created_by_user_ref"),
     /** Whether the run carries owner rights — gates the download tools. */

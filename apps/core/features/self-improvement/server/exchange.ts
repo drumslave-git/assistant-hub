@@ -1,10 +1,10 @@
 import "server-only";
 
-import type { SourceId } from "@assistant-hub-swarm/contracts";
+import { scopedRef, turnCorrelationId, type SourceId } from "@assistant-hub-swarm/contracts";
 
 import { FEATURES } from "@/lib/features";
 import type { Trace } from "@/lib/trace";
-import { getLatestTraceIdsByCorrelation, getTrace } from "@/server/trace";
+import { getLatestTraceIdForMessage, getTrace } from "@/server/trace";
 import type { UserFeedback } from "../types";
 import type { SourceMessagePort } from "./feedback-store";
 
@@ -74,25 +74,30 @@ export async function getReplyTrace(
   chatId: string,
   sourceMessageId: string,
 ): Promise<Trace | null> {
+  const chatRef = scopedRef(source, "chat", chatId);
   try {
-    const direct = await producerTrace(`${chatId}:${sourceMessageId}`);
+    const direct = await producerTrace(turnCorrelationId(chatRef, sourceMessageId));
     if (direct) return direct;
 
     const replyRow = await messages.getMessage(source, chatId, sourceMessageId);
     const anchor = replyRow?.replyToSourceMessageId;
     if (anchor == null) return null;
-    return await producerTrace(`${chatId}:${anchor}`);
+    return await producerTrace(turnCorrelationId(chatRef, anchor));
   } catch {
     return null;
   }
 }
 
-/** The newest message-producing trace on a correlation id, with its events. */
-async function producerTrace(correlation: string): Promise<Trace | null> {
-  const traceIds = await getLatestTraceIdsByCorrelation([correlation], {
+/**
+ * The newest message-producing trace of one message — its own correlation, or
+ * any assistant's turn on it (a shared chat hands the same message to each
+ * assistant present, and the reader here knows the message, not which
+ * assistant answered).
+ */
+async function producerTrace(messageCorrelation: string): Promise<Trace | null> {
+  const traceId = await getLatestTraceIdForMessage(messageCorrelation, {
     features: PRODUCER_FEATURES,
   });
-  const traceId = traceIds.get(correlation);
   return traceId ? await getTrace(traceId) : null;
 }
 

@@ -3753,7 +3753,7 @@ components:
       properties:
         id: { $ref: "#/components/schemas/SourceId" }
         name: { type: string, minLength: 1, description: What the dashboard calls the transport. }
-        contractMajor: { type: integer, minimum: 1, description: "The contract major the transport was built against (`CONTRACT_MAJOR` of the contracts package). A core that speaks another major refuses with 409." }
+        contractMajor: { type: integer, minimum: 1, description: "The contract major the transport was built against (`CONTRACT_MAJOR` of the contracts package; `2` today). A core that speaks another major refuses with 409." }
         baseUrl: { type: string, minLength: 1, description: "The transport's internal API base URL, reachable from the core." }
         mcpPath: { type: [string, "null"], description: "Path of the transport's MCP server on that base, or null." }
         connectionConfigSchema:
@@ -4753,7 +4753,7 @@ components:
         chatSource:
           type: [string, "null"]
           description: The transport the chat lives on - the namespace of every id on the task; null for a global task.
-        threadId: { type: [integer, "null"] }
+        threadId: { type: [string, "null"], description: "Source-local sub-thread (a forum topic) to deliver into, verbatim; null for the chat root." }
         createdByUserId:
           type: [string, "null"]
           description: The author (source-local id in `chatSource`). Null for a dashboard-created task, which the chat tools cannot mutate (timed kinds) - except by the owner, who is exempt.
@@ -4802,7 +4802,7 @@ components:
           type: [string, "null"]
           default: null
           description: The chat's scoped ref, or null for the global scope.
-        threadId: { type: [integer, "null"] }
+        threadId: { type: [string, "null"], description: "Source-local sub-thread (a forum topic) to deliver into, verbatim; null for the chat root." }
         instruction: { type: string, minLength: 2, maxLength: 2000 }
         context: { type: [string, "null"], maxLength: 4000 }
         triggerKind: { $ref: "#/components/schemas/TriggerKind" }
@@ -5004,7 +5004,7 @@ components:
         chatRef:
           type: [string, "null"]
           description: Null for a dashboard-started run, which delivers nothing.
-        threadId: { type: [integer, "null"] }
+        threadId: { type: [string, "null"], description: "Source-local sub-thread (a forum topic) to deliver into, verbatim; null for the chat root." }
         createdByUserRef: { type: [string, "null"] }
         isOwner:
           type: boolean

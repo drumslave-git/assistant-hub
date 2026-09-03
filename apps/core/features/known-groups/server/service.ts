@@ -1,6 +1,6 @@
 import "server-only";
 
-import { parseScopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
+import { parseScopedRef, scopedRef, type SourceId } from "@assistant-hub-swarm/contracts";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { formatKnownUserLabel } from "@/features/known-users/format";
@@ -104,7 +104,7 @@ export async function rememberGroupActivity(
       await recordGroupMembership(db, source, params.chatId, params.userId);
     }
     publishEvent(FEATURE.realtimeTopic);
-    await traceGroupCapture(before, memberExisted, params);
+    await traceGroupCapture(source, before, memberExisted, params);
   } catch {
     // Best-effort capture; swallow so message handling continues.
   }
@@ -123,6 +123,7 @@ function groupProfileChanged(before: KnownGroupRecord, params: SourceGroupProfil
  * the roster stay current.
  */
 async function traceGroupCapture(
+  source: SourceId,
   before: KnownGroupRecord | null,
   memberExisted: boolean,
   params: SourceGroupProfile & { userId: string | null },
@@ -139,7 +140,12 @@ async function traceGroupCapture(
     {
       feature: FEATURE.id,
       action,
-      trigger: { kind: "transport", actor: params.userId ?? params.chatId },
+      trigger: {
+        kind: "transport",
+        actor: params.userId
+          ? scopedRef(source, "user", params.userId)
+          : scopedRef(source, "chat", params.chatId),
+      },
       inputSummary: label,
     }
   );

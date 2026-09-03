@@ -358,16 +358,16 @@ describe("inbound turn consumer", () => {
     // The trace says which way in this was, with an id that is a real id.
     const traces = await listTraces({ correlationId: "thread-abc:7:assistant-1" });
     const reply = traces.traces.find((trace) => trace.action === "reply");
-    expect(reply?.trigger).toMatchObject({ kind: "chat", actor: "user-abc" });
+    expect(reply?.trigger).toMatchObject({ kind: "chat", actor: "chat:user:user-abc" });
   });
 
   it("names a conversation whose source has no name for it, once", async () => {
     const named: Array<{ chatId: string; title: string }> = [];
     const outbound = {
-      sendMessage: async () => ({ messageId: 1 }),
-      sendVoice: async () => ({ messageId: 1, asVoice: true }),
+      sendMessage: async () => ({ sourceMessageId: "1" }),
+      sendVoice: async () => ({ sourceMessageId: "1", asVoice: true }),
       sendPhotos: async () => ({ delivered: [] }),
-      sendFile: async () => ({ messageId: 1 }),
+      sendFile: async () => ({ sourceMessageId: "1" }),
       deleteMessage: async () => ({ deleted: true }),
       setReaction: async () => ({ status: "unsupported" as const, recorded: false }),
       setChatTitle: async (chatId: string, title: string) => {
@@ -722,7 +722,7 @@ describe("inbound turn consumer", () => {
   it("delivers a voice turn's reply as a voice bubble through the source's API", async () => {
     const voiceSends: Array<{ chatId: string; text: string; audioBytes: number }> = [];
     const outbound = {
-      sendMessage: async () => ({ messageId: 601 }),
+      sendMessage: async () => ({ sourceMessageId: "601" }),
       sendVoice: async (
         chatId: string,
         opts: { audioBase64: string; text: string },
@@ -732,10 +732,10 @@ describe("inbound turn consumer", () => {
           text: opts.text,
           audioBytes: Buffer.from(opts.audioBase64, "base64").length,
         });
-        return { messageId: 602, asVoice: true };
+        return { sourceMessageId: "602", asVoice: true };
       },
       sendPhotos: async () => ({ delivered: [] }),
-      sendFile: async () => ({ messageId: 0 }),
+      sendFile: async () => ({ sourceMessageId: "0" }),
       deleteMessage: async () => ({ deleted: true }),
       setReaction: async () => ({ status: "ok" as const, recorded: true }),
     };
@@ -777,13 +777,13 @@ describe("inbound turn consumer", () => {
   it("degrades a voice reply to the text event when synthesis is unavailable", async () => {
     const voiceSends: string[] = [];
     const outbound = {
-      sendMessage: async () => ({ messageId: 603 }),
+      sendMessage: async () => ({ sourceMessageId: "603" }),
       sendVoice: async (_chatId: string, opts: { text: string }) => {
         voiceSends.push(opts.text);
-        return { messageId: 604, asVoice: true };
+        return { sourceMessageId: "604", asVoice: true };
       },
       sendPhotos: async () => ({ delivered: [] }),
-      sendFile: async () => ({ messageId: 0 }),
+      sendFile: async () => ({ sourceMessageId: "0" }),
       deleteMessage: async () => ({ deleted: true }),
       setReaction: async () => ({ status: "ok" as const, recorded: true }),
     };

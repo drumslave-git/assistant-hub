@@ -1,7 +1,7 @@
 import "server-only";
 
 import { startTrace } from "@/server/trace";
-import { tryGetToolContext } from "./context";
+import { toolContextTrigger, tryGetToolContext } from "./context";
 import type { McpToolCallResult } from "./tool-result";
 
 /**
@@ -43,14 +43,11 @@ export async function tracedToolCall(
       {
         feature: toolTraceFeature(owningFeature),
         action: name,
-        trigger: {
-          // The turn's own way in — a web-thread tool call is not telegram's.
-          kind: ctx?.source === "chat" ? "chat" : "transport",
-          actor: ctx?.userId ?? ctx?.chatId,
-          // The turn's correlation, so the tool call groups with the reply (or
-          // fire) that made it; the bare chat id only as a legacy fallback.
-          correlationId: ctx?.correlationId ?? ctx?.chatId,
-        },
+        // One trigger shape for every tool call, bound or not: the turn's own
+        // way in, its actor and its correlation, all as the context stamped
+        // them (`toolContextTrigger`). An unbound call (tests, a tool invoked
+        // outside a turn) names none of them.
+        trigger: ctx ? toolContextTrigger(ctx) : { kind: "transport" },
         inputSummary: name,
       }
     );

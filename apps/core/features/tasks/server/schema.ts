@@ -99,7 +99,7 @@ export const taskSchema = z.object({
   chatId: z.string().nullable(),
   chatRef: z.string().nullable(),
   chatSource: z.string().nullable(),
-  threadId: z.number().nullable(),
+  threadId: z.string().nullable(),
   createdByUserId: z.string().nullable(),
   source: z.enum(["chat", "dashboard"]),
   instruction: z.string(),
@@ -141,7 +141,7 @@ export const createTaskSchema = z
     /** The assistant this task belongs to (Phase 3: tasks are per-assistant). */
     assistantId: z.string().min(1, "An assistant is required"),
     chatRef: chatRef.optional().default(null),
-    threadId: z.number().int().nullable().optional(),
+    threadId: z.string().min(1).nullable().optional(),
     instruction,
     context: context.optional(),
     triggerKind,

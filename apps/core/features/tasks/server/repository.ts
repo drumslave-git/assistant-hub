@@ -37,7 +37,7 @@ export interface InsertTask {
   /** The transport the chat (and everyone named on the task) lives on; null with a null chat. */
   chatSource: SourceId | null;
   chatId: string | null;
-  threadId: number | null;
+  threadId: string | null;
   createdByUserId: string | null;
   source: TaskSource;
   createdByOwner: boolean;

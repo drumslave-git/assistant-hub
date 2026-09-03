@@ -73,7 +73,7 @@ function sendingComplete(texts: string[], deliveries?: { texts: string[] }) {
     const toolCtx = tryGetToolContext();
     for (const [index, text] of texts.entries()) {
       deliveries?.texts.push(text);
-      await toolCtx!.onDelivered!({ ok: true, messageId: 100 + index, text });
+      await toolCtx!.onDelivered!({ ok: true, sourceMessageId: String(100 + index), text });
     }
     return { content: "done", model: "m", latencyMs: 1 };
   });

@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { SourceId } from "@assistant-hub-swarm/contracts";
+import { scopedRef, turnCorrelationId, type SourceId } from "@assistant-hub-swarm/contracts";
 
 import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { ApiError } from "@/lib/api-error";
@@ -173,8 +173,6 @@ export function dbMediaStore(db: StoreDb, source: SourceId): MediaStorePort {
 /** How a describe/transcribe pass records itself and where it reads/writes. */
 export interface DescribeAndStoreOptions {
   db?: StoreDb;
-  /** The source whose row is described, when no `store` is given (the database-backed port is then built for it). */
-  source?: SourceId;
   /** Storage owner override — see {@link MediaStorePort}. Default: this DB. */
   store?: MediaStorePort;
   /**
@@ -201,17 +199,12 @@ export interface DescribeAndStoreOptions {
  * found — never a stale null because a concurrent pass won the DB write.
  */
 export async function describeAndStore(
-  params: { chatId: string; sourceMessageId: string },
+  params: { source: SourceId; chatId: string; sourceMessageId: string },
   deps: DescribeDeps,
   options: DescribeAndStoreOptions = {},
 ): Promise<MediaRecord | null> {
-  const store =
-    options.store ??
-    (options.source
-      ? dbMediaStore(options.db ?? getStoreDb(), options.source)
-      : (() => {
-          throw new Error("describeAndStore needs a media store or the source whose row this is");
-        })());
+  const chatRef = scopedRef(params.source, "chat", params.chatId);
+  const store = options.store ?? dbMediaStore(options.db ?? getStoreDb(), params.source);
   const media = await store.getByMessage(params.chatId, params.sourceMessageId).catch(
     () => null,
   );
@@ -227,8 +220,8 @@ export async function describeAndStore(
           action: isVoice ? "transcribe" : "describe",
           trigger: {
             kind: "transport",
-            actor: params.chatId,
-            correlationId: `${params.chatId}:${params.sourceMessageId}`,
+            actor: chatRef,
+            correlationId: turnCorrelationId(chatRef, params.sourceMessageId),
           },
           inputSummary: `media on message ${params.sourceMessageId}`,
         }

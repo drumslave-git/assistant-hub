@@ -101,7 +101,7 @@ describe("trace correlation", () => {
       task: task({ triggerKind: "schedule", runDate: "2026-08-18", timeOfDay: "09:00" }),
     });
 
-    await runWithToolContext({ source: "tg", chatId: "100", assistantId: "assistant-1", userId: "77", correlationId: "100:41" }, () =>
+    await runWithToolContext({ source: "tg", chatId: "100", assistantId: "assistant-1", userId: "77", correlationId: "tg:chat:100:41" }, () =>
       tools()[TASKS_CREATE_TOOL].handler({
         instruction: "Remind about the contract.",
         trigger: "schedule",
@@ -117,7 +117,11 @@ describe("trace correlation", () => {
 
     expect(service.createTaskFromChat).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ kind: "transport", actor: "77", correlationId: "100:41" }),
+      expect.objectContaining({
+        kind: "transport",
+        actor: "tg:user:77",
+        correlationId: "tg:chat:100:41",
+      }),
     );
   });
 });

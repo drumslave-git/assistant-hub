@@ -99,7 +99,7 @@ describe("describeAndStore — voice dispatch", () => {
     let seen: ChatMessage[] | null = null;
     let seenTrace: Parameters<DescribeDeps["complete"]>[1];
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "70" },
+      { source: "tg", chatId: "5", sourceMessageId: "70" },
       {
         complete: async (messages, trace) => {
           seen = messages;
@@ -107,7 +107,7 @@ describe("describeAndStore — voice dispatch", () => {
           return fakeComplete("hello from the voice message");
         },
       },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
 
     // The request was a transcription pass: strict system prompt + one audio part.
@@ -151,7 +151,7 @@ describe("describeAndStore — voice dispatch", () => {
     let completeCalled = false;
     let sttWav: Buffer | null = null;
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "75" },
+      { source: "tg", chatId: "5", sourceMessageId: "75" },
       {
         complete: async () => {
           completeCalled = true;
@@ -167,7 +167,7 @@ describe("describeAndStore — voice dispatch", () => {
         },
         transcribeTarget: { baseUrl: "https://whisper.example.com/v1", model: "large-v3" },
       },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
 
     expect(completeCalled).toBe(false);
@@ -189,9 +189,9 @@ describe("describeAndStore — voice dispatch", () => {
   it("stores '(no speech)' terminally so the backfill never loops on silent audio", async () => {
     await seedVoice({ sourceMessageId: 71 });
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "71" },
+      { source: "tg", chatId: "5", sourceMessageId: "71" },
       { complete: async () => fakeComplete("[no speech]") },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
     expect(result?.status).toBe("described");
     expect(result?.description).toBe("(no speech)");
@@ -200,9 +200,9 @@ describe("describeAndStore — voice dispatch", () => {
   it("fails instead of storing a blank transcript when the chat model returns nothing", async () => {
     await seedVoice({ sourceMessageId: 72 });
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "72" },
+      { source: "tg", chatId: "5", sourceMessageId: "72" },
       { complete: async () => fakeComplete("   \n ") },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
 
     expect(result).toBeNull();
@@ -217,14 +217,14 @@ describe("describeAndStore — voice dispatch", () => {
   it("fails a dedicated STT endpoint that answers with no text, keeping the audio retryable", async () => {
     await seedVoice({ sourceMessageId: 73 });
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "73" },
+      { source: "tg", chatId: "5", sourceMessageId: "73" },
       {
         complete: async () => fakeComplete("unused — the STT path must win"),
         // What a whisper-class server does on an internal failure it reports as 200.
         transcribe: async () => ({ text: "", latencyMs: 8, responseBody: { text: "" } }),
         transcribeTarget: { baseUrl: "https://whisper.example.com/v1", model: "large-v3" },
       },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
 
     expect(result).toBeNull();
@@ -248,7 +248,7 @@ describe("describeAndStore — voice dispatch", () => {
       trigger: { kind: "transport", actor: "5", correlationId: "5:74" },
     });
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "74" },
+      { source: "tg", chatId: "5", sourceMessageId: "74" },
       {
         // Record like the real completion does (the shared LLM tracing layer),
         // so the parent-trace assertion pins the same titles production writes.
@@ -267,7 +267,7 @@ describe("describeAndStore — voice dispatch", () => {
           return completed;
         },
       },
-      { source: "tg", db: ctx.db, trace: parent },
+      { db: ctx.db, trace: parent },
     );
     await parent.succeed({ outputSummary: "done" });
 
@@ -286,7 +286,7 @@ describe("describeAndStore — voice dispatch", () => {
     const seeded = await seedVoice({ sourceMessageId: 76 });
 
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "76" },
+      { source: "tg", chatId: "5", sourceMessageId: "76" },
       {
         complete: async () => {
           // A concurrent pass describes the row while our LLM call is in flight,
@@ -295,7 +295,7 @@ describe("describeAndStore — voice dispatch", () => {
           return fakeComplete("the loser's transcript");
         },
       },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
 
     // The caller still gets a described record with real text (the winner's) —
@@ -313,14 +313,14 @@ describe("describeAndStore — voice dispatch", () => {
 
     let called = false;
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "77" },
+      { source: "tg", chatId: "5", sourceMessageId: "77" },
       {
         complete: async () => {
           called = true;
           return fakeComplete("unused");
         },
       },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
 
     expect(called).toBe(false);
@@ -332,9 +332,9 @@ describe("describeAndStore — voice dispatch", () => {
     // Garbage bytes: ffmpeg cannot decode them, the transcode throws, the trace fails.
     await seedVoice({ sourceMessageId: 72, dataBase64: Buffer.from("junk").toString("base64") });
     const result = await describeAndStore(
-      { chatId: "5", sourceMessageId: "72" },
+      { source: "tg", chatId: "5", sourceMessageId: "72" },
       { complete: async () => fakeComplete("unused") },
-      { source: "tg", db: ctx.db },
+      { db: ctx.db },
     );
     expect(result).toBeNull();
     const row = await getMediaByMessage(ctx.db, "tg", "5", "72");

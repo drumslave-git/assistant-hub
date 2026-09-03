@@ -25,9 +25,9 @@ export const turnToolMetaSchema = z.object({
   /** The assistant acting in this turn, when the turn has one. */
   assistantId: z.string().nullable().optional(),
   /** Source-local sub-thread (a forum topic), when the chat has them. */
-  threadId: z.number().nullable().optional(),
+  threadId: z.string().nullable().optional(),
   /** The message this turn is answering, for a tool that attaches a reply. */
-  replyToMessageId: z.number().nullable().optional(),
+  replyToSourceMessageId: z.string().nullable().optional(),
   /** The turn's trace correlation, so a hosted tool's work joins the turn. */
   correlationId: z.string().optional(),
   /** The speaker, when the turn has one (a fire does not). */
@@ -78,7 +78,7 @@ export const toolDeliverySchema = z.object({
   /** False = the platform refused the send; the tool reports the reason. */
   ok: z.boolean(),
   /** The delivered message's own id, when it landed. */
-  messageId: z.number().nullable().optional(),
+  sourceMessageId: z.string().nullable().optional(),
   /** Exactly what was sent, as the chat reads it. */
   text: z.string(),
 });

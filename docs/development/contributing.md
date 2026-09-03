@@ -156,7 +156,7 @@ These come from repeated correction; violating one is a review comment every tim
 | The only exception is binary blobs | Image and audio bytes become a `data:<mime>;base64,<N bytes>` marker; the real media is in `source_media` |
 | Add event *types* to `lib/trace.ts` (and the mirror in `packages/contracts/src/trace.ts`) | Do not invent a per-feature trace shape. A transport records through the contract's recorder and the core persists it |
 | **Never hand-record LLM exchanges** | Pass `trace: { recorder, callKind, label? }` to `chatCompletion` / `chatCompletionWithTools`; the shared layer records request (endpoint + full body), rounds, tool calls and retries identically for every feature |
-| A multi-trace flow shares one `correlationId` | A turn is `<chatId>:<messageId>:<assistantId>` — the ingest's `inbound`, the pipeline's `reply`, the transport's `deliver` and every tool-call trace carry it; a sweep stamps `newRunCorrelationId(job)` on every trace of the run. A standalone trace self-correlates automatically |
+| A multi-trace flow shares one `correlationId` | A turn is `<chatRef>:<sourceMessageId>:<assistantId>` (`turnCorrelationId`) — the ingest's `inbound`, the pipeline's `reply`, the transport's `deliver` and every tool-call trace carry it; a sweep stamps `newRunCorrelationId(job)` on every trace of the run. A standalone trace self-correlates automatically |
 | Trace what the operator must be able to explain | Including decisions to stay silent. Skip high-volume passive capture |
 
 ## LLM conventions

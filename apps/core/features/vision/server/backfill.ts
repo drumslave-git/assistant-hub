@@ -40,7 +40,10 @@ export type VisionBackfillDeps = DescribeDeps;
  * API (real), or a store-backed fake in tests. The describe pass writes back
  * through the same `store`, and the source drops the bytes.
  */
-export type VisionBackfillSource = Pick<SourceMediaBrowse, "store" | "listPending" | "countPending">;
+export type VisionBackfillSource = Pick<
+  SourceMediaBrowse,
+  "source" | "store" | "listPending" | "countPending"
+>;
 
 export interface VisionBackfillOptions {
   /** Cooperative stop signal from the scheduler; checked between rows. */
@@ -119,7 +122,11 @@ export async function runVisionBackfill(
             attempted.add(row.id);
             onProgress({ step: "Describing media", current: attempted.size, total });
             const result = await describeAndStore(
-              { chatId: row.chatId, sourceMessageId: row.sourceMessageId },
+              {
+                source: source.source,
+                chatId: row.chatId,
+                sourceMessageId: row.sourceMessageId,
+              },
               deps,
               { store: source.store },
             );

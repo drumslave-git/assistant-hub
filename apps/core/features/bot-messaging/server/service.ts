@@ -1,6 +1,11 @@
 import "server-only";
 
-import type { SourceId } from "@assistant-hub-swarm/contracts";
+import {
+  WEB_CHAT_SOURCE,
+  scopedRef,
+  turnCorrelationId,
+  type SourceId,
+} from "@assistant-hub-swarm/contracts";
 import type { Message } from "@grammyjs/types";
 
 import type { StoreDb } from "@/server/store/db";
@@ -102,8 +107,8 @@ export interface GeneratedReply {
 
 /** Normalized view of an incoming Telegram message (built by the runtime). */
 export interface IncomingMessage {
-  /** Which source app this message came from. Defaults to telegram (v1). */
-  source?: SourceId;
+  /** Which source app this message came from — the namespace of every id here. */
+  source: SourceId;
   /**
    * The raw source update, when the in-process telegram runtime is the
    * caller — the deterministic addressing check reads its wire shapes.
@@ -126,12 +131,13 @@ export interface IncomingMessage {
    */
   chatId: string;
   chatType: string;
-  messageId: number;
+  /** The message's SOURCE-LOCAL id, verbatim — a string for the same reason {@link chatId} is. */
+  sourceMessageId: string;
   /**
    * The turn's correlation id when the caller owns one (the queue consumer —
    * one message can open a turn for more than one assistant, so the id is
-   * not derivable from chat + message alone). Defaults to
-   * `<chatId>:<messageId>`, the shape the in-process runtime uses.
+   * not derivable from chat + message alone). Defaults to the message's own
+   * correlation — see `turnCorrelationId`.
    */
   correlationId?: string;
   /** The sender's source-local id, verbatim. */
@@ -162,7 +168,7 @@ export interface SentMessage {
    * the owning source app performs the send and mirrors the result
    * (redesign Phase 2). Null skips the local mirror write below.
    */
-  messageId: number | null;
+  sourceMessageId: string | null;
   /** True when the reply was delivered as a voice bubble (TTS), not text. */
   asVoice?: boolean;
 }
@@ -292,8 +298,8 @@ export interface BotMessagingDeps {
   /** Persist the delivered assistant reply into the history mirror (best-effort). */
   recordReply: (input: {
     content: string;
-    sourceMessageId: number;
-    replyToMessageId: number;
+    sourceMessageId: string;
+    replyToSourceMessageId: string;
   }) => Promise<void>;
   /**
    * Begin showing the "typing…" chat action, returning a function that stops it.
@@ -518,28 +524,33 @@ async function runActionClaimGate(
  * transcription), passing it in via {@link BotMessagingDeps.trace}.
  */
 export async function startReplyTrace(input: {
-  /** Which source this turn came from — the trace's trigger kind. */
-  source?: SourceId;
+  /** Which source this turn came from — the trace's trigger kind, and the namespace of its ids. */
+  source: SourceId;
   chatId: string;
-  messageId: number;
-  /** The turn's correlation id; defaults to `<chatId>:<messageId>`. */
+  sourceMessageId: string;
+  /** The turn's correlation id; defaults to the message's own (`turnCorrelationId`). */
   correlationId?: string;
+  /** The sender's source-local id, when there is a sender. */
   fromId?: string;
   /** Whose turn this is — the assistant the receiving bot serves. */
   assistantId?: string;
   /** The whole incoming message, never trimmed (may be updated later — voice). */
   inputSummary: string;
 }): Promise<TraceRecorder> {
+  // Refs, not source-local ids: two transports can hand out the same numeric
+  // chat or user id, and Debug's actor facet and the analytics chat filter
+  // both match this field exactly.
+  const chatRef = scopedRef(input.source, "chat", input.chatId);
   return startTrace({
     feature: FEATURE.id,
     action: "reply",
     assistantId: input.assistantId,
     trigger: {
-      // The way in, named honestly: a web-thread turn is not a telegram one,
+      // The way in, named honestly: a web-thread turn is not a transport one,
       // and Debug filters on this.
-      kind: input.source === "chat" ? "chat" : "transport",
-      actor: input.fromId ?? input.chatId,
-      correlationId: input.correlationId ?? `${input.chatId}:${input.messageId}`,
+      kind: input.source === WEB_CHAT_SOURCE ? "chat" : "transport",
+      actor: input.fromId ? scopedRef(input.source, "user", input.fromId) : chatRef,
+      correlationId: input.correlationId ?? turnCorrelationId(chatRef, input.sourceMessageId),
     },
     inputSummary: input.inputSummary,
   });
@@ -565,7 +576,7 @@ export async function handleIncomingMessage(
     (trace ??= await startReplyTrace({
       source: incoming.source,
       chatId: incoming.chatId,
-      messageId: incoming.messageId,
+      sourceMessageId: incoming.sourceMessageId,
       correlationId: incoming.correlationId,
       fromId: incoming.fromId,
       assistantId: deps.assistantId,
@@ -1038,7 +1049,7 @@ export async function handleIncomingMessage(
             message: "send message",
             data: {
               content: REPLY_NOT_PRODUCED_REPLY,
-              messageId: sent.messageId,
+              sourceMessageId: sent.sourceMessageId,
               asVoice: false,
             },
           });
@@ -1093,7 +1104,11 @@ export async function handleIncomingMessage(
           type: "output",
           level: "warn",
           message: "send message",
-          data: { content: TASK_NOT_APPLIED_REPLY, messageId: sent.messageId, asVoice: false },
+          data: {
+            content: TASK_NOT_APPLIED_REPLY,
+            sourceMessageId: sent.sourceMessageId,
+            asVoice: false,
+          },
         });
         // Failed, not succeeded: a task the bot did not carry out is exactly the
         // turn an operator has to be able to find on the Debug page, and a green
@@ -1181,7 +1196,7 @@ export async function handleIncomingMessage(
                 message: "send message",
                 data: {
                   content: ACTION_NOT_TAKEN_REPLY,
-                  messageId: sent.messageId,
+                  sourceMessageId: sent.sourceMessageId,
                   asVoice: false,
                 },
               });
@@ -1226,18 +1241,22 @@ export async function handleIncomingMessage(
         type: "output",
         level: "success",
         message: sent.asVoice ? "send voice message" : "send message",
-        data: { content: outgoing, messageId: sent.messageId, asVoice: Boolean(sent.asVoice) },
+        data: {
+          content: outgoing,
+          sourceMessageId: sent.sourceMessageId,
+          asVoice: Boolean(sent.asVoice),
+        },
       });
       // Mirror the delivery into history under its message id (best-effort —
       // never fail a delivered reply because persistence hiccupped). A null
       // id means the owning source app mirrors the delivery itself
       // (queue-consumer path) — nothing to record here.
-      if (sent.messageId != null) {
+      if (sent.sourceMessageId != null) {
         try {
           await deps.recordReply({
             content: outgoing,
-            sourceMessageId: sent.messageId,
-            replyToMessageId: incoming.messageId,
+            sourceMessageId: sent.sourceMessageId,
+            replyToSourceMessageId: incoming.sourceMessageId,
           });
         } catch {
           // swallow — the reply was delivered; the mirror is a side record

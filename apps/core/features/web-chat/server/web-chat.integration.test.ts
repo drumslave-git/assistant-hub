@@ -183,7 +183,9 @@ describe("posting", () => {
     );
     const posted = await service.postChatMessage(thread.id, { text: "are you there?" }, { db });
     expect(posted.message).toMatchObject({ role: "user", content: "are you there?" });
-    expect(posted.correlationId).toBe(`${thread.id}:${posted.message.id}:${ASSISTANT_ID}`);
+    expect(posted.correlationId).toBe(
+      `chat:thread:${thread.id}:${posted.message.id}:${ASSISTANT_ID}`,
+    );
 
     expect(enqueued).toHaveLength(1);
     const event = enqueued[0];
@@ -376,12 +378,12 @@ describe("outbound port", () => {
     {
       const outbound = outboundModule.webChatOutbound();
       const sent = await outbound.sendMessage(thread.id, { text: "looking that up…" });
-      expect(sent.messageId).toBeGreaterThan(0);
+      expect(Number(sent.sourceMessageId)).toBeGreaterThan(0);
 
       const voice = await outbound.sendVoice(thread.id, {
         audioBase64: Buffer.from("spoken bytes").toString("base64"),
         text: "here is what I found",
-        replyToMessageId: sent.messageId,
+        replyToSourceMessageId: sent.sourceMessageId,
       });
       expect(voice.asVoice).toBe(true);
 
@@ -397,11 +399,11 @@ describe("outbound port", () => {
         mime: "text/plain",
         caption: "the report you asked for",
       });
-      expect(file.messageId).toBeGreaterThan(0);
+      expect(Number(file.sourceMessageId)).toBeGreaterThan(0);
 
       // Retract the first send: soft — the transcript hides it, the operator
       // listing still shows what happened.
-      const deleted = await outbound.deleteMessage(thread.id, sent.messageId);
+      const deleted = await outbound.deleteMessage(thread.id, sent.sourceMessageId);
       expect(deleted.deleted).toBe(true);
       const body = await service.getChatThread(thread.id, ACCOUNT_ID, db);
       expect(body.messages.map((m) => m.media?.kind ?? null)).toEqual(["voice", "image", "file"]);

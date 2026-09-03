@@ -86,16 +86,19 @@ async function deliverText(
   run: BrowserAgentRun,
   text: string,
   opts: { silent?: boolean } = {},
-): Promise<number | null> {
+): Promise<string | null> {
   if (!run.chatRef || !text.trim()) return null;
   // Sent whole — the report is already concise, and a run recap rarely
   // exceeds one message.
-  const { messageId } = await requireOutbound(run.chatRef).sendMessage(chatIdOf(run.chatRef), {
-    text,
-    threadId: run.threadId,
-    ...(opts.silent ? { silent: true } : {}),
-  });
-  return messageId;
+  const { sourceMessageId } = await requireOutbound(run.chatRef).sendMessage(
+    chatIdOf(run.chatRef),
+    {
+      text,
+      threadId: run.threadId,
+      ...(opts.silent ? { silent: true } : {}),
+    },
+  );
+  return sourceMessageId;
 }
 
 /**
@@ -123,10 +126,10 @@ async function sendStagedFile(
   run: BrowserAgentRun,
   staged: StagedFile,
   caption: string,
-): Promise<number | null> {
+): Promise<string | null> {
   if (!run.chatRef) return null;
   try {
-    const { messageId } = await requireOutbound(run.chatRef).sendFile(chatIdOf(run.chatRef), {
+    const { sourceMessageId } = await requireOutbound(run.chatRef).sendFile(chatIdOf(run.chatRef), {
       buffer: staged.file.buffer,
       filename: staged.file.filename,
       mime: staged.file.mime,
@@ -142,7 +145,7 @@ async function sendStagedFile(
         err instanceof Error ? err.message : String(err),
       );
     });
-    return messageId;
+    return sourceMessageId;
   } catch (err) {
     console.error(
       `browser-agent: failed to deliver "${staged.file.filename}" for run ${run.id}:`,
@@ -165,14 +168,14 @@ async function deliverRunOutcome(
   report: string,
   staged: StagedFile[],
   downloads: BrowserDownloadRecord[],
-): Promise<{ content: string; messageId: number; hasMedia: boolean } | null> {
+): Promise<{ content: string; sourceMessageId: string; hasMedia: boolean } | null> {
   if (!run.chatRef) return null;
   if (staged.length === 1) {
     const others = downloads.filter((d) => d !== staged[0].record && !d.deliveredToChat);
     const caption = formatRunReport(report, others);
     if (caption.length <= CAPTION_MAX) {
-      const messageId = await sendStagedFile(run, staged[0], caption);
-      if (messageId != null) return { content: caption, messageId, hasMedia: true };
+      const sourceMessageId = await sendStagedFile(run, staged[0], caption);
+      if (sourceMessageId != null) return { content: caption, sourceMessageId, hasMedia: true };
       // Fall through: the file could not be sent, so it is undelivered and the
       // text recap below names it in the downloads folder.
     } else {
@@ -191,14 +194,14 @@ async function deliverRunOutcome(
   // A report that only announces an undeliverable file is sent without a ping
   // (user decision, 2026-08-01) — there is nothing for the user to act on.
   const silent = downloads.some((d) => d.discarded);
-  const messageId = await deliverText(run, recap, { silent }).catch((err) => {
+  const sourceMessageId = await deliverText(run, recap, { silent }).catch((err) => {
     console.error(
       `browser-agent: failed to deliver the report for run ${run.id}:`,
       err instanceof Error ? err.message : String(err),
     );
     return null;
   });
-  return messageId != null ? { content: recap, messageId, hasMedia: false } : null;
+  return sourceMessageId != null ? { content: recap, sourceMessageId, hasMedia: false } : null;
 }
 
 /**
@@ -212,14 +215,14 @@ async function deliverRunOutcome(
 async function removeRunAck(runId: string): Promise<void> {
   const ack = takeRunAck(runId);
   if (!ack) return;
-  for (const messageId of ack.messageIds) {
+  for (const sourceMessageId of ack.sourceMessageIds) {
     try {
       // The source deletes and soft-deletes its mirror row together;
       // `deleted: false` (older than 48h) just leaves the ack standing.
-      await requireOutbound(ack.chatRef).deleteMessage(chatIdOf(ack.chatRef), messageId);
+      await requireOutbound(ack.chatRef).deleteMessage(chatIdOf(ack.chatRef), sourceMessageId);
     } catch (err) {
       console.error(
-        `browser-agent: could not remove the acknowledgement message ${messageId} for run ${runId}:`,
+        `browser-agent: could not remove the acknowledgement message ${sourceMessageId} for run ${runId}:`,
         err instanceof Error ? err.message : String(err),
       );
     }
@@ -440,7 +443,7 @@ async function runOne(run: BrowserAgentRun, db: StoreDb): Promise<void> {
           type: "output",
           level: "success",
           message: delivered.hasMedia ? "send report with file" : "send report",
-          data: { content: delivered.content, messageId: delivered.messageId },
+          data: { content: delivered.content, sourceMessageId: delivered.sourceMessageId },
         });
       }
       // The run has spoken for itself — the silent "on it" ack can go.

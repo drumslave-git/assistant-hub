@@ -1,5 +1,7 @@
 import "server-only";
 
+import { turnCorrelationId } from "@assistant-hub-swarm/contracts";
+
 import type { StoreDb } from "@/server/store/db";
 import { buildSystemPrompt } from "@/features/bot-messaging/server/prompt";
 import { FEATURES } from "@/lib/features";
@@ -178,7 +180,7 @@ export async function fireTask(
     assistantId: task.assistantId,
     trigger: {
       kind: "cron",
-      actor: task.chatId ?? "global",
+      actor: task.chatRef ?? "global",
       ...(opts.trigger ?? {}),
       correlationId: opts.trigger?.correlationId ?? task.id,
     },
@@ -228,11 +230,11 @@ export async function fireTask(
     // 5); what stays here is the accounting, because "did this fire reach
     // anyone" is a question about the task, not about Telegram.
     const sent: string[] = [];
-    const sentIds: number[] = [];
+    const sentIds: string[] = [];
     let deliveryFailures = 0;
     const onDelivered = async (delivery: {
       ok: boolean;
-      messageId: number | null;
+      sourceMessageId: string | null;
       text: string;
     }) => {
       if (!delivery.ok) {
@@ -240,12 +242,12 @@ export async function fireTask(
         return;
       }
       sent.push(delivery.text);
-      if (delivery.messageId != null) sentIds.push(delivery.messageId);
+      if (delivery.sourceMessageId != null) sentIds.push(delivery.sourceMessageId);
       await trace.event({
         type: "output",
         level: "success",
         message: "send message",
-        data: { content: delivery.text, messageId: delivery.messageId },
+        data: { content: delivery.text, sourceMessageId: delivery.sourceMessageId },
       });
     };
 
@@ -307,13 +309,15 @@ export async function fireTask(
     }
 
     // A fire has no incoming message to key on, so it opens on the task id and
-    // settles on what it delivered. The `<chatId>:<messageId>` convention is
+    // settles on what it delivered. The message correlation is
     // app-wide: feedback on a sent message can resolve the trace behind it, and
     // chat-scoped trace queries count it like any other message in the chat.
     await trace.succeed({
       outputSummary:
         sent.length > 0 ? sent.join("\n\n") : `quiet fire — nothing sent (${reply.content})`,
-      ...(sentIds.length > 0 ? { correlationId: `${task.chatId}:${sentIds[0]}` } : {}),
+      ...(task.chatRef && sentIds.length > 0
+        ? { correlationId: turnCorrelationId(task.chatRef, sentIds[0]) }
+        : {}),
     });
     return { ok: true, sent };
   } catch (err) {

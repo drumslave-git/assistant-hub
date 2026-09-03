@@ -60,6 +60,9 @@ beforeEach(async () => {
 
 const CHAT_ID = "555";
 const USER_ID = "100";
+/** How every trace here names the chat and the reactor — refs, like the app. */
+const CHAT_REF = `tg:chat:${CHAT_ID}`;
+const USER_REF = `tg:user:${USER_ID}`;
 /** The tg menu option that files an addressing report (owned by apps/tg). */
 const NOT_ADDRESSED_OPTION = "Wasn't talking to you";
 
@@ -204,7 +207,7 @@ describe("self-reflection (reflectOnFeedback)", () => {
     const trace = await startTrace({
       feature: "bot-messaging",
       action: "reply",
-      trigger: { kind: "transport", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+      trigger: { kind: "transport", actor: USER_REF, correlationId: `${CHAT_REF}:${USER_MSG_ID}` },
     });
     await trace.event({
       type: "llm_request",
@@ -282,7 +285,7 @@ describe("self-reflection (reflectOnFeedback)", () => {
     const fire = await startTrace({
       feature: "tasks",
       action: "fire",
-      trigger: { kind: "cron", actor: CHAT_ID, correlationId: "task-uuid" },
+      trigger: { kind: "cron", actor: CHAT_REF, correlationId: "task-uuid" },
     });
     await fire.event({
       type: "llm_request",
@@ -295,7 +298,7 @@ describe("self-reflection (reflectOnFeedback)", () => {
       message: "send message",
       data: { content: "Hey. Just checking in.", messageId: FIRED_MSG_ID },
     });
-    await fire.succeed({ correlationId: `${CHAT_ID}:${FIRED_MSG_ID}` });
+    await fire.succeed({ correlationId: `${CHAT_REF}:${FIRED_MSG_ID}` });
 
     const feedback = ports.seedCompleted({
       feedback: "Right tone",
@@ -571,7 +574,7 @@ describe("feedback.recorded consumer", () => {
       v: 1,
       eventId: `evt-${feedback.id}`,
       occurredAt: new Date().toISOString(),
-      correlationId: `${feedback.chatId}:${feedback.sourceMessageId}`,
+      correlationId: `tg:chat:${feedback.chatId}:${feedback.sourceMessageId}`,
       type: "feedback.recorded",
       source: "tg",
       feedback: {
@@ -595,7 +598,7 @@ describe("feedback.recorded consumer", () => {
     const trace = await startTrace({
       feature: "bot-messaging",
       action: "reply",
-      trigger: { kind: "transport", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+      trigger: { kind: "transport", actor: USER_REF, correlationId: `${CHAT_REF}:${USER_MSG_ID}` },
     });
     await trace.event({
       type: "llm_response",
@@ -652,7 +655,7 @@ describe("addressing report (👎 → \"Wasn't talking to you\")", () => {
     const trace = await startTrace({
       feature: "bot-messaging",
       action: "reply",
-      trigger: { kind: "transport", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+      trigger: { kind: "transport", actor: USER_REF, correlationId: `${CHAT_REF}:${USER_MSG_ID}` },
     });
     await trace.event({
       type: "step",
@@ -680,7 +683,7 @@ describe("addressing report (👎 → \"Wasn't talking to you\")", () => {
         v: 1,
         eventId: `evt-${feedback.id}`,
         occurredAt: new Date().toISOString(),
-        correlationId: `${CHAT_ID}:${BOT_MSG_ID}`,
+        correlationId: `${CHAT_REF}:${BOT_MSG_ID}`,
         type: "feedback.recorded",
         source: "tg",
         feedback: {

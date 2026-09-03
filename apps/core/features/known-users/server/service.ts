@@ -160,6 +160,7 @@ function userProfileChanged(before: KnownUserRecord, profile: SourceUserProfile)
  * upsert still bumps `updatedAt` regardless, so "last seen" ordering is unaffected.
  */
 async function traceUserCapture(
+  source: SourceId,
   before: KnownUserRecord | null,
   profile: SourceUserProfile,
 ): Promise<void> {
@@ -171,7 +172,7 @@ async function traceUserCapture(
     {
       feature: FEATURE.id,
       action: added ? "capture-user" : "update-profile",
-      trigger: { kind: "transport", actor: profile.userId },
+      trigger: { kind: "transport", actor: scopedRef(source, "user", profile.userId) },
       inputSummary: label,
     }
   );
@@ -202,7 +203,7 @@ export async function rememberUser(
     const before = await getKnownUser(db, source, profile.userId);
     await upsertKnownUser(db, source, profile);
     publishEvent(FEATURE.realtimeTopic);
-    await traceUserCapture(before, profile);
+    await traceUserCapture(source, before, profile);
   } catch {
     // Best-effort capture; swallow so message handling continues.
   }

@@ -28,7 +28,7 @@ import { getLiveState } from "./live-state";
 /** Columns an enqueue sets. */
 export interface InsertBrowserAgentRun {
   chatRef: string | null;
-  threadId: number | null;
+  threadId: string | null;
   createdByUserRef: string | null;
   isOwner: boolean;
   restricted: boolean;

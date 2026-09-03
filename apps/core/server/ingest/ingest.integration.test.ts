@@ -50,6 +50,7 @@ vi.mock("@/server/store/db", () => ({
 
 const { processTransportUpdate } = await import("./consumer");
 const repository = await import("@/server/source-store/repository");
+const { registerTestTransport } = await import("../../test/transports");
 
 let pg: TestPostgres;
 let pool: Pool;
@@ -62,14 +63,10 @@ beforeAll(async () => {
   pool = new Pool({ connectionString: url });
   db = drizzle(pool, { schema: storeSchema });
   holder.db = db;
-  // The ingest accepts updates only from a registered transport; the suite
-  // speaks as "tg", so register it once (the per-test truncate spares it).
-  await db.insert(storeSchema.transports).values({
-    id: "tg",
-    name: "Telegram",
-    baseUrl: "http://tg:3210",
-    mcpPath: "/mcp",
-  });
+  // The ingest accepts updates only from a registered transport speaking this
+  // core's contract major; the suite speaks as "tg", so register it once
+  // through the shared fixture (the per-test truncate spares it).
+  await registerTestTransport(db);
 });
 
 afterAll(async () => {
@@ -204,7 +201,9 @@ describe("transport.message", () => {
     const byAssistant = new Map(enqueued.map((e) => [e.assistantId, e]));
     expect(byAssistant.get("igor")?.addressing).toMatchObject({ addressed: true });
     expect(byAssistant.get("anna")?.addressing).toMatchObject({ needsAnalyzer: true });
-    expect(byAssistant.get("anna")?.correlationId).toBe(`${GROUP}:42:anna`);
+    // The correlation names the chat by ref, so another transport's chat with
+    // the same id can never share a turn with this one.
+    expect(byAssistant.get("anna")?.correlationId).toBe(`tg:chat:${GROUP}:42:anna`);
     expect(byAssistant.get("anna")?.chat).toMatchObject({
       ref: `tg:chat:${GROUP}`,
       kind: "group",

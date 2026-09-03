@@ -73,7 +73,7 @@ describe("fireTask trace opening", () => {
     expect(startTrace).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "fire",
-        trigger: { kind: "cron", actor: "-1001", correlationId: "task-1" },
+        trigger: { kind: "cron", actor: "tg:chat:-1001", correlationId: "task-1" },
       }),
     );
   });
@@ -86,7 +86,7 @@ describe("fireTask trace opening", () => {
         action: "manual-fire",
         // The dashboard trigger, still correlated to the task so the run joins
         // the task's flow in Debug.
-        trigger: { kind: "dashboard", actor: "-1001", correlationId: "task-1" },
+        trigger: { kind: "dashboard", actor: "tg:chat:-1001", correlationId: "task-1" },
       }),
     );
   });

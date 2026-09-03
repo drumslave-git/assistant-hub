@@ -85,18 +85,20 @@ function requireChatTurn(): McpToolContext | null {
 async function deliver(
   ctx: McpToolContext,
   text: string,
-  replyToMessageId: number | null,
-): Promise<{ messageId: number }> {
+  replyToSourceMessageId: string | null,
+): Promise<{ sourceMessageId: string }> {
   const thread = await getThreadById(ctx.chatId);
   if (!thread) throw new Error(`thread ${ctx.chatId} no longer exists`);
   const stored = await appendMessage({
     threadId: ctx.chatId,
     role: "assistant",
     content: text,
-    replyToMessageId,
+    // The web chat's own rows are keyed by a serial; ids are strings
+    // everywhere they cross the turn, and come back here where they belong.
+    replyToMessageId: replyToSourceMessageId != null ? Number(replyToSourceMessageId) : null,
   });
   pingThreads();
-  return { messageId: stored.id };
+  return { sourceMessageId: String(stored.id) };
 }
 
 function failure(text: string, err: unknown) {
@@ -107,7 +109,7 @@ function failure(text: string, err: unknown) {
         text: `The message could not be delivered: ${err instanceof Error ? err.message : String(err)}. Do not claim it was.`,
       },
     ],
-    structuredContent: toolDeliveryResult({ ok: false, messageId: null, text }),
+    structuredContent: toolDeliveryResult({ ok: false, sourceMessageId: null, text }),
     isError: true as const,
   };
 }
@@ -115,7 +117,7 @@ function failure(text: string, err: unknown) {
 /** Delivered-or-not, into the turn's own bookkeeping (a fire counts these). */
 async function recordDelivery(delivery: {
   ok: boolean;
-  messageId: number | null;
+  sourceMessageId: string | null;
   text: string;
 }): Promise<void> {
   await tryGetToolContext()?.onDelivered?.(delivery);
@@ -146,14 +148,18 @@ export function registerWebChatMcpTools(server: McpServer): void {
       if (!ctx) return refusal(NO_TURN);
       if (ctx.deliveryKind !== "reply") return refusal(NOT_A_REPLY_TURN);
       try {
-        const sent = await deliver(ctx, text, ctx.replyToMessageId ?? null);
-        await recordDelivery({ ok: true, messageId: sent.messageId, text });
+        const sent = await deliver(ctx, text, ctx.replyToSourceMessageId ?? null);
+        await recordDelivery({ ok: true, sourceMessageId: sent.sourceMessageId, text });
         return {
-          content: [{ type: "text" as const, text: `Reply sent (id ${sent.messageId}).` }],
-          structuredContent: toolDeliveryResult({ ok: true, messageId: sent.messageId, text }),
+          content: [{ type: "text" as const, text: `Reply sent (id ${sent.sourceMessageId}).` }],
+          structuredContent: toolDeliveryResult({
+            ok: true,
+            sourceMessageId: sent.sourceMessageId,
+            text,
+          }),
         };
       } catch (err) {
-        await recordDelivery({ ok: false, messageId: null, text });
+        await recordDelivery({ ok: false, sourceMessageId: null, text });
         return failure(text, err);
       }
     },
@@ -184,13 +190,17 @@ export function registerWebChatMcpTools(server: McpServer): void {
       if (ctx.deliveryKind !== "send") return refusal(NOT_A_SEND_TURN);
       try {
         const sent = await deliver(ctx, text, null);
-        await recordDelivery({ ok: true, messageId: sent.messageId, text });
+        await recordDelivery({ ok: true, sourceMessageId: sent.sourceMessageId, text });
         return {
-          content: [{ type: "text" as const, text: `Message sent (id ${sent.messageId}).` }],
-          structuredContent: toolDeliveryResult({ ok: true, messageId: sent.messageId, text }),
+          content: [{ type: "text" as const, text: `Message sent (id ${sent.sourceMessageId}).` }],
+          structuredContent: toolDeliveryResult({
+            ok: true,
+            sourceMessageId: sent.sourceMessageId,
+            text,
+          }),
         };
       } catch (err) {
-        await recordDelivery({ ok: false, messageId: null, text });
+        await recordDelivery({ ok: false, sourceMessageId: null, text });
         return failure(text, err);
       }
     },

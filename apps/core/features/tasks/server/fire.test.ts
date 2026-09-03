@@ -97,7 +97,7 @@ describe("fireTask", () => {
       expect(ctx?.source).toBe("tg");
       await ctx!.onDelivered!({
         ok: true,
-        messageId: 7,
+        sourceMessageId: "7",
         text: "Hey, the feed has something new.",
       });
       return { content: "sent one message", model: "m", latencyMs: 1 };
@@ -158,7 +158,7 @@ describe("fireTask", () => {
 
   it("fails the fire when delivery was attempted and nothing got through", async () => {
     const complete = vi.fn().mockImplementation(async () => {
-      await tryGetToolContext()!.onDelivered!({ ok: false, messageId: null, text: "hello" });
+      await tryGetToolContext()!.onDelivered!({ ok: false, sourceMessageId: null, text: "hello" });
       return { content: "could not send", model: "m", latencyMs: 1 };
     });
 
@@ -170,8 +170,8 @@ describe("fireTask", () => {
   it("stays ok when at least one message got through despite a failed attempt", async () => {
     const complete = vi.fn().mockImplementation(async () => {
       const ctx = tryGetToolContext()!;
-      await ctx.onDelivered!({ ok: false, messageId: null, text: "first" });
-      await ctx.onDelivered!({ ok: true, messageId: 8, text: "second" });
+      await ctx.onDelivered!({ ok: false, sourceMessageId: null, text: "first" });
+      await ctx.onDelivered!({ ok: true, sourceMessageId: "8", text: "second" });
       return { content: "ok", model: "m", latencyMs: 1 };
     });
 

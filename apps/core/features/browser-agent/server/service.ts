@@ -23,7 +23,7 @@ import {
 export interface EnqueueBrowserRunInput {
   goal: string;
   chatRef: string | null;
-  threadId?: number | null;
+  threadId?: string | null;
   createdByUserRef?: string | null;
   isOwner: boolean;
   /** Rule-driven group run, or rights lent to a non-owner (default false). */

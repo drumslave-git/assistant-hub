@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
-import { TURN_META_KEY } from "@assistant-hub-swarm/contracts";
+import { CONTRACT_MAJOR, TURN_META_KEY } from "@assistant-hub-swarm/contracts";
 import {
   applyMigrations,
   startTestPostgres,
@@ -54,12 +54,12 @@ vi.mock("@/server/transports/service", async (importOriginal) => {
     ...actual,
     getTransport: async (source: string) =>
       source === "tg" && config.url
-        ? { id: "tg", name: "Telegram", baseUrl: config.url, mcpPath: "/mcp", enabled: true, contractMajor: 1 }
+        ? { id: "tg", name: "Telegram", baseUrl: config.url, mcpPath: "/mcp", enabled: true, contractMajor: CONTRACT_MAJOR }
         : null,
     // The roster the reconcile walks: tg is always registered here; whether
     // it is reachable is `config.url` (null = never announced a URL).
     listCompatibleTransports: async () => [
-      { id: "tg", name: "Telegram", baseUrl: config.url ?? "", mcpPath: "/mcp", enabled: true, contractMajor: 1 },
+      { id: "tg", name: "Telegram", baseUrl: config.url ?? "", mcpPath: "/mcp", enabled: true, contractMajor: CONTRACT_MAJOR },
     ],
   };
 });

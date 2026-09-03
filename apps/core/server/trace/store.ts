@@ -967,3 +967,32 @@ export async function getLatestTraceIdsByCorrelation(
   }
   return result;
 }
+
+/**
+ * The newest trace whose correlation is a message's — either the message's own
+ * correlation or one of the per-assistant turn correlations under it
+ * (`turnCorrelationId` appends the assistant, so one message in a shared chat
+ * has one correlation per assistant that answered it).
+ *
+ * Scans the index rather than reading one key, because the assistant half is
+ * exactly what a caller looking a message up does not know. The index is small
+ * (one entry per correlation of the loaded months) and this runs on the
+ * feedback path, not per message.
+ */
+export async function getLatestTraceIdForMessage(
+  messageCorrelationId: string,
+  options: { features?: string[] } = {},
+): Promise<string | null> {
+  const s = store();
+  const featureFilter = options.features?.length ? new Set(options.features) : null;
+  const prefix = `${messageCorrelationId}:`;
+  let newest: CorrelationEntry | null = null;
+  for (const [corr, entries] of s.correlations) {
+    if (corr !== messageCorrelationId && !corr.startsWith(prefix)) continue;
+    for (const entry of entries) {
+      if (featureFilter && !featureFilter.has(entry.feature)) continue;
+      if (!newest || entry.startedAt.localeCompare(newest.startedAt) >= 0) newest = entry;
+    }
+  }
+  return newest?.id ?? null;
+}

@@ -567,7 +567,7 @@ pointing at chats and people through scoped refs. See
 | `id` | text PK | |
 | `assistant_id` | text NOT NULL → `assistants.id` CASCADE | The assistant this task belongs to; dies with it |
 | `chat_ref` | text | Scoped chat ref; **null** means every chat (global). `tasks_scope_check`: null only for `message` / `on-reply` |
-| `thread_id` | bigint | Source-local forum-topic thread to deliver into, or null (chat root) |
+| `thread_id` | text | Source-local forum-topic thread to deliver into, or null (chat root) — the platform's own id, verbatim |
 | `created_by_user_ref` | text | Scoped ref of whoever created it, or null (dashboard) |
 | `source` | text NOT NULL, default `dashboard` | `check`: `chat` \| `dashboard` — where the task was authored |
 | `created_by_owner` | boolean NOT NULL, default `false` | Whether the creator held owner rights at creation time, stamped from the inbound event's `sender.isOwner` (the source is authoritative for owner identity). A task lends owner rights when it is dashboard-authored or this flag is set |
@@ -841,7 +841,7 @@ report.
 | --- | --- | --- |
 | `id` | text PK | |
 | `chat_ref` | text | Scoped ref of the chat the run reports back to, or null for a dashboard-started run (the report is only stored here) |
-| `thread_id` | bigint | Forum-topic thread to deliver into, or null |
+| `thread_id` | text | Forum-topic thread to deliver into, or null — the platform's own id, verbatim |
 | `created_by_user_ref` | text | Scoped ref of whoever asked for the run, or null (dashboard) |
 | `is_owner` | boolean NOT NULL, default `false` | Resolved at enqueue time; gates the download tools for the whole run |
 | `restricted` | boolean NOT NULL, default `false` | A standing rule drove the run in a group, or lent the sender rights they did not hold: downloads are fenced to `source_urls` and must attach to the chat or be discarded (user decisions, 2026-08-01) |

@@ -691,7 +691,7 @@ export async function createTaskFromChat(
     userId: string | null;
     /** The sender's owner stamp from the inbound event; recorded on the task. */
     senderIsOwner?: boolean;
-    threadId?: number | null;
+    threadId?: string | null;
     instruction: string;
     context?: string | null;
     triggerKind: TriggerKind;

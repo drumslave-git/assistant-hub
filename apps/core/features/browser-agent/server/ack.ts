@@ -18,7 +18,8 @@ import "server-only";
 
 interface AckEntry {
   chatRef: string;
-  messageIds: number[];
+  /** The platform's own ids of the ack messages, verbatim. */
+  sourceMessageIds: string[];
   /** Set when the run settled with no ack registered yet (epoch ms, for sweeping). */
   settledAt: number | null;
 }
@@ -50,7 +51,7 @@ function sweep(entries: Map<string, AckEntry>): void {
 export function registerRunAck(
   runId: string,
   chatRef: string,
-  messageId: number,
+  sourceMessageId: string,
 ): "stored" | "settled" {
   const entries = store();
   sweep(entries);
@@ -61,9 +62,9 @@ export function registerRunAck(
     return "settled";
   }
   if (existing) {
-    existing.messageIds.push(messageId);
+    existing.sourceMessageIds.push(sourceMessageId);
   } else {
-    entries.set(runId, { chatRef, messageIds: [messageId], settledAt: null });
+    entries.set(runId, { chatRef, sourceMessageIds: [sourceMessageId], settledAt: null });
   }
   return "stored";
 }
@@ -73,15 +74,15 @@ export function registerRunAck(
  * When none was registered yet, leaves a settled marker so a late registration
  * knows to delete immediately, and returns null.
  */
-export function takeRunAck(runId: string): { chatRef: string; messageIds: number[] } | null {
+export function takeRunAck(runId: string): { chatRef: string; sourceMessageIds: string[] } | null {
   const entries = store();
   sweep(entries);
   const entry = entries.get(runId);
-  if (entry && entry.messageIds.length > 0) {
+  if (entry && entry.sourceMessageIds.length > 0) {
     entries.delete(runId);
-    return { chatRef: entry.chatRef, messageIds: entry.messageIds };
+    return { chatRef: entry.chatRef, sourceMessageIds: entry.sourceMessageIds };
   }
-  entries.set(runId, { chatRef: "", messageIds: [], settledAt: Date.now() });
+  entries.set(runId, { chatRef: "", sourceMessageIds: [], settledAt: Date.now() });
   return null;
 }
 

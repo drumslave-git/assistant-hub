@@ -14,6 +14,7 @@ import {
   toTelegramReactionEmoji,
 } from "./reactions";
 import { sendChatMessage } from "./send";
+import { telegramId } from "./telegram";
 import type { UpdatePublisher } from "./updates";
 
 /**
@@ -99,7 +100,7 @@ function deliveryFailure(text: string, err: unknown) {
         text: `Telegram did not accept the message: ${reason}. Nothing was delivered — do not claim it was.`,
       },
     ],
-    structuredContent: toolDeliveryResult({ ok: false, messageId: null, text }),
+    structuredContent: toolDeliveryResult({ ok: false, sourceMessageId: null, text }),
     isError: true as const,
   };
 }
@@ -130,7 +131,7 @@ export function createTgMcpServer(deps: TgMcpDeps): McpServer {
    * withholds the tool that does not match; this checks the turn as well, so
    * a call that arrives anyway cannot smuggle a send into the wrong turn.
    */
-  const deliver = (turn: TurnToolMeta, text: string, replyToMessageId: number | null) =>
+  const deliver = (turn: TurnToolMeta, text: string, replyToSourceMessageId: string | null) =>
     sendChatMessage(
       {
         sender: deps.manager.senderFor(turn.assistantId ?? null),
@@ -141,8 +142,8 @@ export function createTgMcpServer(deps: TgMcpDeps): McpServer {
         chatId: turn.chatId,
         assistantId: turn.assistantId ?? null,
         text,
-        replyToMessageId,
-        threadId: turn.threadId ?? null,
+        replyToMessageId: telegramId(replyToSourceMessageId),
+        threadId: telegramId(turn.threadId),
       },
     );
 
@@ -172,10 +173,14 @@ export function createTgMcpServer(deps: TgMcpDeps): McpServer {
       try {
         // Which message it lands under is the turn's, never the model's: it
         // replies to the message that opened the turn or to nothing at all.
-        const sent = await deliver(turn, text, turn.replyToMessageId ?? null);
+        const sent = await deliver(turn, text, turn.replyToSourceMessageId ?? null);
         return {
           content: [{ type: "text" as const, text: `Reply sent (id ${sent.messageId}).` }],
-          structuredContent: toolDeliveryResult({ ok: true, messageId: sent.messageId, text }),
+          structuredContent: toolDeliveryResult({
+            ok: true,
+            sourceMessageId: String(sent.messageId),
+            text,
+          }),
         };
       } catch (err) {
         return deliveryFailure(text, err);
@@ -212,7 +217,11 @@ export function createTgMcpServer(deps: TgMcpDeps): McpServer {
         const sent = await deliver(turn, text, null);
         return {
           content: [{ type: "text" as const, text: `Message sent (id ${sent.messageId}).` }],
-          structuredContent: toolDeliveryResult({ ok: true, messageId: sent.messageId, text }),
+          structuredContent: toolDeliveryResult({
+            ok: true,
+            sourceMessageId: String(sent.messageId),
+            text,
+          }),
         };
       } catch (err) {
         return deliveryFailure(text, err);

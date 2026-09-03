@@ -6,8 +6,12 @@
       "outputs": [".next/**", "!.next/cache/**"]
     },
     "lint": {},
-    "typecheck": {},
-    "test": {},
+    "typecheck": {
+      "dependsOn": ["^typecheck"]
+    },
+    "test": {
+      "dependsOn": ["^typecheck"]
+    },
     "test:integration": {
       "cache": false
     },
