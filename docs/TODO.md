@@ -463,6 +463,81 @@ Any core edit for a new source id is a bug.
      enabled — without it the bot connects, looks healthy, and sees every
      message as empty.
 
+6. **The SDK owns the runtime** (`done`, 2026-09-04 — staged in all three
+   repositories, unpublished).
+   - **The question that started it (user, 2026-09-04):** "if transports have
+     differences only in telegram and discord folders, what's the point of all
+     other code?" Measured before answering — of the two transports' 6200
+     lines, `core/`, `outbound/`, `http/` and `index.ts` (~1500 lines each)
+     were the same file twice with two platforms' nouns in them, while
+     `telegram/`/`discord/` and `inbound/` genuinely differed. Two copies is a
+     coincidence; the third transport would have made it a rule, and every one
+     of those copies is a place for the contract to drift per platform.
+   - **Decision (user, asked and answered 2026-09-04): extract the runtime.**
+     The wire does not change, so `CONTRACT_MAJOR` stays **3**; the SDK's own
+     API does, so it goes to **3.0.0**.
+   - **What moved into `packages/transport-sdk/src/runtime/`:**
+     `service.ts` (`startTransportService` — env, boot order, registration
+     with retry, reconcile on `transport.config.changed`/`assistant.deleted`,
+     ordered shutdown), `manager.ts` (`ConnectionManager` — desired-state
+     reconcile, supervision with a flat 15 s retry while the core still wants
+     a connection, the dashboard-refresh ping), `core-api.ts` (register,
+     desired, mirror lookup, menu-press toast), `inbound.ts` (dedupe key,
+     shared-chat suppression + presence, the receivers list, the envelope),
+     `updates.ts` (queue publisher, envelope, seen-cache), `send.ts` (the one
+     send: split, send each part, report each as `message.delivered` with what
+     the platform actually attached), `split.ts` (the cap is an argument now —
+     4096 and 2000 are the same algorithm), `delivery.ts` (the bus consumer,
+     the typing loops, the deliver trace), `http.ts` (`/health`, every
+     `/internal/*` route, `/mcp`), `mcp.ts` (the two delivery tools, `turnOf`,
+     `toolRefusal`) and `reactions.ts` (`reactToMessage`).
+   - **Absent, not stubbed.** `PlatformConnection` declares every action past
+     `sendMessage` as optional, and the runtime mounts a route or offers a
+     tool only where the method exists. No capability flags — a platform that
+     cannot do a thing has no method for it, and the core finds out by asking.
+   - **Reacting splits at the right seam.** The mirror gate (a guessed id, or
+     the bot's own message, refused before the platform is touched) and the
+     `transport.bot-reaction` record are the contract's, so they are
+     `reactToMessage` in the SDK; the emoji are the platform's, so each
+     transport registers its own `set_message_reaction` over it. That fixed a
+     real bug: the Discord transport was setting reactions **without**
+     publishing `transport.bot-reaction`, so the next turn would have denied
+     reacting (the exact operator report of 2026-08-15, reintroduced by
+     copying the file that did not have it).
+   - **Dead code found and removed:** `checkCrossFedAddressed` existed in both
+     transports and was called by nothing but its own tests — the cross-feed
+     verdict is the core's (`server/ingest/consumer.ts`). `findMessageRefs`
+     was unused in the Telegram transport.
+   - **The transports are their platforms now.** Telegram **3488 → 1679**
+     lines, Discord **2549 → 950**, each `index.ts` a single
+     `startTransportService` call over a descriptor, an adapter, a normalizer
+     and an addressing rule. `core/`, `outbound/` and `http/` are gone from
+     both.
+   - **Docs.** The manual is restructured: Step 2 is now "Implement four
+     things and call the runtime", the wire walk (Steps 3–11) is what the
+     runtime does on your behalf — kept for non-Node authors, for debugging
+     and for reimplementation — and every reference into the Telegram repo
+     points at a file that still exists. Both transport READMEs and the SDK
+     README lead with the runtime.
+   - **Proof.** SDK: `npm run build` (98 KB d.ts, no private-package imports),
+     `npx tsc --noEmit`, `npx vitest run` (**19 tests / 4 files** — the wire
+     drift check plus new `split`, `inbound` and `send` suites covering the
+     contract logic that used to be duplicated). Telegram: `npx tsc --noEmit`,
+     `npx vitest run` (**35 tests / 3 files**). Discord: `npx tsc --noEmit`,
+     `npx vitest run` (**16 tests / 2 files**). Not run: anything live, and
+     the image builds.
+   - **Known gap, left as it was:** the Discord transport ignores
+     `linkableSourceMessageIds` — Telegram renders those citations as tappable
+     links in its HTML, and Discord does not render masked links in ordinary
+     message content, so there is no obvious equivalent. Not invented; ask the
+     user what a Discord citation should look like before wiring it.
+   - **On the user:** publish `@assistant-hub-swarm/transport-sdk@3.0.0`, then
+     `npm install` in both transport repositories to pick it up and commit the
+     lockfiles. Until then each transport's `node_modules` holds a **copy of
+     the local 3.0.0 build** (`dist/` + `package.json`, no lockfile change) so
+     typecheck and tests could run — a plain `npm ci` there today would
+     install 2.0.0 and fail.
+
 **Landed with the org move (`done`, 2026-09-02):** local `origin` repointed;
 the guide, the tracker and the link-fetch user-agent name the new repository;
 all workspaces renamed `@assistant-hub-swarm/*` → `@assistant-hub-swarm/*` (157

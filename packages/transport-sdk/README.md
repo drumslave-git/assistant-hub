@@ -1,9 +1,9 @@
 # `@assistant-hub-swarm/transport-sdk`
 
 Everything a **transport** needs to connect a messaging platform (Discord,
-Signal, Matrix, Slack, …) to a running [assistant-hub-swarm][core] core: the wire
-contracts, the Redis queue and bus helpers, the internal-token guard, an MCP
-server over Hono, the trace client and image normalization.
+Signal, Matrix, Slack, …) to a running [assistant-hub-swarm][core] core — as a
+**runtime** you hand your platform to, over the wire contracts, Redis helpers,
+token guard, MCP server, trace client and image normalization it is built on.
 
 A transport is a stateless service that owns exactly one platform. It has no
 database and no files. It registers with a core at boot, forwards every update
@@ -61,7 +61,45 @@ refuses you **by name**, with a reason its dashboard shows next to your
 transport — never a silent drop. When that happens, bump the SDK and rebuild;
 the manual's "Before you start" has the exact failure.
 
-## Ten lines of it
+## A whole transport
+
+```ts
+import { startTransportService } from "@assistant-hub-swarm/transport-sdk";
+
+await startTransportService({
+  descriptor,   // who you are: id, name, config fields, message cap
+  adapter,      // connect() one connection: the actions you support, the events you report
+  normalize,    // one platform message -> the contract's InboundMessage
+  addressing,   // the structural verdict, per receiving bot
+  tools: { platform: "Signal" },
+});
+```
+
+That call is the service: it opens the queue, serves `/health` from the first
+moment, registers with the core (retrying — the core may boot second),
+reconciles its connections from the desired state and refetches on every
+change, dedupes shared chats, assembles and publishes every event, consumes
+the core's deliveries and drives the typing indicator, splits and performs
+sends, serves the whole internal API, hosts the delivery tools, and shuts all
+of it down in order on a signal.
+
+What you write is your platform, and nothing else. Two rules shape it:
+
+- **A missing action is a missing method.** `PlatformConnection` declares
+  `sendVoice`, `sendPhoto`, `sendFile`, `deleteMessage`, `sendMenu`,
+  `editMenu`, `setReaction`, `setChatTitle` and `sendTyping` as optional. Leave
+  out what your platform cannot do and no route is served and no tool offered
+  for it. There are no capability flags anywhere.
+- **Report, never decide.** Your adapter says what the platform said, in the
+  contract's vocabulary. Duplicates, receivers, correlation ids and whether
+  anyone answers are decided elsewhere.
+
+## Or the wire, by hand
+
+Nothing above is required. Every schema and helper the runtime is built on is
+exported, so a transport that wants its own boot — or a language that is not
+TypeScript, reading [JSON Schema][schema] and [OpenAPI][openapi] instead — can
+speak Redis and HTTP directly:
 
 ```ts
 import {
@@ -100,6 +138,8 @@ console.log(scopedRef("discord", "chat", "1183…")); // discord:chat:1183…
 
 | Group | For |
 | --- | --- |
+| `startTransportService`, `PlatformAdapter`, `PlatformConnection`, `Normalizer`, `AddressingRule`, `TransportDescriptor` | The runtime, and the four things you implement against it |
+| `ConnectionManager`, `createCoreApi`, `createTransportApi`, `startDeliveryConsumer`, `registerDeliveryTools`, `reactToMessage`, `sendChatMessage`, `splitMessage`, `buildInboundEvent` | Its pieces, for a transport that wants its own boot |
 | Scoped refs (`scopedRef`, `parseScopedRef`, `SOURCE_ID_PATTERN`) | Naming a chat, a person or a message across apps without a foreign key |
 | `CONTRACT_MAJOR` | The handshake at registration |
 | `transport*` schemas + `TRANSPORT_UPDATES_QUEUE` | Registering, receiving desired state, publishing every update |

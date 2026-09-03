@@ -208,3 +208,51 @@ export {
   normalizeImageForChat,
   type ImagePayload,
 } from "@assistant-hub-swarm/media";
+
+// ---- The runtime: everything that is the same for every platform ----------
+// A transport supplies a descriptor, a platform adapter, a normalizer and an
+// addressing rule; `startTransportService` is the rest of it — boot,
+// registration, reconcile, dedupe, event assembly, sends, the HTTP surface,
+// the delivery tools and shutdown. See the "Adding a transport" manual.
+export { startTransportService } from "./runtime/service";
+export { ConnectionManager } from "./runtime/manager";
+export { createTransportApi } from "./runtime/http";
+export { registerDeliveryTools, toolRefusal, turnOf } from "./runtime/mcp";
+export { reactToMessage } from "./runtime/reactions";
+export { startDeliveryConsumer } from "./runtime/delivery";
+export { createCoreApi } from "./runtime/core-api";
+export { openUpdatePublisher, updateEnvelope, SeenCache } from "./runtime/updates";
+export { buildEditEvent, buildInboundEvent, buildReactionEvent } from "./runtime/inbound";
+export { healthBody, publishDelivered, sendChatMessage } from "./runtime/send";
+export { splitMessage } from "./runtime/split";
+export type {
+  ConnectionManagerDeps,
+} from "./runtime/manager";
+export type { CoreApi } from "./runtime/core-api";
+export type { DeliveryConsumer } from "./runtime/delivery";
+export type { DeliveryToolDeps, DeliveryToolTexts } from "./runtime/mcp";
+export type { ReactionOutcome, ReactionStatus } from "./runtime/reactions";
+export type { InboundResult } from "./runtime/inbound";
+export type { TransportApiDeps } from "./runtime/http";
+export type {
+  RunningConnection,
+  SendContext,
+  SendInput,
+  SentChatMessage,
+} from "./runtime/send";
+export type { TransportRuntime, TransportServiceOptions } from "./runtime/service";
+export type { UpdatePublisher } from "./runtime/updates";
+export type {
+  AddressingRule,
+  BotIdentity,
+  ConnectionStatus,
+  InboundMessage,
+  MenuGrid,
+  Normalizer,
+  PlatformAdapter,
+  PlatformConnection,
+  PlatformHooks,
+  SendOptions,
+  SentMessage,
+  TransportDescriptor,
+} from "./runtime/types";

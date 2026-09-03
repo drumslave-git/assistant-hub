@@ -10,7 +10,7 @@ dashboard. Everything a transport must do is published:
 
 | What you need | Where it is |
 | --- | --- |
-| The contract, as code | [`@assistant-hub-swarm/transport-sdk`](../../packages/transport-sdk/README.md) on GitHub Packages — zod schemas, the Redis helpers, the token guard, an MCP server over Hono, the trace client, image normalization |
+| The contract, as code | [`@assistant-hub-swarm/transport-sdk`](../../packages/transport-sdk/README.md) on GitHub Packages — the **runtime** (registration, reconcile, dedupe, event assembly, sends, HTTP, delivery tools, shutdown) plus every schema and helper underneath it |
 | The contract, language-neutral | [`docs/api/transport/events.schema.json`](../api/transport/events.schema.json) (JSON Schema for every event) and [`docs/api/transport/openapi.yaml`](../api/transport/openapi.yaml) (the HTTP in both directions) — generated from the same schemas and checked against them in CI |
 | A working version of every step | [`assistant-hub-swarm/ahw-transport-telegram`](https://github.com/assistant-hub-swarm/ahw-transport-telegram) — the Telegram transport, referenced file by file below. It is a separate repository built on the SDK, exactly like yours will be |
 
@@ -75,7 +75,7 @@ Two things are checked when you register:
 | Check | Rule | On failure |
 | --- | --- | --- |
 | **Source id** | `^[a-z][a-z0-9-]{0,31}$` — short, lowercase, stable. It becomes the prefix of every scoped ref (`signal:user:123`), the slug of your MCP tools (`signal__send_message`), the `source` on every event and the `transports.id` row. It cannot change later without rewriting stored refs | 400 `a transport registration is required` |
-| **Contract major** | `contractMajor` must equal the core's `CONTRACT_MAJOR` (exported by the SDK; `2` today). It is bumped when an event, an internal route or the registration shape changes incompatibly | 409 naming both majors. The row is still upserted so the assistant editor shows the refusal next to your name; you get no desired state and your events are dropped until either side updates |
+| **Contract major** | `contractMajor` must equal the core's `CONTRACT_MAJOR` (exported by the SDK; `3` today). It is bumped when an event, an internal route or the registration shape changes incompatibly | 409 naming both majors. The row is still upserted so the assistant editor shows the refusal next to your name; you get no desired state and your events are dropped until either side updates |
 
 The two versions are different numbers and mean different things: the SDK's
 own semver covers its TypeScript API, and `CONTRACT_MAJOR` covers the wire.
@@ -114,20 +114,21 @@ npm install @assistant-hub-swarm/transport-sdk \
 
 | Dependency | Gives you |
 | --- | --- |
-| `@assistant-hub-swarm/transport-sdk` | Every schema and helper named below: `CONTRACT_MAJOR`, the queue/channel constants, `turnCorrelationId`, `messageDedupeKey`, `readTurnMeta`, `toolDeliveryResult`, `openQueue`/`openPublisher`/`openSubscriber`, `requireEnv`, `internalTokenGuard`, `serveMcp`, `busTraceClient`, `dashboardRefresh`, `normalizeImageForChat` |
-| `hono` + `@hono/node-server` | The HTTP surface. Any framework works, but `serveMcp` is written for Hono's node adapter |
-| `@modelcontextprotocol/sdk` | `McpServer` for the platform tools |
+| `@assistant-hub-swarm/transport-sdk` | `startTransportService` and the four types you implement against, plus every schema and helper underneath: `CONTRACT_MAJOR`, the queue/channel constants, `turnCorrelationId`, `messageDedupeKey`, `readTurnMeta`, `toolDeliveryResult`, `openQueue`/`openPublisher`/`openSubscriber`, `requireEnv`, `internalTokenGuard`, `serveMcp`, `busTraceClient`, `dashboardRefresh`, `normalizeImageForChat` |
+| `hono` + `@hono/node-server` | The HTTP surface the runtime serves on |
+| `@modelcontextprotocol/sdk` | `McpServer`, for the delivery tools and any of your own |
 | `zod` | The schemas' runtime, and your MCP tools' input shapes |
-| Your platform SDK | grammy, for Telegram |
+| Your platform SDK | grammy for Telegram, discord.js for Discord |
 
 Those last four are the SDK's **peer** dependencies: you construct Hono apps,
 `McpServer`s and zod schemas and hand them across, so one copy of each must be
 shared. Everything else the SDK needs (BullMQ, ioredis, sharp) it brings.
 
-Not using Node? Nothing above is required. Read the events from
-[`events.schema.json`](../api/transport/events.schema.json) and the HTTP from
-[`openapi.yaml`](../api/transport/openapi.yaml), and speak Redis and HTTP
-directly — the SDK is a convenience, not the contract.
+Not using Node? Nothing above is required, and neither is Step 2. Read the
+events from [`events.schema.json`](../api/transport/events.schema.json) and the
+HTTP from [`openapi.yaml`](../api/transport/openapi.yaml), speak Redis and HTTP
+directly, and follow Steps 3 onward — they describe the wire itself, which is
+the actual contract. The SDK is a convenience.
 
 Environment (bootstrap only — runtime config comes from the core):
 
@@ -135,26 +136,73 @@ Environment (bootstrap only — runtime config comes from the core):
 | --- | --- | --- |
 | `REDIS_URL` | yes | Bus + queue |
 | `INTERNAL_API_TOKEN` | yes | Must equal the core's |
-| `PORT` | no | Your HTTP port (tg: 3210) |
+| `PORT` | no | Your HTTP port (tg: 3210, discord: 3220) |
 | `CORE_API_URL` | no | The core's base URL (default `http://localhost:3200`) |
 | `SELF_URL` | no | The base URL you **announce** — what the core will call. Default `http://localhost:<PORT>`; under compose `http://<service>:<PORT>` |
 
-Boot order matters (worked example: [src/index.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/index.ts)):
+## Step 2 — Implement four things and call the runtime
 
-1. Open the update publisher (queue) and the platform manager.
-2. Start the HTTP server **first** so `/health` answers from the first
-   moment — the core probes it for the dashboard.
-3. Register with the core, retrying until it answers (the core may boot after
-   you). The response is your desired state; reconcile from it.
-4. Subscribe to the bus for config changes.
-5. Start the delivery consumer.
-6. On `SIGINT`/`SIGTERM`: close the server, the subscriptions, the platform
-   connections, and the queue, then exit.
+Everything the rest of this document describes is the same for every platform,
+so the SDK does it. `startTransportService` opens the queue, serves `/health`
+from the first moment, registers (retrying — the core may boot second),
+reconciles connections from the desired state and refetches on every change,
+dedupes shared chats, assembles and publishes every event, consumes deliveries
+and drives the typing indicator, splits and performs sends, serves the whole
+internal API, hosts the delivery tools, and shuts all of it down in order on a
+signal.
 
-## Step 2 — Register, receive desired state, reconcile
+What is left is your platform, in four pieces:
 
-Reference: [src/core/desired-state.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/core/desired-state.ts),
-[src/telegram/manager.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/manager.ts) (`applyDesiredState`).
+| You write | It is | Reference |
+| --- | --- | --- |
+| a **descriptor** | who you are: id, name, the config fields the dashboard renders, your message cap and typing refresh | [src/descriptor.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/descriptor.ts) |
+| a **platform adapter** | `connect()` for one connection: the actions you support, and what arrives reported through the runtime's hooks | [src/telegram/adapter.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/adapter.ts), [src/telegram/connection.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/connection.ts) |
+| a **normalizer** | one platform message → the contract's `InboundMessage`, media fetched | [src/inbound/normalize.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/normalize.ts) |
+| an **addressing rule** | the structural verdict, per receiving bot | [src/inbound/addressing.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/addressing.ts) |
+
+```ts
+import { startTransportService } from "@assistant-hub-swarm/transport-sdk";
+
+await startTransportService({
+  descriptor,        // { id, name, connectionConfigSchema, maxMessageLength, typingRefreshMs }
+  adapter,           // { connect(input, hooks): Promise<PlatformConnection> }
+  normalize,         // (raw) => Promise<InboundMessage | null>
+  addressing,        // (raw, bot) => Addressing
+  defaultPort: 3230,
+  tools: { platform: "Signal" },  // how the delivery tools word themselves
+});
+```
+
+Two rules decide the shape of your adapter:
+
+- **A missing action is a missing method, not a refusal.** `PlatformConnection`
+  declares `sendVoice`, `sendPhoto`, `sendFile`, `deleteMessage`, `sendMenu`,
+  `editMenu`, `setReaction`, `setChatTitle` and `sendTyping` as optional. Leave
+  out what your platform cannot do and the runtime serves no route and offers
+  no tool for it. There are no capability flags anywhere.
+- **Report, never decide.** The hooks (`message`, `edited`, `reaction`,
+  `menuPress`, `status`) take what the platform said, in the contract's
+  vocabulary. Whether an event is a duplicate, who its receivers are, what its
+  correlation id is and whether anyone answers are all decided elsewhere.
+
+Your own MCP tools go on the same server through `tools.register(server,
+runtime)`, which hands you the running context (`runtime.send`, `runtime.core`,
+`runtime.descriptor`). Reacting is the usual case: the emoji a platform accepts
+are its own, so each transport registers its own `set_message_reaction` over
+the SDK's `reactToMessage`, which owns the part that is not — the mirror check
+that refuses a guessed id or the bot's own message, and the
+`transport.bot-reaction` record that lets the next turn remember it
+([src/telegram/reaction-tool.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/reaction-tool.ts)).
+
+Everything below is what the runtime does on your behalf. Read it to
+understand the system, to debug it, or to reimplement it in another language —
+not to write a Node transport.
+
+## Step 3 — Register, receive desired state, reconcile
+
+The runtime does all of this (`createCoreApi`, `ConnectionManager`); a transport supplies
+only the descriptor it announces ([src/descriptor.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/descriptor.ts)) and the
+adapter that opens one connection ([src/telegram/adapter.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/adapter.ts)).
 
 ### Registration
 
@@ -218,23 +266,26 @@ event). Serialize refetches so a burst collapses into one reconcile.
   started with — secrets are not readable off a live client);
 - start or restart the rest; start always replaces a running instance.
 
-Per-connection state you report on `/health` is `running | error | stopped`,
-with the platform identity (`username`), `since`, and the last `error`.
-Publish `dashboardRefresh(<id>, ["status"])` on every state change so the
+Per-connection state on `/health` is `starting | running | error | stopped`,
+with the platform identity (`username`), `since`, and the last `error`. A
+`dashboardRefresh(<id>, ["status"])` goes out on every state change so the
 assistant editor's badge flips without a reload.
 
-Supervision is your problem: Telegram's poller caps its own fetch retries at
-30 s, then reconnects every 15 s on a flat interval for transient network
-errors only, and logs edge-triggered (one line down, one line back). A
-platform that answered and refused (revoked token) settles as `error` without
-retrying.
+Supervision is split. The runtime restarts a still-desired connection on a
+flat 15 s interval whenever the adapter reports an error status, and stops
+retrying the moment the core stops asking for it. What counts AS an error is
+the platform's to say: Telegram's poller caps its own fetch retries at 30 s
+before giving up to the runtime, and a revoked token surfaces the same way a
+network blip does — visibly, on the dashboard, rather than as a silent
+retry loop nobody can see.
 
-## Step 3 — Forward every update
+## Step 4 — Forward every update
 
-Reference: [src/inbound/normalize.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/normalize.ts),
-[src/core/updates.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/core/updates.ts),
-[src/inbound/addressing.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/addressing.ts),
-[src/telegram/media/ingest.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/media/ingest.ts).
+The runtime assembles and publishes every event below (`buildInboundEvent`,
+`openUpdatePublisher`). A transport supplies the normalizer
+([src/inbound/normalize.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/normalize.ts), with
+[src/telegram/media/ingest.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/media/ingest.ts) for the bytes) and the
+addressing rule ([src/inbound/addressing.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/addressing.ts)).
 
 Everything leaves as one job per event on the BullMQ queue
 `TRANSPORT_UPDATES_QUEUE` (`transport-updates`), payload validated by
@@ -355,7 +406,7 @@ very next turn).
 
 Published for **every** send you perform, on every path — reply-delivery
 events, the internal send API, your MCP tools — from one function
-([src/outbound/send.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound/send.ts), `publishDelivered`):
+(the runtime's `publishDelivered`):
 
 | Field | Meaning |
 | --- | --- |
@@ -372,9 +423,11 @@ message to the other present assistants as a cross-fed turn. Publish it
 best-effort: a report failure must not turn a message the user can see into a
 failed send.
 
-## Step 4 — Consume deliveries and render the turn lifecycle
+## Step 5 — Consume deliveries and render the turn lifecycle
 
-Reference: [src/outbound/delivery.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound/delivery.ts).
+The runtime runs this consumer (`startDeliveryConsumer`); a transport supplies
+`sendMessage` and `sendTyping` on its connection
+([src/telegram/connection.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/connection.ts)).
 
 Subscribe to `BUS_EVENTS_CHANNEL` (`assistant-hub-swarm:events`), parse by `type`,
 and ignore anything whose `source` is not yours. Failures are logged, never
@@ -402,7 +455,7 @@ that fallback triggers only on a parse error, because any other retry could
 double-deliver. **You split.** The core publishes the whole answer as one
 `reply.delivery` and knows no platform's cap (user decision, 2026-09-02):
 cut a long text at natural boundaries under yours (Telegram:
-[src/outbound/split.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound/split.ts), paragraph → line →
+the runtime's `splitMessage`, paragraph → line →
 sentence → word), send the parts in order with the same reply target, and
 report every part as `message.delivered` so the mirror holds the whole
 answer.
@@ -428,10 +481,11 @@ included, so a loop always ends.
 
 You do nothing else on `settled` — the core releases its own mirror hold.
 
-## Step 5 — The HTTP surface
+## Step 6 — The HTTP surface
 
-Reference: [src/http/api.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/http/api.ts),
-[src/telegram/sender.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/sender.ts).
+The runtime serves this whole table (`createTransportApi`), mounting only the routes
+whose action your connection actually implements
+([src/telegram/connection.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/connection.ts)).
 
 Guard everything under `/internal` and `/mcp` with
 `internalTokenGuard(INTERNAL_API_TOKEN)`. `/health` stays open: it carries no
@@ -470,10 +524,12 @@ A platform that lacks an action does **not** implement the endpoint with an
 it never publishes `transport.reaction`; a reaction-less platform simply hosts
 no reaction tool. The contract carries no capability flags.
 
-## Step 6 — The MCP server
+## Step 7 — The MCP server
 
-Reference: [src/http/mcp.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/http/mcp.ts),
-[src/telegram/reactions.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/reactions.ts).
+The runtime hosts the two delivery tools (`registerDeliveryTools`) and the mirror-gated
+half of reacting (`reactToMessage`); a transport registers the reaction tool itself,
+because the emoji are the platform's
+([src/telegram/reaction-tool.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/telegram/reaction-tool.ts)).
 
 Serve an `McpServer` at the `mcpPath` you announced, with `serveMcp` from the
 SDK: one server instance per request, no session ids — every call carries its
@@ -534,9 +590,9 @@ Your tools may need the core's mirror: `set_message_reaction` asks
 `GET /api/internal/transports/messages?source=&chatId=&sourceMessageId=&assistantId=&direct=`
 → `{ found, role, assistantId }` before touching the platform, so a guessed
 id or the bot's own message is refused without a call
-([src/core/client.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/core/client.ts)).
+(the runtime's `createCoreApi`).
 
-## Step 7 — Synchronous calls back into the core
+## Step 8 — Synchronous calls back into the core
 
 Most traffic is asynchronous (queue and bus). Two things need an answer:
 
@@ -545,7 +601,7 @@ Most traffic is asynchronous (queue and bus). Two things need an answer:
 | `POST /api/internal/transports/callback` with `transportCallbackRequestSchema` `{ source, assistantId, chat, user, menuSourceMessageId, data }` | a feedback-menu button was pressed — the platform's spinner wants a toast only the flow's outcome can word | `{ toast \| null }` — answer the platform's callback query with it |
 | `PATCH /api/internal/transports/<id>/config` with a partial blob | you resolved something worth persisting in your transport-level config (shallow merge; the keys are yours) | `{ config }` |
 
-## Step 8 — Traces and live refresh
+## Step 9 — Traces and live refresh
 
 Tracing is unified and core-owned; a transport never writes trace rows.
 `busTraceClient(<id>, publisher)` gives you a recorder: `startTrace({ feature,
@@ -579,7 +635,7 @@ layer; unknown topic names ping nothing. The transport's own topic is
 `status`; the ingest publishes `history`, `users`, `groups` for the rows it
 writes, so you do not.
 
-## Step 9 — Ship an image
+## Step 10 — Ship an image
 
 A transport is delivered as a container image. Nothing about it is special:
 one process, one HTTP port, no database, no migrations, no volumes.
@@ -645,7 +701,7 @@ it, and start your service on the host. Registration, the reconcile and the
 bus subscriptions all run at boot, so restart your service after a code change
 before judging a live check — a file watcher will not re-run them.
 
-## Step 10 — Verify
+## Step 11 — Verify
 
 Against a running core, in this order — each step proves the one before it
 reached the right place:
@@ -675,8 +731,7 @@ ones the Telegram transport pins: one event per platform update (with dedupe
 and per-assistant streams), the structural addressing verdicts and their
 reasons, and the split-and-send path
 ([src/inbound/normalize.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/normalize.test.ts),
-[inbound/addressing.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/addressing.test.ts),
-[outbound/send.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/outbound/send.test.ts)).
+[src/inbound/addressing.test.ts](https://github.com/assistant-hub-swarm/ahw-transport-telegram/blob/main/src/inbound/addressing.test.ts)).
 
 ## Reference: the worked example, duty by duty
 
@@ -685,27 +740,27 @@ as the files that carry each duty. It is a separate repository on the published
 SDK — the same position yours will be in — so it is worth reading as a whole
 once, not only per step.
 
-| Duty | File |
+| Duty | Where |
 | --- | --- |
-| Boot order, shutdown | `src/index.ts` |
-| Registration, desired-state fetch, retry | `src/core/desired-state.ts` |
-| Queue publisher, envelope, seen-cache | `src/core/updates.ts` |
-| Calls into the core (callback toast, mirror lookup) | `src/core/client.ts` |
-| Normalizing a message into `transport.message`, media, receivers | `src/inbound/normalize.ts`, `src/telegram/media/*` |
+| Boot, registration, reconcile, shutdown | the SDK (`startTransportService`), called from `src/index.ts` |
+| Queue publisher, envelope, seen-cache, event assembly | the SDK (`openUpdatePublisher`, `buildInboundEvent`) |
+| Calls into the core (callback toast, mirror lookup) | the SDK (`createCoreApi`) |
+| Bus consumer: reply delivery, typing loops, deliver trace | the SDK (`startDeliveryConsumer`) |
+| The one send: split under the cap, each part reported as `message.delivered` | the SDK (`splitMessage`, `sendChatMessage`) |
+| HTTP surface: health, `/internal/*`, `/mcp` | the SDK (`createTransportApi`) |
+| The two delivery tools and the turn binding | the SDK (`registerDeliveryTools`, `turnOf`) |
+| Who this transport is | `src/descriptor.ts` |
+| Connection lifecycle and update handlers | `src/telegram/adapter.ts` |
+| Platform actions (HTML render, link whitelist, files by mime, menus, reactions) | `src/telegram/connection.ts`, `src/telegram/html.ts`, `src/telegram/ids.ts` |
+| Normalizing a message, media | `src/inbound/normalize.ts`, `src/telegram/media/*` |
 | Structural addressing verdicts | `src/inbound/addressing.ts` |
-| Bus consumer: reply delivery, typing loops, deliver trace | `src/outbound/delivery.ts` |
-| The one send: split under the cap, each part sent and reported as `message.delivered` | `src/outbound/send.ts`, `src/outbound/split.ts` |
-| Poller lifecycle, reconcile, supervision, update handlers | `src/telegram/manager.ts` |
-| Running-connection roster | `src/telegram/connections.ts` |
-| Platform sends (HTML render, link whitelist, files by mime, menus, reactions) | `src/telegram/sender.ts`, `src/telegram/html.ts`, `src/telegram/ids.ts` |
-| HTTP surface: health, `/internal/*`, `/mcp` | `src/http/api.ts` |
-| MCP tools and the turn binding | `src/http/mcp.ts`, `src/telegram/reactions.ts` |
+| The reaction tool (the emoji Telegram accepts) | `src/telegram/reaction-tool.ts` |
 
-Its folders follow the **direction of travel** — `core/` speaks to the core,
-`inbound/` is platform → core, `outbound/` is core → platform, `http/` is the
-transport's own surface, and `telegram/` is the only code that knows the Bot
-API exists. That last boundary is the one worth copying: it is what you would
-replace to get a different transport.
+Its folders follow the **one boundary that matters**: `telegram/` is the only
+code that knows the Bot API exists, `inbound/` reads a platform message into
+the contract's vocabulary, and `index.ts` hands all of it to the runtime. That
+first folder is what you replace to get a different transport — the Discord
+transport is the same tree with `discord/` in its place.
 
 ## What the dashboard shows for your transport
 
