@@ -1,9 +1,10 @@
 "use client";
 
-import { Brain, Link2, UserRound } from "lucide-react";
+import { Brain, Link2, Unlink, UserRound } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
 import { ChangePasswordSection } from "@/features/settings/ui/ChangePasswordSection";
 import { Timestamp } from "@/components/time/Timestamp";
 import {
@@ -112,7 +113,45 @@ function DisplayNameCard({
 function IdentitiesCard({ identities }: { identities: ProfileIdentity[] }) {
   const [minted, setMinted] = useState<{ code: string; expiresAt: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [unlinking, setUnlinking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const router = useRouter();
+
+  /**
+   * The undo for redeeming a link code. Worth confirming: memory and owner
+   * rights follow these links, so removing one changes what the assistant
+   * knows about you on that platform.
+   */
+  async function unlink(identity: ProfileIdentity) {
+    const label = identity.label ?? identity.ref;
+    const ok = await confirm({
+      title: `Unlink ${label}?`,
+      body:
+        `This ${identity.sourceLabel} identity stops being you. The assistant no longer ` +
+        "carries your memory or owner rights there, and messages from it are treated as a " +
+        "stranger's until you link it again.",
+      confirmLabel: "Unlink",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setUnlinking(identity.ref);
+    setError(null);
+    try {
+      const res = await fetch(`/api/profile/identities?ref=${encodeURIComponent(identity.ref)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        setError(await readError(res));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError("Network error — could not reach the server");
+    } finally {
+      setUnlinking(null);
+    }
+  }
 
   async function mint() {
     setBusy(true);
@@ -155,6 +194,20 @@ function IdentitiesCard({ identities }: { identities: ProfileIdentity[] }) {
               </span>
               <Badge tone="neutral">{identity.sourceLabel}</Badge>
               {identity.self ? <Badge tone="info">this account</Badge> : null}
+              {/* The web identity is not a link — it is what links are made to. */}
+              {identity.self ? null : (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto"
+                  onClick={() => void unlink(identity)}
+                  disabled={unlinking !== null}
+                  aria-label={`Unlink ${identity.label ?? identity.ref}`}
+                >
+                  <Unlink className="h-3.5 w-3.5" aria-hidden />
+                  {unlinking === identity.ref ? "Unlinking…" : "Unlink"}
+                </Button>
+              )}
             </li>
           ))}
         </ul>
@@ -185,6 +238,7 @@ function IdentitiesCard({ identities }: { identities: ProfileIdentity[] }) {
           </Button>
         </div>
       </CardContent>
+      {confirmDialog}
     </Card>
   );
 }
@@ -272,6 +326,11 @@ export function ProfileManager({
   identities: ProfileIdentity[];
   memory: ProfileMemoryDoc[];
 }) {
+  // Linking happens somewhere else entirely — a code sent to a bot on another
+  // platform — so this page has to hear about it rather than wait for a
+  // reload. `users` covers the link graph, `accounts` the profile itself, and
+  // `memory` the documents below, which arrive with a newly linked identity.
+  useLiveRefresh(["users", "accounts", "memory"]);
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2 text-sm text-muted">

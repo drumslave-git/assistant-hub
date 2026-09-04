@@ -25,6 +25,7 @@ import { CONTRACT_MAJOR } from "@assistant-hub-swarm/contracts";
 
 import { desiredTransportState } from "@/server/transports/service";
 
+import { unlinkOwnIdentity } from "./profile";
 import { LINK_CODE_TTL_MS, mintLinkCode, redeemLinkCode } from "./self-link";
 import { createAccount, deleteAccountHard, listAccountViews, patchAccount } from "./service";
 
@@ -396,5 +397,57 @@ describe("offboarding (Phase 9)", () => {
       links: 0,
       codes: 0,
     });
+  });
+});
+
+describe("unlinking an identity", () => {
+  it("takes a linked identity back off and drops a link that would be left alone", async () => {
+    const adminId = await seedAdmin();
+    const accountRef = `chat:user:${adminId}`;
+    const { code } = await mintLinkCode(adminId, trigger, db);
+    await redeemLinkCode({ senderRef: "tg:user:1001", text: code }, db);
+    expect((await findLinksForRefs(db, ["tg:user:1001"])).get("tg:user:1001")).toBeDefined();
+
+    await unlinkOwnIdentity(adminId, "tg:user:1001", trigger, db);
+
+    // The link held exactly two identities, so removing one leaves nothing a
+    // link could mean — the row goes with it.
+    expect((await findLinksForRefs(db, ["tg:user:1001", accountRef])).size).toBe(0);
+  });
+
+  it("keeps the rest of a bigger link, and removes only the one asked for", async () => {
+    const adminId = await seedAdmin();
+    const accountRef = `chat:user:${adminId}`;
+    for (const ref of ["tg:user:1001", "discord:user:2002"]) {
+      const { code } = await mintLinkCode(adminId, trigger, db);
+      await redeemLinkCode({ senderRef: ref, text: code }, db);
+    }
+
+    await unlinkOwnIdentity(adminId, "discord:user:2002", trigger, db);
+
+    const links = await findLinksForRefs(db, [accountRef]);
+    const linkId = links.get(accountRef);
+    expect(linkId).toBeDefined();
+    const members = (await listMembersOfLinks(db, [linkId!])).get(linkId!) ?? [];
+    expect([...members].sort()).toEqual([accountRef, "tg:user:1001"].sort());
+  });
+
+  it("refuses an identity that is not yours, and your own account identity", async () => {
+    const adminId = await seedAdmin();
+    const { code } = await mintLinkCode(adminId, trigger, db);
+    await redeemLinkCode({ senderRef: "tg:user:1001", text: code }, db);
+
+    // Someone else's identity: not in this account's person at all.
+    await expect(
+      unlinkOwnIdentity(adminId, "tg:user:9999", trigger, db),
+    ).rejects.toThrow(/not linked to you/i);
+
+    // The web identity is what links are made TO; unlinking it is meaningless.
+    await expect(
+      unlinkOwnIdentity(adminId, `chat:user:${adminId}`, trigger, db),
+    ).rejects.toThrow(/cannot be unlinked/i);
+
+    // Neither refusal touched the graph.
+    expect((await findLinksForRefs(db, ["tg:user:1001"])).get("tg:user:1001")).toBeDefined();
   });
 });

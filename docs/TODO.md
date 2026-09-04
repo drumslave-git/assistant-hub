@@ -540,6 +540,33 @@ Any core edit for a new source id is a bug.
      runtime port actually ships: same env, same port, same wire, a different
      inside. Discord stays 1.0.0, having never released.
 
+10. **The profile was neither live nor reversible** (`done`, 2026-09-04).
+    - **Found live (user, 2026-09-04):** "identities have to auto refresh after
+      linking is done. there is no option to UNLINK account from Profile page."
+      Both correct.
+    - **The page had no live refresh at all.** `redeemLinkCode` already
+      published `users` and `accounts`, and `ProfileManager` subscribed to
+      nothing — so linking, which happens on ANOTHER PLATFORM ENTIRELY, could
+      not possibly show up without a reload. It is the one page where the state
+      changes from somewhere the user is not looking.
+      `useLiveRefresh(["users", "accounts", "memory"])` covers the link graph,
+      the profile itself, and the memory documents that arrive with a newly
+      linked identity.
+    - **Linking had no undo.** `unlinkOwnIdentity` is the mirror of redeeming a
+      code and refuses the same way the memory delete does: not one of your
+      identities → 403, your own web identity → 400, since that is not a link
+      but the thing links are made TO. Removing the second-to-last member drops
+      the link row, because a link of one means nothing. `DELETE
+      /api/profile/identities?ref=…`, access `account`, traced like every other
+      write; admins keep the Users page for everyone else's.
+    - **Proof.** Three integration tests against a real Postgres
+      (`accounts.integration.test.ts`, 14 in the file now): the two-member link
+      is deleted outright, a bigger link keeps its other members, and both
+      refusals leave the graph untouched. Core `lint`, `typecheck`, `test`
+      (1165 + 19). The dev server compiles and serves `/profile`. Not verified
+      in a browser by me — the preview pane has no session and I will not add
+      a bypass.
+
 9. **A link code could not be redeemed where a mention is mandatory**
    (`done`, 2026-09-04).
    - **Found live (user, 2026-09-04):** `@bot link-xxxxxxxx` in a Discord

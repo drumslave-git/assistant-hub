@@ -4,13 +4,19 @@ import { scopedRef, tryParseScopedRef } from "@assistant-hub-swarm/contracts";
 
 import { getUserMemoriesFor } from "@/features/memory/server/repository";
 import { forgetUser } from "@/features/memory/server/service";
+import {
+  deletePersonLink,
+  findLinksForRefs,
+  listMembersOfLinks,
+  replacePersonLinkMembers,
+} from "@/features/person-links/server/repository";
 import { resolveLinkedRefs } from "@/features/person-links/server/service";
 import { listDirectoryUsers, sourceLabelOf, sourceLabels } from "@/server/source/directory";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { getAccountById, updateAccount } from "@/server/auth/accounts";
-import { getStoreDb } from "@/server/store/db";
+import { getStoreDb, type StoreDb } from "@/server/store/db";
 import { publishEvent } from "@/server/realtime/hub";
 import { withTrace } from "@/server/trace";
 
@@ -46,9 +52,9 @@ export interface ProfileMemoryDoc {
 }
 
 /** The identity refs that are this account's person (own ref first). */
-async function identityRefs(accountId: string): Promise<string[]> {
+async function identityRefs(accountId: string, db?: StoreDb): Promise<string[]> {
   const ownRef = scopedRef("chat", "user", accountId);
-  const linked = await resolveLinkedRefs([ownRef]);
+  const linked = await resolveLinkedRefs([ownRef], db);
   return linked.get(ownRef) ?? [ownRef];
 }
 
@@ -108,6 +114,82 @@ export async function forgetOwnMemory(accountId: string, userId: string): Promis
     throw ApiError.forbidden("That memory document is not about you");
   }
   await forgetUser(userId);
+}
+
+/**
+ * Unlink one of the acting account's OWN platform identities.
+ *
+ * The mirror image of redeeming a link code, and it has to exist for the same
+ * reason: a person who can join an identity to their account must be able to
+ * take it back off — a mis-sent code, a bot account they no longer use, a
+ * phone number that changed hands. Refused for anything that is not this
+ * account's, and for the account's own web identity, which is not a link at
+ * all but the thing links are made TO.
+ *
+ * Removing the last other member leaves a link of one, which means nothing, so
+ * the link itself goes.
+ */
+export async function unlinkOwnIdentity(
+  accountId: string,
+  ref: string,
+  trigger: TraceTrigger,
+  db: StoreDb = getStoreDb(),
+): Promise<{ unlinked: string }> {
+  return withTrace(
+    {
+      feature: FEATURE.id,
+      action: "unlink-identity",
+      trigger,
+      inputSummary: `unlink ${ref}`,
+    },
+    async (trace) => {
+      const ownRef = scopedRef("chat", "user", accountId);
+      if (ref === ownRef) {
+        throw ApiError.badRequest("That is your own account identity — it cannot be unlinked");
+      }
+      const refs = new Set(await identityRefs(accountId, db));
+      if (!refs.has(ref)) {
+        throw ApiError.forbidden("That identity is not linked to you");
+      }
+
+      const links = await findLinksForRefs(db, [ref]);
+      const linkId = links.get(ref);
+      if (!linkId) {
+        // Nothing to undo: it resolved as this person without a link row.
+        throw ApiError.badRequest("That identity is not linked to you");
+      }
+      const members = (await listMembersOfLinks(db, [linkId])).get(linkId) ?? [];
+      const remaining = members.filter((member) => member !== ref);
+
+      if (remaining.length < 2) {
+        await deletePersonLink(db, linkId);
+        trace.event({
+          message: "link dropped — one identity is not a link",
+          type: "db",
+          level: "info",
+          data: { linkId, members, remaining },
+        });
+      } else {
+        await replacePersonLinkMembers(db, linkId, remaining);
+        trace.event({
+          message: "identity removed from the link",
+          type: "db",
+          level: "info",
+          data: { linkId, members, remaining },
+        });
+      }
+
+      // Both surfaces that show identities: this profile, and the operator's
+      // Users page.
+      publishEvent("users");
+      publishEvent(FEATURE.realtimeTopic);
+      await trace.succeed({
+        outputSummary: `${ref} unlinked from '${accountId}'`,
+        relatedIds: { [FEATURE.relatedIdsKey]: [accountId] },
+      });
+      return { unlinked: ref };
+    },
+  );
 }
 
 /** Change the acting account's display name (a self-service write). */
