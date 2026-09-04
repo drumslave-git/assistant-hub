@@ -68,6 +68,25 @@ export class ConnectionManager<TRaw> {
     return this.deps.descriptor.id;
   }
 
+  /**
+   * A connection's identity, or null while it has none.
+   *
+   * `connect()` resolves as soon as the platform is *started*, not ready —
+   * that is what the adapter contract promises, and Discord's `login()` is
+   * exactly that: the token is accepted, `ClientReady` has not fired. So an
+   * identity read anywhere in this class must tolerate "not yet", including
+   * an adapter that signals it by throwing rather than returning null. It
+   * cost a boot crash to learn: the throw escaped `applyDesiredState` and
+   * killed the process instead of settling one connection as `error`.
+   */
+  private identityOf(connection: PlatformConnection | null): BotIdentity | null {
+    try {
+      return connection?.identity() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   private errorText(err: unknown): string {
     return this.deps.adapter.errorText?.(err) ?? (err instanceof Error ? err.message : String(err));
   }
@@ -79,7 +98,7 @@ export class ConnectionManager<TRaw> {
    */
   running(): RunningConnection[] {
     return [...this.managed.values()].flatMap((entry) => {
-      const identity = entry.connection?.identity();
+      const identity = this.identityOf(entry.connection);
       return identity
         ? [{ assistantId: entry.assistantId, botId: identity.id, identity: identity.identity }]
         : [];
@@ -186,9 +205,12 @@ export class ConnectionManager<TRaw> {
     }
     managed.connection = connection;
     const recovered = managed.status.state === "error";
-    const identity = connection.identity();
+    const identity = this.identityOf(connection);
     this.setStatus(managed, {
-      state: "running",
+      // No identity yet means the platform is still handshaking — say
+      // `starting` rather than claiming a connection that cannot send. The
+      // adapter's `status` hook flips it to `running` when it is ready.
+      state: identity ? "running" : "starting",
       username: identity?.identity.botUsername ?? null,
       since: new Date().toISOString(),
       error: null,
@@ -282,7 +304,7 @@ export class ConnectionManager<TRaw> {
           this.fail(entry, input.error ?? "connection failed");
           return;
         }
-        const identity = entry.connection?.identity();
+        const identity = this.identityOf(entry.connection);
         this.setStatus(entry, {
           state: "running",
           username: identity?.identity.botUsername ?? entry.status.username,
@@ -296,7 +318,7 @@ export class ConnectionManager<TRaw> {
   /** Every live bot account, for the receivers list on an inbound event. */
   private identities(): (BotIdentity & { assistantId: string })[] {
     return [...this.managed.values()].flatMap((entry) => {
-      const identity = entry.connection?.identity();
+      const identity = this.identityOf(entry.connection);
       return identity ? [{ ...identity, assistantId: entry.assistantId }] : [];
     });
   }

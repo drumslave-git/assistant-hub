@@ -3,8 +3,14 @@ import {
   parseScopedRef,
   replyDeliveryEventSchema,
   turnLifecycleEventSchema,
+  type SourceTraceClient,
 } from "@assistant-hub-swarm/contracts";
-import { openPublisher, openSubscriber, type BusPublisher, type BusSubscription } from "@assistant-hub-swarm/bus";
+import {
+  openPublisher,
+  openSubscriber,
+  type BusPublisher,
+  type BusSubscription,
+} from "@assistant-hub-swarm/bus";
 import { busTraceClient } from "@assistant-hub-swarm/service";
 
 import { sendChatMessage, type SendContext } from "./send";
@@ -66,6 +72,13 @@ export async function startDeliveryConsumer(input: {
   redisUrl: string;
   descriptor: TransportDescriptor;
   send: SendContext;
+  /**
+   * The service's one trace client — the same one the hosted tools use, so a
+   * turn's delivery and its tool calls are recorded the same way. Omitted, one
+   * is opened here and closed with the consumer; `startTransportService`
+   * always passes its own.
+   */
+  traces?: SourceTraceClient;
   /** Whether a chat is direct; the core's refs do not carry the kind. */
   isDirect: (chatId: string) => Promise<boolean>;
   onError?: (context: string, error: unknown) => void;
@@ -75,8 +88,8 @@ export async function startDeliveryConsumer(input: {
     input.onError ??
     ((context: string, error: unknown) => console.error(`[${source} delivery] ${context}:`, error));
   const typing = new TypingLoops(input.send.connectionFor, input.descriptor.typingRefreshMs);
-  const publisher: BusPublisher = openPublisher(input.redisUrl);
-  const traces = busTraceClient(source, publisher);
+  const ownPublisher: BusPublisher | null = input.traces ? null : openPublisher(input.redisUrl);
+  const traces = input.traces ?? busTraceClient(source, ownPublisher!);
 
   const handle = async (payload: unknown): Promise<void> => {
     const type =
@@ -182,7 +195,7 @@ export async function startDeliveryConsumer(input: {
     async close(): Promise<void> {
       typing.stopAll();
       await subscription.close();
-      await publisher.close();
+      await ownPublisher?.close();
     },
   };
 }

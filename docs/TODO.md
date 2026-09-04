@@ -540,6 +540,50 @@ Any core edit for a new source id is a bug.
      runtime port actually ships: same env, same port, same wire, a different
      inside. Discord stays 1.0.0, having never released.
 
+8. **A hosted tool leaves a trace** (`done`, 2026-09-04).
+   - **Found by running it (user, 2026-09-04):** "why the fuck reaction tool
+     (which have to be mcp tool) is not traceable?" Correct, and worse than it
+     looked: NOTHING traced an MCP tool call, on either side. The core's turn
+     trace ends at the LLM response, and the transports' tools recorded
+     nothing at all — so a reaction that silently failed was indistinguishable
+     from one that worked, and the transport is the only process that knows
+     which it was.
+   - **The contract had already anticipated it.** `turnToolMeta.correlationId`
+     is documented as "the turn's trace correlation, so a hosted tool's work
+     joins the turn" and nothing read it. A trace opened on it lands beside
+     the turn's own reply trace in the one Debug explorer, in order.
+   - **One trace client per service** (`runtime/trace.ts`, `tracedTool`), built
+     once in `startTransportService` and shared by the delivery consumer and
+     every hosted tool, so a transport has one way to record anything. Each
+     call records what it did — the message ids, the reply target actually
+     attached, the emoji, and whether the bot-reaction was recorded — and a
+     result carrying `isError` settles as a refusal rather than a success,
+     because a tool that told the model "nothing was changed" must not read as
+     having worked in Debug.
+   - **Two boot bugs the live run exposed**, both invisible until a Discord
+     connection existed at cold boot:
+     - `ConnectionManager.start` read `identity()` straight after `connect()`,
+       but the adapter contract says `connect()` resolves when the platform is
+       *started*, not ready — Discord's `login()` resolves before
+       `ClientReady`. Discord's `identity()` threw, the throw escaped
+       `applyDesiredState`, and the process died instead of settling one
+       connection as `error`. Every identity read in the manager now goes
+       through `identityOf`, which tolerates "not yet".
+     - The status then claimed `running` for a connection that could not send.
+       It says `starting` until an identity exists, and the adapter's `status`
+       hook flips it.
+     - Discord's `identity()` returns null while handshaking, which is what
+       its own return type always said.
+   - **SDK 3.1.0** — additive on purpose: `traces` is optional on
+     `startDeliveryConsumer` (it opens its own when omitted), so `^3.0.0`
+     ranges keep resolving and no transport manifest had to change.
+   - **Proof.** Core `lint`, `typecheck`, `test` (1161 + 19). Both transports
+     typecheck, 35 and 16 tests. Live: both transports rebooted on 3.1.0 and
+     report `running` with their identities. Not yet seen live: a tool trace
+     itself, which needs the model to call a tool — the delivery consumer uses
+     the same client and its `deliver` trace is confirmed, so the plumbing is
+     proven and only the tool-side call is not.
+
 7. **The release gate is the registry** (`done`, 2026-09-04 — all three
    repositories).
    - **Problem (user, 2026-09-04):** "checking version is not enough, it have

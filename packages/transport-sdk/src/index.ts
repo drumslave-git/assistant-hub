@@ -218,6 +218,7 @@ export { startTransportService } from "./runtime/service";
 export { ConnectionManager } from "./runtime/manager";
 export { createTransportApi } from "./runtime/http";
 export { registerDeliveryTools, toolRefusal, turnOf } from "./runtime/mcp";
+export { toolTrigger, tracedTool } from "./runtime/trace";
 export { reactToMessage } from "./runtime/reactions";
 export { startDeliveryConsumer } from "./runtime/delivery";
 export { createCoreApi } from "./runtime/core-api";

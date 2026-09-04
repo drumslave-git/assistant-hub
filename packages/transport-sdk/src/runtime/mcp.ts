@@ -1,8 +1,14 @@
-import { readTurnMeta, toolDeliveryResult, type TurnToolMeta } from "@assistant-hub-swarm/contracts";
+import {
+  readTurnMeta,
+  toolDeliveryResult,
+  type SourceTraceClient,
+  type TurnToolMeta,
+} from "@assistant-hub-swarm/contracts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { sendChatMessage, type SendContext } from "./send";
+import { tracedTool } from "./trace";
 import type { TransportDescriptor } from "./types";
 
 /**
@@ -70,6 +76,8 @@ export interface DeliveryToolDeps {
   send: SendContext;
   errorText: (err: unknown) => string;
   texts: DeliveryToolTexts;
+  /** Records what each call did, on the turn's own correlation. */
+  traces?: SourceTraceClient | null;
 }
 
 export function registerDeliveryTools(server: McpServer, deps: DeliveryToolDeps): void {
@@ -126,22 +134,45 @@ export function registerDeliveryTools(server: McpServer, deps: DeliveryToolDeps)
     },
     async ({ text }, extra) => {
       const turn = turnOf(extra?._meta, descriptor.id);
-      if (!turn) return toolRefusal(NO_TURN);
-      if (turn.deliveryKind !== "reply") return toolRefusal(NOT_A_REPLY_TURN);
-      try {
-        // Which message it lands under is the turn's, never the model's.
-        const sent = await deliver(turn, text, turn.replyToSourceMessageId ?? null);
-        return {
-          content: [{ type: "text" as const, text: `Reply sent (id ${sent.sourceMessageId}).` }],
-          structuredContent: toolDeliveryResult({
-            ok: true,
-            sourceMessageId: sent.sourceMessageId,
-            text,
-          }),
-        };
-      } catch (err) {
-        return deliveryFailure(text, err);
-      }
+      return tracedTool(
+        { traces: deps.traces ?? null, descriptor, turn, action: "reply_to_message", inputSummary: text },
+        async (event) => {
+          if (!turn) return toolRefusal(NO_TURN);
+          if (turn.deliveryKind !== "reply") return toolRefusal(NOT_A_REPLY_TURN);
+          try {
+            // Which message it lands under is the turn's, never the model's.
+            const sent = await deliver(turn, text, turn.replyToSourceMessageId ?? null);
+            event({
+              message:
+                sent.sourceMessageIds.length > 1
+                  ? `reply sent as ${sent.sourceMessageIds.length} messages`
+                  : "reply sent",
+              type: "external_call",
+              level: "success",
+              data: {
+                sourceMessageIds: sent.sourceMessageIds,
+                requestedReplyToSourceMessageId: turn.replyToSourceMessageId ?? null,
+                replyToSourceMessageId: sent.replyToSourceMessageId,
+              },
+            });
+            return {
+              content: [{ type: "text" as const, text: `Reply sent (id ${sent.sourceMessageId}).` }],
+              structuredContent: toolDeliveryResult({
+                ok: true,
+                sourceMessageId: sent.sourceMessageId,
+                text,
+              }),
+            };
+          } catch (err) {
+            event({
+              message: `the platform refused the send: ${deps.errorText(err)}`,
+              type: "error",
+              level: "error",
+            });
+            return deliveryFailure(text, err);
+          }
+        },
+      );
     },
   );
 
@@ -155,23 +186,44 @@ export function registerDeliveryTools(server: McpServer, deps: DeliveryToolDeps)
     },
     async ({ text }, extra) => {
       const turn = turnOf(extra?._meta, descriptor.id);
-      if (!turn) return toolRefusal(NO_TURN);
-      if (turn.deliveryKind !== "send") return toolRefusal(NOT_A_SEND_TURN);
-      try {
-        // A fire sends standalone: nothing triggered it, so there is nothing
-        // to attach to and no target for the model to aim wrong.
-        const sent = await deliver(turn, text, null);
-        return {
-          content: [{ type: "text" as const, text: `Message sent (id ${sent.sourceMessageId}).` }],
-          structuredContent: toolDeliveryResult({
-            ok: true,
-            sourceMessageId: sent.sourceMessageId,
-            text,
-          }),
-        };
-      } catch (err) {
-        return deliveryFailure(text, err);
-      }
+      return tracedTool(
+        { traces: deps.traces ?? null, descriptor, turn, action: "send_message", inputSummary: text },
+        async (event) => {
+          if (!turn) return toolRefusal(NO_TURN);
+          if (turn.deliveryKind !== "send") return toolRefusal(NOT_A_SEND_TURN);
+          try {
+            // A fire sends standalone: nothing triggered it, so there is
+            // nothing to attach to and no target for the model to aim wrong.
+            const sent = await deliver(turn, text, null);
+            event({
+              message:
+                sent.sourceMessageIds.length > 1
+                  ? `message sent as ${sent.sourceMessageIds.length} messages`
+                  : "message sent",
+              type: "external_call",
+              level: "success",
+              data: { sourceMessageIds: sent.sourceMessageIds },
+            });
+            return {
+              content: [
+                { type: "text" as const, text: `Message sent (id ${sent.sourceMessageId}).` },
+              ],
+              structuredContent: toolDeliveryResult({
+                ok: true,
+                sourceMessageId: sent.sourceMessageId,
+                text,
+              }),
+            };
+          } catch (err) {
+            event({
+              message: `the platform refused the send: ${deps.errorText(err)}`,
+              type: "error",
+              level: "error",
+            });
+            return deliveryFailure(text, err);
+          }
+        },
+      );
     },
   );
 }

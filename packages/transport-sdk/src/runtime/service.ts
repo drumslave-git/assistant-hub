@@ -1,6 +1,6 @@
-import { BUS_EVENTS_CHANNEL } from "@assistant-hub-swarm/contracts";
-import { openSubscriber, type BusSubscription } from "@assistant-hub-swarm/bus";
-import { optionalEnv, requireEnv } from "@assistant-hub-swarm/service";
+import { BUS_EVENTS_CHANNEL, type SourceTraceClient } from "@assistant-hub-swarm/contracts";
+import { openPublisher, openSubscriber, type BusPublisher, type BusSubscription } from "@assistant-hub-swarm/bus";
+import { busTraceClient, optionalEnv, requireEnv } from "@assistant-hub-swarm/service";
 import { serve } from "@hono/node-server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -67,6 +67,12 @@ export interface TransportRuntime<TRaw> {
   core: CoreApi;
   updates: UpdatePublisher;
   send: SendContext;
+  /**
+   * The service's one trace client. Anything a transport records — its own
+   * MCP tools included — goes through this, so every trace it emits is built
+   * the same way and lands on the turn it belongs to.
+   */
+  traces: SourceTraceClient;
   statuses: () => ConnectionStatus[];
   /** Stop everything, in order. Called for you on SIGINT/SIGTERM. */
   shutdown: () => Promise<void>;
@@ -81,6 +87,10 @@ export async function startTransportService<TRaw>(
   const port = Number(optionalEnv("PORT") ?? String(options.defaultPort ?? 3210));
 
   const updates = openUpdatePublisher(redisUrl);
+  // One bus publisher for everything this service records; the delivery
+  // consumer and every hosted tool share it.
+  const events: BusPublisher = openPublisher(redisUrl);
+  const traces = busTraceClient(descriptor.id, events);
   const core = createCoreApi({
     descriptor,
     baseUrl: optionalEnv("CORE_API_URL") ?? "http://localhost:3200",
@@ -127,6 +137,7 @@ export async function startTransportService<TRaw>(
     core,
     updates,
     send,
+    traces,
     statuses: () => manager.statuses(),
     shutdown: () => shutdown("shutdown()"),
   };
@@ -145,6 +156,7 @@ export async function startTransportService<TRaw>(
             descriptor,
             send,
             errorText,
+            traces,
             texts: options.tools ?? { platform: descriptor.name },
           });
           options.tools?.register?.(server, runtime);
@@ -211,6 +223,7 @@ export async function startTransportService<TRaw>(
     redisUrl,
     descriptor,
     send,
+    traces,
     isDirect,
   });
 
@@ -223,6 +236,7 @@ export async function startTransportService<TRaw>(
     await configWatch.close().catch(() => undefined);
     await delivery.close().catch(() => undefined);
     await manager.close().catch(() => undefined);
+    await events.close().catch(() => undefined);
     await updates.close().catch(() => undefined);
   }
 
