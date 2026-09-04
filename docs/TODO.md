@@ -540,6 +540,35 @@ Any core edit for a new source id is a bug.
      runtime port actually ships: same env, same port, same wire, a different
      inside. Discord stays 1.0.0, having never released.
 
+9. **A link code could not be redeemed where a mention is mandatory**
+   (`done`, 2026-09-04).
+   - **Found live (user, 2026-09-04):** `@bot link-xxxxxxxx` in a Discord
+     channel fell through to the model, which improvised an apology about not
+     seeing a link. Two defects behind it.
+   - **The Discord transport stored raw mention tokens.** `message.content`
+     puts a mention on the wire as `<@1545468913393860950>`, and that snowflake
+     was what the mirror kept, the search index held and the model read. The
+     normalizer uses `cleanContent` now — the readable `@name` a person sees —
+     for the message and for a quoted one. Outgoing text already stripped raw
+     mention tokens; this is the same rule inbound. It corrupted every
+     mentioning message, not only link codes.
+   - **The rule itself was unreachable on a mention platform.** A code must be
+     the WHOLE message (`^link-[a-z0-9]{8}$`), which is exactly what makes it
+     safe to redeem on sight — but addressing a bot in a shared channel
+     REQUIRES mentioning it, so the code is never alone. Telegram groups had
+     the same hole since the beginning; only direct chats ever worked.
+   - **Decision (asked 2026-09-04, user chose "accept mention + code"):**
+     `withoutAddressing` strips a leading run of `@handle` tokens before the
+     code test. Only the addressing comes off, so the property the anchor
+     existed for survives — a code inside a sentence still does not redeem,
+     because what remains must be nothing but the code. The profile's
+     instruction says so now instead of "as the whole message".
+   - **Proof.** `features/accounts/server/self-link.test.ts` (4 tests) pins
+     both halves: the addressed forms redeem, and `my code is link-…`,
+     `@bot link-… thanks` and `link-…@evil` do not. Core `lint`, `typecheck`,
+     `test` (1165 + 19). Discord transport typechecks, 16 tests. Not yet
+     confirmed live.
+
 8. **A hosted tool leaves a trace** (`done`, 2026-09-04).
    - **Found by running it (user, 2026-09-04):** "why the fuck reaction tool
      (which have to be mcp tool) is not traceable?" Correct, and worse than it

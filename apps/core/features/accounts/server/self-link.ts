@@ -37,6 +37,29 @@ export const LINK_CODE_TTL_MS = 15 * 60 * 1000;
 /** What a code looks like — cheap mechanical gate before any DB read. */
 const CODE_PATTERN = /^link-[a-z0-9]{8}$/;
 
+/**
+ * A leading `@handle` — how every platform spells "this message is for you".
+ * Not linguistic: one token, at the front, beginning with `@`.
+ */
+const ADDRESSING_PREFIX = /^(?:@[^\s@]+\s+)+/;
+
+/**
+ * The message with its addressing stripped.
+ *
+ * A code has to be the WHOLE message, and on a platform where addressing a bot
+ * in a shared channel REQUIRES mentioning it, that is unreachable — the code is
+ * never alone (user decision, 2026-09-04, after `@bot link-xxxxxxxx` fell
+ * through to the model on Discord). Telegram groups have had the same problem
+ * since the beginning.
+ *
+ * Only the addressing comes off, so the property that made the anchor worth
+ * having survives: a code quoted inside a sentence still does not redeem,
+ * because what is left has to be nothing but the code.
+ */
+export function withoutAddressing(text: string): string {
+  return text.replace(ADDRESSING_PREFIX, "").trim();
+}
+
 /** Unambiguous alphabet (no 0/o, 1/l) for hand-typed codes. */
 const CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 
@@ -94,7 +117,7 @@ export async function redeemLinkCode(
   db: StoreDb = getStoreDb(),
   now: Date = new Date(),
 ): Promise<SelfLinkOutcome | null> {
-  const candidate = input.text.trim().toLowerCase();
+  const candidate = withoutAddressing(input.text.trim()).toLowerCase();
   if (!CODE_PATTERN.test(candidate)) return null;
 
   return withTrace(

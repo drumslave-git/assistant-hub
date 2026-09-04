@@ -163,8 +163,9 @@ function IdentitiesCard({ identities }: { identities: ProfileIdentity[] }) {
           {minted ? (
             <div className="space-y-1">
               <p className="text-sm">
-                Send this code — as the whole message — to any connected bot from the identity
-                you want to link:
+                Send this code to any connected bot from the identity you want to link.
+                It has to be the whole message, though mentioning the bot in front of it
+                is fine — that is the only way to address one in a shared channel:
               </p>
               <p className="font-mono text-lg font-semibold tracking-wide">{minted.code}</p>
               <p className="text-xs text-faint">
