@@ -563,9 +563,11 @@ Any core edit for a new source id is a bug.
       (`accounts.integration.test.ts`, 14 in the file now): the two-member link
       is deleted outright, a bigger link keeps its other members, and both
       refusals leave the graph untouched. Core `lint`, `typecheck`, `test`
-      (1165 + 19). The dev server compiles and serves `/profile`. Not verified
-      in a browser by me — the preview pane has no session and I will not add
-      a bypass.
+      (1165 + 19). **Verified in the browser**: the SSE stream is connected, both
+      Unlink buttons render, the confirm names the right platform, and Cancel
+      leaves the graph alone. That check found one more defect — the two
+      buttons had the SAME accessible name, because one person usually carries
+      the same handle everywhere; the label now carries the platform.
 
 9. **A link code could not be redeemed where a mention is mandatory**
    (`done`, 2026-09-04).

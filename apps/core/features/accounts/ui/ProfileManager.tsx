@@ -202,7 +202,9 @@ function IdentitiesCard({ identities }: { identities: ProfileIdentity[] }) {
                   className="ml-auto"
                   onClick={() => void unlink(identity)}
                   disabled={unlinking !== null}
-                  aria-label={`Unlink ${identity.label ?? identity.ref}`}
+                  // The same person usually carries the same handle on every
+                  // platform, so the label alone names two buttons identically.
+                  aria-label={`Unlink ${identity.label ?? identity.ref} on ${identity.sourceLabel}`}
                 >
                   <Unlink className="h-3.5 w-3.5" aria-hidden />
                   {unlinking === identity.ref ? "Unlinking…" : "Unlink"}
