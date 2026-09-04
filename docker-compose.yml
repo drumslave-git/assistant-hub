@@ -67,7 +67,7 @@ services:
     # on is the wire's CONTRACT_MAJOR, and a mismatch is refused by name on the
     # dashboard rather than failing quietly.
     # https://github.com/assistant-hub-swarm/ahw-transport-telegram
-    image: ghcr.io/assistant-hub-swarm/ahw-transport-telegram:${AHW_TELEGRAM_VERSION:-1.0.0}
+    image: ghcr.io/assistant-hub-swarm/ahw-transport-telegram:${AHW_TELEGRAM_VERSION:-1.1.0}
     depends_on:
       redis:
         condition: service_healthy

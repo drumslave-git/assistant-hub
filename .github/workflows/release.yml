@@ -233,7 +233,7 @@ jobs:
             if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
               echo "$ref exists."
             else
-              echo "::error::docker-compose.yml pins $ref, which is not in any registry"
+              echo "::error::docker-compose.yml pins $ref, which is not in any           registry. If that is a sibling transport, its own release has not run           yet — this repo's compose may only name images that exist."
               missing=1
             fi
           done

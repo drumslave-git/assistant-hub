@@ -420,13 +420,9 @@ Any core edit for a new source id is a bug.
      read }` — it installs the SDK with the workflow's own token, which works
      only while a repository's default workflow permissions are the permissive
      ones, and a restricted repository would have 401'd on a public package.
-   - **Still on the user** (needs a token this session must not handle): run
-     `npm install` in the transport repo with a `read:packages` token in
-     `~/.npmrc`, commit the resulting `package-lock.json`, and restore
-     `cache: npm` in `setup-node` in the same commit. CI does **not** need this
-     — `npm install` resolves from the registry without a lockfile — so the
-     transport's release can be proved first by bumping its version and
-     pushing.
+   - **Settled, 2026-09-04**: the lockfile is committed and `cache: npm` is
+     back in `setup-node`, resolved from the registry rather than a packed
+     tarball.
 5. **Discord transport** (`done`, 2026-09-04 — the user created and pushed
    [assistant-hub-swarm/ahw-transport-discord](https://github.com/assistant-hub-swarm/ahw-transport-discord);
    the runtime port of phase 6 sits unpushed on top of it).
@@ -462,12 +458,10 @@ Any core edit for a new source id is a bug.
      survives as a string), against the SDK installed from a locally packed
      2.0.0 tarball. Not run: anything against live Discord, and the image
      build.
-   - **Created and pushed by the user, 2026-09-04** (`90cf133` is on `origin`).
-     Still on the user: `npm install` there with a `read:packages` token and
-     commit the lockfile (its `.gitignore` says so). A live check needs a bot
-     from the Discord Developer Portal with the **MESSAGE CONTENT** intent
-     enabled — without it the bot connects, looks healthy, and sees every
-     message as empty.
+   - **Created and pushed by the user, 2026-09-04** (`90cf133` is on `origin`);
+     its lockfile is committed since. A live check needs a bot from the Discord
+     Developer Portal with the **MESSAGE CONTENT** intent enabled — without it
+     the bot connects, looks healthy, and sees every message as empty.
 
 6. **The SDK owns the runtime** (`done`, 2026-09-04 — staged in all three
    repositories, unpublished).
@@ -626,8 +620,8 @@ images. Proof: `npm run typecheck` (8/8), `npm run lint`, `npm run test`
 (contracts 16, service 3, tg 44, core 1175). Not run: the release workflow
 itself (needs a version bump on main).
 
-**Still manual, on the user:** after each first publish, flip the GitHub package
-(npm or container) to public. Note what "public" buys on each registry: a public
+**Only a person can do this:** flipping a GitHub package (npm or container) to
+public after its first publish is an account-settings action, not an API one. Note what "public" buys on each registry: a public
 **container** image pulls anonymously, but the npm registry asks for a token on
 every request even for a public package — so a transport author always needs
 one with `read:packages`, and the docs say so. **Confirmed empirically**
@@ -672,11 +666,9 @@ service 3, transport-sdk 3 incl. the wire drift check, core 1161 passed / 26
 skipped). A repo-wide search for `assistant-hub` not followed by `-swarm`
 returns nothing outside `node_modules`/`.next`.
 
-**On the user:** publish **SDK 2.0.0**. Until then the Telegram transport runs
-on SDK 1.x, announces contract major 2, and this core refuses it **by name on
-the dashboard** — the designed behaviour, not an outage to debug. After
-publishing: bump the transport's dependency to `^2.0.0`, release it, and the
-two speak again. Nothing else in the deployment changes.
+**Settled, 2026-09-03/04:** SDK 2.0.0 was published and the transport moved
+onto it; both have since been superseded by 3.0.0 (the runtime extraction).
+The refusal path this entry describes was never exercised in anger.
 
 ## Dependency CVEs: every high cleared (`done`, 2026-09-03)
 
@@ -718,10 +710,9 @@ service 3, transport-sdk 3, core 1161 passed / 26 skipped), `npm run build`
 Not run: the integration suite (Docker was up, but nothing in this change
 touches persistence).
 
-**On the user:** publish SDK **1.0.1** (its version changed, so pushing `main`
-runs the `publish-sdk` job), then `npm update @assistant-hub-swarm/transport-sdk`
-in the transport and commit its lockfile — that is what clears the transport's
-own two highs.
+**Settled, 2026-09-03/04:** SDK 1.0.1 shipped and the transport picked it up;
+both are superseded by 3.0.0. `npm audit` in all three repositories reports 0
+vulnerabilities.
 
 ## Documentation overhaul for the two-app platform + the transport manual (`done`, 2026-09-02)
 
