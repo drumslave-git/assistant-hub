@@ -620,8 +620,8 @@ images. Proof: `npm run typecheck` (8/8), `npm run lint`, `npm run test`
 (contracts 16, service 3, tg 44, core 1175). Not run: the release workflow
 itself (needs a version bump on main).
 
-**Only a person can do this:** flipping a GitHub package (npm or container) to
-public after its first publish is an account-settings action, not an API one. Note what "public" buys on each registry: a public
+**Registry visibility (settled — the packages are public).** Note what "public"
+buys on each registry: a public
 **container** image pulls anonymously, but the npm registry asks for a token on
 every request even for a public package — so a transport author always needs
 one with `read:packages`, and the docs say so. **Confirmed empirically**
