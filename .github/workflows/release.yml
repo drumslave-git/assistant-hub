@@ -176,6 +176,13 @@ jobs:
     # until it has passed.
     if: needs.plan.outputs.anything == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The compose-pin check below inspects the container registry. Stated
+      # rather than inherited: a repository whose default workflow permissions
+      # are restricted gets `contents: read` and nothing else, and the
+      # inspection would 403 on every pin.
+      packages: read
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -242,6 +249,10 @@ jobs:
     needs: [plan, verify]
     if: needs.plan.outputs.images_pending == 'true'
     runs-on: ubuntu-latest
+    # Builds locally and hands the result on as an artifact; it touches no
+    # registry, so it needs nothing but the source.
+    permissions:
+      contents: read
     strategy:
       # Exactly the images the plan job found missing from the registry, so a
       # re-run never rebuilds over something already published.
