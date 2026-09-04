@@ -5,6 +5,7 @@
  *
  *   node scripts/pin-compose-version.mjs           # rewrite the pins
  *   node scripts/pin-compose-version.mjs --check   # fail if they are stale
+ *   node scripts/pin-compose-version.mjs --list    # print every image ref it names
  *
  * Compose is the operator's artifact: it is what someone clones and runs, so a
  * pin left behind by a release would silently start them on an old build —
@@ -15,6 +16,13 @@
  *
  * Only the DEFAULT inside `${AHW_VERSION:-…}` is touched. An operator setting
  * `AHW_VERSION` still wins at runtime; this file has no opinion about that.
+ *
+ * `--list` covers the pins this script does NOT own: a transport's image is
+ * released from its own repository on its own version, so nothing here can
+ * rewrite it — but compose can still name a version nobody ever published, and
+ * an operator would discover that as a pull failure. The release workflow
+ * feeds this list to the registry and refuses to ship a compose file that
+ * points at an image which does not exist.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -27,8 +35,19 @@ const COMPOSE = join(ROOT, "docker-compose.yml");
 /** `${AHW_VERSION:-1.2.3}` — the default is group 1. */
 const PIN = /(\$\{AHW_VERSION:-)([^}]*)(\})/g;
 
+/** Every `image:` line, with `${VAR:-default}` resolved to its default. */
+const IMAGE_LINE = /^\s*image:\s*(\S+)\s*$/gm;
+const VAR_DEFAULT = /\$\{[A-Z0-9_]+:-([^}]*)\}/g;
+
 const version = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 const before = readFileSync(COMPOSE, "utf8");
+
+if (process.argv.includes("--list")) {
+  for (const [, ref] of before.matchAll(IMAGE_LINE)) {
+    console.log(ref.replace(VAR_DEFAULT, (_whole, fallback) => fallback));
+  }
+  process.exit(0);
+}
 
 const stale = [...before.matchAll(PIN)].filter((m) => m[2] !== version);
 const check = process.argv.includes("--check");

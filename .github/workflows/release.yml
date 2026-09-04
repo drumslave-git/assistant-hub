@@ -1,94 +1,180 @@
 name: Release
 
-# Ships two kinds of artifact, each on its own version field, each gated the
-# same way: a "version" that changed on main is a release.
+# Ships two kinds of artifact, each on its own version field:
 #
-#  - The APPS' images, on the ROOT package.json version. Bump it locally
-#    (e.g. `npm run release:patch`) and push to main; this workflow verifies,
-#    pushes EVERY per-app image (one per entry in the build job's matrix) to the
-#    org's GitHub Container Registry (ghcr.io/<owner>/<image>) on that one
-#    version, and tags the commit `v<version>`.
-#  - The TRANSPORT SDK, on packages/transport-sdk/package.json's version —
+#  - The APPS' images, on the ROOT package.json version, pushed to the org's
+#    GitHub Container Registry (ghcr.io/<owner>/<image>) and tagged
+#    `v<version>`.
+#  - The TRANSPORT SDK, on packages/transport-sdk/package.json's version,
 #    published to the org's npm registry on GitHub Packages and tagged
 #    `transport-sdk-v<version>`. It carries its own semver because a transport
 #    author pins the SDK, not a core release, and the two move at different
 #    speeds (the wire major they must agree on is `CONTRACT_MAJOR`, which lives
 #    in the code, not in either version field).
 #
-# Auth for both is the job's own GITHUB_TOKEN — no registry secrets to keep.
-# No version change -> nothing runs. Manual dispatch (Actions -> Release ->
-# Run workflow) forces a release of the CURRENT versions - for re-runs and for
-# proving the pipeline on a fresh repo; tagging, image pushes and the npm
-# publish are all idempotent.
+# THE GATE IS THE REGISTRY, NOT THE DIFF. A version field that changed on this
+# push says nothing about whether anything shipped: a release that failed
+# half-way leaves the manifest untouched, so the old "did the version change?"
+# check would never retry it, and a version already in the registry would be
+# silently overwritten with different bytes. So this workflow asks what is
+# actually released — is this image tag in GHCR, is this package version on the
+# registry, is the git tag on origin — and ships only what is missing. That
+# makes it self-healing (any later push to main finishes an interrupted
+# release) and safe (a published version is never rebuilt over).
+#
+# It also checks what it released, after the fact: an image must boot against a
+# real Postgres and Redis and answer /api/health before it is pushed, its
+# pushed digest must come back from the registry with :latest pointing at the
+# same one, and the published SDK is installed FROM the registry and imported,
+# typechecked and inspected for private-package leakage before its tag goes up.
+#
+# Auth for all of it is the job's own GITHUB_TOKEN — no registry secrets to
+# keep. Manual dispatch (Actions -> Release -> Run workflow) forces a release
+# of the CURRENT versions even when they are already published, which is the
+# deliberate escape hatch for replacing a bad build.
 on:
   push:
     branches: [main]
-    # Only wake the workflow when a version file is touched; the version job
-    # then confirms a "version" field actually changed before anything ships.
-    paths:
-      - "package.json"
-      - "packages/transport-sdk/package.json"
   workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  SDK_PACKAGE: "@assistant-hub-swarm/transport-sdk"
+  NPM_REGISTRY: https://npm.pkg.github.com
+
 jobs:
-  version:
-    name: Detect version changes
+  plan:
+    name: What is not released yet
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Reading the container registry and the npm registry to find out what
+      # is already published.
+      packages: read
     outputs:
-      changed: ${{ steps.check.outputs.changed }}
-      version: ${{ steps.check.outputs.version }}
-      sdk_changed: ${{ steps.check.outputs.sdk_changed }}
-      sdk_version: ${{ steps.check.outputs.sdk_version }}
+      version: ${{ steps.plan.outputs.version }}
+      images: ${{ steps.plan.outputs.images }}
+      images_pending: ${{ steps.plan.outputs.images_pending }}
+      tag_pending: ${{ steps.plan.outputs.tag_pending }}
+      sdk_version: ${{ steps.plan.outputs.sdk_version }}
+      sdk_pending: ${{ steps.plan.outputs.sdk_pending }}
+      sdk_tag_pending: ${{ steps.plan.outputs.sdk_tag_pending }}
+      anything: ${{ steps.plan.outputs.anything }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          # Need the previous commit to diff the version fields.
-          fetch-depth: 2
 
-      - id: check
-        name: Compare each version field against the previous commit
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: "@assistant-hub-swarm"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: plan
+        name: Ask the registries what exists
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          FORCED: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -eu
-          # One rule, applied to each manifest that carries a shippable
-          # version: changed on this push (or a manual dispatch) means release.
-          check() {
-            name="$1" manifest="$2" out="$3"
-            current=$(node -p "require('./$manifest').version")
-            echo "${out}version=$current" >> "$GITHUB_OUTPUT"
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              echo "$name: manual dispatch -> releasing current version $current."
-              echo "${out}changed=true" >> "$GITHUB_OUTPUT"
-              return 0
-            fi
-            if git cat-file -e "HEAD~1:$manifest" 2>/dev/null; then
-              previous=$(git show "HEAD~1:$manifest" \
-                | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
-            else
-              previous=""
-            fi
-            echo "$name: previous='$previous' current='$current'"
-            if [ "$current" != "$previous" ]; then
-              echo "$name: version changed -> release will run."
-              echo "${out}changed=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "$name: version unchanged -> nothing to release."
-              echo "${out}changed=false" >> "$GITHUB_OUTPUT"
-            fi
+
+          # Every image this repository ships, as "<name>=<dockerfile>". ONE
+          # list: it decides what to release and becomes the build matrix
+          # below, so the two can never disagree. Transports are not here —
+          # each is its own repository, on its own version.
+          IMAGES="ahw-core=apps/core/Dockerfile"
+
+          published_image() {
+            docker buildx imagetools inspect "$1" >/dev/null 2>&1
           }
-          check "apps" "package.json" ""
-          check "transport-sdk" "packages/transport-sdk/package.json" "sdk_"
+          published_tag() {
+            git ls-remote --exit-code --tags origin "refs/tags/$1" >/dev/null 2>&1
+          }
+
+          # ---- the apps' images -------------------------------------------
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          pending='[]'
+          for entry in $IMAGES; do
+            image="${entry%%=*}"
+            dockerfile="${entry#*=}"
+            ref="ghcr.io/$OWNER/$image:$version"
+            if [ "$FORCED" != "true" ] && published_image "$ref"; then
+              echo "$ref is already in the registry."
+            else
+              echo "$ref is not released -> build and push it."
+              pending=$(node -e '
+                const [json, image, dockerfile] = process.argv.slice(1);
+                const list = JSON.parse(json);
+                list.push({ image, dockerfile });
+                console.log(JSON.stringify(list));
+              ' "$pending" "$image" "$dockerfile")
+            fi
+          done
+          echo "images={\"include\":$pending}" >> "$GITHUB_OUTPUT"
+          if [ "$pending" = "[]" ]; then
+            images_pending=false
+          else
+            images_pending=true
+          fi
+          echo "images_pending=$images_pending" >> "$GITHUB_OUTPUT"
+
+          if published_tag "v$version"; then
+            echo "tag v$version is already on origin."
+            tag_pending=false
+          else
+            echo "tag v$version is missing."
+            tag_pending=true
+          fi
+          echo "tag_pending=$tag_pending" >> "$GITHUB_OUTPUT"
+
+          # ---- the SDK ------------------------------------------------------
+          sdk_version=$(node -p "require('./packages/transport-sdk/package.json').version")
+          echo "sdk_version=$sdk_version" >> "$GITHUB_OUTPUT"
+          if [ "$FORCED" != "true" ] &&
+             npm view "$SDK_PACKAGE@$sdk_version" version --registry "$NPM_REGISTRY" >/dev/null 2>&1; then
+            echo "$SDK_PACKAGE@$sdk_version is already published."
+            sdk_pending=false
+          else
+            echo "$SDK_PACKAGE@$sdk_version is not published -> publish it."
+            sdk_pending=true
+          fi
+          echo "sdk_pending=$sdk_pending" >> "$GITHUB_OUTPUT"
+
+          if published_tag "transport-sdk-v$sdk_version"; then
+            sdk_tag_pending=false
+          else
+            sdk_tag_pending=true
+          fi
+          echo "sdk_tag_pending=$sdk_tag_pending" >> "$GITHUB_OUTPUT"
+
+          # ---- anything at all ----------------------------------------------
+          if [ "$images_pending$tag_pending$sdk_pending$sdk_tag_pending" = "falsefalsefalsefalse" ]; then
+            echo "Everything on this commit is already released; nothing to do."
+            echo "anything=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "anything=true" >> "$GITHUB_OUTPUT"
+          fi
 
   verify:
     name: Lint, typecheck, test
-    needs: version
+    needs: plan
     # Whatever is being released, it is verified first — and the whole
     # monorepo is, because the SDK is assembled from the same packages the
-    # apps run on.
-    if: needs.version.outputs.changed == 'true' || needs.version.outputs.sdk_changed == 'true'
+    # apps run on. A missing git tag counts: a commit is not marked released
+    # until it has passed.
+    if: needs.plan.outputs.anything == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -110,29 +196,61 @@ jobs:
       - name: Compose pins the released version
         run: node scripts/pin-compose-version.mjs --check
 
-  # A release is all-or-nothing: every image is built first (nothing pushed),
-  # and only when EVERY build succeeded does one job push them all and tag the
-  # commit. One failing image fails the whole release with the registry and the
-  # repo untouched - no half-released version, no dangling tag.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # And every OTHER image it names has to exist. A transport is released
+      # from its own repository on its own version, so nothing in this repo can
+      # keep that pin honest — but compose can happily name a version nobody
+      # published, and an operator meets that as a pull failure on their own
+      # server. The one exception is the image this release is about to push.
+      - name: Every image compose pins exists
+        env:
+          RELEASING: ${{ needs.plan.outputs.version }}
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+        run: |
+          set -eu
+          missing=0
+          for ref in $(node scripts/pin-compose-version.mjs --list); do
+            case "$ref" in
+              "$REGISTRY"/*:"$RELEASING")
+                echo "$ref is this release; it does not exist yet by design."
+                continue
+                ;;
+            esac
+            if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+              echo "$ref exists."
+            else
+              echo "::error::docker-compose.yml pins $ref, which is not in any registry"
+              missing=1
+            fi
+          done
+          exit $missing
+
+  # A release is all-or-nothing: every missing image is built first (nothing
+  # pushed), and only when EVERY build succeeded does one job smoke-test, push
+  # them all and tag the commit. One failing image fails the whole release with
+  # the registry and the repo untouched — no half-released version, no dangling
+  # tag.
   build:
     name: Build ${{ matrix.image }}
-    needs: [version, verify]
-    if: needs.version.outputs.changed == 'true'
+    needs: [plan, verify]
+    if: needs.plan.outputs.images_pending == 'true'
     runs-on: ubuntu-latest
     strategy:
-      # Per-app images, all released together on the same version. Every app
-      # in THIS repository that ships an image adds a matrix entry here - the
-      # publish job picks up whatever this matrix produced. Transports are not
-      # here: each one is its own repository and releases on its own schedule.
-      matrix:
-        include:
-          - image: ahw-core
-            dockerfile: apps/core/Dockerfile
+      # Exactly the images the plan job found missing from the registry, so a
+      # re-run never rebuilds over something already published.
+      matrix: ${{ fromJSON(needs.plan.outputs.images) }}
       # Let any other image finish (and warm its cache) even if one fails; the
       # publish job still refuses to run unless all of them succeeded.
       fail-fast: false
     env:
-      VERSION: ${{ needs.version.outputs.version }}
+      VERSION: ${{ needs.plan.outputs.version }}
       IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
     steps:
       - uses: actions/checkout@v5
@@ -161,9 +279,15 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish all images and tag
-    needs: [version, build]
-    if: needs.version.outputs.changed == 'true'
+    name: Smoke-test, push and tag
+    needs: [plan, verify, build]
+    # Runs when an image is missing, when only the tag is missing, or both.
+    # `build` is skipped in the tag-only case, which is a pass, not a failure.
+    if: >-
+      !cancelled()
+      && needs.verify.result == 'success'
+      && (needs.build.result == 'success' || needs.build.result == 'skipped')
+      && (needs.plan.outputs.images_pending == 'true' || needs.plan.outputs.tag_pending == 'true')
     runs-on: ubuntu-latest
     permissions:
       # Required so the workflow can push the release tag back to the repo.
@@ -171,24 +295,99 @@ jobs:
       # Required to push images to the org's container registry.
       packages: write
     env:
-      VERSION: ${{ needs.version.outputs.version }}
+      VERSION: ${{ needs.plan.outputs.version }}
       REGISTRY: ghcr.io/${{ github.repository_owner }}
+      HAS_IMAGES: ${{ needs.plan.outputs.images_pending }}
+    # The smoke test below boots the real image against these. pgvector, not
+    # plain Postgres: migration 0000 creates the `vector` extension, so a
+    # stock image would fail on the first migration — which is exactly the
+    # kind of thing this test exists to catch.
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: bot
+          POSTGRES_PASSWORD: bot
+          POSTGRES_DB: bot
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U bot"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
+        if: env.HAS_IMAGES == 'true'
         with:
           pattern: image-*
           path: /tmp/images
           merge-multiple: true
 
       - name: Load images
+        if: env.HAS_IMAGES == 'true'
         run: |
           set -eu
           for tar in /tmp/images/*.tar; do
             docker load --input "$tar"
           done
           docker image ls --format '{{.Repository}}:{{.Tag}}'
+
+      # What actually got built has to RUN before it is published. The image
+      # applies its migrations on a clean database and then serves; a migration
+      # that was generated but never committed, a missing runtime dependency or
+      # a broken entrypoint all fail here, with the registry untouched.
+      - name: Smoke-test the core image
+        if: env.HAS_IMAGES == 'true'
+        run: |
+          set -eu
+          ref="${REGISTRY}/ahw-core:${VERSION}"
+          docker run -d --name smoke --network host \
+            -e NODE_ENV=production \
+            -e PORT=3200 \
+            -e DATABASE_URL=postgres://bot:bot@127.0.0.1:5432/bot \
+            -e REDIS_URL=redis://127.0.0.1:6379 \
+            -e INTERNAL_API_TOKEN=smoke-test \
+            "$ref"
+          # Generous: migrations run before the server binds, on a cold image.
+          for attempt in $(seq 1 60); do
+            if body=$(curl -fsS --max-time 5 http://127.0.0.1:3200/api/health 2>/dev/null); then
+              echo "/api/health answered: $body"
+              # It has to be ready (the DB probe passed, so the migrations
+              # applied) AND report the version being released — which is
+              # inlined at image build time, so a stale or mis-tagged build
+              # says so here rather than on the operator's server.
+              echo "$body" | VERSION="$VERSION" node -e "
+                const health = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+                if (health.status !== 'ok') {
+                  throw new Error('not ready: ' + JSON.stringify(health));
+                }
+                if (health.version !== process.env.VERSION) {
+                  throw new Error(
+                    'the image reports version ' + health.version +
+                      ', this release is ' + process.env.VERSION,
+                  );
+                }
+                console.log('ready, and reports version', health.version);
+              "
+              docker rm -f smoke >/dev/null
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke)" != "true" ]; then
+              echo "The container exited before it served /api/health:"
+              docker logs smoke
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "/api/health never answered within 120s:"
+          docker logs smoke
+          exit 1
 
       - name: Log in to the GitHub Container Registry
         uses: docker/login-action@v3
@@ -200,6 +399,7 @@ jobs:
       # Every image's version tag goes up before any `latest` moves, so a push
       # failure mid-way can never leave `latest` pointing at a mixed set.
       - name: Push version tags
+        if: env.HAS_IMAGES == 'true'
         run: |
           set -eu
           for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=${REGISTRY}/*:${VERSION}"); do
@@ -207,6 +407,7 @@ jobs:
           done
 
       - name: Push latest tags
+        if: env.HAS_IMAGES == 'true'
         run: |
           set -eu
           for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=${REGISTRY}/*:${VERSION}"); do
@@ -215,10 +416,29 @@ jobs:
             docker push "$latest"
           done
 
+      # Read back what the registry now holds, rather than trusting that the
+      # push said so: the version must resolve, and :latest must be the SAME
+      # digest — a moved tag that points somewhere else is the failure an
+      # operator would otherwise discover by pulling it.
+      - name: Verify what landed in the registry
+        if: env.HAS_IMAGES == 'true'
+        run: |
+          set -eu
+          for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=${REGISTRY}/*:${VERSION}"); do
+            versioned=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+            latest=$(docker buildx imagetools inspect "${ref%:*}:latest" --format '{{.Manifest.Digest}}')
+            echo "$ref -> $versioned"
+            if [ "$versioned" != "$latest" ]; then
+              echo "::error::${ref%:*}:latest is $latest, not the $VERSION digest $versioned"
+              exit 1
+            fi
+          done
+
       # The git tag is the last step: it exists only for a version whose every
-      # image is already in the registry.
+      # image is already in the registry and answered a health check.
       - name: Create and push release tag
         run: |
+          set -eu
           tag="v${VERSION}"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
             echo "Tag $tag already exists on origin, skipping tag creation."
@@ -232,11 +452,13 @@ jobs:
   # The transport SDK, on its own version and its own tag. Independent of the
   # images: a transport author installs a package, and pinning it to whatever
   # the core's apps were at would make every app release look like an SDK
-  # change. Gated exactly like them — its version field changed on main.
+  # change.
   publish-sdk:
-    name: Publish the transport SDK
-    needs: [version, verify]
-    if: needs.version.outputs.sdk_changed == 'true'
+    name: Publish and verify the transport SDK
+    needs: [plan, verify]
+    if: >-
+      needs.plan.outputs.sdk_pending == 'true'
+      || needs.plan.outputs.sdk_tag_pending == 'true'
     runs-on: ubuntu-latest
     permissions:
       # Required so the workflow can push the SDK's release tag back to the repo.
@@ -244,9 +466,9 @@ jobs:
       # Required to publish to the org's npm registry on GitHub Packages.
       packages: write
     env:
-      VERSION: ${{ needs.version.outputs.sdk_version }}
-      PACKAGE: "@assistant-hub-swarm/transport-sdk"
+      VERSION: ${{ needs.plan.outputs.sdk_version }}
       WORKSPACE: packages/transport-sdk
+      PENDING: ${{ needs.plan.outputs.sdk_pending }}
     steps:
       - uses: actions/checkout@v5
 
@@ -266,25 +488,113 @@ jobs:
       # bundled in — see the SDK's tsup config for why nothing published may
       # resolve to a package that exists only in this repo.
       - name: Build
-        run: npm run build --workspace $PACKAGE
+        if: env.PENDING == 'true'
+        run: npm run build --workspace $SDK_PACKAGE
 
-      # Idempotent, so a re-run or a manual dispatch of an already-published
-      # version is a no-op rather than a red workflow.
+      # A registry refuses to overwrite a published version, so a forced
+      # dispatch of one that is already out there re-verifies and re-tags
+      # rather than failing red. Images are the opposite — they CAN be
+      # overwritten, which is what makes dispatch the escape hatch for them.
       - name: Publish
+        if: env.PENDING == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          if npm view "$PACKAGE@$VERSION" version --registry https://npm.pkg.github.com >/dev/null 2>&1; then
-            echo "$PACKAGE@$VERSION is already published, skipping."
+          if npm view "$SDK_PACKAGE@$VERSION" version --registry "$NPM_REGISTRY" >/dev/null 2>&1; then
+            echo "$SDK_PACKAGE@$VERSION is already published; verifying it instead."
             exit 0
           fi
-          npm publish --workspace $PACKAGE
+          npm publish --workspace $SDK_PACKAGE
 
-      # Last, like the images' tag: it exists only for a version that is in
-      # the registry.
+      # The check that matters, and the one a version bump can never make: pull
+      # the package back OUT of the registry, into a project that has none of
+      # this repository, and prove it is usable there. That is the position
+      # every transport author is in, and it is where the two real failures of
+      # this package showed up — declarations that re-exported private
+      # workspace packages, and a bundle that resolved to them at runtime.
+      - name: Verify what was published
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          # The wire major the SOURCE of this commit declares. The published
+          # package has to agree: a bundle built from a stale tree would
+          # announce a different one and every transport would be refused by a
+          # core that is actually compatible.
+          expected_major=$(grep -oE 'CONTRACT_MAJOR = [0-9]+' \
+            packages/contracts/src/contract-version.ts | grep -oE '[0-9]+')
+          echo "this commit declares CONTRACT_MAJOR $expected_major"
+
+          dir=$(mktemp -d)
+          cd "$dir"
+          printf '@assistant-hub-swarm:registry=%s\n//npm.pkg.github.com/:_authToken=%s\n' \
+            "$NPM_REGISTRY" "$NODE_AUTH_TOKEN" > .npmrc
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund \
+            "$SDK_PACKAGE@$VERSION" \
+            hono @hono/node-server @modelcontextprotocol/sdk zod typescript
+
+          # By path, not through the resolver: the package's exports map
+          # deliberately exposes only ".", so requiring its manifest by name
+          # throws ERR_PACKAGE_PATH_NOT_EXPORTED.
+          installed=$(node -p "require('./node_modules/$SDK_PACKAGE/package.json').version")
+          if [ "$installed" != "$VERSION" ]; then
+            echo "::error::the registry served $installed, not $VERSION"
+            exit 1
+          fi
+
+          # 1. It imports and runs, with nothing from the core's workspace on disk.
+          EXPECTED_MAJOR="$expected_major" node --input-type=module -e "
+            import { CONTRACT_MAJOR, startTransportService } from '$SDK_PACKAGE';
+            if (typeof startTransportService !== 'function') {
+              throw new Error('the published package exports no runtime');
+            }
+            if (String(CONTRACT_MAJOR) !== process.env.EXPECTED_MAJOR) {
+              throw new Error(
+                'published CONTRACT_MAJOR ' + CONTRACT_MAJOR +
+                  ', source says ' + process.env.EXPECTED_MAJOR,
+              );
+            }
+            console.log('imports, and announces contract major', CONTRACT_MAJOR);
+          "
+
+          # 2. Its declarations name no package that only exists in the core's
+          #    repository. A d.ts that re-exports one typechecks in this repo
+          #    and breaks in every consumer, so grep for it directly.
+          decl="node_modules/$SDK_PACKAGE/dist/index.d.ts"
+          if grep -nE "from ['\"]@assistant-hub-swarm/(contracts|bus|service|media|db|ui)['\"]" "$decl"; then
+            echo "::error::the published declarations import a private workspace package"
+            exit 1
+          fi
+
+          # 3. A consumer typechecks against them.
+          cat > consumer.ts <<'TS'
+          import {
+            startTransportService,
+            type AddressingRule,
+            type Normalizer,
+            type PlatformAdapter,
+            type TransportDescriptor,
+          } from "@assistant-hub-swarm/transport-sdk";
+
+          declare const descriptor: TransportDescriptor;
+          declare const adapter: PlatformAdapter<unknown>;
+          declare const normalize: Normalizer<unknown>;
+          declare const addressing: AddressingRule<unknown>;
+
+          export const boot = () =>
+            startTransportService({ descriptor, adapter, normalize, addressing });
+          TS
+          npx tsc --noEmit --strict --module nodenext --moduleResolution nodenext \
+            --target es2022 --skipLibCheck consumer.ts
+          echo "the published package installs, imports and typechecks outside this repository"
+
+      # Last, like the images' tag: it exists only for a version that is in the
+      # registry and proved usable from it.
       - name: Create and push the SDK's release tag
         run: |
+          set -eu
           tag="transport-sdk-v${VERSION}"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
             echo "Tag $tag already exists on origin, skipping tag creation."

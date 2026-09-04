@@ -277,6 +277,11 @@ integration suite needs Docker and is not part of the release gate, so **run it
 locally** when you touch persistence, migrations, a job's idempotency, or either
 pipeline stage.
 
+Migrations do get one CI check, and it is not a test: before the image is
+pushed, the release workflow boots it against a clean pgvector database and
+waits for `/api/health`. A migration that was generated but never committed
+fails there — visibly, in the release, rather than on an operator's server.
+
 `npm run test` also carries the **wire-contract drift check**
 (`packages/transport-sdk/src/wire.test.ts`): it regenerates
 `docs/api/transport/{events.schema.json,openapi.yaml}` from the zod schemas and

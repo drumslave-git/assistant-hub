@@ -34,9 +34,9 @@ current tree before acting on them.
 
 ## Transport SDK: a new transport with zero core edits (`in-progress`, opened 2026-09-02)
 
-**Where it stands (2026-09-04):** all six phases have landed locally and every
-check passes. What is left is not code — it is the publishes and pushes only
-the user can make (see "Still on the user" at the end of each phase).
+**Where it stands (2026-09-04):** all seven phases have landed and every check
+passes. The SDK is published at **3.0.0** and both transports run on it. What
+is left is the pushes only the user can make.
 
 **Problem (user, 2026-09-02).** `docs/PLAN.md` and the overview promise that a
 transport connects "without any core change", while
@@ -537,12 +537,84 @@ Any core edit for a new source id is a bug.
      links in its HTML, and Discord does not render masked links in ordinary
      message content, so there is no obvious equivalent. Not invented; ask the
      user what a Discord citation should look like before wiring it.
-   - **On the user:** publish `@assistant-hub-swarm/transport-sdk@3.0.0`, then
-     `npm install` in both transport repositories to pick it up and commit the
-     lockfiles. Until then each transport's `node_modules` holds a **copy of
-     the local 3.0.0 build** (`dist/` + `package.json`, no lockfile change) so
-     typecheck and tests could run — a plain `npm ci` there today would
-     install 2.0.0 and fail.
+   - **Published by the user, 2026-09-04**, and both transports moved onto it:
+     `npm install` in each resolved `@assistant-hub-swarm/transport-sdk@3.0.0`
+     from GitHub Packages (Telegram's lockfile updated; Discord's lockfile was
+     never committed at all, so it is now). Typecheck and tests pass in both
+     against the PUBLISHED package rather than a hand-copied build — Telegram
+     35 tests, Discord 16. The Telegram transport is bumped to **1.1.0** so the
+     runtime port actually ships: same env, same port, same wire, a different
+     inside. Discord stays 1.0.0, having never released.
+
+7. **The release gate is the registry** (`done`, 2026-09-04 — all three
+   repositories).
+   - **Problem (user, 2026-09-04):** "checking version is not enough, it have
+     to check what released". Correct, and in two directions. A version field
+     that changed on a push says nothing about whether anything reached the
+     registry: a release that failed half-way left the manifest untouched, so
+     the gate saw "no change" and never retried it — only a second bump or a
+     manual dispatch would ever fix it. And a version already published was
+     silently overwritten with different bytes on a forced run.
+   - **The gate now asks the registries.** Each workflow's first job checks
+     what is actually released — is this image tag in GHCR
+     (`docker buildx imagetools inspect`), is this package version on the npm
+     registry (`npm view`), is the git tag on origin — and ships only what is
+     missing. The core's job emits the build matrix from that check, so the
+     list that decides and the list that builds cannot drift apart. Two
+     consequences: the workflows are **self-healing** (any later push to main
+     finishes an interrupted release), and the `paths:` filter is **gone**,
+     because a fix-up push has to be able to wake the workflow. When nothing
+     is pending the first job says so in about half a minute and the rest is
+     skipped.
+   - **And they check what they released.** Nothing is trusted to have worked
+     because a push step exited zero:
+     - *Images boot before they are pushed.* Built and **loaded**, not pushed:
+       the core runs against a real pgvector Postgres and Redis and must answer
+       `/api/health` with `status: "ok"` **and the version being released**
+       (it is inlined at build time, so a stale cached build says so here); a
+       transport runs against a real Redis and must answer `/health` with a
+       transport's own body. A migration generated but never committed, a
+       missing runtime dependency or a broken entrypoint fails here with the
+       registry untouched — and that is the failure an operator meets first.
+     - *Pushed digests are read back.* `:latest` must resolve to the same
+       digest as `:<version>`, so a half-moved tag cannot pass.
+     - *The published SDK is pulled back out.* Into a scratch project with none
+       of this repository: it must import and run, announce the same
+       `CONTRACT_MAJOR` the source declares, carry declarations that name no
+       private workspace package, and typecheck for a consumer. That is the
+       position every transport author is in, and where this package's two real
+       failures showed up.
+     - *Compose may not name an image nobody published.* `verify` now resolves
+       every `image:` pin in `docker-compose.yml` (via
+       `scripts/pin-compose-version.mjs --list`, new) and inspects each in its
+       registry, exempting only the one this release is about to push. A
+       transport's pin is released from another repository entirely, so nothing
+       here could keep it honest before; an operator met a stale one as a pull
+       failure on their own server.
+   - **A forced dispatch still overwrites an image** (deliberate: it is the
+     escape hatch for replacing a bad build) but cannot overwrite an npm
+     version, which no registry allows — so a forced SDK run re-verifies and
+     re-tags instead of failing red.
+   - **Proof.** All three workflows parse with duplicate-key checking. The
+     pieces that could be run locally were: `imagetools inspect --format
+     '{{.Manifest.Digest}}'` against a real image, the matrix JSON the plan job
+     builds, the compose-pin sweep against the live registries (it correctly
+     exempts `ahw-core:1.48.1` as this release's own and confirms the other
+     three), and the SDK's whole published-package verification against the
+     real 3.0.0 — which caught a bug in the check itself: `require('<pkg>/
+     package.json')` throws `ERR_PACKAGE_PATH_NOT_EXPORTED`, because the
+     package's exports map exposes only `.`, so the manifest is read by path.
+     Core `lint`/`typecheck`/`test` (1161 + 19) pass. **Not run: the workflows
+     themselves** — they need a push, and the current versions are all already
+     released, so the first real exercise will be the Telegram transport's
+     1.1.0.
+   - **Known state at the time of writing:** `ahw-core:1.48.1`, `v1.48.1`,
+     `transport-sdk-v3.0.0` and `ahw-transport-telegram:1.0.0` are all in the
+     registry, so a push to `ahw-core` today releases nothing. The Discord
+     repository has never released, so its first push runs the whole thing on
+     1.0.0 — and the core's compose pin for Telegram stays at 1.0.0 until
+     1.1.0 is actually in the registry, since the new pin check would (rightly)
+     refuse a compose file naming an image nobody published.
 
 **Landed with the org move (`done`, 2026-09-02):** local `origin` repointed;
 the guide, the tracker and the link-fetch user-agent name the new repository;

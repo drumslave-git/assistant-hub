@@ -88,7 +88,7 @@ Root scripts fan out across the workspaces through turbo.
 | `npm run db:generate` | Generate a SQL migration from `apps/core/store/schema.ts` |
 | `npm run db:migrate` | Apply pending migrations to `DATABASE_URL` |
 | `npm run db:studio` | Open Drizzle Studio |
-| `npm run release:patch\|minor\|major` | Bump the root version; the release workflow ships every image on the change |
+| `npm run release:patch\|minor\|major` | Bump the root version; the release workflow ships whatever that version is missing from the registry |
 
 ## Repository Layout
 

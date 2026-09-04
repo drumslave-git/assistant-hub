@@ -275,8 +275,23 @@ the Redis queue across the restart.
 
 `.github/workflows/release.yml` ships two kinds of artifact, each on its own
 version field: the **app images** on the root `package.json` version, and the
-**transport SDK** on `packages/transport-sdk/package.json`'s. A version field
-that changed on `main` is a release; neither waits for the other.
+**transport SDK** on `packages/transport-sdk/package.json`'s. Neither waits for
+the other.
+
+**The gate is the registry, not the diff.** A version field that changed on
+this push says nothing about whether anything shipped: a release that failed
+half-way leaves the manifest untouched, so a "did the version change?" check
+would never retry it, and a version already published would be quietly
+overwritten with different bytes. So the workflow asks what is actually
+released — is this image tag in GHCR, is this package version on the npm
+registry, is the git tag on origin — and ships only what is missing. Two
+consequences worth knowing:
+
+- **It is self-healing.** Any later push to `main` finishes an interrupted
+  release. Nothing has to be bumped again.
+- **It runs on every push to `main`**, because a fix-up push has to be able to
+  wake it. When everything on the commit is already released the first job says
+  so in about half a minute and the rest is skipped.
 
 ```bash
 npm run release:patch
@@ -284,43 +299,50 @@ npm run release:patch
 
 (or `release:minor` / `release:major` — they bump the version without creating a git
 tag), then commit and push to `main`. Actions → Release → *Run workflow* forces a
-release of the current version instead (re-runs, or proving a fresh repo); every
-step below is idempotent, so a manual run is safe to repeat.
+release of the current version even when it is already published — the escape
+hatch for replacing a bad image. (A published npm version cannot be replaced at
+all; a forced SDK run re-verifies and re-tags it instead of failing red.)
 
 A release is all-or-nothing: nothing reaches the registry and no tag is created
-unless every image built. This repository's image is
+unless every image built and started. This repository's image is
 `ghcr.io/assistant-hub-swarm/ahw-core`; each transport publishes its own from
 its own repository (`ahw-transport-telegram`, …). The workflow:
 
-1. **version** — wakes only when a version manifest is touched (the root
-   `package.json` or the SDK's), then diffs each `version` field against
-   `HEAD~1`. Unchanged → that artifact does not ship. A manual dispatch skips
-   the diff and releases the current versions.
+1. **plan** — asks the registries what exists: each image tag, the SDK version,
+   and both git tags. It emits the build matrix (exactly the images that are
+   missing) and stops the whole run when there is nothing to do.
 2. **verify** — `npm install`, `npm run lint`, `npm run typecheck`, `npm run test`
    (fanned out across the workspaces via turbo. Unit tests only; the integration
-   suite needs Docker and is not part of the gate.) Then one release-shaped
-   check: `docker-compose.yml`'s image pins must name the version being
-   released, so a compose file that would start operators on an older build
-   cannot ship. `npm run release:*` keeps them in step; this catches a version
-   bumped any other way.
-3. **build** — a matrix with one entry per app image in this repository
-   (`ahw-core` from `apps/core/Dockerfile`) builds each with GitHub Actions
-   layer caching and hands it to the next job as an artifact — nothing is
-   pushed. One failing image fails the release. Transports are not in the
-   matrix: each releases from its own repository, on its own version.
-4. **publish** — runs only when every build succeeded: loads all images, pushes
-   every `ghcr.io/<org>/<image>:<version>` first, then moves every `:latest`, and finally
-   creates the `v<version>` git tag (skipped if it already exists). The ordering
-   means a push failure mid-way can never leave `latest` pointing at a mixed set,
-   and a tag exists only for a version whose every image is in the registry.
+   suite needs Docker and is not part of the gate.) Then two release-shaped
+   checks on `docker-compose.yml`, the artifact an operator actually clones:
+   its own pins must name the version being released (`npm run release:*` keeps
+   them in step; this catches a version bumped any other way), and **every other
+   image it names must exist in a registry** — a transport's pin is released
+   from another repository entirely, so nothing here can keep it honest, and an
+   operator would otherwise meet a stale one as a pull failure on their server.
+3. **build** — one entry per missing image (`ahw-core` from
+   `apps/core/Dockerfile`), built with layer caching and handed to the next job
+   as an artifact — nothing is pushed. One failing image fails the release.
+   Transports are not in the matrix: each releases from its own repository.
+4. **publish** — loads the images and **boots the core against a real Postgres
+   and Redis** (pgvector, because migration 0000 creates the `vector`
+   extension), waiting for `/api/health` to answer `ok` *and* report the version
+   being released. Only then does it push every `:<version>`, move every
+   `:latest`, read both digests back from the registry to confirm they match,
+   and create the `v<version>` git tag. A migration that was generated but never
+   committed, a missing runtime dependency, a broken entrypoint or a stale
+   cached build all fail here, with the registry untouched.
 
-And, when the SDK's version changed:
+And, for the SDK:
 
 5. **publish-sdk** — builds `packages/transport-sdk` (ESM + `.d.ts`, with the
-   private workspace packages bundled in, so nothing published resolves to a
-   package that exists only in this repo), publishes it to the org's npm
-   registry on GitHub Packages, and tags `transport-sdk-v<version>`. Skips the
-   publish when that version is already there, so a re-run is a no-op.
+   private workspace packages bundled in), publishes it, and then **pulls it
+   back out of the registry** into a scratch project that has none of this
+   repository: the package must import and run, announce the same
+   `CONTRACT_MAJOR` the source declares, carry declarations that name no
+   private workspace package, and typecheck for a consumer. That is the
+   position every transport author is in, and it is where this package's two
+   real failures showed up. The tag goes up last.
 
 The SDK carries its own semver because a transport author pins the package,
 not a core release, and the two move at different speeds. The number the two

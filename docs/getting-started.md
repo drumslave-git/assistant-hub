@@ -183,7 +183,7 @@ Root scripts fan out across the workspaces through turbo.
 | `npm run db:generate` | Generate a SQL migration from `apps/core/store/schema.ts` |
 | `npm run db:migrate` | Apply pending migrations to `DATABASE_URL` |
 | `npm run db:studio` | Drizzle Studio |
-| `npm run release:patch\|minor\|major` | Bump the root `package.json` version without a git tag — the release workflow ships every image on the change |
+| `npm run release:patch\|minor\|major` | Bump the root `package.json` version without a git tag. The release workflow then ships whatever that version is missing from the registry |
 
 `db:generate` and `db:migrate` are two halves of one job — generating the SQL
 without applying it leaves your dev database on the old schema.

@@ -658,8 +658,14 @@ RUN --mount=type=secret,id=npm_token     set -eu;     printf '//npm.pkg.github.c
 your own, or your repository's (`ghcr.io/<you>/<repo>`). Tag a real version
 rather than only `latest`, so an operator can pin one. The Telegram and
 Discord transports are released by their own repositories' workflows, on the
-same shape as this repo's [release workflow](../../.github/workflows/release.yml):
-a version field that changed on `main` is a release.
+same shape as this repo's [release workflow](../../.github/workflows/release.yml),
+which is worth copying for one reason: it gates on the REGISTRY, not on a
+version field that changed. It asks whether this image tag is already there
+and ships only what is missing, so a release that fails half-way is finished
+by the next push instead of needing another bump, and a published version is
+never rebuilt over. It also boots the image and waits for `/health` before
+pushing anything — a Dockerfile that builds but cannot start is what your
+operator meets first.
 
 **What the operator adds.** One service in their `docker-compose.yml`, and
 nothing else:
